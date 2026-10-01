@@ -20,3 +20,8 @@
 - R2. `ns-resolve` returns nil even for public vars; core vars carry no `:ns` meta.
 - R3. `bit-or` takes exactly 2 args.
 - R4. Shifts follow Go (count not masked): `(bit-shift-right -8 64)` = -1. The wasm backend masks mod 64; the reference intrinsics mirror wasm, lg's own ops mirror lg (D16).
+
+## Maps (from corpus/maporder/SPEC.md, let-go 4e769212, 2026-10-01)
+- M1. **Real bug:** when a 2-entry collision bucket loses one key, the survivor is rebuilt at shift 0 regardless of depth (persistent_map.go:552-562): `seq` still shows it, `get` misses it, a re-assoc inserts a duplicate key, `(= c (dissoc a \a))` is false. Pinned by `collide-map.lg` bucket-* rows. Generic upstream report after the campaign.
+- M2. With ≤8 keys, `read-json`/transit/bencode-sourced maps take Go map iteration order: native lg is nondeterministic there (2 orders in 3 runs). Not on xsofy's path.
+- M3. 11 constructed hash-colliding key pairs incl. an FNV-1a string preimage ("xe2tiazy" collides with 97, \a, 4.8e-322).
