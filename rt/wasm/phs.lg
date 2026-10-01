@@ -1,0 +1,136 @@
+;; wasm.phs — let-go's PersistentSet (pkg/vm/persistent_set.go at 4e769212)
+;; and TransientSet (pkg/vm/transient.go:451-519) over wasm.phm, in the
+;; runtime dialect (see wasm.phm's header).
+;;
+;; As in let-go, a set is a map from each element to itself (:15-20) whose
+;; backing map is always in HAMT mode: the empty impl has a non-null empty
+;; root (emptySetImpl :29), disj-to-empty and persistent! of an empty
+;; transient land back on it (:128-133, transient.go:513-517), and a transient
+;; set forces its map to HAMT (transient.go:469). So a set of any size
+;; iterates in hash order; insertion order shows only inside a collision bucket.
+;; A transient set stores the boxed `true` as every value
+;; (transientSetSentinel, transient.go:457), not the element.
+;;
+;; This file also owns the seq.lg composition hooks for both maps and sets
+;; (`install-hooks!`, SEQ.md "Composition hooks"): seq.lg's single hook slot
+;; serves every foreign kind, and phs is the one namespace that sees both.
+(ns wasm.phs
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.phm :as m]
+            [wasm.seq :as sq]))
+
+;; impl (an HMap in HAMT mode), hash cache (-1 = none).
+(wasm/defstruct HSet [:ref [:mut :i64]])
+
+(defn- impl [s] (wasm/get HSet 0 s))
+(defn- mkset [i] (wasm/new HSet i -1))
+
+(defn empty-set [] (mkset (m/empty-hamt-map)))            ; EmptyPersistentSet :32
+
+(defn scount [s] (m/mcount (impl s)))
+
+(defn sconj [s x]                                           ; Conj :114-120
+  (let [i (impl s) ni (m/massoc i x x)]
+    (if (wasm/ref-eq ni i) s (mkset ni))))
+
+(defn sdisj [s x]                                           ; Disj :124-135
+  (let [i (impl s) ni (m/mdissoc i x)]
+    (cond
+      (wasm/ref-eq ni i) s
+      ;; mdissoc drains to the ORDERED empty map; a set must not regrow from it.
+      (= 0 (m/mcount ni)) (mkset (m/empty-hamt-map))
+      :else (mkset ni))))
+
+(defn scontains? [s x]                                      ; Contains :137-146
+  (if (= 0 (scount s)) false (m/mcontains? (impl s) x)))
+
+(defn sget                                                  ; ValueAtOr :160-169
+  "Returns the probe x, not the stored element, when found (as Go does)."
+  [s x nf]
+  (if (scontains? s x) x nf))
+
+(defn sseq "Elements in seq order (entries :188-199): the map's keys." [s]
+  (m/mkeys (impl s)))
+
+(defn shash                                                 ; Hash :69-82
+  "mixFinish(sum of hash(e)), uint32 wrapping; cached."
+  [s]
+  (let [c (wasm/get HSet 1 s)]
+    (if (>= c 0)
+      c
+      (let [ks (sseq s) n (wasm/alen ks)
+            h (loop [j 0 h 0]
+                (if (< j n)
+                  (recur (inc j) (bit-and (+ h (sq/unbox-int (sq/hash (wasm/aget m/HSlots ks j)))) 0xffffffff))
+                  h))
+            r (m/mix-finish h)]
+        (wasm/set! HSet 1 s r)
+        r))))
+
+(defn sequiv                                                ; setEquals (rt/lang.go:1227-1233)
+  "Same count and every element of s is in o."
+  [s o]
+  (if (= (scount s) (scount o))
+    (let [ks (sseq s) n (wasm/alen ks)]
+      (loop [j 0]
+        (if (< j n)
+          (if (scontains? o (wasm/aget m/HSlots ks j)) (recur (inc j)) false)
+          true)))
+    false))
+
+;; TransientSet (transient.go:451-519): a TransientMap forced to HAMT.
+
+(defn transient-set [s]                                     ; NewTransientSet :459-473
+  (let [t (m/transient-map (impl s))]
+    (m/t-force-hamt t)
+    t))
+
+(defn tconj! [t x] (m/tassoc! t x (sq/bool true)))            ; :488-494
+(defn tdisj! [t x] (m/tdissoc! t x))                        ; :496-502
+(defn tscount [t] (m/tcount t))
+
+(defn tpersistent-set! [t]                                  ; :504-519
+  (let [i (m/tpersistent! t)]
+    (mkset (if (= 0 (m/mcount i)) (m/empty-hamt-map) i))))
+
+;; ---------------------------------------------------------------------------
+;; seq.lg hooks (kind 18 = foreign). Each takes the closure first (D36) and
+;; returns refs (D37). Anything that is neither a map nor a set traps here;
+;; a later value-model kind adds its branch.
+
+(defn- foreign-gap [] (wasm/trap "wasm.phs: foreign value is neither a map nor a set"))
+
+(defn seq-hook [self x]
+  (cond (wasm/is? m/HMap x) (m/entry-seq x)
+        (wasm/is? HSet x) (let [ks (sseq x)]              ; SetSeq over the keys (persistent_set.go:174-186)
+                            (loop [j (dec (wasm/alen ks)) acc (wasm/null)]
+                              (if (< j 0) acc (recur (dec j) (sq/cons (wasm/aget m/HSlots ks j) acc)))))
+        :else (foreign-gap)))
+
+(defn count-hook [self x]
+  (cond (wasm/is? m/HMap x) (sq/box-int (m/mcount x))
+        (wasm/is? HSet x) (sq/box-int (scount x))
+        :else (foreign-gap)))
+
+(defn equiv-hook
+  "seq.lg calls this when either side is foreign; a map only equals a map
+   and a set a set (PersistentMap.Equals :1028, setEquals)."
+  [self a b]
+  (sq/bool (cond (if (wasm/is? m/HMap a) (wasm/is? m/HMap b) false) (m/mequiv a b)
+                 (if (wasm/is? HSet a) (wasm/is? HSet b) false) (sequiv a b)
+                 :else false)))
+
+(defn hash-hook [self x]
+  (cond (wasm/is? m/HMap x) (sq/box-int (m/mhash x))
+        (wasm/is? HSet x) (sq/box-int (shash x))
+        :else (foreign-gap)))
+
+(defn- hook-fn1 [f] (wasm/new sq/Fn (wasm/null) f (wasm/null) (wasm/null)))
+
+(defn install-hooks!
+  "Link-time step: route seq.lg's foreign-kind seq/count/equiv/hash here."
+  []
+  (sq/set-hooks! (hook-fn1 (wasm/funcref sq/Code1 seq-hook))
+                 (hook-fn1 (wasm/funcref sq/Code1 count-hook))
+                 (wasm/new sq/Fn (wasm/null) (wasm/null) (wasm/funcref sq/Code2 equiv-hook) (wasm/null))
+                 (hook-fn1 (wasm/funcref sq/Code1 hash-hook))))
