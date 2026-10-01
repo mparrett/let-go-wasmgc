@@ -70,3 +70,123 @@
    native lg off a TTY, which checks/wasm-run.sh mirrors), else the runtime's
    [cols rows] (term_wasm.go's defaults for a zero dimension)."
   [] (if (= -1 (wasm.term/term-size)) nil (wasm.term/size)))
+
+;; ---------------------------------------------------------------------------
+;; P4.1-backend: the browser seam (D100) and the two natives xsofy's real
+;; entry reaches beyond the world dump.
+;;
+;; host-emit and host-url-param are BACKEND intrinsics (emitted as
+;; env.emit / env.url_param, host/ABI.md) declared here until rt/wasm/host.lg
+;; carries them (the requested rt patch moves both, and json-str, into
+;; wasm.host and makes its emit/url-param twins call them; lw_rt then stops
+;; routing js/emit and js/url-param here). The bodies are the deterministic
+;; references (D27): native lg off the browser emits nothing and has no URL.
+
+(defn ^{:intrinsic true
+        :wasm "copy name and JSON Bytes to linear memory at 32; call $env.emit(name_ptr, name_len, json_ptr, json_len)"
+        :type "[:any :any] -> :any"}
+  host-emit
+  "Hand an event name and its JSON text to the host (let-go's _lgEmit)."
+  [name-bytes json-bytes] nil)
+
+(defn ^{:intrinsic true
+        :wasm "copy name to 32; call $env.url_param(name_ptr, name_len, buf, cap) (getenv's contract); -1 -> ref.null, else Bytes"
+        :type "[:any] -> :any"}
+  host-url-param
+  "The page URL's query parameter as Bytes, or null when absent."
+  [name-bytes] nil)
+
+(defn- json-char
+  "One char of a JSON string as Go's encoding/json writes it (encode.go
+   appendString with escapeHTML): \\\" \\\\ \\n \\r \\t, other controls and
+   < > & as \\u00XX, U+2028/U+2029 escaped, everything else verbatim."
+  [c]
+  (let [n (int c)]
+    (cond (= n 34) "\\\""
+          (= n 92) "\\\\"
+          (= n 10) "\\n"
+          (= n 13) "\\r"
+          (= n 9) "\\t"
+          (or (< n 32) (= n 60) (= n 62) (= n 38))
+          (str "\\u00" (nth "0123456789abcdef" (quot n 16)) (nth "0123456789abcdef" (rem n 16)))
+          (= n 8232) "\\u2028"
+          (= n 8233) "\\u2029"
+          :else (str c))))
+
+(defn json-string [s] (str "\"" (apply str (map json-char s)) "\""))
+
+(defn json-key
+  "A map key as fromMapValue (pkg/rt/json.go:58) names it: a String as is,
+   a Keyword its name with namespace and no colon, anything else String()."
+  [k]
+  (cond (string? k) k
+        (keyword? k) (subs (str k) 1)
+        :else (str k)))
+
+(defn json-str
+  "(js/emit name data)'s data as JSON text: fromValue (pkg/rt/json.go:103)
+   then json.Marshal. Map keys are sorted (Go marshals map[string]any in
+   key order). Floats: a whole value (|v| < 1e18) prints without a fraction,
+   as Go's 'f'/-1 does; others use the runtime's float text (Go switches to
+   exponent form outside [1e-6, 1e21); xsofy's payloads carry no floats)."
+  [v]
+  (cond (nil? v) "null"
+        (true? v) "true"
+        (false? v) "false"
+        (string? v) (json-string v)
+        (int? v) (str v)
+        (float? v) (if (and (< v 1e18) (> v -1e18) (= 0.0 (- v (long v)))) (str (long v)) (str v))
+        (keyword? v) (json-string (subs (str v) 1))
+        (map? v) (let [es (sort-by first (map (fn [[k x]] [(json-key k) x]) v))]
+                   (str "{" (apply str (interpose "," (map (fn [[k x]] (str (json-string k) ":" (json-str x))) es))) "}"))
+        (or (vector? v) (seq? v) (set? v)) (str "[" (apply str (interpose "," (map json-str v))) "]")
+        :else (json-string (str v))))
+
+(defn emit-v
+  "js/emit (pkg/rt/js.go prepareEmit): validate, marshal, hand to the host."
+  ([] (wasm.core/raise (wasm.str/str-bytes "js/emit expects 2 args (event-name data), got 0")))
+  ([a] (wasm.core/raise (wasm.str/str-bytes "js/emit expects 2 args (event-name data), got 1")))
+  ([nm data]
+   (let [n (cond (keyword? nm) (subs (str nm) 1)
+                 (symbol? nm) (str nm)
+                 (string? nm) nm
+                 :else (wasm.core/raise (wasm.str/str-bytes (str "js/emit event-name must be keyword, symbol, or string; got " (type nm)))))]
+     (host-emit (wasm.str/str-bytes n) (wasm.str/str-bytes (json-str data)))
+     nil))
+  ([a b x] (wasm.core/raise (wasm.str/str-bytes "js/emit expects 2 args (event-name data), got 3"))))
+
+(defn url-param-v
+  "js/url-param: the page's query parameter, nil when absent, off-browser,
+   or called with anything but one String."
+  ([] nil)
+  ([nm] (if (string? nm)
+          (let [b (host-url-param (wasm.str/str-bytes nm))]
+            (if (wasm.intrinsics/null? b) nil (wasm.str/mk-str b)))
+          nil))
+  ([nm x] nil))
+
+(defn os-name-v
+  "os/os-name: runtime.GOOS of the build. This backend's target is the one
+   let-go's wasm bundle runs on (GOOS=js), and xsofy keys its web-only paths
+   (replay-dump via js/emit) on \"js\"."
+  [] "js")
+
+(defn dot-v
+  "core/. (host interop). The one shape xsofy reaches is ui/millis's
+   (.Sub (now) clock-epoch), where now-v stands a monotonic ns Int in for a
+   time.Time: Sub of two Ints is their difference in ns (time.Duration).
+   Anything else is a named limit."
+  ([obj m] (wasm.core/raise (wasm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported"))))
+  ([obj m a] (if (and (= m 'Sub) (int? obj) (int? a))
+               (- obj a)
+               (wasm.core/raise (wasm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported"))))))
+
+(defn char-v
+  "core/char? (P4.1: reached through long-v once json-str calls long)."
+  [x] (= 19 (wasm.seq/kind x)))
+
+(defn dissoc-n
+  "core/dissoc past rt/'s fixed arities (P4.1: xsofy's game loop dissocs
+   four screen keys at once): each key in turn, as native's variadic loop."
+  [coll ks]
+  (loop [m coll ks ks] (if (seq ks) (recur (dissoc m (first ks)) (rest ks)) m)))

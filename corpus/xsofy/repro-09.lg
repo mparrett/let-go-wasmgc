@@ -1,0 +1,10 @@
+;; repro-09 (P4.1): os/os-name. xsofy routes the death-screen replay code to
+;; the browser (js/emit "xsofy/replay-dump") when (os/os-name) is "js", the
+;; GOOS of let-go's wasm bundle. Native (darwin):
+;;   darwin
+;; stock wasm lane and lane 5:
+;;   js
+;; backend before: an unbound native (nil). This is the one place lane 5
+;; follows the wasm lane rather than native lg by design: the backend's
+;; target is the browser let-go's GOOS=js build runs in (proposed decision).
+(println (os/os-name))

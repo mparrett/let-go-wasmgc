@@ -1,0 +1,8 @@
+;; repro-10 (P4.1): core/char? had no twin. lw-ext/long-v (core/long) tests
+;; char? for a Char argument; P4.1's json-str made long-v reachable from the
+;; real entry and the census showed `$ext_core/char?` (a nil slot). Native:
+;;   97
+;;   true false
+;; backend before: "nil is not a function" on (long \a). Fixed: lw-ext/char-v.
+(println (long \a))
+(println (char? \a) (char? "a"))

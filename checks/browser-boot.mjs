@@ -4,6 +4,14 @@
 //          byte for byte with native lg's;
 //   keys:  ?module=keys.wasm, wait for "ready", press a, b, q, compare the echo.
 //
+// checks/browser-boot.mjs --xsofy <base-url> [seed]
+// P4.1 backend half: the emitted xsofy module in the real shell, see
+// xsofyGame() below.
+//
+// checks/browser-boot.mjs --walk <base-url> <seed> <out.txt>
+// P4.2 lane 5's second walk (checks/lane5.sh): held-key bursts, see
+// heldWalk() below. Works on any lane whose page is the real shell.
+//
 // checks/browser-boot.mjs --xsofy-shell <base-url> <hello-expected-stdout-file>
 // Drives host/build-xsofy-serve.sh's page (the real xsofy-shell.html on
 // xsofy-shell-adapter.js) instead: see xsofyShell() below.
@@ -20,6 +28,14 @@ const pwDir = path.resolve(here, '../../../local-scripts/browser-smoke-playwrigh
 const pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href);
 const chromium = pw.chromium || pw.default.chromium;   // resolve() lands on the CJS entry
 
+if (process.argv[2] === '--walk') {
+  console.log(JSON.stringify(await heldWalk(...process.argv.slice(3))));
+  process.exit(0);
+}
+if (process.argv[2] === '--xsofy') {
+  console.log(JSON.stringify(await xsofyGame(...process.argv.slice(3))));
+  process.exit(0);
+}
 if (process.argv[2] === '--xsofy-shell') {
   console.log(JSON.stringify(await xsofyShell(...process.argv.slice(3))));
   process.exit(0);
@@ -176,6 +192,99 @@ async function xsofyShell(base, expectedFile) {
       if (!out.quit.pass || !out.held.pass) out.keysStdout = r.stdout;
       await page.close();
     }
+  } catch (e) {
+    out.failure = String((e && e.message) || e).split('\n')[0];
+  }
+  await browser.close();
+  return out;
+}
+
+// ---- --xsofy -----------------------------------------------------------------
+// The emitted xsofy module (module.wasm, the adapter's default) in the real
+// shell, booted the way local-scripts/browser-smoke-playwright/
+// zz-boot-time-probe.mjs boots the four let-go lanes: page load to "press any
+// key" in the page text (the title card) = time-to-title; Space; then "hp" or
+// "floor" in the page text (the map screen's HUD) = time-to-map, both from
+// navigation. Also asserts what only the D100 imports can make true: the
+// title card prints the ?seed= the page was opened with (js/url-param), and
+// the shell received xsofy/startup with a title and xsofy/stats (js/emit).
+async function xsofyGame(base, seed = '424242') {
+  const browser = await chromium.launch();
+  const out = { label: 'xsofy', seed };
+  const page = await browser.newPage();
+  const errors = [], bad = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('response', (r) => { if (r.status() >= 400 && !r.url().endsWith('/build-info.json')) bad.push(`${r.status()} ${r.url()}`); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
+  await page.addInitScript(() => {
+    window.__events = [];
+    for (const n of ['xsofy/startup', 'xsofy/stats']) {
+      window.addEventListener(n, (e) => window.__events.push([n, e.detail]));
+    }
+  });
+  try {
+    const t0 = Date.now();
+    await page.goto(`${base}/index.html?seed=${seed}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => /press any key/i.test(document.body.innerText), null, { timeout: 120000 });
+    out.titleMs = Date.now() - t0;
+    out.titleSeed = await page.evaluate((s) => document.body.innerText.includes(`seed ${s}`), seed);
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => /hp[: ]/i.test(document.body.innerText) || /floor/i.test(document.body.innerText), null, { timeout: 120000 });
+    out.mapMs = Date.now() - t0;
+    await page.waitForTimeout(500);
+    const r = await page.evaluate(() => ({ lgw: window.__lgw, events: window.__events }));
+    const startup = r.events.find(([n]) => n === 'xsofy/startup');
+    out.startup = startup ? startup[1] : null;
+    out.stats = r.events.filter(([n]) => n === 'xsofy/stats').length;
+    out.readyMode = r.lgw.readyMode; out.coi = r.lgw.coi; out.jspi = r.lgw.jspi;
+    out.running = !r.lgw.done;
+    out.error = r.lgw.error || null;
+    out.errors = errors; out.bad = bad;
+    out.pass = out.titleSeed && !!(out.startup && out.startup.title) && out.stats > 0
+      && out.running && !errors.length && !bad.length;
+  } catch (e) {
+    out.failure = String((e && e.message) || e).split('\n')[0];
+    out.pass = false;
+    try { out.text = (await page.evaluate(() => document.body.innerText)).slice(-600); out.lgw = await page.evaluate(() => window.__lgw); } catch {}
+  }
+  await browser.close();
+  return out;
+}
+
+// ---- --walk -------------------------------------------------------------------
+// Lane 5's held-key walk. Boots like zz-determinism-probe.mjs (?seed=, title,
+// Space, map, 3 s settle), then sends auto-repeat BURSTS: n keydowns of one
+// key dispatched in a single task on xterm's textarea (what a held key does),
+// each burst followed by a pause long enough for the turn to resolve. let-go's
+// key ring coalesces a burst the game has not yet read into ONE read
+// (keysource_js_wasm.go:96-122, D98), so the dump only matches across lanes
+// if the emitted lane's host coalesces the same way. Bursts stay under the
+// ring's 8 slots so neither lane drops keys. Writes document.body.innerText.
+async function heldWalk(base, seed, outFile) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const out = { label: 'walk', seed };
+  try {
+    await page.goto(`${base}/?seed=${seed}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => /press any key/i.test(document.body.innerText), null, { timeout: 120000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => /hp[: ]/i.test(document.body.innerText) || /floor/i.test(document.body.innerText), null, { timeout: 120000 });
+    await page.waitForTimeout(3000);
+    const bursts = [['l', 5], ['j', 4], ['h', 6], ['k', 3], ['l', 6], ['j', 5]];
+    for (const [key, n] of bursts) {
+      await page.evaluate(([key, n]) => {
+        const ta = document.querySelector('.xterm-helper-textarea');
+        const code = 'Key' + key.toUpperCase();
+        for (let i = 0; i < n; i++) {
+          ta.dispatchEvent(new KeyboardEvent('keydown', { key, code, keyCode: key.toUpperCase().charCodeAt(0), repeat: i > 0, bubbles: true, cancelable: true }));
+        }
+      }, [key, n]);
+      await page.waitForTimeout(1200);
+    }
+    await page.waitForTimeout(2000);
+    const txt = await page.evaluate(() => document.body.innerText);
+    fs.writeFileSync(outFile, txt);
+    out.bytes = txt.length; out.bursts = bursts.map(([k, n]) => k + 'x' + n).join(' ');
   } catch (e) {
     out.failure = String((e && e.message) || e).split('\n')[0];
   }

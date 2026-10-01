@@ -42,6 +42,10 @@ if (isMainThread) {
     // os/args (P3.2, proposed ABI addition): `node run.mjs m.wasm prog.lg a b`
     // reads as native's [lg-path "prog.lg" "a" "b"]; arg follows getenv's
     // contract (returns the byte length, copies only when it fits in cap)
+    // D100 (P4.1): js/emit and js/url-param. Native lg off the browser
+    // emits nowhere and has no page URL, so: drop, and -1 (absent -> nil)
+    emit: () => {},
+    url_param: () => -1,
     argc: () => argv.length,
     arg: (i, buf, cap) => {
       const b = Buffer.from(argv[i] ?? '');

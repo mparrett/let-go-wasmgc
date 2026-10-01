@@ -3,9 +3,11 @@
 Each lower-wasm module talks to its host only through the imports and exports
 listed here. `lg-wasm-host.js` implements them for browsers and Node,
 `node-host.mjs` wraps it for the command line, and `wasmtime-adapter.wat`
-implements the same set on WASI preview1 for wasmtime. As of 2026-10-01 the
-backend emits only the six `env.*` imports marked "emitted"; the rest are
-defined now so Phase 4 can start using them without changing any host.
+implements the same set on WASI preview1 for wasmtime (which has no
+`emit`/`url_param`/`argc`/`arg`: it runs only the P4.0 smoke modules). As of
+2026-10-01 (P4.1-backend) the backend emits every import marked "emitted",
+each only when the program reaches it (imports are tree-shaken); `getenv` is
+still "defined".
 
 ## Exports (module side)
 
@@ -36,11 +38,13 @@ simply block the thread.
 | `env.sleep` | `(ms i64) -> ()` | **yes** | emitted | resumes after `ms` milliseconds (`setTimeout`); `ms <= 0` resumes on the next macrotask. Reached from `(<!! (timeout ms))` via `wasm.host/take!!` (D6, D87) |
 | `env.nanotime` | `() -> i64` | no | emitted | monotonic ns (`performance.now()*1e6` in JS hosts, `CLOCK_MONOTONIC` under WASI); only differences mean anything |
 | `env.getenv` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | defined | copies the value into `[buf, buf+cap)` and returns its byte length; returns `> cap` (nothing copied, retry with a bigger buffer) or `-1` when unset. The backend still lowers `host-getenv` to nil |
-| `env.emit` | `(name_ptr i32, name_len i32, json_ptr i32, json_len i32) -> ()` | no | defined (P4.1) | `js/emit`: the event name and the data as JSON text, let-go's `_lgEmit(name, dataJson)` shape. The browser host parses the JSON and fires the `window` CustomEvent the shell listens for (`xsofy/startup` sets the title and quest, `xsofy/stats`, `xsofy/replay-dump`, …); node drops it. xsofy calls `js/emit` 10 times |
-| `env.url_param` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | defined (P4.1) | `js/url-param`: getenv's contract over the page's query string; `-1` when absent or off-browser (native returns nil). xsofy reads `?seed=` and friends through it (6 calls) |
-| `term.read_key` | `(buf i32, cap i32) -> i32` | **yes** | defined | waits for the next key and copies its UTF-8 bytes (one `sendInput` call = one key, ≤ 16 bytes, as in let-go's SAB ring) into `[buf, buf+cap)`; returns the byte count, **0 = end of input** (`read-key` → nil). Coalesces (D98, below). The runtime builds the lg String |
-| `term.key_pending` | `() -> i32` | no | defined | 1 if a key is queued, else 0 (`key-pending?`) |
-| `term.size` | `() -> (i32 i32)` | no | defined | `cols rows` as a multi-value result (`term/size` → `[cols rows]`); default 80×24 |
+| `env.emit` | `(name_ptr i32, name_len i32, json_ptr i32, json_len i32) -> ()` | no | emitted (P4.1) | `js/emit`: the event name and the data as JSON text, let-go's `_lgEmit(name, dataJson)` shape; the JSON is byte-identical to let-go's (`fromValue` + `encoding/json`: sorted keys, HTML escaping). The browser host parses the JSON and fires the `window` CustomEvent the shell listens for (`xsofy/startup` sets the title and quest, `xsofy/stats`, `xsofy/replay-dump`, …); node and run.mjs drop it. xsofy calls `js/emit` 10 times |
+| `env.url_param` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | emitted (P4.1) | `js/url-param`: getenv's contract over the page's query string; `-1` when absent or off-browser (native returns nil). xsofy reads `?seed=` and friends through it (6 calls) |
+| `env.argc` | `() -> i32` | no | emitted (P3.2, D115) | `os/args` length; JS hosts take `argv` (default `['lg']`) |
+| `env.arg` | `(i i32, buf i32, cap i32) -> i32` | no | emitted (P3.2, D115) | argument `i`, getenv's copy contract |
+| `term.read_key` | `(buf i32, cap i32) -> i32` | **yes** | emitted (D104) | waits for the next key and copies its UTF-8 bytes (one `sendInput` call = one key, ≤ 16 bytes, as in let-go's SAB ring) into `[buf, buf+cap)`; returns the byte count, **0 = end of input** (`read-key` → nil). Coalesces (D98, below). The runtime builds the lg String |
+| `term.key_pending` | `() -> i32` | no | emitted (D104) | 1 if a key is queued, else 0 (`key-pending?`) |
+| `term.size` | `() -> (i32 i32)` | no | emitted (D104) | `cols rows` as a multi-value result (`term/size` → `[cols rows]`); default 80×24 |
 | `term.write` | `(ptr i32, len i32) -> i32` | no | defined | same stream as `env.write` fd 1. let-go's `term/write` is `(write *out* s)`, so the runtime may use either; this exists so a terminal host can tell term output apart if it ever needs to |
 
 **Not imports, and why:**
@@ -145,7 +149,7 @@ What the shell expects at boot, and who provides it:
 | xterm 5.5 + addon-fit from cdn.jsdelivr.net | network; nothing local |
 | Fairfax HD (inlined base64 in the shell), loaded before `term.open` | the shell itself; `?font=system` skips it |
 | `build-info.json` next to the page (optional; 404 = ad-hoc bundle) | absent |
-| `xsofy/startup`, `xsofy/stats`, `xsofy/term-size`, `xsofy/perf`, `xsofy/replay-dump` window events (title, quest, stats, replay link) | `env.emit` → `onEmit` default → `CustomEvent` (defined; no module imports it yet) |
+| `xsofy/startup`, `xsofy/stats`, `xsofy/term-size`, `xsofy/perf`, `xsofy/replay-dump` window events (title, quest, stats, replay link) | `env.emit` → `onEmit` default → `CustomEvent` (P4.1: the emitted xsofy fires them) |
 | nothing printed at boot: the title bar shows `—` until `xsofy/startup` arrives; the terminal shows whatever the program writes | — |
 
 The adapter starts `lw main` only after the shell's first `setSize` (or 2 s

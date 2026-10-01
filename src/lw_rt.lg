@@ -146,7 +146,9 @@
 
 (defn intrinsic? [v]
   (and (var? v) (intrinsic-meta? v)
-       (contains? rt-nss (ns-name (:ns (meta v))))))
+       ;; P4.1: src/lw_ext.lg declares the backend's own host intrinsics
+       ;; (host-emit, host-url-param) until rt/ carries them
+       (let [n (ns-name (:ns (meta v)))] (or (contains? rt-nss n) (= n 'lw-ext)))))
 
 (defn intrinsic-vars
   "Every intrinsic var of the loaded runtime, for the backend's emitter check."
@@ -235,7 +237,7 @@
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
                        v (ns-var 'lw-ext nm)]
-                 :when v]
+                 :when (and v (not (intrinsic-meta? v)))]
              [v {:var v :ns 'lw-ext :name nm :arities (arities (drop 2 form)) :core-lg true}])))
 
 ;; P3.2: defns of the program's own library namespaces (the driver's
@@ -246,10 +248,19 @@
 
 ;; P3.2: natives the backend fills from lw_ext.lg (no rt/ twin)
 (def ext-twins
+  (merge
   {#'core/long #'lw-ext/long-v #'core/ints #'lw-ext/ints-v #'core/longs #'lw-ext/ints-v
    #'core/re-find #'lw-ext/re-find-lit
    (resolve 'let-go.core/now) #'lw-ext/now-v
-   #'term/size #'lw-ext/term-size-v})
+   #'term/size #'lw-ext/term-size-v
+   ;; P4.1: the real entry's host seams
+   #'os/os-name #'lw-ext/os-name-v #'core/char? #'lw-ext/char-v
+   (resolve 'core/.) #'lw-ext/dot-v}
+  ;; D100: js/emit and js/url-param through the host imports, until rt/'s
+  ;; host.lg twins call the intrinsics themselves (the requested patch
+  ;; defines wasm.host/host-emit; then the runtime twins are used as is)
+  (when-not (ns-var 'wasm.host 'host-emit)
+    {#'js/emit #'lw-ext/emit-v #'js/url-param #'lw-ext/url-param-v})))
 
 (defn source-defn
   "The source defn the backend compiles for v: a runtime defn, an lg-defined

@@ -764,7 +764,9 @@
    #'wasm.core/gt [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 2))"]]
    #'wasm.core/ge [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 3))"]]
    #'wasm.seq/map* [#'lw-ext/map-n 1 []]
-   #'wasm.seq/list [#'lw-ext/list-n 0 []]})
+   #'wasm.seq/list [#'lw-ext/list-n 0 []]
+   ;; P4.1: n-ary dissoc (main.lg's screen exits)
+   #'wasm.core/dissoc [#'lw-ext/dissoc-n 1 []]})
 
 ;; natives the backend builds inline when called (coll-ctors) and that have
 ;; no runtime defn to be a value: as values they are lw-ext's variadic fns
@@ -1175,6 +1177,9 @@
       "term-read-key" ["(call $rt_term_read_key)" :box]
       "term-key-pending" ["(call $term.key_pending)" :bool]
       "term-size" ["(call $rt_term_size)" :int]
+      ;; D100: js/emit and js/url-param's host imports (P4.1-backend)
+      "host-emit" [(str "(call $rt_host_emit " (cast-ref "$Bytes" (a 0)) " " (cast-ref "$Bytes" (a 1)) ")") :void]
+      "host-url-param" [(str "(call $rt_host_url_param " (cast-ref "$Bytes" (a 0)) ")") :box]
       "trap" (if (string-const? (a 0))
                [(str "(call $rt_trap " (bytes-wat (const-val (a 0))) ")") :bottom]
                (fail "wasm/trap needs a string literal" {:nid (a 0) :fn *fname*}))
@@ -1199,7 +1204,7 @@
     "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
     "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
-    "term-read-key" "term-key-pending" "term-size"})
+    "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"})
 
 ;; every ^:intrinsic var has an emitter: a new intrinsic fails the backend's
 ;; load, not a program's compile (D24: the set is read from the metadata)
@@ -2287,6 +2292,43 @@
 (func $rt_term_size (result i64) (local $c i32) (local $r i32)
   (call $term.size) (local.set $r) (local.set $c)
   (i64.or (i64.shl (i64.extend_i32_u (local.get $c)) (i64.const 32)) (i64.extend_i32_u (local.get $r))))
+;; D100 (P4.1-backend): copy Bytes to linear memory at off, growing it first
+(func $rt_mem_put (param $off i32) (param $b (ref $Bytes)) (local $i i32) (local $n i32) (local $need i32)
+  (local.set $n (array.len (local.get $b)))
+  (local.set $need (i32.add (local.get $off) (local.get $n)))
+  (if (i32.gt_u (local.get $need) (i32.mul (memory.size) (i32.const 65536)))
+    (then (drop (memory.grow (i32.sub (i32.add (i32.shr_u (local.get $need) (i32.const 16)) (i32.const 1)) (memory.size))))))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+    (i32.store8 (i32.add (local.get $off) (local.get $i)) (array.get_u $Bytes (local.get $b) (local.get $i)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l))))
+;; host-emit: name at 32, the JSON right after it, both to env.emit
+(func $rt_host_emit (param $n (ref $Bytes)) (param $j (ref $Bytes)) (local $jo i32)
+  (local.set $jo (i32.add (i32.const 32) (array.len (local.get $n))))
+  (call $rt_mem_put (i32.const 32) (local.get $n))
+  (call $rt_mem_put (local.get $jo) (local.get $j))
+  (call $host_emit (i32.const 32) (array.len (local.get $n)) (local.get $jo) (array.len (local.get $j))))
+;; host-url-param: getenv's contract (D88/D100): -1 = absent (null); a
+;; length past the buffer grows memory and asks again
+(func $rt_host_url_param (param $nm (ref $Bytes)) (result (ref null eq))
+  (local $bo i32) (local $cap i32) (local $len i32) (local $i i32) (local $r (ref null $Bytes))
+  (local.set $bo (i32.add (i32.const 32) (array.len (local.get $nm))))
+  (call $rt_mem_put (i32.const 32) (local.get $nm))
+  (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+  (local.set $len (call $host_url_param (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))
+  (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (ref.null none))))
+  (if (i32.gt_u (local.get $len) (local.get $cap))
+    (then (drop (memory.grow (i32.add (i32.shr_u (i32.sub (local.get $len) (local.get $cap)) (i32.const 16)) (i32.const 1))))
+          (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+          (local.set $len (call $host_url_param (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))))
+  (local.set $r (array.new_default $Bytes (local.get $len)))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+    (array.set $Bytes (local.get $r) (local.get $i) (i32.load8_u (i32.add (local.get $bo) (local.get $i))))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (local.get $r))
 ;; host-write: copy to linear memory, hand ptr+len to env.write
 (func $rt_host_write (param $fd i32) (param $b (ref $Bytes)) (result i32) (local $i i32) (local $n i32) (local $need i32)
   (local.set $n (array.len (local.get $b)))
@@ -2617,6 +2659,9 @@
          ;; P3.2: os/args (proposed ABI addition, see run.mjs)
          "(import \"env\" \"argc\" (func $host_argc (result i32)))\n"
          "(import \"env\" \"arg\" (func $host_arg (param i32 i32 i32) (result i32)))\n"
+         ;; D100: js/emit, js/url-param
+         "(import \"env\" \"emit\" (func $host_emit (param i32 i32 i32 i32)))\n"
+         "(import \"env\" \"url_param\" (func $host_url_param (param i32 i32 i32 i32) (result i32)))\n"
          ;; D88/D97: the term imports (read_key suspends under JSPI)
          "(import \"term\" \"read_key\" (func $term.read_key (param i32 i32) (result i32)))\n"
          "(import \"term\" \"key_pending\" (func $term.key_pending (result i32)))\n"

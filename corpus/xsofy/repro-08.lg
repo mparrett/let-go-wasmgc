@@ -1,0 +1,11 @@
+;; repro-08 (P4.1): host interop through core/. — xsofy/ui.lg's clock is
+;; (defn millis [] (quot (.Sub (now) clock-epoch) 1000000)). Native:
+;;   true
+;; backend before: `.` was an unbound native (a nil var-table slot), so the
+;; title card's first clock tick died with "TypeError: nil is not a function"
+;; (FATAL ERROR before the title). Fixed: lw-ext/dot-v; `now` is already the
+;; host's monotonic ns Int (lw-ext/now-v), so (.Sub a b) of two Ints is their
+;; ns difference, Go's time.Duration. Other interop is a named error.
+(def epoch (now))
+(defn millis [] (quot (.Sub (now) epoch) 1000000))
+(println (>= (millis) 0))

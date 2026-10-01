@@ -1,0 +1,10 @@
+;; repro-07 (P4.1): n-ary dissoc. main.lg leaves its inscribe/quick-menu
+;; screens with (dissoc world :screen :a :b :c), four keys at once. Native:
+;;   {:e 5}
+;;   {}
+;; backend before: rt/'s dissoc has fixed arities up to 3 keys, so the call
+;; fell through to $rt_invoke5 and threw "function <mfn dissoc 0x0> doesn't
+;; have a 5-arity variant" right after the first map frame (FATAL ERROR on
+;; the map screen). Fixed: seq-variant-table routes it to lw-ext/dissoc-n.
+(println (dissoc {:a 1 :b 2 :c 3 :d 4 :e 5} :a :b :c :d))
+(println (dissoc {:a 1} :a :b :c :d :e :f))

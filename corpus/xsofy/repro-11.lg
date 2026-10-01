@@ -1,0 +1,15 @@
+;; repro-11 (P4.1): js/emit and js/url-param were runtime twins that only
+;; validated (emit) or returned nil (url-param), so in the browser the shell
+;; never got xsofy/startup (title bar "—") and ?seed= was ignored (the title
+;; card showed a time seed). Native lg off the browser, and lane 5 under
+;; src/run.mjs (no page: emit dropped, url_param -1):
+;;   nil
+;;   nil nil
+;; In the browser (host/lg-wasm-host.js, ?seed=424242) url-param reads
+;; "424242" and the event's JSON is byte-identical to native
+;; (json/write-json data):
+;;   {"f":2,"n":3,"quest":{"name":"x"},"s":["a","b"],"title":"A <b> & \"q\"\n","v":[1,"k",null,true]}
+;; Fixed: env.emit / env.url_param (D100) as the host-emit / host-url-param
+;; intrinsics, json-str per pkg/rt/json.go fromValue + encoding/json.
+(println (js/emit :xsofy/startup {:title "A <b> & \"q\"\n" :quest {:name "x"} :n 3 :f 2.0 :v [1 :k nil true] :s '(a b)}))
+(println (js/url-param "seed") (js/url-param 3))

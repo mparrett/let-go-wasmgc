@@ -1,19 +1,21 @@
-;; pending (2026-10-01): compiles, but the D97 term intrinsics do not lower
-;; yet. The emitted module imports only env.write/print_*; no term.* import
-;; appears, so term-read-key runs its reference body (*term-input* is nil)
-;; and the first (term/read-key) returns nil: under node-host the program
-;; prints "size 80 24", the banner escapes, "ready", then "eof" whatever keys
-;; are sent, and size ignores LetGoHost.setSize. The output twins (clear,
-;; move-cursor, set-fg, write-at, reset-style) already emit the exact escapes.
-;; Until the backend learns term-read-key/term-key-pending/term-size
-;; (P4.1-backend), checks/browser-boot.sh --xsofy-shell drives host/keys-probe.wat
-;; for input instead. When it lowers, move this file to corpus/host/.
+;; Out of pending 2026-10-01 (P4.1-backend): the D97 term intrinsics lower
+;; (term.read_key / key_pending / size). checks/browser-boot.sh --xsofy runs
+;; it natively on a 100x30 pseudo-terminal (host/pty-run.py) and under
+;; host/node-host.mjs --size 100x30, keys a b j j q, and requires identical
+;; bytes. Native, on that pty:
+;;   size 100 30
+;;   ESC[2J ESC[3;1H ESC[38;5;208m ESC[3;1Hterm-demo ESC[0m ESC[4;1H
+;;   ready / key a / key b / key j / key j / key q reads 5 / pending 0 / bye
+;; raw-mode!/restore-mode! are there for native's sake: in cooked mode the
+;; pty line-buffers the keys and read-key never returns (the twins are
+;; no-ops returning true, term_wasm.go:50-60).
 ;; P4.1 host smoke for the term/* twins (D97) under xsofy-shell.html.
 ;; Prints the window size, draws a coloured banner with clear/move-cursor/
 ;; write-at/set-fg, then echoes every key term/read-key returns, one "key"
 ;; line per read, until a lone q. A held key that the host coalesced (D98)
 ;; shows up as ONE "key j" line for several presses. Ends with one
 ;; term/key-pending? reading and "bye".
+(term/raw-mode!)
 (let [[cols rows] (term/size)]
   (println "size" cols rows))
 (term/clear)
@@ -31,3 +33,4 @@
                         (println "pending" (if (term/key-pending?) 1 0))
                         (println "bye"))
           :else (do (println "key" k) (recur (inc n))))))
+(term/restore-mode!)

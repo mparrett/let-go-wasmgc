@@ -32,7 +32,8 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
 
 export class LgWasmHost {
   constructor({ onOutput = () => {}, env = {}, cols = 80, rows = 24, keyCapacity = KEY_CAPACITY, coalesceKeys = true,
-    onEmit = () => {}, urlParams = null } = {}) {
+    onEmit = () => {}, urlParams = null, argv = ['lg'] } = {}) {
+    this.argv = argv;              // os/args (D115): env.argc / env.arg
     this.onOutput = onOutput;
     this.onEmit = onEmit;          // (name, dataJson) for js/emit
     this.urlParams = urlParams;    // URLSearchParams for js/url-param; null off-browser
@@ -128,10 +129,13 @@ export class LgWasmHost {
         return h.copyOut(String(h.envMap[name]), buf, cap);
       },
       // js/emit and js/url-param (xsofy uses both: the shell's title/quest/
-      // stats arrive as xsofy/* events; ?seed= etc. as URL params). Defined,
-      // not yet imported by any module. emit hands the name and the JSON text
+      // stats arrive as xsofy/* events; ?seed= etc. as URL params), imported
+      // since P4.1-backend (D100). emit hands the name and the JSON text
       // the runtime serialised (let-go's _lgEmit(name, dataJson) shape).
       // url_param has getenv's contract; -1 off-browser, as native's nil.
+      // os/args (D115): getenv's copy contract per argument
+      argc: () => h.argv.length,
+      arg: (i, buf, cap) => h.copyOut(String(h.argv[i] ?? ''), buf, cap),
       emit: (nptr, nlen, dptr, dlen) => { h.onEmit(h.str(nptr, nlen), h.str(dptr, dlen)); },
       url_param: (nptr, nlen, buf, cap) => {
         const v = h.urlParams ? h.urlParams.get(h.str(nptr, nlen)) : null;

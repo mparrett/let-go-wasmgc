@@ -1,0 +1,184 @@
+--- wasm/host.lg	2026-10-01 07:13:22.471876186 -0700
++++ wasm/host.lg	2026-10-01 16:02:03.100160084 -0700
+@@ -145,18 +145,173 @@
+   ([ch x] (raise-arity 2)))
+ 
+ ;; ---------------------------------------------------------------------------
+-;; The browser seam. Native lg off the browser: emit validates its
+-;; arguments and does nothing, url-param is nil. Both mirror that (the
+-;; oracle is native lg); a browser host would route them through new host
+-;; imports. emit's JSON conversion of data is not checked here.
++;; The browser seam (D100). emit validates its arguments, marshals data to
++;; JSON exactly as let-go does (prepareEmit, pkg/rt/js.go: fromValue,
++;; pkg/rt/json.go:103, then encoding/json.Marshal) and hands both to the host
++;; through wasm/host-emit; url-param reads the page's query through
++;; wasm/host-url-param. Their references are native lg off the browser: the
++;; event goes nowhere and every parameter is absent (nil), so the oracle
++;; still holds; a browser host (host/lg-wasm-host.js) fires the CustomEvent
++;; and answers ?seed= and friends.
++
++(defn ^{:intrinsic true
++        :wasm "copy name and JSON Bytes to linear memory at 32; call $env.emit(name_ptr, name_len, json_ptr, json_len)"
++        :type "[:any :any] -> :any"}
++  host-emit
++  "Hand an event name and its JSON text (both Bytes) to the host."
++  [name-bytes json-bytes] nil)
++
++(defn ^{:intrinsic true
++        :wasm "copy name to 32; call $env.url_param(name_ptr, name_len, buf, cap) (getenv's contract); -1 -> ref.null, else Bytes"
++        :type "[:any] -> :any"}
++  host-url-param
++  "The page URL's query parameter (Bytes name) as Bytes, or null when absent."
++  [name-bytes] nil)
++
++;; A growable byte buffer for the JSON text: bytes, length.
++(wasm/defstruct JBuf [[:mut :ref] [:mut :i64]])
++(defn- jb-new [] (wasm/new JBuf (wasm/bytes-new 64) 0))
++(defn- jb-room! [b extra]
++  (let [bs (wasm/get JBuf 0 b) len (wasm/get JBuf 1 b) need (+ len extra)]
++    (when (> need (wasm/alen bs))
++      (let [nb (wasm/bytes-new (+ need need))]
++        (wasm/array-copy wasm/Bytes nb 0 bs 0 len)
++        (wasm/set! JBuf 0 b nb)))))
++(defn- jb-byte! [b v]
++  (jb-room! b 1)
++  (wasm/bset! (wasm/get JBuf 0 b) (wasm/get JBuf 1 b) v)
++  (wasm/set! JBuf 1 b (inc (wasm/get JBuf 1 b))))
++(defn- jb-range! [b src from to]
++  (let [n (- to from)]
++    (jb-room! b n)
++    (wasm/array-copy wasm/Bytes (wasm/get JBuf 0 b) (wasm/get JBuf 1 b) src from n)
++    (wasm/set! JBuf 1 b (+ (wasm/get JBuf 1 b) n))))
++(defn- jb-lit! [b bs] (jb-range! b bs 0 (wasm/alen bs)))
++(defn- jb-done [b]
++  (let [n (wasm/get JBuf 1 b) out (wasm/bytes-new n)]
++    (wasm/array-copy wasm/Bytes out 0 (wasm/get JBuf 0 b) 0 n)
++    out))
++
++(defn- hex-digit [d] (if (< d 10) (+ 48 d) (+ 87 d)))
++
++;; A JSON string as encoding/json writes it (encode.go appendString,
++;; escapeHTML on): " \ and \n \r \t escaped, other bytes < 0x20 and < > & as
++;; \u00XX, U+2028/U+2029 (E2 80 A8/A9) as  / , the rest verbatim.
++;; (Go also replaces invalid UTF-8 with U+FFFD; the runtime's strings are
++;; valid UTF-8 from source text and the host.)
++(defn- json-string! [b bs]
++  (jb-byte! b 34)
++  (let [n (wasm/alen bs)]
++    (loop [i 0 run 0]
++      (if (>= i n)
++        (jb-range! b bs run n)
++        (let [c (wasm/bget bs i)
++              ls? (if (= c 226) (if (< (+ i 2) n) (if (= 128 (wasm/bget bs (inc i)))
++                                                   (let [c3 (wasm/bget bs (+ i 2))] (if (= c3 168) true (= c3 169)))
++                                                   false) false) false)]
++          (cond
++            ls? (do (jb-range! b bs run i)
++                    (jb-lit! b (if (= 168 (wasm/bget bs (+ i 2))) (wasm/bytes-of-string "\\u2028") (wasm/bytes-of-string "\\u2029")))
++                    (recur (+ i 3) (+ i 3)))
++            (if (< c 32) true (if (= c 34) true (if (= c 92) true (if (= c 60) true (if (= c 62) true (= c 38))))))
++            (do (jb-range! b bs run i)
++                (cond (= c 34) (jb-lit! b (wasm/bytes-of-string "\\\""))
++                      (= c 92) (jb-lit! b (wasm/bytes-of-string "\\\\"))
++                      (= c 10) (jb-lit! b (wasm/bytes-of-string "\\n"))
++                      (= c 13) (jb-lit! b (wasm/bytes-of-string "\\r"))
++                      (= c 9) (jb-lit! b (wasm/bytes-of-string "\\t"))
++                      :else (do (jb-lit! b (wasm/bytes-of-string "\\u00"))
++                                (jb-byte! b (hex-digit (quot c 16)))
++                                (jb-byte! b (hex-digit (bit-and c 15)))))
++                (recur (inc i) (inc i)))
++            :else (recur (inc i) run))))))
++  (jb-byte! b 34))
++
++(defn- named-text
++  "A keyword's Go string (ns/name, no colon), as fromValue reads it."
++  [x] (let [bs (s/str-bytes (s/value-string x)) n (wasm/alen bs) out (wasm/bytes-new (- n 1))]
++        (wasm/array-copy wasm/Bytes out 0 bs 1 (- n 1))
++        out))
++
++(defn- json-key-str
++  "A map key as fromMapValue (pkg/rt/json.go:58) names it, as a Str."
++  [k] (let [kd (sq/kind k)]
++        (cond (= kd 17) k
++              (= kd 20) (s/mk-str (named-text k))
++              :else (s/value-string k))))
++
++(declare json!)
++
++(defn- json-seq! [b xs]
++  (jb-byte! b 91)
++  (loop [s (sq/seq xs) first? true]
++    (when-not (wasm/null? s)
++      (when-not first? (jb-byte! b 44))
++      (json! b (sq/first s))
++      (recur (sq/next s) false)))
++  (jb-byte! b 93))
++
++;; Go marshals map[string]any with its keys sorted, and a later entry whose
++;; key converts to the same string replaces an earlier one: re-key into a
++;; map by the converted Str, then walk its keys in sorted order.
++(defn- json-map! [b m]
++  (let [km (loop [s (sq/seq m) acc (wasm/null)]
++             (if (wasm/null? s)
++               acc
++               (let [e (sq/first s)]
++                 (recur (sq/next s) (c/assoc acc (json-key-str (c/key e)) (c/val e))))))]
++    (jb-byte! b 123)
++    (loop [s (sq/seq (c/sort (loop [s (sq/seq km) ks (wasm/null)]
++                               (if (wasm/null? s) ks (recur (sq/next s) (sq/cons (c/key (sq/first s)) ks))))))
++           first? true]
++      (when-not (wasm/null? s)
++        (let [k (sq/first s)]
++          (when-not first? (jb-byte! b 44))
++          (json-string! b (s/str-bytes k))
++          (jb-byte! b 58)
++          (json! b (c/get km k))
++          (recur (sq/next s) false))))
++    (jb-byte! b 125)))
++
++;; fromValue's cases: String, Int, Float (strconv 'f', -1 for |x| < 1e21:
++;; a whole value prints with no fraction; elsewhere the runtime's float text,
++;; which agrees on xsofy's payloads), Boolean, nil, maps (and records),
++;; Keyword (its ns/name text), vectors and anything seqable as arrays, any
++;; other value as its String().
++(defn json! [b x]
++  (let [k (sq/kind x) ck (c/ckind x)]
++    (cond (= k 0) (jb-lit! b (wasm/bytes-of-string "null"))
++          (= k 1) (jb-lit! b (s/str-bytes (s/value-string x)))
++          (= k 15) (jb-lit! b (if (= 1 (wasm/get sq/Bool 0 x)) (wasm/bytes-of-string "true") (wasm/bytes-of-string "false")))
++          (= k 17) (json-string! b (s/str-bytes x))
++          (= k 20) (json-string! b (named-text x))
++          (= k 22) (let [f (s/unbox-float x)]
++                     (if (if (< f 1.0e18) (if (> f -1.0e18) (= f (wasm/i64-to-f64 (wasm/f64-to-i64 f))) false) false)
++                       (jb-lit! b (s/str-bytes (s/value-string (sq/box-int (wasm/f64-to-i64 f)))))
++                       (jb-lit! b (s/str-bytes (s/value-string x)))))
++          (= ck 30) (json-map! b x)
++          (if (= k 11) true (if (sq/seq-kind? k) true (if (= ck 31) true (= k 23)))) (json-seq! b x)
++          :else (json-string! b (s/str-bytes (s/value-string x))))))
++
++(defn json-bytes "data as the JSON text js/emit hands the host." [x]
++  (let [b (jb-new)] (json! b x) (jb-done b)))
+ 
+ (defn ^{:twin "js/emit"} emit
+   ([] (c/raise (wasm/bytes-of-string "js/emit expects 2 args (event-name data), got 0")))
+   ([a] (c/raise (wasm/bytes-of-string "js/emit expects 2 args (event-name data), got 1")))
+   ([nm data] (let [k (sq/kind nm)]
+-               (if (if (= k 20) true (if (= k 21) true (= k 17)))
+-                 (wasm/null)
+-                 (raise-str (s/str (lit (wasm/bytes-of-string "js/emit event-name must be keyword, symbol, or string; got ")) (tn nm))))))
++               (cond (= k 20) (host-emit (named-text nm) (json-bytes data))
++                     (= k 21) (host-emit (s/str-bytes (s/value-string nm)) (json-bytes data))
++                     (= k 17) (host-emit (s/str-bytes nm) (json-bytes data))
++                     :else (raise-str (s/str (lit (wasm/bytes-of-string "js/emit event-name must be keyword, symbol, or string; got ")) (tn nm))))
++               (wasm/null)))
+   ([a b x] (c/raise (wasm/bytes-of-string "js/emit expects 2 args (event-name data), got 3"))))
+ 
+-(defn ^{:twin "js/url-param"} url-param ([] (wasm/null)) ([nm] (wasm/null)) ([nm x] (wasm/null)))
++;; nil unless called with exactly one String (js.go: len(vs) != 1 or a
++;; non-String name reads as absent).
++(defn ^{:twin "js/url-param"} url-param
++  ([] (wasm/null))
++  ([nm] (if (= 17 (sq/kind nm))
++          (let [bs (host-url-param (s/str-bytes nm))] (if (wasm/null? bs) (wasm/null) (s/mk-str bs)))
++          (wasm/null)))
++  ([nm x] (wasm/null)))
