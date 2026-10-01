@@ -1,0 +1,11 @@
+;; PENDING construct: KNOWN-bug shapes that abort the whole program in the
+;; backend (2026-10-01 08:40):
+;;   r2-11-apply-int  review2 bug-11: `(apply + 5)` -> uncatchable `wasm trap:
+;;                    seq expected Seqable` (native: catchable "seq expected Seqable")
+;;   r1-08-try-recur  review bug-08: compile-time `ir/build: recur argument
+;;                    count must match function argument count (got 1, need 0)`
+;; Split from review-shapes.lg.
+(defn show [label x] (println label (pr-str x)))
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+(show "r2-11-apply-int" (msg (fn [] (apply + 5))))
+(show "r1-08-try-recur" (loop [i 0] (if (< i 3) (try (recur (inc i))) i)))

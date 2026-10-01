@@ -1,0 +1,10 @@
+;; PENDING construct: natives unbound at this build when used as values or
+;; called: core/vector and core/hash-map as apply targets (`apply expected
+;; Fn`, since the var reads nil), core/fn?, core/ifn?, core/every-pred
+;; (`TypeError: nil is not a function`). Backend 2026-10-01 08:05. Split
+;; from closures-rt.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "apply-vector" (apply vector '(1 2 3)))
+(show "apply-hash-map" (apply hash-map [:a 1 :b 2]))
+(show "fn?" [(fn? inc) (fn? (fn [] 1)) (fn? :k) (ifn? :k)])
+(show "every-pred" ((every-pred pos? (fn [x] (< x 10))) 5))

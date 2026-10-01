@@ -1,0 +1,11 @@
+;; PENDING construct: a closure of the wrong arity invoked by a runtime HOF
+;; twin (`reduce`, lazy `map`). Backend (2026-10-01 07:58): uncatchable
+;; `error: dereferencing a null pointer` (the twin calls the missing $Code
+;; slot directly); native raises a catchable arity error. Direct calls,
+;; `apply`, and lg-compiled `mapv` raise the arity error fine.
+;; Split from errors.lg.
+(defn show [label x] (println label (pr-str x)))
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+(defn amsg [f] (let [m (msg f)] (subs m (index-of m ">"))))
+(show "reduce-arity-fn" (amsg (fn [] (reduce (fn [a] a) [1 2]))))
+(show "map-arity-fn" (try (doall (map (fn [] 1) [1])) (catch Exception e :caught)))

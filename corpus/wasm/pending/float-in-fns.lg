@@ -1,0 +1,13 @@
+;; PENDING construct: floats flowing through closures, fn params and loop
+;; locals. Backend (2026-10-01 07:30), per probe:
+;;   fn-closure        (* k x), k=0.5 captured, x int  -> Maximum call stack size exceeded
+;;   fn-closure-float  (* k x), both floats             -> illegal cast (uncatchable)
+;;   loop-halve        (/ x 2), x a float loop local    -> D42 named limit `/ on a non-Int operand`
+;;   float-cond        (< x 0.0), x a float param via mapv -> illegal cast (uncatchable)
+;; Split from floats.lg.
+(defn show [label x] (println label (pr-str x)))
+(defn fscale [k] (fn [x] (* k x)))
+(show "fn-closure" (mapv (fscale 0.5) [1 2 3]))
+(show "fn-closure-float" (mapv (fscale 2.5) [0.5 1.5]))
+(show "loop-halve" (loop [x 1.0 n 0] (if (< x 1e-10) [x n] (recur (/ x 2) (inc n)))))
+(show "float-cond" (mapv (fn [x] (cond (< x 0.0) :neg (> x 0.0) :pos :else :zero)) [-1.5 0.0 2.5]))

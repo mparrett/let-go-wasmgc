@@ -1,0 +1,12 @@
+;; PENDING construct: `deref` of a non-atom (a Reduced). Backend (2026-10-01
+;; 06:55): named limit `lower-wasm: deref/reset!/swap! of a non-atom (Phase
+;; 2)`; native returns the wrapped value. Split from seqs.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "deref-reduced" (deref (reduced 2)))
+(show "at-reduced" @(reduced :x))
+(show "deref-volatile" (deref (volatile! 3)))
+(show "deref-delay" (deref (delay 4)))
+;; from errors.lg: deref of an int; native "deref expected Reference",
+;; backend the same named limit.
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+(show "deref-non-ref" (msg (fn [] (deref 5))))

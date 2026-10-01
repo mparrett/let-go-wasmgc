@@ -1,0 +1,22 @@
+;; PENDING construct: numeric natives unbound in the backend at this build:
+;; core/abs, core/float?, core/int?, core/NaN?, core/infinite?, core/long,
+;; core/double, core/rem, Math/floor|ceil|round|abs|sqrt|pow. Backend
+;; (2026-10-01 07:20): `TypeError: nil is not a function` (D63 shape). `int`
+;; on a float works. Split from floats.lg.
+(defn show [label x] (println label (pr-str x)))
+(def nan ##NaN)
+(def inf ##Inf)
+(def ninf ##-Inf)
+(defn lcg [s] (mod (+ (* s 1103515245) 12345) 2147483648))
+(def lcg-floats (loop [i 0 s 42 out []] (if (= i 12) out (let [s2 (lcg s)] (recur (inc i) s2 (conj out (* (/ s2 2147483648.0) 1000.0)))))))
+(show "abs" [(abs -1.5) (abs 2.5) (abs -3)])
+(show "contagion-type" [(float? (+ 1 1.0)) (int? (+ 1 1)) (float? 1) (number? 1.5)])
+(show "nan?" [(NaN? nan) (NaN? 1.0) (infinite? inf) (infinite? 1.0)])
+(show "long" [(long 1.9) (long -1.9) (long 0.5) (long -0.0) (long 1e15) (long 7)])
+(show "double" [(double 1) (double -7) (double 1.5)])
+(show "long-big" (long 9.2e18))
+(show "round-trip" [(double (long 1e15)) (long (double 123456789))])
+(show "math-floor" [(Math/floor 1.5) (Math/ceil 1.2) (Math/round 2.5) (Math/abs -2.0)])
+(show "math-sqrt" [(Math/sqrt 16.0) (Math/sqrt 2.0) (Math/pow 2.0 10.0)])
+(show "rem" [(rem 7 2) (rem -7 2) (rem 7 -2) (rem -7 -2)])
+(show "lcg-longs" (mapv long lcg-floats))

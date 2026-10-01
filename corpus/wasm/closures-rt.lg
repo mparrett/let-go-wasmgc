@@ -1,0 +1,87 @@
+;; P2.1 oracle: closures over runtime values. apply, partial/comp written by
+;; hand and the core ones, closures capturing collections, fns stored in map
+;; values, 4-arg calls (D52's ceiling), reduce with closures.
+
+(defn show [label x] (println label (pr-str x)))
+
+;; apply
+(show "apply-+" (apply + [1 2 3 4]))
+(show "apply-prefix" (apply + 1 2 [3 4]))
+(show "apply-str" (apply str ["a" "b" :c]))
+(show "apply-max" (apply max [3 9 2]))
+(show "apply-min" (apply min [3 9 2]))
+(show "apply-conj" (apply conj [] [1 2]))
+(show "apply-closure" (apply (fn [a b c] (+ a (* b c))) [1 2 3]))
+(show "apply-empty" (apply + []))
+
+;; hand-written partial/comp
+(defn my-partial [f a] (fn [b] (f a b)))
+(defn my-comp [f g] (fn [x] (f (g x))))
+(show "my-partial" ((my-partial + 10) 5))
+(show "my-comp" ((my-comp inc (fn [x] (* x 2))) 5))
+(show "my-comp-map" (map (my-comp str inc) [1 2]))
+(show "comp-chain" ((reduce my-comp [inc inc (fn [x] (* 3 x))]) 1))
+
+;; core partial/comp/complement/identity/constantly
+(show "complement" (filter (complement (fn [x] (> x 2))) [1 2 3 4]))
+(show "identity" (map identity [1 nil :a]))
+
+;; closures over collections
+(defn make-lookup [m] (fn [k] (get m k :missing)))
+(def lk (make-lookup {:a 1 :b [2 3]}))
+(show "lookup" [(lk :a) (lk :b) (lk :z)])
+(defn make-adder-vec [v] (fn [i] (+ (nth v i) 100)))
+(show "vec-closure" (map (make-adder-vec [1 2 3]) [0 2]))
+(defn counter-fn [] (let [c (atom 0)] (fn [] (swap! c inc))))
+(def c1 (counter-fn))
+(def c2 (counter-fn))
+(show "counters" [(c1) (c1) (c2) (c1)])
+(show "capture-set" ((fn [s] (filter (fn [x] (contains? s x)) (range 10))) #{2 5 7}))
+(show "capture-big-vec" (let [v (vec (range 100))] ((fn [i] (v i)) 77)))
+(show "nested-capture" (some? (((fn [a] (fn [b] (fn [c] [a b c]))) 1) 2)))
+(show "nested-capture-call" ((((fn [a] (fn [b] (fn [c] [a b c]))) 1) 2) 3))
+(show "capture-shadow" (let [x 1 f (fn [] x) x 2] [(f) x]))
+(show "letfn-like" (let [ev (fn ev [n] (if (= n 0) true (not (ev (dec n)))))] [(ev 4) (ev 5)]))
+
+;; fns in map values (dispatch tables)
+(def ops {:add (fn [a b] (+ a b)) :mul (fn [a b] (* a b)) :neg (fn [a] (- 0 a))})
+(show "dispatch" [((:add ops) 2 3) ((:mul ops) 2 3) ((get ops :neg) 4)])
+(show "dispatch-map" (mapv (fn [[op a b]] ((ops op) a b)) [[:add 1 2] [:mul 3 4]]))
+(def handlers {:move (fn [s d] (update s :pos + d)) :heal (fn [s d] (update s :hp + d))})
+(show "handlers" (reduce (fn [s [k d]] ((handlers k) s d)) {:pos 0 :hp 5} [[:move 2] [:heal 3] [:move -1]]))
+(show "fn-in-vec" ((nth [inc dec] 1) 10))
+(show "fn-equality" (let [f inc] [(= f f) (= inc dec)]))
+
+;; 4-arg calls (D52 ceiling) and arities
+(defn four [a b c d] [a b c d])
+(show "four-direct" (four 1 2 3 4))
+(show "four-via-var" (let [f four] (f :a :b :c :d)))
+(show "four-apply" (apply four [1 2 3 4]))
+(show "four-closure" ((fn [a b c d] (+ a b c d)) 1 2 3 4))
+(defn multi ([] :zero) ([a] [:one a]) ([a b] [:two a b]) ([a b c] [:three a b c]))
+(show "multi-arity" [(multi) (multi 1) (multi 1 2) (multi 1 2 3)])
+(show "multi-as-value" (map (fn [f] (f 1)) [multi inc]))
+(show "anon-pct" (map #(* % %) [1 2 3]))
+
+;; reduce with closures
+(show "reduce-closure" (reduce (fn [acc x] (+ acc (* x x))) 0 (range 10)))
+(show "reduce-build-map" (reduce (fn [m x] (assoc m x (* 2 x))) {} [1 2 3]))
+(show "reduce-capture" (let [k 3] (reduce (fn [acc x] (+ acc (* k x))) 0 [1 2 3])))
+(show "reduce-fn-acc" ((reduce (fn [f g] (fn [x] (g (f x)))) identity [inc inc inc]) 0))
+(show "reduce-early" (reduce (fn [acc x] (if (> x 4) (reduced acc) (conj acc x))) [] (range 10)))
+(show "reduce-over-map" (reduce (fn [acc [k v]] (+ acc v)) 0 {:a 1 :b 2 :c 3}))
+(show "reduce-strings" (reduce (fn [s x] (str s x "-")) "" [:a :b]))
+
+;; higher-order returns
+(defn twice [f] (fn [x] (f (f x))))
+(show "twice" ((twice inc) 0))
+(show "twice-twice" (((twice twice) inc) 0))
+(show "memo-like" (let [cache (atom {}) f (fn [n] (if-let [v (get @cache n)] v (let [v (* n n)] (swap! cache assoc n v) v)))] [(f 4) (f 4) (count @cache)]))
+
+;; closures created in loops and lazy seqs
+(def fs (loop [i 0 acc []] (if (= i 4) acc (recur (inc i) (conj acc (fn [] (* i 10)))))))
+(show "loop-closures" (mapv (fn [f] (f)) fs))
+(def lazy-fs (map (fn [i] (fn [x] (+ x i))) (range 3)))
+(show "lazy-closures" (map (fn [f] (f 100)) lazy-fs))
+(show "closure-over-closure" (let [add (fn [a] (fn [b] (+ a b))) add5 (add 5)] (map add5 [1 2])))
+(show "closure-count" (count (filter some? (map (fn [i] (fn [] i)) (range 50)))))

@@ -1,0 +1,84 @@
+;; P2.1 oracle: sets. Literal/constructor/into/conj paths across the 8/9
+;; boundary, disj, membership, colliding members, seq order, = and hash.
+
+(defn show [label x] (println label (pr-str x)))
+(defn sv [s] (vec (seq s)))
+
+(def kw9 [:a :b :c :d :e :f :g :h :i])
+(def lit8 #{:a :b :c :d :e :f :g :h})
+(def lit9 #{:a :b :c :d :e :f :g :h :i})
+(def conj8 (reduce conj #{} (take 8 kw9)))
+(def conj9 (reduce conj #{} kw9))
+(def into9 (into #{} kw9))
+(def set9 (set kw9))
+(def hs9 (hash-set :a :b :c :d :e :f :g :h :i))
+(def tr9 (persistent! (reduce conj! (transient #{}) kw9)))
+
+;; order by construction path
+(show "lit8" (sv lit8))
+(show "lit9" (sv lit9))
+(show "conj8" (sv conj8))
+(show "conj9" (sv conj9))
+(show "into9" (sv into9))
+(show "set9" (sv set9))
+(show "hs9" (sv hs9))
+(show "tr9" (sv tr9))
+(show "eq-paths" [(= lit9 conj9) (= conj9 into9) (= into9 set9) (= set9 hs9) (= hs9 tr9) (= lit8 conj8)])
+(show "hash-paths" [(hash lit9) (= (hash lit9) (hash conj9) (hash into9) (hash set9) (hash hs9) (hash tr9))])
+(show "hash-8" [(hash lit8) (= (hash lit8) (hash conj8))])
+
+;; ints, strings, mixed
+(def i40 (set (range 40)))
+(def s12 (set (map (fn [i] (str "s" i)) (range 12))))
+(def mixed #{1 "1" :1 '1 \1 1.0 nil [1] '(2) {:a 1} #{3} true false})
+(show "i40" (sv i40))
+(show "s12" (sv s12))
+(show "mixed-count" (count mixed))
+(show "mixed-members" [(contains? mixed 1) (contains? mixed 1.0) (contains? mixed "1") (contains? mixed nil) (contains? mixed [1]) (contains? mixed '(1)) (contains? mixed false)])
+(show "mixed-hash" (hash mixed))
+
+;; membership and lookups
+(show "contains" [(contains? lit9 :a) (contains? lit9 :z) (contains? #{} nil) (contains? #{nil} nil)])
+(show "get" [(get lit9 :a) (get lit9 :z) (get lit9 :z :d) (get #{nil} nil :d)])
+(show "set-as-fn" [(lit9 :b) (lit9 :q) (#{false} false) (#{nil} nil)])
+(show "kw-on-set" [(:a lit9) (:z lit9 :nf)])
+(show "count" [(count #{}) (count lit8) (count lit9) (count i40)])
+(show "conj-dup" (count (conj lit9 :a :b)))
+(show "conj-multi" (sv (conj #{1} 2 3)))
+(show "conj-nil" (conj #{} nil))
+
+;; disj: every probe lives in pending/disj.lg (core/disj is unbound)
+
+;; colliding members (maporder SPEC)
+(def col (into #{} [97 \a "xe2tiazy" "snpfo" "s6rja" :kby0z :kcxik [97] [\a] 4611686018427387904 2.0 :z1]))
+(show "collide-count" (count col))
+(show "collide-order" (sv col))
+(show "collide-members" [(contains? col 97) (contains? col \a) (contains? col "s6rja") (contains? col [\a]) (contains? col 2.0) (contains? col 98)])
+(show "collide-small" (sv (conj #{97} \a)))
+
+;; seq, reduce, map over sets
+(show "seq-empty" (seq #{}))
+(show "first" (first #{:only}))
+(show "reduce" (reduce + i40))
+(show "map-inc" (sort (map inc #{1 2 3})))
+(show "filter" (sort (filter (fn [x] (> x 35)) i40)))
+(show "into-vec" (into [] (sort #{3 1 2})))
+(show "sort-set" (sort lit9))
+
+;; set ops via reduce (clojure.set is not assumed)
+(defn union [a b] (reduce conj a b))
+(defn intersection [a b] (reduce (fn [acc x] (if (contains? b x) (conj acc x) acc)) #{} a))
+(show "union" (sort (union #{1 2 3} #{3 4 5})))
+(show "intersection" (sort (intersection #{1 2 3 4} #{3 4 5})))
+(show "union-9" (sv (union lit8 #{:i})))
+
+;; equality and hash
+(show "eq" [(= #{} #{}) (= #{1} #{1.0}) (= #{1 2} #{2 1}) (= #{[1]} #{[1]}) (= #{1} [1]) (= #{nil} #{nil})])
+(show "eq-nested" (= #{#{1} #{2}} #{#{2} #{1}}))
+(show "hash-small" [(hash #{}) (hash #{1}) (hash #{1 2}) (hash #{"a" :b})])
+(show "hash-order-indep" (= (hash #{1 2 3}) (hash #{3 2 1})))
+(show "set?" [(set? #{}) (set? lit9) (set? []) (set? {})])
+(show "str" (str #{1}))
+(show "pr-nested" #{[1 #{2}]})
+(show "as-key" (get {#{1 2} :v} #{2 1}))
+(show "eq-vec-vs-list-member" [(= #{[1]} #{(list 1)}) (= #{[1 2]} #{(seq [1 2])}) (contains? #{[1]} (list 1))])

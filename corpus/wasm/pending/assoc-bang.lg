@@ -1,0 +1,35 @@
+;; PENDING construct: `assoc!` / `dissoc!` on transient maps (unbound natives
+;; core/assoc!, core/dissoc!; rt_wasm.lg's header already notes core/assoc!
+;; has no runtime twin). Backend (2026-10-01 06:30): `TypeError: nil is not
+;; a function`. Split from maps.lg, xsofy-shapes.lg.
+(defn show [label x] (println label (pr-str x)))
+(def kw8 [:a :b :c :d :e :f :g :h])
+(def kw9 [:a :b :c :d :e :f :g :h :i])
+(def tr8 (persistent! (reduce (fn [m k] (assoc! m k 1)) (transient {}) kw8)))
+(def tr9 (persistent! (reduce (fn [m k] (assoc! m k 1)) (transient {}) kw9)))
+(show "tr8-keys" (vec (keys tr8)))
+(show "tr9-keys" (vec (keys tr9)))
+(show "tr-hash" [(hash tr8) (hash tr9)])
+(def t (transient {:a 1}))
+(assoc! t :b 2)
+(show "transient-get" [(get t :a) (count t)])
+(show "transient-dissoc" (persistent! (dissoc! (transient {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) :a :b)))
+(show "transient-grow" (count (persistent! (reduce (fn [m i] (assoc! m i i)) (transient {}) (range 100)))))
+(show "transient-vec-assoc" (persistent! (assoc! (transient [1 2 3]) 1 :x)))
+;; from xsofy-shapes.lg: group-by / frequencies build with transients
+;; and assoc! (unbound)
+(def w0 {:turn 0
+         :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+(defn ents [w] (vals (:entities w)))
+(defn lcg [s] (mod (+ (* s 1103515245) 12345) 2147483648))
+(defn rolls [seed n] (loop [i 0 s seed out []] (if (= i n) out (let [s2 (lcg s)] (recur (inc i) s2 (conj out (mod s2 6)))))))
+(show "group-by-kind" (let [g (group-by :kind (ents w0))] [(sort (keys g)) (count (:rat g))]))
+(show "frequencies" (let [f (frequencies (map :kind (ents w0)))] [(get f :rat) (get f :player) (count f)]))
+(show "frequencies-ints" (frequencies [1 2 1 3 1 2]))
+(show "roll-freq" (frequencies (rolls 99 60)))

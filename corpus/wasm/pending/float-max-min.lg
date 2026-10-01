@@ -1,0 +1,8 @@
+;; PENDING construct: `max` / `min` with any float operand. Backend
+;; (2026-10-01 07:20): uncatchable `error: illegal cast` for (max 1 2.5),
+;; (max 1.5 2.5), (min -0.0 0.0). Split from floats.lg.
+(defn show [label x] (println label (pr-str x)))
+(def nan ##NaN)
+(def inf ##Inf)
+(def ninf ##-Inf)
+(show "max-min" [(max 1 2.5) (min 1 2.5) (max 3 1.0) (min -0.0 0.0)])

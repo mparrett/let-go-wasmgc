@@ -24,5 +24,5 @@
 | review-2 | done 2026-10-01 | opus | 2300 seeds; 16 runtime bugs (8 silent) → P2.10 |
 | P2.10 | done 2026-10-01 | opus | 15/16 fixed, 1 deferred; vkind_test; 89 tests; verified |
 | P1.7 | running | opus | Phase 1 review fixes |
-| P2.1-corpus | running | opus | corpus/wasm oracle programs |
+| P2.1-corpus | done 2026-10-01 | opus | 14 programs, 5 MATCH; F1–F9 → P2.11; variadics → P2.12 |
 | P3.1-runtime | running | opus | xsofy-only natives in the dialect (arrays, math, xxh3, nanotime) |

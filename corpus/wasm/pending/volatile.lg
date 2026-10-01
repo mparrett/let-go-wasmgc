@@ -1,0 +1,11 @@
+;; PENDING construct: volatiles. Backend (2026-10-01 07:40): `@vol`,
+;; vswap!, vreset! throw the named limit `lower-wasm: deref/reset!/swap! of
+;; a non-atom (Phase 2)` although the runtime has a Volatile kind (D67).
+;; Split from atoms.lg.
+(defn show [label x] (println label (pr-str x)))
+(def vol (volatile! 1))
+(show "vol-deref" @vol)
+(show "vswap" (vswap! vol inc))
+(show "vreset" (vreset! vol 42))
+(show "vol-after" @vol)
+(show "vol-in-coll" [@vol (count [vol])])

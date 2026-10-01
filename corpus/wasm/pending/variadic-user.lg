@@ -1,0 +1,13 @@
+;; PENDING construct: a user defn with `& rest` (D52 named limit). Backend
+;; (2026-10-01 07:45): compile-time `lower-wasm: unsupported variadic fn
+;; {:fn "log!"}`, which fails the whole program. xsofy has 9 such heads.
+;; Split from atoms.lg, closures-rt.lg.
+(defn show [label x] (println label (pr-str x)))
+(def log (atom []))
+(defn log! [& xs] (swap! log conj (vec xs)))
+(log! :a 1)
+(log! :b)
+(show "variadic-log" @log)
+(defn sum-all [x & more] (reduce + x more))
+(show "variadic-sum" [(sum-all 1) (sum-all 1 2 3 4 5 6)])
+(show "variadic-apply" (apply sum-all [1 2 3]))

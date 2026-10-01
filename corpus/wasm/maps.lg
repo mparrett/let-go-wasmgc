@@ -1,0 +1,112 @@
+;; P2.1 oracle: maps. Array-map/HAMT boundary 8/9 by every construction path,
+;; lookup and update ops, key order via (vec (keys m)), colliding keys from
+;; corpus/maporder/SPEC.md, nil keys, transients, = and hash across paths.
+
+(defn show [label x] (println label (pr-str x)))
+(defn ks [m] (vec (keys m)))
+
+(def kw8 [:a :b :c :d :e :f :g :h])
+(def kw9 [:a :b :c :d :e :f :g :h :i])
+
+;; construction paths at 8 and 9 keys
+(def lit8 {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8})
+(def lit9 {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9})
+(def assoc8 (reduce (fn [m k] (assoc m k 1)) {} kw8))
+(def assoc9 (reduce (fn [m k] (assoc m k 1)) {} kw9))
+(def into8 (into {} (map (fn [k] [k 1]) kw8)))
+(def into9 (into {} (map (fn [k] [k 1]) kw9)))
+(def zip8 (zipmap kw8 (repeat 1)))
+(def zip9 (zipmap kw9 (repeat 1)))
+(def hm8 (hash-map :a 1 :b 1 :c 1 :d 1 :e 1 :f 1 :g 1 :h 1))
+(def hm9 (hash-map :a 1 :b 1 :c 1 :d 1 :e 1 :f 1 :g 1 :h 1 :i 1))
+(def shrink8 (dissoc assoc9 :i))
+
+(show "lit8-keys" (ks lit8))
+(show "lit9-keys" (ks lit9))
+(show "assoc8-keys" (ks assoc8))
+(show "assoc9-keys" (ks assoc9))
+(show "into8-keys" (ks into8))
+(show "into9-keys" (ks into9))
+(show "zip8-keys" (ks zip8))
+(show "zip9-keys" (ks zip9))
+(show "hm8-keys" (ks hm8))
+(show "hm9-keys" (ks hm9))
+(show "shrink8-keys" (ks shrink8))
+(show "eq-8" [(= assoc8 into8) (= assoc8 zip8) (= assoc8 hm8) (= assoc8 shrink8)])
+(show "eq-9" [(= assoc9 into9) (= assoc9 zip9) (= assoc9 hm9)])
+(show "hash-8" [(hash assoc8) (= (hash assoc8) (hash into8) (hash zip8) (hash hm8) (hash shrink8))])
+(show "hash-9" [(hash assoc9) (= (hash assoc9) (hash into9) (hash zip9) (hash hm9))])
+(show "lit9" lit9)
+
+;; integer and string keys at 9 and 20
+(def i20 (reduce (fn [m i] (assoc m i (* i i))) {} (range 20)))
+(def s9 (reduce (fn [m i] (assoc m (str "k" i) i)) {} (range 9)))
+(show "i20-keys" (ks i20))
+(show "s9-keys" (ks s9))
+(show "i20-vals" (vec (vals i20)))
+(show "lit9-vals" (vec (vals lit9)))
+
+;; lookups
+(show "get" [(get lit8 :a) (get lit8 :z) (get lit8 :z :d) (get nil :a) (get lit9 :i)])
+(show "kw-fn" [(:a lit9) (:z lit9 :nf) (lit9 :b) (lit9 :q :nf)])
+(show "contains" [(contains? lit8 :h) (contains? lit8 :i) (contains? lit9 :i) (contains? {:a nil} :a)])
+(show "find" [(find lit8 :c) (find lit8 :z)])
+(show "count" [(count {}) (count lit8) (count lit9) (count i20)])
+
+;; dissoc / merge / update
+(show "dissoc-1" (dissoc {:a 1 :b 2 :c 3} :b))
+(show "dissoc-miss" (dissoc {:a 1} :z))
+(show "dissoc-many" (dissoc lit9 :a :c :e))
+(show "dissoc-9-keys" (ks (dissoc lit9 :a)))
+(show "update" (update {:n 1} :n inc))
+(show "update-missing" (update {} :n (fn [x] (if (nil? x) 0 x))))
+(show "update-args" (update {:n 1} :n + 10))
+(show "assoc-replace" (assoc lit8 :a 100))
+(show "assoc-replace-order" (ks (assoc lit9 :e 0)))
+(show "select-keys" (select-keys lit9 [:a :i :z]))
+
+;; nested
+(def nest {:a {:b {:c 1}} :v [{:x 1} {:x 2}]})
+(show "get-in" [(get-in nest [:a :b :c]) (get-in nest [:v 1 :x]) (get-in nest [:a :z] :nf)])
+(show "assoc-in" (assoc-in nest [:a :b :d] 2))
+(show "assoc-in-new" (assoc-in {} [:p :q] 1))
+(show "update-in" (update-in nest [:v 0 :x] inc))
+(show "nested-eq" (= nest {:v [{:x 1} {:x 2}] :a {:b {:c 1}}}))
+
+;; colliding keys (maporder SPEC: 97/\a/"xe2tiazy", "snpfo"/"s6rja", :kby0z/:kcxik)
+(def col (reduce (fn [m k] (assoc m k (pr-str k)))
+                 {} [97 \a "xe2tiazy" "snpfo" "s6rja" :kby0z :kcxik [97] [\a] 4611686018427387904 2.0 :z1]))
+(show "collide-count" (count col))
+(show "collide-keys" (ks col))
+(show "collide-get" [(get col 97) (get col \a) (get col "s6rja") (get col :kcxik) (get col [\a]) (get col 2.0)])
+(show "collide-dissoc" (ks (dissoc col \a :kby0z)))
+(show "collide-hash" [(hash 97) (hash \a) (hash "xe2tiazy") (hash "snpfo") (hash "s6rja") (hash :kby0z) (hash :kcxik)])
+(show "collide-small" (ks (assoc {97 1} \a 2)))
+
+;; nil keys and values
+(show "nil-key" (get {nil 1 :a 2} nil))
+(show "nil-key-9" (get (assoc lit9 nil :n) nil))
+(show "nil-key-keys" (ks (assoc {:a 1} nil 2)))
+(show "nil-val" [(get {:a nil} :a :d) (contains? {:a nil} :a)])
+(show "dissoc-nil" (dissoc (assoc lit9 nil 0) nil))
+
+;; transients (assoc!/dissoc! probes live in pending/assoc-bang.lg)
+(show "transient-conj" (count (persistent! (conj! (transient {:a 1}) [:b 2]))))
+(show "transient-persist" (persistent! (transient lit9)))
+
+;; seqs of entries
+(show "seq" (seq {:a 1 :b 2}))
+(show "seq-empty" (seq {}))
+(show "first-entry" (first {:a 1}))
+(show "entry-kv" (let [e (first {:a 1})] [(key e) (val e) (nth e 0) (count e) (vector? e)]))
+(show "map-over" (map (fn [[k v]] (str k v)) {:a 1 :b 2}))
+(show "reduce-kv" (reduce-kv (fn [acc k v] (+ acc v)) 0 lit9))
+(show "into-vec" (into [] {:a 1 :b 2}))
+(show "keys-empty" [(keys {}) (vals {})])
+
+;; = across kinds, hash
+(show "eq" [(= {} {}) (= {:a 1} {:a 1.0}) (= {:a [1]} {:a '(1)}) (= {:a 1} {:a 1 :b 2}) (= {nil nil} {nil nil})])
+(show "hash-small" [(hash {}) (hash {:a 1}) (hash {:a 1 :b 2}) (hash {"s" [1 2]})])
+(show "hash-order-indep" (= (hash {:a 1 :b 2}) (hash {:b 2 :a 1})))
+(show "str" (str {:a "s" :b [1]}))
+(show "map?" [(map? {}) (map? lit9) (map? []) (map? (transient {}))])

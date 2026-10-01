@@ -1,0 +1,16 @@
+;; PENDING construct: nil passed to a fn whose param is typed i64 because it
+;; reaches `inc` (KNOWN: corpus/review bug-01, item P1.7). Backend
+;; (2026-10-01 08:30): uncatchable `illegal cast`. This is xsofy's common
+;; `(update m k (fn [n] (if n (inc n) 1)))` counter shape. Split from
+;; xsofy-shapes.lg.
+(defn show [label x] (println label (pr-str x)))
+(def w0 {:turn 0 :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+(defn ents [w] (vals (:entities w)))
+(show "update-in-missing-fn" (get-in (update-in w0 [:stats :kills] (fn [k] (if k (inc k) 0))) [:stats]))
+(show "count-by-kind" (reduce (fn [m e] (update m (:kind e) (fn [n] (if n (inc n) 1)))) {} (ents w0)))

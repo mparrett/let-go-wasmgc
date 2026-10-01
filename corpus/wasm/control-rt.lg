@@ -1,0 +1,83 @@
+;; P2.1 oracle: control flow over runtime values. cond/case/condp,
+;; when-let/if-let/when-some, loop with vector and map destructuring,
+;; doseq/dotimes/for comprehensions, threading macros.
+
+(defn show [label x] (println label (pr-str x)))
+
+;; cond / case / condp
+(defn classify [x] (cond (nil? x) :nil (string? x) :str (keyword? x) :kw (vector? x) :vec (map? x) :map :else :other))
+(show "cond" (mapv classify [nil "s" :k [1] {:a 1} 3]))
+(defn kase [x] (case x :a 1 :b 2 "s" 3 4 :four (5 6) :five-or-six [1 2] :vec nil :nil :default))
+(show "case" (mapv kase [:a :b "s" 4 5 6 [1 2] nil :zz]))
+(show "case-int" (mapv (fn [n] (case n 0 :zero 1 :one :many)) [0 1 7]))
+(show "case-sym" (case 'foo foo :sym bar :bar :none))
+(show "case-char" (case \b \a 1 \b 2 0))
+(show "condp" (mapv (fn [x] (condp = x 1 :one 2 :two :other)) [1 2 3]))
+(show "condp-lt" (mapv (fn [x] (condp < x 10 :big 5 :mid :small)) [20 7 1]))
+(show "cond-thread" (cond-> {:a 1} true (assoc :b 2) false (assoc :c 3)))
+(show "cond-thread-last" (cond->> [1 2 3] true (map inc) false (filter odd?)))
+
+;; when-let / if-let / when-some / if-some
+(show "if-let" [(if-let [x (get {:a 1} :a)] [:got x] :none) (if-let [x (get {} :a)] [:got x] :none)])
+(show "when-let" [(when-let [x (first [5])] (* x 2)) (when-let [x (first [])] (* x 2))])
+(show "if-let-false" (if-let [x false] :t :f))
+(show "when-some" [(when-some [x false] [:some x]) (when-some [x nil] :never)])
+(show "if-some" (if-some [x (get {:a nil} :a)] :some :none))
+(show "if-let-destr" (if-let [[a b] (seq [1 2])] (+ a b) 0))
+(show "when-not" [(when-not false :ran) (when-not true :ran)])
+(show "if-not" (if-not (empty? [1]) :nonempty :empty))
+
+;; loop with destructuring
+(show "loop-vec-destr" (loop [[x & more] [1 2 3 4] acc 0] (if x (recur more (+ acc x)) acc)))
+(show "loop-pair-destr" (loop [[a b] [0 1] n 0] (if (= n 10) a (recur [b (+ a b)] (inc n)))))
+(show "loop-map-destr" (loop [{:keys [i acc]} {:i 0 :acc []}] (if (= i 3) acc (recur {:i (inc i) :acc (conj acc i)}))))
+(show "let-destr-vec" (let [[a b & r] [1 2 3 4]] [a b r]))
+(show "let-destr-nested" (let [[a [b c]] [1 [2 3]]] [a b c]))
+(show "let-destr-map" (let [{a :a b :b :or {b 9}} {:a 1}] [a b]))
+(show "let-destr-keys" (let [{:keys [x y] :as all} {:x 1 :y 2 :z 3}] [x y (count all)]))
+(show "let-destr-strs" (let [{:strs [s]} {"s" 5}] s))
+(show "let-destr-as" (let [[a :as v] [1 2]] [a v]))
+(show "fn-destr" ((fn [{:keys [hp max-hp]}] (/ hp max-hp)) {:hp 5 :max-hp 5}))
+(show "fn-destr-vec" (map (fn [[k v]] (str (name k) "=" v)) {:a 1 :b 2}))
+(show "destr-missing" (let [[a b c] [1]] [a b c]))
+
+;; doseq / dotimes / for
+(def acc (atom []))
+(doseq [x [1 2 3]] (swap! acc conj (* x x)))
+(show "doseq" @acc)
+(reset! acc [])
+(doseq [x [1 2] y [:a :b]] (swap! acc conj [x y]))
+(show "doseq-nested" @acc)
+(reset! acc [])
+(doseq [[k v] {:a 1 :b 2}] (swap! acc conj k))
+(show "doseq-destr" @acc)
+(reset! acc [])
+(dotimes [i 5] (swap! acc conj i))
+(show "dotimes" @acc)
+(show "for" (for [x [1 2 3]] (* x 10)))
+(show "for-nested" (for [x [1 2] y [:a :b]] [x y]))
+(show "for-when" (for [x (range 10) :when (= 0 (bit-and x 1))] x))
+(show "for-let" (for [x [1 2] :let [y (* x x)]] [x y]))
+(show "for-while" (for [x (range 10) :while (< x 4)] x))
+(show "for-destr" (for [[k v] {:a 1 :b 2}] (str k v)))
+(show "doseq-returns" (doseq [x [1]] x))
+
+;; threading
+(show "thread-first" (-> {:a 1} (assoc :b 2) (update :a inc) (dissoc :b)))
+(show "thread-last" (->> (range 10) (filter (fn [x] (> x 5))) (map inc) (reduce +)))
+(show "some-thread" [(some-> {:a {:b 1}} :a :b inc) (some-> {:a nil} :a :b inc)])
+(show "as-thread" (as-> 5 x (* x 2) (+ x 1) [x]))
+(show "doto-like" (let [a (atom [])] (swap! a conj 1) (swap! a conj 2) @a))
+
+;; and/or/not over runtime values
+(show "and-or" [(and 1 2) (and nil 2) (or nil false 3) (or false nil) (and) (or)])
+(show "not" [(not nil) (not []) (not 0) (not false)])
+(show "boolean" [(boolean nil) (boolean []) (boolean 0)])
+(show "truthy-colls" (mapv (fn [x] (if x :t :f)) [[] {} #{} "" 0 nil false]))
+
+;; while / loop termination over atoms
+(def n (atom 0))
+(while (< @n 5) (swap! n inc))
+(show "while" @n)
+(show "loop-early-return" (loop [xs [1 2 3 -1 4]] (cond (empty? xs) :none (neg? (first xs)) [:found (first xs)] :else (recur (rest xs)))))
+(show "nested-loops" (loop [i 0 out []] (if (= i 3) out (recur (inc i) (conj out (loop [j 0 s 0] (if (> j i) s (recur (inc j) (+ s j)))))))))

@@ -1,0 +1,26 @@
+;; PENDING construct: core.lg HOFs that return variadic closures (partial,
+;; comp, constantly, juxt, fnil, some-fn). Backend (2026-10-01 08:05): named
+;; run-time error `lower-wasm: core/partial#3 did not compile (lower-wasm:
+;; unsupported variadic fn (& args) as a closure ...)`; 3-fn comp says
+;; `function <mfn comp 0x0> doesn't have a 3-arity variant` (D78 drop).
+;; Split from closures-rt.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "partial" ((partial + 1 2) 3))
+(show "partial-map" (map (partial * 2) [1 2 3]))
+(show "comp" ((comp inc inc) 1))
+(show "comp-3" ((comp str inc (fn [x] (* x 10))) 1))
+(show "constantly" (map (constantly 7) [1 2 3]))
+(show "juxt" ((juxt inc dec) 5))
+(show "fnil" ((fnil inc 0) nil))
+(show "some-fn" ((some-fn neg? zero?) 0))
+;; from xsofy-shapes.lg: fnil
+(def w0 {:turn 0
+         :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+(defn ents [w] (vals (:entities w)))
+(show "update-in-missing" (get-in (update-in w0 [:stats :kills] (fnil inc 0)) [:stats]))

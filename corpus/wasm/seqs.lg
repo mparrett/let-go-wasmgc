@@ -1,0 +1,115 @@
+;; P2.1 oracle: seqs. Lists, cons, lazy seqs, range/repeat, take/drop,
+;; concat/map/filter/reduce (with reduced), some/every?, partition, and
+;; realisation counting through an atom (lazy chains must realise exactly
+;; as much as native does).
+
+(defn show [label x] (println label (pr-str x)))
+
+;; lists and cons
+(show "list-lit" '(1 2 3))
+(show "list-fn" (list 1 2 3))
+(show "list-empty" (list))
+(show "list-nested" (list (list 1) [2] {:a 3}))
+(show "cons-vec" (cons 0 [1 2]))
+(show "cons-nil" (cons 1 nil))
+(show "cons-list" (cons 0 '(1)))
+(show "conj-list" (conj '(1 2) 0 -1))
+(show "first-rest" [(first '(1 2)) (rest '(1 2)) (rest '(1)) (next '(1)) (first nil) (rest nil)])
+(show "count" [(count '(1 2 3)) (count (cons 0 [1 2])) (count (range 10))])
+(show "peek-pop-list" [(peek '(1 2)) (pop '(1 2 3))])
+(show "nth-list" [(nth '(1 2 3) 2) (nth '(1 2 3) 5 :nf)])
+(show "second-last" [(second [1 2 3]) (last '(1 2 3)) (butlast [1 2 3])])
+
+;; range / repeat
+(show "range-n" (range 5))
+(show "range-ab" (range 2 7))
+(show "range-step" (range 0 20 3))
+(show "range-neg" (range 5 0 -1))
+(show "range-empty" [(range 0) (range 3 3) (seq (range 0))])
+(show "range-take" (take 4 (range)))
+(show "range-count" (count (range 1000)))
+(show "range-sum" (reduce + (range 10001)))
+(show "repeat-n" (repeat 3 :x))
+(show "repeat-take" (take 3 (repeat "a")))
+(show "repeat-zero" (repeat 0 1))
+
+;; take / drop
+(show "take" [(take 2 [1 2 3]) (take 0 [1]) (take 5 [1 2]) (take 2 nil)])
+(show "drop" [(drop 2 [1 2 3]) (drop 0 [1]) (drop 5 [1 2])])
+(show "take-while" (take-while (fn [x] (< x 4)) (range 10)))
+(show "drop-while" (drop-while (fn [x] (< x 7)) (range 10)))
+(show "take-last" (take-last 2 [1 2 3 4]))
+(show "nthrest" (nthrest (range 6) 4))
+
+;; concat / map / filter / remove
+(show "concat-2" (concat [1 2] '(3)))
+(show "concat-empty" (concat))
+(show "map-1" (map inc '(1 2 3)))
+(show "map-indexed" (map-indexed (fn [i x] [i x]) [:a :b]))
+(show "filter" (filter (fn [x] (> x 2)) [1 2 3 4]))
+(show "remove" (remove (fn [x] (> x 2)) [1 2 3 4]))
+(show "keep" (keep (fn [x] (if (> x 2) (* x 10) nil)) [1 2 3 4]))
+(show "mapcat" (mapcat (fn [x] [x x]) [1 2]))
+(show "interleave" (interleave [1 2 3] [:a :b :c]))
+(show "interpose" (interpose 0 [1 2 3]))
+(show "distinct" (distinct [1 2 1 3 2]))
+
+;; reduce, reduced
+(show "reduce-init" (reduce + 0 [1 2 3]))
+(show "reduce-noinit" (reduce + [1 2 3]))
+(show "reduce-empty" [(reduce + []) (reduce + 5 [])])
+(show "reduce-one" (reduce + [7]))
+(show "reduced" (reduce (fn [acc x] (if (> acc 10) (reduced acc) (+ acc x))) 0 (range 100)))
+(show "reduced-lazy" (reduce (fn [acc x] (if (= x 5) (reduced [:stop acc]) (+ acc x))) 0 (map inc (range))))
+(show "reduced?" [(reduced? (reduced 1)) (reduced? 1) (unreduced (reduced 2))])
+(show "reductions" (reductions + [1 2 3 4]))
+
+;; some / every?
+(show "some" [(some (fn [x] (if (> x 2) x nil)) [1 2 3 4]) (some (fn [x] (> x 9)) [1 2])])
+(show "every?" [(every? (fn [x] (> x 0)) [1 2]) (every? (fn [x] (> x 1)) [1 2]) (every? (fn [x] false) [])])
+(show "not-any" [(not-any? nil? [1 2]) (not-every? nil? [nil 1])])
+
+;; partition and friends
+(show "partition" (partition 2 [1 2 3 4 5]))
+(show "partition-step" (partition 2 1 [1 2 3 4]))
+(show "partition-all" (partition-all 2 [1 2 3 4 5]))
+(show "partition-by" (partition-by (fn [x] (< x 3)) [1 2 3 4 1]))
+(show "split-at" (split-at 2 [1 2 3 4]))
+(show "split-with" (split-with (fn [x] (< x 3)) [1 2 3 1]))
+
+;; realisation counting
+(def hits (atom 0))
+(defn tick [x] (swap! hits inc) x)
+(def lz (map tick (range 100)))
+(show "lazy-none" @hits)
+(first lz)
+(show "lazy-first" @hits)
+(doall (take 40 lz))
+(show "lazy-take40" @hits)
+(reset! hits 0)
+(def lz2 (map tick [1 2 3 4 5]))
+(show "lazy-vec-first" (do (first lz2) @hits))
+(reset! hits 0)
+(def lz3 (filter (fn [x] (tick (> x 3))) (range 10)))
+(show "lazy-filter-first" [(first lz3) @hits])
+(reset! hits 0)
+(def lz4 (lazy-seq (tick (cons 1 (lazy-seq (tick (cons 2 nil)))))))
+(show "lazy-seq-0" @hits)
+(show "lazy-seq-1" [(first lz4) @hits])
+(show "lazy-seq-all" [(vec lz4) @hits])
+(show "lazy-seq-again" [(count lz4) @hits])
+(reset! hits 0)
+(def lz5 (take 3 (map tick (range))))
+(show "range-take-count" [(vec lz5) @hits])
+(show "realized" [(realized? (lazy-seq nil)) (let [s (lazy-seq [1])] (seq s) (realized? s))])
+
+;; seq predicates and conversions
+(show "seq?" [(seq? '(1)) (seq? [1]) (seq? (map inc [1])) (seq? nil)])
+(show "seq-of" [(seq nil) (seq "ab") (seq {:a 1}) (seq '())])
+(show "empty?" [(empty? nil) (empty? '()) (empty? (range 0)) (empty? (map inc []))])
+(show "vec-of-lazy" (vec (map inc (range 3))))
+(show "into-list" (into '() [1 2 3]))
+(show "doall" (doall (map inc [1 2])))
+(show "lazy-eq" [(= (map inc [1 2]) [2 3]) (= (range 3) '(0 1 2)) (= (list) [])])
+(show "lazy-hash" [(hash (range 3)) (hash (map inc [0 1 2])) (hash '(1 2 3))])
+(show "str-lazy" (str (map inc [1 2])))

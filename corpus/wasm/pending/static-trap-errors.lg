@@ -1,0 +1,18 @@
+;; PENDING construct: runtime errors that are static-text `wasm/trap`s in
+;; the runtime where native raises a catchable error (KNOWN: rt_wasm.lg
+;; header for nth; review2 README / D74 "static-text traps" follow-up).
+;; Backend (2026-10-01 07:55): uncatchable `wasm trap: <native text>`, e.g.
+;; `wasm trap: nth index out of bounds`, `count expected Counted`, `first
+;; expected Seq`, `seq expected Seqable`, `string index out of range`,
+;; `can't pop empty vector`. Split from errors.lg.
+(defn show [label x] (println label (pr-str x)))
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+(show "nth-oob-vec" (msg (fn [] (nth [1 2] 5))))
+(show "nth-oob-neg" (msg (fn [] (nth [1 2] -1))))
+(show "nth-oob-list" (msg (fn [] (nth '(1 2) 9))))
+(show "nth-oob-str" (msg (fn [] (nth "ab" 3))))
+(show "count-kw" (msg (fn [] (count :kw))))
+(show "first-int" (msg (fn [] (first 5))))
+(show "seq-int" (msg (fn [] (seq 5))))
+(show "subs-oob" (msg (fn [] (subs "abc" 2 9))))
+(show "pop-empty" (msg (fn [] (pop []))))

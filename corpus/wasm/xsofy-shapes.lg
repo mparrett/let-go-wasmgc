@@ -1,0 +1,92 @@
+;; P2.1 oracle: shapes lifted from xsofy (get-in 404 uses, assoc-in 154,
+;; aget 54, aset 31, update-in 21, int-array 16, sort-by 13 as of
+;; 2026-10-01). A miniature world map with entities, a turn step, queries,
+;; and the int-array grid idiom from terrain.lg. `format` is not used.
+
+(defn show [label x] (println label (pr-str x)))
+
+(def w0 {:turn 0
+         :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+
+;; get-in / assoc-in / update-in (update-in with extra args: pending/variadic-core.lg)
+(show "update-in-fn" (get-in (update-in w0 [:entities 1 :hp] (fn [hp] (- hp 3))) [:entities 1 :hp]))
+(show "update-in-conj-fn" (get-in (update-in w0 [:entities 1 :inv] (fn [v] (conj v :key))) [:entities 1 :inv]))
+(show "get-in-entity" (get-in w0 [:entities 2]))
+(show "get-in-field" (get-in w0 [:entities 1 :hp]))
+(show "get-in-missing" [(get-in w0 [:entities 99 :hp]) (get-in w0 [:entities 99 :hp] 0)])
+(show "get-in-vec" (get-in w0 [:entities 1 :inv 0]))
+(show "assoc-in" (get-in (assoc-in w0 [:entities 2 :hp] 1) [:entities 2]))
+(show "assoc-in-new-path" (get-in (assoc-in w0 [:fov :seen 3] true) [:fov]))
+(show "update-turn" (:turn (update w0 :turn inc)))
+
+;; reduce over entity maps
+(defn ents [w] (vals (:entities w)))
+(show "total-hp" (reduce (fn [acc e] (+ acc (get e :hp 0))) 0 (ents w0)))
+(show "reduce-kv-ids" (sort (reduce-kv (fn [acc k v] (conj acc k)) [] (:entities w0))))
+(show "reduce-destr" (reduce (fn [m [k v]] (assoc m k (:kind v))) {} (:entities w0)))
+(show "into-map" (into {} (map (fn [e] [(:id e) (:hp e)]) (filter :hp (ents w0)))))
+(show "into-sorted-ids" (vec (sort (keys (:entities w0)))))
+(show "rats" (sort (map (fn [e] (:id e)) (filter (fn [e] (= :rat (:kind e))) (ents w0)))))
+
+;; sort-by / min / max (group-by and frequencies: pending/assoc-bang.lg)
+(show "count-by-kind-or" (reduce (fn [m e] (assoc m (:kind e) (inc (get m (:kind e) 0)))) {} (ents w0)))
+(show "group-by-hand" (let [g (reduce (fn [m e] (update m (:kind e) (fn [v] (conj (or v []) (:id e))))) {} (ents w0))] [(sort (keys g)) (sort (:rat g))]))
+(show "sort-by-x" (map (fn [e] (:id e)) (sort-by :x (ents w0))))
+(show "sort-by-fn" (map (fn [e] (:id e)) (sort-by (fn [e] (+ (:x e) (:y e))) (ents w0))))
+(show "sort-by-cmp" (map (fn [e] (:id e)) (sort-by :y > (ents w0))))
+(show "sort-by-vec-key" (map (fn [e] (:id e)) (sort-by (fn [e] [(:y e) (:x e)]) (ents w0))))
+(show "apply-max-4" (apply max [3 9 2 7]))
+(show "reduce-max" (reduce max (map (fn [e] (:x e)) (ents w0))))
+(show "reduce-min" (reduce min (map (fn [e] (:y e)) (ents w0))))
+(show "distinct-kinds" (sort (distinct (map (fn [e] (:kind e)) (ents w0)))))
+(show "some-entity-at" (:id (some (fn [e] (when (and (= 4 (:x e)) (= 4 (:y e))) e)) (ents w0))))
+(show "every-alive" (every? (fn [e] (pos? (get e :hp 1))) (ents w0)))
+
+;; a turn step: move rats toward the player, log, remove dead
+(defn sign [n] (cond (pos? n) 1 (neg? n) -1 :else 0))
+(defn step-toward [e px py] (-> e (update :x + (sign (- px (:x e)))) (update :y + (sign (- py (:y e))))))
+(defn turn [w]
+  (let [{px :x py :y} (get-in w [:entities (:player w)])
+        movers (filter (fn [e] (= :rat (:kind e))) (vals (:entities w)))
+        w (reduce (fn [w e] (assoc-in w [:entities (:id e)] (step-toward e px py))) w movers)]
+    (-> w (update :turn inc) (update :log conj [:turn (:turn w)]))))
+(def w3 (loop [w w0 n 0] (if (= n 3) w (recur (turn w) (inc n)))))
+(show "turn-count" (:turn w3))
+(show "turn-rats" (mapv (fn [id] (select-keys (get-in w3 [:entities id]) [:x :y])) [2 3]))
+(show "turn-log" (:log w3))
+(defn damage [w id n] (update-in w [:entities id :hp] (fn [hp] (- hp n))))
+(defn reap [w] (update w :entities (fn [es] (into {} (remove (fn [[k e]] (and (:hp e) (<= (:hp e) 0))) es)))))
+(def w4 (-> w3 (damage 2 5) (damage 3 1) reap))
+(show "reaped" (vec (sort (keys (:entities w4)))))
+(show "dissoc-in-like" (vec (sort (keys (:entities (update w4 :entities dissoc 4))))))
+(show "player-unchanged" (= (get-in w0 [:entities 1]) (get-in w4 [:entities 1])))
+(show "world-hash-stable" (= (hash w4) (hash (-> w3 (damage 2 5) (damage 3 1) reap))))
+
+;; int-array / aget / aset: pending/int-array.lg (core/int-array is unbound)
+
+;; deterministic LCG dungeon-ish rolls (pure)
+(defn lcg [s] (mod (+ (* s 1103515245) 12345) 2147483648))
+(defn rolls [seed n] (loop [i 0 s seed out []] (if (= i n) out (let [s2 (lcg s)] (recur (inc i) s2 (conj out (mod s2 6)))))))
+(show "rolls" (rolls 12345 12))
+(show "spawn-map" (into {} (map-indexed (fn [i r] [i {:kind (if (< r 3) :rat :bat) :hp (inc r)}]) (rolls 7 5))))
+
+(defn abs-diff [a b] (if (> a b) (- a b) (- b a)))
+
+;; grid neighbourhoods and fov-style sets
+(defn neighbours [[x y]] (for [dx [-1 0 1] dy [-1 0 1] :when (not (and (= dx 0) (= dy 0)))] [(+ x dx) (+ y dy)]))
+(show "neighbours" (neighbours [2 3]))
+(def seen (into #{} (mapcat neighbours [[0 0] [1 0]])))
+(show "seen-count" (count seen))
+(show "seen-has" [(contains? seen [2 1]) (contains? seen [5 5])])
+(show "occupied" (into #{} (map (fn [e] [(:x e) (:y e)]) (ents w0))))
+(show "keep-hp" (sort (keep (fn [e] (:hp e)) (ents w0))))
+(show "blocked?" (let [occ (into #{} (map (fn [e] [(:x e) (:y e)]) (ents w0)))] (mapv (fn [p] (contains? occ p)) [[5 3] [5 4]])))
+(show "assoc-in-vec-path" (assoc-in {:rows [[0 0] [0 0]]} [:rows 1 0] 7))
+(show "entity-at" (let [idx (into {} (map (fn [e] [[(:x e) (:y e)] (:id e)]) (ents w0)))] [(get idx [4 4]) (get idx [0 0])]))
+(show "path-cost" (reduce + (map (fn [[a b]] (+ (abs-diff a b) 1)) [[1 4] [6 2] [3 3]])))

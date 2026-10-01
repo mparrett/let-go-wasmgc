@@ -1,0 +1,29 @@
+;; PENDING construct: non-fn callables (keyword, set, map) handed to runtime
+;; HOF twins. Backend (2026-10-01 06:50): uncatchable `wasm trap: map
+;; expected Fn` / `some expected Fn`; native accepts any callable. Direct
+;; calls `(f x)` with f a keyword/map/set/vector work, and `filter` works.
+;; Split from seqs.lg, xsofy-shapes.lg, closures-rt.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "map-kw" (map :a [{:a 1} {:a 2} {}]))
+(show "some-set" (some #{3} [1 3]))
+(show "mapv-kw" (mapv :a [{:a 1}]))
+(show "map-set" (map #{1 2} [1 2 3]))
+(show "map-map" (map {:a 1 :b 2} [:a :b :c]))
+(show "map-vec" (map [10 20 30] [2 0]))
+;; from xsofy-shapes.lg: the same probes with (map :kw ...), as xsofy writes them
+(def w0 {:turn 0 :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+(defn ents [w] (vals (:entities w)))
+(show "rats" (sort (map :id (filter (fn [e] (= :rat (:kind e))) (ents w0)))))
+(show "sort-by-x" (map :id (sort-by :x (ents w0))))
+(show "sort-by-fn" (map :id (sort-by (fn [e] (+ (:x e) (:y e))) (ents w0))))
+(show "sort-by-cmp" (map :id (sort-by :y > (ents w0))))
+(show "sort-by-vec-key" (map :id (sort-by (fn [e] [(:y e) (:x e)]) (ents w0))))
+(show "reduce-max" (reduce max (map :x (ents w0))))
+(show "reduce-min" (reduce min (map :y (ents w0))))
+(show "distinct-kinds" (sort (distinct (map :kind (ents w0)))))

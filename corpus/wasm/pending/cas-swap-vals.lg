@@ -1,0 +1,14 @@
+;; PENDING construct: compare-and-set!, swap-vals!, reset-vals!, instance?
+;; (unbound natives at this build). Backend (2026-10-01 07:40): `TypeError:
+;; nil is not a function`. Native quirk kept on purpose: compare-and-set! on
+;; a vector value throws "comparing uncomparable type vm.ArrayVector".
+;; Split from atoms.lg.
+(defn show [label x] (println label (pr-str x)))
+(def a (atom 100))
+(show "cas-ok" (compare-and-set! a 100 5))
+(show "cas-fail" (compare-and-set! a 100 6))
+(show "after-cas" @a)
+(show "atom-cas-coll" (try (let [x (atom [1])] [(compare-and-set! x [1] [2]) @x]) (catch Exception e (ex-message e))))
+(show "swap-vals" (let [x (atom 1)] (swap-vals! x inc)))
+(show "reset-vals" (let [x (atom 1)] (reset-vals! x 9)))
+(show "atom?" [(instance? clojure.lang.Atom a)])

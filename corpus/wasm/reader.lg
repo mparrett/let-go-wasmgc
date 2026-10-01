@@ -1,0 +1,88 @@
+;; P2.1 oracle: read-string (D70/D72: the backend side is rt/wasm/reader.lg,
+;; the native side wraps core/read-data-string). 40+ forms: every scalar
+;; kind, collections, nesting, whitespace/comments, round trips, and
+;; malformed input caught as an error (message compared).
+
+(defn show [label x] (println label (pr-str x)))
+(defn rd [label s] (println label (pr-str (read-string s))))
+(defn rerr [label s] (println label (try (pr-str (read-string s)) (catch Exception e (str "ERR " (ex-message e))))))
+
+;; scalars
+(rd "r-int" "42")
+(rd "r-neg" "-17")
+(rd "r-plus" "+5")
+(rd "r-big" "9223372036854775807")
+(rd "r-minlong" "-9223372036854775808")
+(rd "r-float" "1.5")
+(rd "r-float-exp" "1e10")
+(rd "r-float-neg-exp" "-2.5e-3")
+(rd "r-float-neg0" "-0.0")
+(rd "r-nan" "##NaN")
+(rd "r-inf" "##Inf")
+(rd "r-ninf" "##-Inf")
+(rd "r-nil" "nil")
+(rd "r-true" "true")
+(rd "r-false" "false")
+(rd "r-str" "\"hello\"")
+(rd "r-str-esc" "\"a\\nb\\t\\\"q\\\\\"")
+(rd "r-str-uni" "\"日本\"")
+(rd "r-str-u" "\"\\u0041\"")
+(rd "r-char" "\\a")
+(rd "r-char-named" "\\newline")
+(rd "r-char-space" "\\space")
+(rd "r-kw" ":k")
+(rd "r-kw-ns" ":ns/k")
+(rd "r-sym" "foo")
+(rd "r-sym-ns" "ns/foo")
+(rd "r-sym-punct" "a->b?")
+
+;; collections
+(rd "r-vec" "[1 2 3]")
+(rd "r-vec-empty" "[]")
+(rd "r-list" "(1 2 3)")
+(rd "r-list-empty" "()")
+(rd "r-map" "{:a 1 :b 2}")
+(rd "r-map-empty" "{}")
+(rd "r-map-9" "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}")
+(rd "r-set" "#{1 2 3}")
+(rd "r-set-empty" "#{}")
+(rd "r-nested" "{:a [1 {:b #{:c}}] :d (\"s\" \\x)}")
+(rd "r-commas" "[1, 2, ,3]")
+(rd "r-ws" "  \n\t [ 1\n2 ]  ")
+(rd "r-comment" "[1 ; comment\n 2]")
+(rd "r-discard" "[1 #_ 2 3]")
+(rd "r-quote" "'x")
+(rd "r-first-form" "1 2 3")
+(rd "r-deep" "[[[[[[1]]]]]]")
+
+;; types and counts of read values
+(show "types" (mapv (fn [s] (str (type (read-string s)))) ["1" "1.5" "\"s\"" ":k" "s" "[1]" "{:a 1}" "#{1}" "\\c" "nil"]))
+(show "count-read" [(count (read-string "[1 2 3]")) (count (read-string "{:a 1}")) (count (read-string "(1 2)"))])
+(show "eq-read" [(= (read-string "[1 2]") [1 2]) (= (read-string "{:a 1}") {:a 1}) (= (read-string "#{1}") #{1})])
+(show "hash-read" [(= (hash (read-string "[1 2]")) (hash [1 2])) (= (hash (read-string "{:a [1]}")) (hash {:a [1]}))])
+(show "map-order-read" (vec (keys (read-string "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}"))))
+
+;; round trips through pr-str
+(defn rt [x] (= x (read-string (pr-str x))))
+(show "rt-scalars" (mapv rt [1 -1 1.5 "s" "a\nb" :k :ns/k 'sym \c nil true]))
+(show "rt-colls" (mapv rt [[1 [2]] {:a {:b 1}} #{1 2} '(1 2) [] {} #{}]))
+(show "rt-floats" (mapv rt [0.1 1e21 1e-7 123456789.125 5e-324]))
+(show "rt-seed" (read-string (pr-str {:seed 12345 :depth 3 :name "dungeon"})))
+
+;; malformed input: caught, message compared
+(rerr "e-empty" "")
+(rerr "e-unclosed-vec" "[1 2")
+(rerr "e-unclosed-map" "{:a 1")
+(rerr "e-unclosed-str" "\"abc")
+(rerr "e-unmatched" ")")
+(rerr "e-odd-map" "{:a}")
+(rerr "e-bad-char" "\\notachar")
+(rerr "e-dup-set" "#{1 1}")
+(rerr "e-dup-map" "{:a 1 :a 2}")
+(rerr "e-ws-only" "   ")
+
+;; console-style command parsing (xsofy dev console)
+(defn parse-cmd [s] (let [f (read-string (str "[" s "]"))] {:cmd (first f) :args (vec (rest f))}))
+(show "cmd-1" (parse-cmd "teleport 3 4"))
+(show "cmd-2" (parse-cmd ":give :sword 2"))
+(show "cmd-3" (parse-cmd "seed \"abc\""))

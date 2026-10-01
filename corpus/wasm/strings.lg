@@ -1,0 +1,89 @@
+;; P2.1 oracle: strings and named values. str / pr-str / print-str of every
+;; kind nested three deep, subs/split/includes?/index-of/case on ASCII,
+;; keyword/symbol/name/namespace, chars, escapes, unicode counting.
+
+(defn show [label x] (println label (pr-str x)))
+(defn modes [label x] (println label (str x) "|" (pr-str x) "|" (print-str x)))
+
+;; every kind in three printing modes
+(modes "m-nil" nil)
+(modes "m-bool" [true false])
+(modes "m-int" [0 -1 9223372036854775807 -9223372036854775808])
+(modes "m-float" [1.5 -0.0 1e21 0.1 100.0])
+(modes "m-str" "a\"b\\c\nd")
+(modes "m-char" [\a \space \newline \tab \\ \"])
+(modes "m-kw" [:a :ns/b])
+(modes "m-sym" ['a 'ns/b])
+(modes "m-list" '(1 "s" \c))
+(modes "m-map" {:k "v" "s" \c})
+(modes "m-set" #{"s"})
+(modes "m-nested" [{:a ["s" #{\c}]} '({:b nil}) #{[:k "v"]}])
+(modes "m-deep" {:l1 {:l2 {:l3 ["x" \y :z 1.0 nil]}}})
+(modes "m-lazy" (map str [1 2]))
+(modes "m-range" (range 3))
+(modes "m-entry" (first {:a "b"}))
+(modes "m-empty" [[] {} #{} "" '()])
+(println "println-args" "s" \c :k nil 1.5 ["v" \c])
+
+;; str concatenation
+(show "str-0" (str))
+(show "str-nil" (str nil))
+(show "str-many" (str "a" 1 :b 'c \d 2.5 nil true [1] {:k 1}))
+(show "str-nested" (str [[["deep"]]]))
+(show "pr-str-many" (pr-str "a" 1 :b nil))
+(show "print-str-many" (print-str "a" 1 :b nil))
+
+;; subs / count
+(show "subs" [(subs "hello" 1) (subs "hello" 1 3) (subs "hello" 5) (subs "" 0)])
+(show "count" [(count "") (count "abc") (count "héllo") (count "日本語") (count "😀x")])
+(show "nth-str" [(nth "abc" 1) (get "abc" 2) (get "abc" 9)])
+(show "seq-str" (seq "héy"))
+(show "first-last" [(first "abc") (last "abc")])
+(show "reverse-str" (apply str (reverse "abc")))
+
+;; split / includes / index-of / case (string ns aliases resolve natively)
+(show "split" (split "a,b,,c" ","))
+(show "split-ws" (split "a b  c" " "))
+(show "includes" [(includes? "hello" "ell") (includes? "hello" "z") (includes? "" "")])
+(show "index-of" [(index-of "hello" "l") (index-of "hello" "z") (index-of "hello" "")])
+(show "last-index-of" (last-index-of "hello" "l"))
+(show "starts-ends" [(starts-with? "abc" "ab") (ends-with? "abc" "bc") (starts-with? "abc" "c")])
+(show "upper-lower" [(upper-case "abc XyZ 1") (lower-case "ABC xYz 1")])
+(show "trim" [(string/trim "  x  ") (string/triml "  x ") (string/trimr " x  ")])
+(show "str-eq" [(= "a" "a") (= "a" "b") (= "" "") (compare "a" "b") (compare "b" "a") (compare "ab" "a")])
+
+;; keywords, symbols, name, namespace
+(show "keyword" [(keyword "a") (keyword "ns" "b") (keyword "ns/c") (keyword :d)])
+(show "symbol" [(symbol "a") (symbol "ns" "b") (symbol "ns/c")])
+(show "name" [(name :a) (name :ns/b) (name 'c) (name 'ns/d) (name "s")])
+(show "namespace" [(namespace :a) (namespace :ns/b) (namespace 'ns/d)])
+(show "kw-pred" [(keyword? :a) (keyword? 'a) (symbol? 'a) (symbol? :a) (string? "s") (string? \s)])
+(show "kw-eq" [(= :a :a) (= :a (keyword "a")) (= :a 'a) (= 'a (symbol "a"))])
+(show "kw-str" [(str :a) (str :ns/b) (str 'c) (str 'ns/d)])
+(show "kw-hash" [(hash :a) (hash 'a) (hash :ns/b) (= (hash :a) (hash (keyword "a")))])
+
+;; chars
+(show "char-ops" [(char 97) (int \a) (str \a \b)])
+(show "char-cmp" [(= \a \a) (compare \a \b) (< (int \a) (int \b))])
+(show "char-names" [\newline \space \tab \return \backspace \formfeed])
+(show "char-unicode" [\é (int \é) (char 955)])
+(show "char-str" (str \newline))
+
+;; escapes
+(show "esc" "tab\there\nnl\\bs\"q")
+(show "esc-control" (str (char 1) (char 127)))
+(show "esc-count" (count "a\tb\nc"))
+(show "esc-unicode" "é日本😀")
+(show "esc-u" "Aé")
+
+;; unicode counting and slicing
+(show "uni-subs" (subs "héllo" 1 3))
+(show "uni-seq-count" (count (seq "日本語")))
+(show "uni-upper" (upper-case "abc"))
+(show "uni-index-of" (index-of "日本語" "語"))
+(show "uni-split" (split "日,本" ","))
+
+;; parse / format-ish
+(show "parse-long" [(parse-long "42") (parse-long "-7") (parse-long "x")])
+(show "str-of-num" [(str 1) (str -0.0) (str 1.0) (str 1e100)])
+(show "int-to-str-roundtrip" (parse-long (str 9223372036854775807)))

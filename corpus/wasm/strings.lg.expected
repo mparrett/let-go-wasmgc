@@ -1,0 +1,68 @@
+m-nil  | nil | nil
+m-bool [true false] | [true false] | [true false]
+m-int [0 -1 9223372036854775807 -9223372036854775808] | [0 -1 9223372036854775807 -9223372036854775808] | [0 -1 9223372036854775807 -9223372036854775808]
+m-float [1.5 -0.0 1000000000000000000000.0 0.1 100.0] | [1.5 -0.0 1000000000000000000000.0 0.1 100.0] | [1.5 -0.0 1000000000000000000000.0 0.1 100.0]
+m-str a"b\c
+d | "a\"b\\c\nd" | a"b\c
+d
+m-char [\a \space \newline \tab \\ \"] | [\a \space \newline \tab \\ \"] | [a   
+ 	 \ "]
+m-kw [:a :ns/b] | [:a :ns/b] | [:a :ns/b]
+m-sym [a ns/b] | [a ns/b] | [a ns/b]
+m-list (1 "s" \c) | (1 "s" \c) | (1 s c)
+m-map {:k "v" "s" \c} | {:k "v", "s" \c} | {:k v, s c}
+m-set #{"s"} | #{"s"} | #{s}
+m-nested [{:a ["s" #{\c}]} ({:b nil}) #{[:k "v"]}] | [{:a ["s" #{\c}]} ({:b nil}) #{[:k "v"]}] | [{:a [s #{c}]} ({:b nil}) #{[:k v]}]
+m-deep {:l1 {:l2 {:l3 ["x" \y :z 1.0 nil]}}} | {:l1 {:l2 {:l3 ["x" \y :z 1.0 nil]}}} | {:l1 {:l2 {:l3 [x y :z 1.0 nil]}}}
+m-lazy ("1" "2") | ("1" "2") | (1 2)
+m-range (0 1 2) | (0 1 2) | (0 1 2)
+m-entry [:a "b"] | [:a "b"] | [:a b]
+m-empty [[] {} #{} "" ()] | [[] {} #{} "" ()] | [[] {} #{}  ()]
+println-args s c :k nil 1.5 [v c]
+str-0 ""
+str-nil ""
+str-many "a1:bcd2.5true[1]{:k 1}"
+str-nested "[[[\"deep\"]]]"
+pr-str-many "\"a\" 1 :b nil"
+print-str-many "a 1 :b nil"
+subs ["ello" "el" "" ""]
+count [0 3 5 3 2]
+nth-str [\b \c nil]
+seq-str (\h \é \y)
+first-last [\a \c]
+reverse-str "cba"
+split ("a" "b" "" "c")
+split-ws ("a" "b" "" "c")
+includes [true false true]
+index-of [2 nil 0]
+last-index-of 3
+starts-ends [true true false]
+upper-lower ["ABC XYZ 1" "abc xyz 1"]
+trim ["x" "x " " x"]
+str-eq [true false true -1 1 1]
+keyword [:a :ns/b :ns/c :d]
+symbol [a ns/b ns/c]
+name ["a" "b" "c" "d" "s"]
+namespace [nil "ns" "ns"]
+kw-pred [true false true false true false]
+kw-eq [true true false true]
+kw-str [":a" ":ns/b" "c" "ns/d"]
+kw-hash [226577107 1867108634 3680622468 true]
+char-ops [\a 97 "ab"]
+char-cmp [true -1 true]
+char-names [\newline \space \tab \return \ \]
+char-unicode [\é 233 \λ]
+char-str "\n"
+esc "tab\there\nnl\\bs\"q"
+esc-control "\u0001\u007F"
+esc-count 5
+esc-unicode "é日本😀"
+esc-u "Aé"
+uni-subs "él"
+uni-seq-count 3
+uni-upper "ABC"
+uni-index-of 2
+uni-split ("日" "本")
+parse-long [42 -7 nil]
+str-of-num ["1" "-0.0" "1.0" "10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.0"]
+int-to-str-roundtrip 9223372036854775807

@@ -1,0 +1,7 @@
+;; PENDING construct: `letfn` (KNOWN: corpus/review README "letfn is refused
+;; as unsupported variadic fn (& args)", which names the wrong construct).
+;; Backend (2026-10-01 08:15): compile-time `lower-wasm: unsupported variadic
+;; fn (& args) as a closure {:fn "_main", :name nil}`. Split from control-rt.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "letfn" (letfn [(f [x] (if (= x 0) :done (g (dec x)))) (g [x] (f x))] (f 3)))
+(show "letfn-self" (letfn [(fact [n] (if (= n 0) 1 (* n (fact (dec n)))))] (fact 10)))

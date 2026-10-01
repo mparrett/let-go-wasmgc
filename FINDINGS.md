@@ -46,3 +46,14 @@
 - R9. Native reader quirks reproduced: `0x-5` = -5, `018` = 18, `1_000` = 1000.0, `4/2` = Int 2, `\u-041` = rune -65, radix overflow is `invalid number` never BigInt.
 - R10. Native: an exception thrown while `=` realises a lazy seq escapes try/catch; so does one raised inside a `try` placed in a vector literal. `(lazy-seq (lazy-seq (throw …)))` reads as `()` on the second access. Upstream candidates.
 - I10. ir.build resolves later `loop*` initialisers in the OUTER scope (phm_test's shuffle-lcg shape); typeinfer does not fold `cond`'s `:else`, so every cond result joins with nil and boxes. Both worked around in the backend; upstream IR candidates.
+
+## Backend bugs from the oracle corpus (corpus/wasm/README.md, 2026-10-01) → P2.11
+- F1 silent: closures capturing same-named locals in different scopes share the captured value (`[104 104 104]` vs `[100 101 102]`).
+- F2 silent: the constant pool interns literals by `=` so `[]`/`()` and `0.0`/`-0.0` collapse to whichever was seen first.
+- F3 silent: compiled `=` on maps/sets treats vector and list members as equal (native: false).
+- F4 trap: `compare`/`==`/`sort`/`reduce +` with a float operand overflows the stack (boxed runtime calls re-enter).
+- F5 silent: vector `=` short-circuits on identical elements, so `(= [nan] [nan])` is true.
+- F6 trap: HOF twins (`map`, `some`, `mapv`) reject keyword/set/map callables (`(map :id ents)` is xsofy's shape).
+- F7 trap: a wrong-arity closure inside `reduce`/lazy `map` null-derefs uncatchably.
+- F8 trap: `max`/`min` or closures with float operands `illegal cast`.
+- F9 compile error: a float literal where typeinfer chose i64 fails the program (`unsupported coercion {:from :float, :to :int}`).

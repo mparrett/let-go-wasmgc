@@ -1,0 +1,15 @@
+;; PENDING construct: string/print natives unbound in the backend at this
+;; build: core/prn, core/print, core/char?, core/identical?,
+;; core/parse-double, string/join, string/replace, string/blank?,
+;; string/capitalize. Backend (2026-10-01 07:00): `TypeError: nil is not a
+;; function` (D63 shape). Split from strings.lg.
+(defn show [label x] (println label (pr-str x)))
+(prn "prn-args" "s" \c :k nil)
+(print "print-args" "s" \c "\n")
+(show "replace" (string/replace "a-b-c" "-" "+"))
+(show "join" [(string/join ["a" "b"]) (string/join "," [1 2 3])])
+(show "blank" [(string/blank? "") (string/blank? "  ") (string/blank? "a")])
+(show "capitalize" (string/capitalize "hELLO"))
+(show "parse-double" [(parse-double "1.5") (parse-double "1e3")])
+(show "char?" [(char? \a) (char? "a")])
+(show "identical-kw" (identical? :a :a))

@@ -1,0 +1,119 @@
+;; P2.1 oracle: vectors. Plain lg; native runs let-go's natives, the backend
+;; runs rt/wasm compiled through the backend. One labelled line per probe.
+;; Sizes 32/33/1057 cross the tail (32) and the first trie level (1056+1).
+
+(defn show [label x] (println label (pr-str x)))
+
+(def v32 (reduce conj [] (range 32)))
+(def v33 (conj v32 32))
+(def v1057 (reduce conj [] (range 1057)))
+
+;; literals and constructors
+(show "lit-empty" [])
+(show "lit-ints" [1 2 3])
+(show "lit-mixed" [nil true false 1 -1 "s" :k 'sym \c 2.5])
+(show "lit-nested" [[] [[]] [[1] [2 [3]]]])
+(show "lit-computed" [(inc 1) (* 3 4) (str "a" "b")])
+(show "vector-0" (vector))
+(show "vector-1" (vector 1))
+(show "vector-4" (vector 1 2 3 4))
+(show "vec-list" (vec '(1 2 3)))
+(show "vec-range" (vec (range 5)))
+(show "vec-nil" (vec nil))
+(show "vec-str" (vec "abc"))
+(show "vec-map" (vec {:a 1}))
+(show "vec-set-count" (count (vec #{1 2 3})))
+
+;; conj across the boundaries
+(show "count-32" (count v32))
+(show "count-33" (count v33))
+(show "count-1057" (count v1057))
+(show "nth-32-edges" [(nth v32 0) (nth v32 31)])
+(show "nth-33-edges" [(nth v33 31) (nth v33 32)])
+(show "nth-1057-edges" [(nth v1057 0) (nth v1057 31) (nth v1057 32) (nth v1057 1023) (nth v1057 1024) (nth v1057 1055) (nth v1057 1056)])
+(show "peek-sizes" [(peek []) (peek [1]) (peek v32) (peek v33) (peek v1057)])
+(show "conj-multi" (conj [1] 2 3 4))
+(show "conj-nil" (conj nil 1))
+(show "v33" v33)
+
+;; assoc
+(show "assoc-0" (assoc [1 2 3] 0 :a))
+(show "assoc-end" (assoc [1 2 3] 3 :d))
+(show "assoc-33" (nth (assoc v33 32 :x) 32))
+(show "assoc-1057" [(nth (assoc v1057 1056 :y) 1056) (nth (assoc v1057 500 :z) 500) (count (assoc v1057 1057 :w))])
+(show "assoc-keeps-orig" [(nth v1057 500) (nth v1057 1056)])
+(show "assoc-multi" (assoc [0 0 0] 0 1 2 3))
+
+;; nth with/without default, get
+(show "nth-default-hit" (nth [1 2] 1 :nf))
+(show "nth-default-miss" [(nth [1 2] 2 :nf) (nth [1 2] -1 :nf) (nth v1057 2000 :nf)])
+(show "get" [(get [1 2] 0) (get [1 2] 5) (get [1 2] 5 :d) (get [1 2] -1)])
+(show "vec-as-fn" [([10 20 30] 2) (v1057 1000)])
+
+;; subvec
+(show "subvec-mid" (subvec [0 1 2 3 4] 1 3))
+(show "subvec-tail" (subvec [0 1 2 3 4] 2))
+(show "subvec-empty" (subvec [0 1 2] 1 1))
+(show "subvec-1057" (subvec v1057 1050))
+(show "subvec-count" (count (subvec v1057 10 1050)))
+(show "subvec-conj" (conj (subvec [0 1 2 3] 1 2) :x))
+(show "subvec-nth" (nth (subvec v1057 1000 1057) 56))
+
+;; pop / peek
+(show "pop-1" (pop [1]))
+(show "pop-3" (pop [1 2 3]))
+(show "pop-33" (count (pop v33)))
+(show "pop-33-peek" (peek (pop v33)))
+(show "pop-1057" [(count (pop v1057)) (peek (pop v1057))])
+(show "pop-1057-x33" (peek (loop [v v1057 i 0] (if (= i 33) v (recur (pop v) (inc i))))))
+
+;; into / mapv
+(show "into-vec" (into [1] [2 3]))
+(show "into-list-src" (into [] '(1 2 3)))
+(show "into-xform" (into [] (map inc) [1 2 3]))
+(show "into-filter-xform" (into [] (filter (fn [x] (= 0 (bit-and x 1)))) (range 10)))
+(show "into-map-entries" (into [] {:a 1}))
+(show "mapv-1" (mapv inc [1 2 3]))
+(show "mapv-str" (mapv str [1 :a "b" nil]))
+(show "mapv-1057" (reduce + (mapv inc v1057)))
+
+;; seq order
+(show "seq" (seq [1 2 3]))
+(show "seq-empty" (seq []))
+(show "seq-33" (take 3 (drop 30 (seq v33))))
+(show "first-rest" [(first v33) (first (rest v33)) (count (rest v33))])
+(show "next" [(next [1]) (next [1 2])])
+(show "last" [(last v33) (last v1057)])
+(show "seq-sum-1057" (reduce + (seq v1057)))
+
+;; = and hash of equal vectors built differently
+(def a1 [0 1 2 3 4])
+(def a2 (vec (range 5)))
+(def a3 (into [] (range 5)))
+(def a4 (pop (conj a1 5)))
+(def a5 (subvec [9 0 1 2 3 4] 1))
+(def a6 (persistent! (reduce conj! (transient []) (range 5))))
+(show "eq-paths" [(= a1 a2) (= a1 a3) (= a1 a4) (= a1 a5) (= a1 a6) (= a1 '(0 1 2 3 4))])
+(show "hash-paths" (= (hash a1) (hash a2) (hash a3) (hash a4) (hash a5) (hash a6)))
+(show "hash-a1" (hash a1))
+(show "hash-33" [(hash v33) (= (hash v33) (hash (vec (range 33))))])
+(show "hash-1057" (hash v1057))
+(show "eq-1057" (= v1057 (vec (range 1057))))
+(show "neq" [(= [1 2] [1 2 3]) (= [1 2] [2 1]) (= [] ()) (= [nil] [])])
+
+;; reverse, sort
+(show "reverse" (reverse [1 2 3]))
+(show "reverse-empty" (reverse []))
+(show "sort-ints" (sort [3 1 2 -5 10 0]))
+(show "sort-strs" (sort ["pear" "apple" "fig"]))
+(show "sort-kws" (sort [:c :a :b]))
+(show "sort-cmp" (sort > [3 1 2]))
+(show "sort-vecs" (sort [[1 2] [1 1] [0 5]]))
+(show "sort-33" (take 5 (sort > v33)))
+
+;; type/printing forms
+(show "str-vec" (str [1 "a" :b]))
+(show "vector?" [(vector? []) (vector? '()) (vector? (subvec [1 2] 1)) (vector? (seq [1]))])
+(show "empty" [(empty? []) (empty? [1]) (not-empty [])])
+(show "contains" [(contains? [1 2] 0) (contains? [1 2] 2) (contains? [] 0)])
+(show "count-nested" (count [[1 2] [3]]))

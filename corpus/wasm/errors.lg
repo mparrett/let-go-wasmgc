@@ -1,0 +1,83 @@
+;; P2.1 oracle: errors. ex-info/ex-data/ex-message, throwing non-exception
+;; values, finally ordering, catch classes, and the text of native errors
+;; (arity, type, nth out of range, assoc failed) as seen through ex-message.
+
+(defn show [label x] (println label (pr-str x)))
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+(defn amsg [f] (let [m (msg f)] (subs m (index-of m ">"))))  ; native embeds a heap address
+(defn data [f] (try (f) (catch Exception e (ex-data e))))
+
+;; ex-info
+(show "info-msg" (msg (fn [] (throw (ex-info "boom" {:a 1})))))
+(show "info-data" (data (fn [] (throw (ex-info "boom" {:a 1 :v [1 2]})))))
+(show "info-data-nested" (data (fn [] (throw (ex-info "x" {:m {:n {:o #{1}}}})))))
+(show "info-empty-data" (data (fn [] (throw (ex-info "x" {})))))
+(show "info-both" (try (throw (ex-info "both" {:k :v})) (catch Exception e [(ex-message e) (ex-data e)])))
+(show "info-cause" (try (throw (ex-info "outer" {:o 1} (ex-info "inner" {:i 2})))
+                        (catch Exception e [(ex-message e) (ex-message (ex-cause e)) (ex-data (ex-cause e))])))
+(show "info-no-cause" (try (throw (ex-info "x" {})) (catch Exception e (ex-cause e))))
+(show "info-str-msg" (msg (fn [] (throw (ex-info (str "n=" 42) {})))))
+
+;; ex-message / ex-data on non-exceptions (D68)
+(show "ex-message-5" (ex-message 5))
+(show "ex-message-str" (ex-message "s"))
+(show "ex-message-nil" (ex-message nil))
+(show "ex-data-nil" [(ex-data nil) (ex-data 5) (ex-data {:a 1})])
+
+;; throwing values
+(show "throw-kw" (try (throw :oops) (catch Throwable e [:caught e])))
+(show "throw-map" (try (throw {:code 7}) (catch Throwable e (:code e))))
+(show "throw-str" (try (throw "plain") (catch Throwable e e)))
+(show "throw-int" (try (throw 42) (catch Throwable e (inc e))))
+(show "throw-vec-msg" (try (throw [1 2]) (catch Throwable e (ex-message e))))
+(show "exception-skips-kw" (try (try (throw :k) (catch Exception e :exc)) (catch Throwable e [:outer e])))
+(show "throw-nil-in-fn" (msg (fn [] (throw (ex-info "in fn" {})))))
+
+;; finally ordering
+(def trail (atom []))
+(defn note [x] (swap! trail conj x) x)
+(show "finally-normal" (try (note :body) (finally (note :fin))))
+(show "finally-trail" @trail)
+(reset! trail [])
+(show "finally-throw" (try (try (note :body) (throw (ex-info "e" {})) (finally (note :fin)))
+                           (catch Exception e (note :outer-catch))))
+(show "finally-throw-trail" @trail)
+(reset! trail [])
+(show "finally-catch" (try (throw (ex-info "e" {})) (catch Exception e (note :catch)) (finally (note :fin))))
+(show "finally-catch-trail" @trail)
+(reset! trail [])
+(show "finally-value-ignored" (try 1 (finally 2)))
+(show "nested-rethrow" (try (try (throw (ex-info "a" {})) (catch Exception e (throw (ex-info "b" {:from (ex-message e)}))))
+                            (catch Exception e [(ex-message e) (ex-data e)])))
+(show "loop-try" (loop [i 0 acc []] (if (= i 4) acc (recur (inc i) (conj acc (try (if (= 1 (bit-and i 1)) (throw (ex-info "odd" {})) i) (catch Exception e :odd)))))))
+
+;; catch classes
+(show "catch-throwable" (try (throw (ex-info "t" {})) (catch Throwable e :throwable)))
+(show "catch-ex-info-class" (try (throw (ex-info "t" {})) (catch clojure.lang.ExceptionInfo e :exinfo)))
+(show "catch-first-match" (try (throw (ex-info "t" {})) (catch Exception e :first) (catch Throwable e :second)))
+(show "no-throw-no-catch" (try :ok (catch Exception e :never)))
+
+;; native error text
+(show "arity-fn" (amsg (fn [] ((fn [a b] a) 1))))
+(show "arity-defn" (amsg (fn [] (let [f (fn [x] x)] (f 1 2)))))
+(show "not-a-fn" (msg (fn [] (1 2))))
+(show "nil-call" (msg (fn [] (let [f nil] (f 1)))))
+(show "add-type" (msg (fn [] (+ 1 "a"))))
+(show "add-nil" (msg (fn [] (+ nil 1))))
+(show "cmp-type" (msg (fn [] (< 1 :a))))
+(show "nth-default-ok" (nth [1 2] 5 :nf))
+(show "assoc-vec-oob" (msg (fn [] (assoc [1 2] 5 :x))))
+(show "assoc-non-assoc" (msg (fn [] (assoc :kw 1 2))))
+(show "assoc-list" (msg (fn [] (assoc '(1) 0 2))))
+(show "quot-zero" (msg (fn [] (quot 5 0))))
+(show "overflow" (msg (fn [] (* 9223372036854775807 2))))
+(show "peek-empty" (peek []))
+(show "keyword-call-arity" (msg (fn [] (:a))))
+(show "get-in-non-map" (get-in 5 [:a]))
+(show "conj-on-int" (msg (fn [] (conj 1 2))))
+
+;; ex-info shapes from xsofy (data carrying a vector path and keyword)
+(defn validate [x] (if (neg? x) (throw (ex-info "negative" {:value x :path [:hp]})) x))
+(show "validate-ok" (validate 3))
+(show "validate-bad" (try (validate -3) (catch Exception e [(ex-message e) (:path (ex-data e)) (:value (ex-data e))])))
+(show "errors-in-map" (mapv (fn [x] (try (validate x) (catch Exception e :bad))) [1 -1 2]))

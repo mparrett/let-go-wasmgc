@@ -1,0 +1,92 @@
+;; P2.1 oracle: the shapes of KNOWN bugs from corpus/review (Phase 1 backend,
+;; item P1.7) and corpus/review2 (runtime, item P2.10), restated as plain
+;; programs so each fix gets a differential check through the whole
+;; backend. Not new findings: the label names the bug. Shapes that trap
+;; (uncatchable) live in pending/review-traps.lg so this file can run.
+
+(defn show [label x] (println label (pr-str x)))
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+
+;; review2 bug-01: (hash []) and ordering of hash-ordered colls holding []
+(show "r2-01-hash-empty-vec" [(hash []) (hash [[]])])
+(show "r2-01-set-order" (pr-str #{[] :a :b :c}))
+(show "r2-01-contains" [(contains? #{[]} (list)) (contains? #{(list)} [])])
+
+;; review2 bug-08: hash of (seq v) / (rest v)
+(show "r2-08-seq-hash" [(hash (seq [1 2])) (hash (rest [1 2 3])) (hash (next [1 2 3]))])
+
+;; review2 bug-03: seq of a vector conj'd past 32 prints as (seq [...])
+(def v33 (reduce conj [] (range 33)))
+(show "r2-03-seq-v33-str" (subs (pr-str (seq v33)) 0 12))
+(show "r2-03-seq-v33-type" (str (type (seq v33))))
+(show "r2-03-rest-v33" (subs (pr-str (rest v33)) 0 8))
+
+;; review2 bug-09: meta'd / >32 vectors and Repeat print through String()
+(show "r2-09-meta-vec-modes" (let [v (with-meta [{:a 1 :b 2} "s"] {:m 1})] [(pr-str v) (print-str v) (str v)]))
+(show "r2-09-v33-nested" (let [v (conj v33 {:a 1 :b 2})] (subs (pr-str v) 95)))
+(show "r2-09-repeat-modes" (let [r (repeat 2 "s")] [(pr-str r) (print-str r) (str r)]))
+
+;; review2 bug-02: a lazy seq whose thunk threw is cached (S2)
+(def runs (atom 0))
+(def bad (lazy-seq (swap! runs inc) (throw (ex-info "boom" {}))))
+(show "r2-02-first" (msg (fn [] (first bad))))
+(show "r2-02-second" (msg (fn [] (first bad))))
+(show "r2-02-runs" @runs)
+(show "r2-02-realized" (realized? bad))
+
+;; review2 bug-14: sort of a Repeat / ChunkedCons throws natively
+(show "r2-14-sort-repeat" (msg (fn [] (sort (repeat 3 2)))))
+(show "r2-14-sort-chunked" (msg (fn [] (sort (seq (map inc (range 3)))))))
+(show "r2-14-sort-range" (sort (range 3)))
+
+;; review2 bug-04: transient maps are seqable natively
+(show "r2-04-seq-tmap" (msg (fn [] (seq (transient {:a 1})))))
+(show "r2-04-reduce-tmap" (msg (fn [] (reduce conj [] (transient {:a 1})))))
+(show "r2-04-nth-tmap" (msg (fn [] (nth (transient {:a 1}) 0 :nf))))
+
+;; review2 bug-11: seq natives on foreign kinds name the native
+(show "r2-11-first-type" (msg (fn [] (first (type 1)))))
+(show "r2-11-apply-int-note" :see-pending-review-traps)
+(show "r2-11-nth-type-default" (msg (fn [] (nth (type 1) 0 :nf))))
+
+;; review2 bug-15: "assoc failed for key K" embeds K's String()
+(show "r2-15-assoc-failed" (msg (fn [] (assoc [] {:a 1 :b 2} 1))))
+
+;; review2 bug-13: the type of a Repeat's type
+(show "r2-13-type-of-type" [(str (type (type (repeat 2 1)))) (str (type (type 1)))])
+
+;; review2 bug-16: computed NaN hash bits
+(show "r2-16-nan-hash" [(hash ##NaN) (hash (- ##Inf ##Inf))])
+
+;; review2 R5 (open, known): map/set seq hashes
+(show "r2-R5-map-seq-hash" [(hash (seq {:a 1 :b 2})) (hash (seq #{1 2}))])
+
+;; review bug-02: DCE must not drop checked arithmetic
+(defn dce-add [x] (+ x 1) :ok)
+(show "r1-02-dce-overflow" (msg (fn [] (dce-add 9223372036854775807))))
+(defn dce-nil [x] (+ x 1) :ok)
+(show "r1-02-dce-type" (msg (fn [] (dce-nil "s"))))
+
+;; review bug-03: LICM must not hoist a trapping op out of a zero-trip loop
+(defn licm [n d] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (quot 10 d))) acc)))
+(show "r1-03-licm" (msg (fn [] (licm 0 0))))
+
+;; review bug-04: unary-minus rewrite vs shadowing
+(show "r1-04-shadow-minus" (let [- inc] (- 5)))
+
+;; review bug-05: a user defn named like a core op (native keeps the op)
+(show "r1-05-note" :user-redefinition-of-core-ops-is-refused-by-name-per-D71)
+
+;; review bug-07: tail calls are eliminated natively (1e5 here, quick)
+(defn tail-count [n acc] (if (= n 0) acc (tail-count (dec n) (inc acc))))
+(show "r1-07-tail-1e5" (tail-count 100000 0))
+(declare pong)
+(defn ping [n] (if (= n 0) :ping (pong (dec n))))
+(defn pong [n] (if (= n 0) :pong (ping (dec n))))
+(show "r1-07-mutual-1e5" (ping 100001))
+
+;; review bug-08: (try (recur ...)) inside loop
+
+;; review gap-02: printing fns/atoms/exceptions (addresses differ, so print a predicate)
+(show "r1-gap02-print-atom" (subs (pr-str (atom 1)) 0 7))
+(show "r1-gap02-print-ex" (msg (fn [] (throw (ex-info "x" {})))))

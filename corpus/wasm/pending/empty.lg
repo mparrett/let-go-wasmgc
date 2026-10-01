@@ -1,0 +1,9 @@
+;; PENDING construct: `empty` (unbound native `core/empty`). Backend
+;; (2026-10-01 06:15): `TypeError: nil is not a function` (D63 shape).
+;; Split from vectors.lg, maps.lg, sets.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "empty-vec" (empty [1 2]))
+(show "empty-map" (empty {:a 1}))
+(show "empty-set" (empty #{1}))
+(show "empty-list" (empty '(1 2)))
+(show "empty-meta" (meta (empty (with-meta [1] {:m 1}))))

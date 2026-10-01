@@ -1,0 +1,35 @@
+;; PENDING construct: variadic arities of lg-defined core fns (D78 drops
+;; them when core.lg compiles). Backend (2026-10-01 06:17): e.g.
+;; `function <fn mapv 0x0> expected 2 args, got 3`; native returns values.
+;; Split from vectors.lg (and others as noted inline).
+(defn show [label x] (println label (pr-str x)))
+(show "mapv-2" (mapv + [1 2 3] [10 20 30]))
+;; from maps.lg: `merge` with 2+ maps is the `[m & maps]` arity. Backend:
+;; `function <mfn merge 0x0> doesn't have a 2-arity variant`.
+(def kw8 [:a :b :c :d :e :f :g :h])
+(def assoc8 (reduce (fn [m k] (assoc m k 1)) {} kw8))
+(def merge9 (merge assoc8 {:i 1}))
+(show "merge9-keys" (vec (keys merge9)))
+(show "merge9-hash" (hash merge9))
+(show "merge" (merge {:a 1 :b 2} {:b 3 :c 4}))
+(show "merge-nil" [(merge {:a 1} nil) (merge nil {:a 1})])
+(show "merge-1" [(merge) (merge {:a 1})])
+;; from seqs.lg: concat with 3 colls, map over 2 and 3 colls.
+(show "concat-3" (concat [1] nil [2 3]))
+(show "map-2" (map + [1 2 3] [10 20]))
+(show "map-3" (map vector [1 2] [:a :b] ["x" "y"]))
+;; from closures-rt.lg: #(+ %1 %2) mapped over two colls
+(show "anon-pct2" (map #(+ %1 %2) [1 2] [10 20]))
+;; from xsofy-shapes.lg: update-in with extra args (`[m ks f & args]`).
+;; Backend: `function <fn update-in 0x0> expected 3 args, got 4`.
+(def w0 {:turn 0
+         :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+(defn ents [w] (vals (:entities w)))
+(show "update-in" (get-in (update-in w0 [:entities 1 :hp] - 3) [:entities 1 :hp]))
+(show "update-in-conj" (get-in (update-in w0 [:entities 1 :inv] conj :key) [:entities 1 :inv]))

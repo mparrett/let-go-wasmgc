@@ -1,0 +1,87 @@
+;; P2.1 oracle: atoms and metadata-carrying values. atom/swap!/reset!,
+;; and with-meta values on each collection kind (reading `meta` itself,
+;; compare-and-set!, swap-vals! and volatiles live in pending/), on each
+;; collection kind with D69's keep/drop rules.
+
+(defn show [label x] (println label (pr-str x)))
+
+;; atoms
+(def a (atom 0))
+(show "deref" @a)
+(show "swap-inc" (swap! a inc))
+(show "swap-args" (swap! a + 10))
+(show "swap-args2" (swap! a + 1 2))
+(show "reset" (reset! a 100))
+(show "after-reset" (deref a))
+(def m (atom {:n 0 :log []}))
+(swap! m update :n inc)
+(swap! m update :log conj :a)
+(swap! m assoc :k "v")
+(show "map-atom" @m)
+(swap! m (fn [s] (update s :n (fn [n] (* n 10)))))
+(show "map-atom-fn" (:n @m))
+(def v (atom []))
+(dotimes [i 40] (swap! v conj i))
+(show "vec-atom-count" (count @v))
+(show "vec-atom-last" (peek @v))
+(def counter (atom 0))
+(defn next-id! [] (swap! counter inc))
+(show "ids" [(next-id!) (next-id!) (next-id!)])
+(show "atom-in-closure" (let [c (atom 0) f (fn [] (swap! c inc))] (f) (f) @c))
+(show "atom-of-nil" @(atom nil))
+
+;; volatiles: pending/volatile.lg
+
+;; with-meta / meta on collections
+(def mv (with-meta [1 2] {:tag :v}))
+(def mm (with-meta {:a 1} {:tag :m}))
+(def ms (with-meta #{1} {:tag :s}))
+(def ml (with-meta '(1 2) {:tag :l}))
+(show "meta-value-eq" [(= mv [1 2]) (= mm {:a 1}) (= ms #{1}) (= ml '(1 2))])
+(show "meta-hash-eq" [(= (hash mv) (hash [1 2])) (= (hash mm) (hash {:a 1}))])
+(show "meta-pr" [mv mm ms ml])
+
+;; kept by conj/assoc/dissoc/disj-free ops/pop
+
+;; dropped by rest/next/seq/into/vec/subvec/persistent!/map
+
+;; vary-meta, replacing meta, meta of meta'd fns
+(def mf (with-meta (fn [x] (* x 2)) {:doc "dbl"}))
+(show "meta-fn-call" (mf 21))
+(show "with-meta-scalar" [(with-meta "s" {:a 1})])
+
+;; atoms holding meta'd values and validators-free watch-free flows
+(def ma (atom mv))
+(swap! ma conj 3)
+(show "type-vec-meta" [(type [1]) (type mv)])
+
+;; operations on meta'd collections: values must match the bare ones
+(show "meta-conj-val" [(conj mv 3) (assoc mm :b 2) (conj ms 2) (conj ml 0)])
+(show "meta-ops-val" [(pop mv) (dissoc mm :a) (rest ml) (count ms) (nth mv 1) (get mm :a)])
+(show "meta-seq-val" [(seq mv) (seq mm) (into [] ms) (vec ml)])
+(show "meta-as-key" (get {mv :found} [1 2]))
+(show "meta-in-set" (contains? #{[1 2]} mv))
+(show "meta-str" [(str mv) (str mm) (str ml)])
+(show "meta-fn-map" (mapv mf [1 2 3]))
+(show "meta-fn-apply" (apply mf [5]))
+(show "meta-kw-like" (= (with-meta [:k] {:x 1}) [:k]))
+
+;; atoms as state machines (xsofy-style turn loop)
+(def world (atom {:turn 0 :entities {1 {:hp 10} 2 {:hp 7}}}))
+(defn step! [] (swap! world (fn [w] (-> w (update :turn inc) (update-in [:entities 1 :hp] dec)))))
+(dotimes [_ 5] (step!))
+(show "world-turn" (:turn @world))
+(show "world-hp" (get-in @world [:entities 1 :hp]))
+(show "world-untouched" (get-in @world [:entities 2]))
+(def log (atom []))
+(show "atom-reset-coll" (do (reset! log [:x]) @log))
+(def acc (atom 0))
+(doseq [x (range 10)] (swap! acc + x))
+(show "doseq-swap" @acc)
+(def nested (atom (atom 1)))
+(show "atom-of-atom" @@nested)
+(swap! @nested inc)
+(show "inner-swap" @@nested)
+(show "swap-returns-new" (let [x (atom {:a 1})] (= (swap! x assoc :b 2) @x)))
+(show "atom-eq-identity" (let [x (atom 1) y (atom 1)] [(= x x) (= x y)]))
+(show "swap-with-closure" (let [x (atom 1) k 5] (swap! x (fn [v] (+ v k))) @x))

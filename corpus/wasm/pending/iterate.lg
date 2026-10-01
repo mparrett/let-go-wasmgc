@@ -1,0 +1,13 @@
+;; PENDING construct: `iterate` (lazy, core.lg). Backend (2026-10-01 06:10):
+;; runtime error `TypeError: nil is not a function` (unbound var, D63 shape);
+;; native prints `pop-1057-x33 1023`. Split from vectors.lg.
+(defn show [label x] (println label (pr-str x)))
+(def v1057 (reduce conj [] (range 1057)))
+(show "pop-1057-x33" (peek (nth (iterate pop v1057) 33)))
+(show "iterate-take" (take 5 (iterate inc 0)))
+(show "iterate-double" (nth (iterate (fn [x] (* 2 x)) 1) 40))
+;; from seqs.lg: realisation count through iterate
+(def hits (atom 0))
+(defn tick [x] (swap! hits inc) x)
+(def lz5 (take 3 (map tick (iterate inc 0))))
+(show "iterate-take-count" [(vec lz5) @hits])

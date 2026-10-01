@@ -1,0 +1,21 @@
+;; PENDING construct: `apply` that spreads more than 4 arguments (D52).
+;; Backend (2026-10-01 08:05): uncatchable `wasm trap: lower-wasm: a call
+;; with more than 4 arguments (D52: variadic ABI is Phase 3)`. `(apply +
+;; [1 2 3 4])` works. xsofy's `(apply max coll)` hits this for any coll of
+;; 5+. Split from closures-rt.lg, xsofy-shapes.lg.
+(defn show [label x] (println label (pr-str x)))
+(show "apply-assoc" (apply assoc {} [:a 1 :b 2]))
+(show "apply-lazy" (apply + (map inc (range 10))))
+;; from xsofy-shapes.lg: (apply max-key :hp four-entities) = 5 args
+(def w0 {:turn 0
+         :player 1
+         :entities {1 {:id 1 :kind :player :x 2 :y 3 :hp 10 :inv [:torch]}
+                    2 {:id 2 :kind :rat :x 5 :y 3 :hp 3}
+                    3 {:id 3 :kind :rat :x 1 :y 7 :hp 2}
+                    4 {:id 4 :kind :bat :x 9 :y 0 :hp 4}
+                    5 {:id 5 :kind :item :x 4 :y 4 :item :potion}}
+         :log []})
+(defn ents [w] (vals (:entities w)))
+(show "max-key" (:id (apply max-key :hp (filter :hp (take 4 (sort-by :id (ents w0)))))))
+(show "apply-max-5" (apply max [3 9 2 7 1]))
+(show "apply-min-coll" (apply min (range 10 30)))
