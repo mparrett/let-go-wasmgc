@@ -13,6 +13,6 @@
 | P1.1-backend | done 2026-10-01 | opus | 44/44 incl. typed probe; hybrid i31 (fib 15.5 ms); verified |
 | P2.6-native | done 2026-10-01 | opus | str.lg 1122 lines; 20 tests/2239 asserts; floats 281/281 exact (Go strconv port) |
 | P1.3 | done 2026-10-01 | opus | 11/11; $Fn layout D52; atom; error parity; verified |
-| P2.8 | running | opus | native-twin report tooling |
+| P2.8 | tooling done 2026-10-01 | opus | inventory 954; shared MISSING 46/93 (proposed manifest); markers to be applied by P2.9 |
 | P2.9 | running | opus | runtime integration: seq.lg patch, per-kind hooks, slow tier split |
 | P1.4-6 | running | opus | refuse.sh, census through the backend, :switch nodes, 0 goto |

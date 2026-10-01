@@ -1,0 +1,233 @@
+;; tools/native-inventory.lg — every native var a stock lg exposes, with where
+;; let-go registers it. The var list is runtime truth (every public var in every
+;; loaded ns whose value is a NativeFn); the Go sources only supply file:line,
+;; arity and the registration style, read at the binary's own SHA via
+;; `git show`, so a let-go checkout that has moved on cannot skew the mapping.
+;;
+;;   lg tools/native-inventory.lg [let-go-dir] [sha]
+;;
+;; TSV columns: var  arities  source  registered-via  match  same-fn-as
+;;   arities: "N" fixed, ">=N" variadic, "?" when the Go side checks arity at
+;;            run time (the vm.NativeFnType.Wrap proxy style hides it)
+;;   registered-via: lg:native | ns.Def | other
+;;   match: exact (ns+name agree) | name (Def in a ns the scanner could not name
+;;          statically, e.g. installMathInto(nsName)) | none
+(require '[clojure.string :as str])
+
+(def argv (vec (rest (drop-while #(not (str/ends-with? % "native-inventory.lg")) os/args))))
+(def letgo (get argv 0 (str (os/getenv "HOME") "/projects-new/3p/let-go")))
+
+(defn sh-out [& cmd]
+  (let [r (apply os/sh cmd)]
+    (when-not (zero? (:exit r)) (throw (ex-info (str "failed: " (str/join " " cmd) "\n" (:err r)) {})))
+    (:out r)))
+
+;; The SHA the running binary was built from: `lg -version` prints "(4e76921)".
+(def sha
+  (or (get argv 1)
+      (second (re-find #"\(([0-9a-f]{7,40})\)" (sh-out (first os/args) "-version")))
+      (throw (ex-info "cannot determine lg's let-go SHA; pass it" {}))))
+(def full-sha (str/trim (sh-out "git" "-C" letgo "rev-parse" sha)))
+(def commit-date (str/trim (sh-out "git" "-C" letgo "show" "-s" "--format=%cs" sha)))
+
+(def ns-alias-map {"clojure.core" "core" "clojure.test" "test" "clojure.string" "string"
+                 "clojure.set" "set" "clojure.walk" "walk" "clojure.edn" "edn"
+                 "clojure.zip" "zip" "clojure.data" "data" "clojure.test.tap" "test.tap"})
+(defn canon-ns [n] (get ns-alias-map n n))
+
+(defn grep-files [& pats]
+  (let [args (concat ["git" "-C" letgo "grep" "-l" "-E"] (mapcat (fn [p] ["-e" p]) pats)
+                     [sha "--" "pkg/*.go" ":!*_test.go"])
+        r (apply os/sh args)]
+    ;; git grep prints "<sha>:<path>"
+    (map #(subs % (inc (str/index-of % ":"))) (remove str/blank? (str/split-lines (:out r))))))
+
+(def file-lines
+  (memoize (fn [path] (vec (str/split-lines (sh-out "git" "-C" letgo "show" (str sha ":" path)))))))
+
+(defn kebab [ident]
+  ;; primgen's KebabCase for the default lg name: CamelCase → camel-case
+  (str/lower-case (str/replace ident #"([a-z0-9])([A-Z])" "$1-$2")))
+
+(defn split-params [s]
+  ;; top-level commas only: a func-typed param carries its own parens
+  (loop [cs (seq s) depth 0 cur "" out []]
+    (if-let [c (first cs)]
+      (cond (#{\( \[ \{} c) (recur (rest cs) (inc depth) (str cur c) out)
+            (#{\) \] \}} c) (recur (rest cs) (dec depth) (str cur c) out)
+            (and (= c \,) (zero? depth)) (recur (rest cs) depth "" (conj out (str/trim cur)))
+            :else (recur (rest cs) depth (str cur c) out))
+      (remove str/blank? (conj out (str/trim cur))))))
+
+(defn sig-arity [func-line]
+  ;; "func Ident(params) ..." → "N" | ">=N" | "?" (signature continues on the next line)
+  (if-let [[_ ps] (re-find #"^func \w+\((.*?)\)\s*[\(\w\{*\[]" func-line)]
+    (let [items (split-params ps)
+          items (if (and (seq items) (re-find #"\*vm\.ExecContext" (first items))) (rest items) items)
+          n (count items)]
+      (if (and (pos? n) (str/includes? (last items) "...")) (str ">=" (dec n)) (str n)))
+    "?"))
+
+;; ---- //lg:native directives (what cmd/lgprimgen consumes) ----
+(defn scan-directives [path]
+  (let [ls (file-lines path)]
+    (for [i (range (count ls)) :when (= "//lg:native" (str/trim (ls i)))]
+      (let [tail (take-while #(not (str/starts-with? % "func ")) (subvec ls (inc i) (min (count ls) (+ i 30))))
+            fl (get ls (+ i 1 (count tail)) "")
+            dir (fn [k] (some #(second (re-find (re-pattern (str "^//lg:" k " (.+)$")) (str/trim %))) tail))
+            ident (second (re-find #"^func (\w+)" fl))]
+        {:ns (canon-ns (or (dir "ns") "clojure.core"))
+         :name (or (dir "name") (kebab (or ident "?")))
+         :line (+ i 2 (count tail)) :path path :via "lg:native" :arity (sig-arity fl)
+         ;; outside pkg/rt proper (corefns) the generated registrar only records
+         ;; a direct-call descriptor (RegisterNativeModule); the var itself is
+         ;; Def'd elsewhere, so such a directive is a fallback source only
+         :weak (not (re-find #"^pkg/rt/[^/]+\.go$" path))}))))
+
+;; ---- Go registration sites other than the directive ----
+;; ns.Def("name", v): the ns comes from the receiver when it was bound to a
+;; literal namespace in the same func (`ns := vm.NewNamespace("os")`,
+;; `longNS := DefNSBare("Long")`); nil when it is computed (installMathInto).
+;; LookupOrAdd(vm.Symbol("name")) and New*NativeFn("name", …) / wrapNNamed("name", …)
+;; are the registrations that bypass Def (compiler/eval.go, gogen's entry table).
+(def ns-ctor #"(\w+)\s*:?=\s*(?:vm\.NewNamespace|DefNSBare|DefNS|LookupOrRegisterNS)\((?:\"([^\"]+)\"|(\w+))\)")
+
+;; `const NameCoreNS = "core"` — lang.go builds core from the constant
+(def ns-consts
+  (let [r (os/sh "git" "-C" letgo "grep" "-h" "-E" "-e" "Name\\w*NS\\s*=\\s*\"" sha "--" "pkg/rt/*.go")]
+    (into {} (for [[_ k v] (re-seq #"(Name\w*NS)\s*=\s*\"([^\"]+)\"" (:out r))] [k (canon-ns v)]))))
+
+(defn hint-arity [l]
+  ;; arity readable off the wrapper at the site; "?" for the []vm.Value proxies
+  (if-let [[_ n v] (re-find #"NewArityNativeFn\(\"[^\"]*\",\s*(\d+),\s*(true|false)" l)]
+    (if (= v "true") (str ">=" n) n)
+    (or (second (re-find #"\b(?:mathFn|wrap)(\d)(?:Named)?\(" l)) "?")))
+
+(defn scan-defs [path]
+  (let [ls (file-lines path)]
+    (loop [i 0 recv {} out []]
+      (if (>= i (count ls))
+        out
+        (let [l (ls i)
+              recv (if (str/starts-with? l "func ") {} recv)
+              recv (reduce (fn [m [_ r lit k]] (assoc m r (if lit (canon-ns lit) (ns-consts k)))) recv (re-seq ns-ctor l))
+              site (fn [ns nm via] {:ns ns :name nm :line (inc i) :path path :via via :arity (hint-arity l)})
+              out (-> out
+                      ;; recv.Def("x" …) or defStaticNS("Array").Def("x" …)
+                      (into (for [[_ r lit nm] (re-seq #"(?:(\w+)|\w+\((?:\"([^\"]+)\"|\w+)\))\.Def\(\"([^\"]+)\"" l)]
+                              (site (if lit (canon-ns lit) (recv r)) nm "ns.Def")))
+                      (into (for [[_ nm] (re-seq #"LookupOrAdd\(vm\.Symbol\(\"([^\"]+)\"\)\)" l)]
+                              (site nil nm "other")))
+                      (into (for [[_ nm] (re-seq #"(?:New\w*NativeFn|wrap\dNamed|mk|makeVariadic)\(\"([^\"]+)\"" l)]
+                              (assoc (site nil nm "other") :weak true))))]
+          (recur (inc i) recv out))))))
+
+;; Constructors registered under computed names (exceptions.go's `"->" + bare`
+;; loop, host_stringbuilder's spellings): the Def call takes a variable.
+(defn scan-computed [path]
+  (let [ls (file-lines path)]
+    (for [i (range (count ls)) :when (re-find #"\.Def\((spelling|\w*[Nn]ame|n|s)\b" (ls i))]
+      {:path path :line (inc i) :text (str/join "\n" ls)})))
+
+;; (def alias native) in the embedded lg sources: `(def ref atom)`, hash.lg's
+;; `(def xxh3-64 xxh3/Hash)`. The ns is the file's own (ns …) form.
+(defn scan-lg-defs [path]
+  (let [ls (file-lines path)
+        ns (some #(some-> (second (re-find #"^\(ns\s+([^\s()]+)" %)) canon-ns) ls)]
+    (for [i (range (count ls))
+          :let [[_ nm] (re-find #"^\(def\s+(?:\^\S+\s+)?([^\s()\[\]]+)\s" (ls i))]
+          :when (and nm ns)]
+      {:ns ns :name nm :line (inc i) :path path :via "other" :arity "?"})))
+
+(defn grep-lg-files [pat]
+  (let [r (os/sh "git" "-C" letgo "grep" "-l" "-E" "-e" pat sha "--" "pkg/rt/core/*.lg")]
+    (map #(subs % (inc (str/index-of % ":"))) (remove str/blank? (str/split-lines (:out r))))))
+
+(def def-files (grep-files "\\.Def\\(" "LookupOrAdd\\(vm\\.Symbol" "NativeFn\\(\"" "wrap[0-9]Named\\(\"" "mk\\(\""))
+(def sites (concat (mapcat scan-directives (grep-files "^//lg:native"))
+                   (mapcat scan-defs def-files)
+                   (mapcat scan-lg-defs (grep-lg-files "^\\(def "))))
+(def computed (mapcat scan-computed def-files))
+
+(defn rank [{:keys [path via weak]}]
+  ;; pkg/rt proper beats sub-packages (corefns mirrors), unconstrained files beat
+  ;; per-target ones (syscall_linux, term_wasm …), the directive beats a Def,
+  ;; a registration beats a bare constructor name
+  [(if (re-find #"_(linux|plan9|wasm|js|tinygo|windows|wasip1)\.go$" path) 1 0)
+   (if weak 1 0)
+   (if (re-find #"^pkg/rt/[^/]+\.go$" path) 0 1)
+   (if (= via "lg:native") 0 1)
+   path])
+
+(def by-ns+name (group-by (juxt :ns :name) (filter :ns sites)))
+(def by-name (group-by :name (remove :ns sites)))
+
+(defn ctor-site [s]
+  ;; "X." / "->X" / qualified spellings → the computed-name Def in the file that
+  ;; mentions the class stem, else the exceptions.go-style loop
+  (when-let [stem (or (second (re-find #"^->(?:\w+\.)*(\w+)$" s)) (second (re-find #"^(?:\w+\.)*(\w+)\.$" s)))]
+    (or (first (filter #(str/includes? (:text %) (str "\"" stem)) computed))
+        (first (filter #(re-find #"\"->\" \+" (:text %)) computed)))))
+
+;; ---- runtime truth ----
+(def native-vals
+  (into (sorted-map)
+        (for [n (all-ns) [s v] (ns-publics n)
+              :let [x (try @v (catch Exception _ nil))]
+              :when (= "let-go.lang.NativeFn" (str (type x)))]
+          [(str (ns-name n) "/" s) x])))
+
+(defn site-of [q]
+  ;; strong registrations before weak ones (bare constructor names, descriptor-
+  ;; only directives), and within each an ns+name match before a name match
+  (let [[n s] (let [i (str/index-of q "/" 1)] [(subs q 0 i) (subs q (inc i))])
+        ;; a name-only candidate whose file spells this ns as a literal wins:
+        ;; installMathNS loops over ["math" "clojure.math"], installMathStatics
+        ;; over ["Math" "java.lang.Math"], and both Def "pow"
+        ;; (import lines — a bare `"math"` — do not count)
+        names-ns? (memoize (fn [path]
+                             (let [lit (str "\"" n "\"")]
+                               (some #(and (str/includes? % lit) (not (re-find #"^\s*(import\s+)?(\w+\s+)?\"[^\"]*\"\s*$" %)))
+                                     (file-lines path)))))
+        best (fn [weak? xs] (first (sort-by (fn [e] [(if (names-ns? (:path e)) 0 1) (rank e)])
+                                            (filter #(= weak? (boolean (:weak %))) xs))))]
+    (or (some (fn [[weak? m]]
+                (let [xs (if (= m "exact") (by-ns+name [n s]) (by-name s))]
+                  (when-let [e (best weak? xs)]
+                    ;; several directives can register one name (Reduce + Reduce3):
+                    ;; the arity column lists them all
+                    (let [ars (distinct (keep #(when (and (= (:via %) (:via e)) (= (:path %) (:path e))) (:arity %)) xs))
+                          known (remove #{"?"} ars)]
+                      [(assoc e :arity (if (seq known) (str/join "," (sort known)) "?")) m]))))
+              [[false "exact"] [false "name"] [true "exact"] [true "name"]])
+        (when-let [c (ctor-site s)] [(assoc c :via "ns.Def" :arity "?") "computed"])
+        [nil "none"])))
+
+(def site-map (into {} (for [q (keys native-vals)] [q (site-of q)])))
+
+;; Vars bound to the very same NativeFn object (pr-str carries its address):
+;; `ref`/`agent` are `atom`, Math/* and java.lang.Math/* share fns. A twin for
+;; one member covers the group, so each row names its group's canonical member:
+;; the one with a Go registration, else the first by name.
+(def same-fn
+  (into {}
+        (for [[_ grp] (group-by #(pr-str (native-vals %)) (keys native-vals))
+              :when (> (count grp) 1)
+              :let [go? #(re-find #"\.go$" (str (:path (first (site-map %)))))
+                    canon (first (sort-by (fn [q] [(if (go? q) 0 1) q]) grp))]
+              q grp]
+          [q canon])))
+
+(println (str "# native inventory: lg let-go " full-sha " (commit " commit-date ")"
+              ", generated " (str/trim (sh-out "date" "+%F")) " by tools/native-inventory.lg"))
+(println (str "# " (count native-vals) " native vars in " (count (distinct (map #(subs % 0 (str/index-of % "/" 1)) (keys native-vals)))) " namespaces; registered-via "
+              (str/join ", " (for [[k v] (sort (frequencies (map #(or (:via (first (site-map %))) "other") (keys native-vals))))] (str k "=" v)))
+              "; match " (str/join ", " (for [[k v] (sort (frequencies (map #(second (site-map %)) (keys native-vals))))] (str k "=" v)))))
+(println "# var\tarities\tsource\tregistered-via\tmatch\tsame-fn-as")
+(doseq [q (keys native-vals)]
+  (let [[site m] (site-map q)]
+    (println (str/join "\t" [q (if site (:arity site) "?")
+                             (if site (str (:path site) ":" (:line site)) "?")
+                             (if site (:via site) "other")
+                             m
+                             (let [c (same-fn q)] (if (and c (not= c q)) c "-"))]))))

@@ -1,0 +1,120 @@
+;; tools/twin-manifest.lg — which let-go natives the wasm runtime claims to
+;; provide. A runtime defn claims a native by carrying `:twin` metadata on its
+;; name, the same place D24 keeps `:intrinsic`/`:wasm`:
+;;
+;;   (defn ^{:twin "core/first"} first [x] …)
+;;   (defn ^{:twin ["core/hash" "core/hash-ordered-coll"]} hash [x] …)
+;;
+;; The value is the native's `ns/name` as the inventory and the reach lists
+;; spell it (runtime ns names: core, string, os, …), or a vector of them.
+;;
+;;   lg tools/twin-manifest.lg [rt-dir]
+;;       → TSV  twin  runtime-var  file:line         (the real manifest)
+;;   lg tools/twin-manifest.lg --propose [rt-dir] [inventory.tsv]
+;;       → TSV  twin  runtime-var  file:line  confidence  runtime-arities
+;;              native-arities  note
+;;         a name-matched proposal for applying the markers (see tools/README.md)
+;;
+;; Reads the sources with read-string rather than loading them: the runtime
+;; files need not load together under native lg for the scan to work, and the
+;; reader turns `^{…} name` into `(with-meta name {…})`, which is what this
+;; matches.
+(require '[clojure.string :as str])
+
+(def argv (vec (rest (drop-while #(not (str/ends-with? % "twin-manifest.lg")) os/args))))
+(def propose? (= "--propose" (first argv)))
+(def pos-args (if propose? (rest argv) argv))
+(def rt-dir (or (first pos-args) "rt/wasm"))
+(def inventory-path (or (second pos-args) "corpus/natives/inventory.tsv"))
+
+(defn rt-files []
+  (sort (for [f (os/ls rt-dir) :when (str/ends-with? f ".lg")] (str rt-dir "/" f))))
+
+(defn defn-name+meta [nm]
+  ;; plain symbol, or the reader's (with-meta sym {…})
+  (if (and (seq? nm) (= 'with-meta (first nm))) [(second nm) (nth nm 2)] [nm nil]))
+
+(defn arities [more]
+  (let [more (if (string? (first more)) (rest more) more)
+        more (if (map? (first more)) (rest more) more)
+        groups (if (vector? (first more)) [(first more)] (map first more))]
+    (str/join "," (for [ps groups]
+                    (let [n (count (take-while #(not= '& %) ps))]
+                      (if (some #(= '& %) ps) (str ">=" n) (str n)))))))
+
+(defn file-defns [path]
+  (let [text (slurp path)
+        lines (str/split-lines text)
+        forms (read-string (str "[" text "\n]"))
+        ns-sym (some #(when (and (seq? %) (= 'ns (first %))) (second %)) forms)]
+    (for [f forms
+          :when (and (seq? f) ('#{defn defn-} (first f)))
+          :let [[nm m] (defn-name+meta (second f))
+                ;; first source line whose defn head names this symbol
+                re (re-pattern (str "^\\(defn-?\\s+(?:\\^\\{.*?\\}\\s+)?" (str/replace (str nm) #"[?!*+.$<>=|]" #(str "\\" %)) "(?:\\s|$|\\[|\\()"))
+                line (some (fn [i] (when (re-find re (nth lines i)) (inc i))) (range (count lines)))]]
+      {:ns (str ns-sym) :name (str nm) :private? (or (= 'defn- (first f)) (:private m))
+       :twin (:twin m) :path path :line (or line 0) :arities (arities (drop 2 f))})))
+
+(def defns (mapcat file-defns (rt-files)))
+
+(defn claims [d]
+  (let [t (:twin d)] (cond (nil? t) [] (string? t) [t] :else (vec t))))
+
+(if-not propose?
+  (doseq [d defns, t (claims d)]
+    (println (str/join "\t" [t (str (:ns d) "/" (:name d)) (str (:path d) ":" (:line d))])))
+
+  ;; ---- --propose: name-match the runtime's public defns to the inventory ----
+  (let [inv (into {} (for [l (str/split-lines (slurp inventory-path))
+                           :when (not (str/starts-with? l "#"))
+                           :let [[q ar] (str/split l #"\t")]]
+                       [q ar]))
+        ;; Kind-specific entry points whose name differs from the native's:
+        ;; one collection kind each, so `low` until P2.9's dispatching entry
+        ;; (D48's per-kind hooks) routes the native to them.
+        renamed {"wasm.pvec" {"vcount" "core/count" "vnth" "core/nth" "vconj" "core/conj"
+                              "vassoc" "core/assoc" "vpop" "core/pop" "empty-vec" "core/vector"}
+                 "wasm.phm"  {"mcount" "core/count" "mget" "core/get" "mcontains?" "core/contains?"
+                              "massoc" "core/assoc" "mdissoc" "core/dissoc" "empty-map" "core/hash-map"
+                              "transient-map" "core/transient" "tassoc!" "core/assoc!"
+                              "tdissoc!" "core/dissoc!" "tget" "core/get" "tcount" "core/count"
+                              "tpersistent!" "core/persistent!" "mequiv" "core/=" "mhash" "core/hash"}
+                 "wasm.phs"  {"scount" "core/count" "sconj" "core/conj" "sdisj" "core/disj"
+                              "scontains?" "core/contains?" "sget" "core/get" "sseq" "core/seq"
+                              "empty-set" "core/hash-set" "transient-set" "core/transient"
+                              "tconj!" "core/conj!" "tdisj!" "core/disj!" "tscount" "core/count"
+                              "tpersistent-set!" "core/persistent!" "sequiv" "core/=" "shash" "core/hash"}
+                 ;; same semantics, different spelling
+                 "wasm.seq"  {"equals" "core/="}
+                 "wasm.str"  {"equals" "core/=" "string-upper-case" "string/upper-case"}}
+        public (remove :private? (remove #(= "wasm.intrinsics" (:ns %)) defns))
+        ;; identity matches core/ only: string/trim etc. are the same NativeFn as
+        ;; core/trim (the inventory's same-fn-as), which the twin report follows
+        ;; names defined in more than one runtime file: seq.lg's copy is the
+        ;; claim, str.lg's string-kind copy folds into it at P2.9 (D48)
+        dup (set (for [[n ds] (group-by :name public) :when (> (count ds) 1)] n))
+        rows (for [d public
+                   :let [short (str/replace (:ns d) #"^wasm\." "")
+                         ren (get-in renamed [(:ns d) (:name d)])
+                         ident (filter inv [(str "core/" (:name d))])]
+                   [twin conf note]
+                   (concat
+                    (when (and ren (inv ren))
+                      [[ren (if (#{"wasm.seq" "wasm.str"} (:ns d)) "medium" "low")
+                        (if (#{"wasm.seq" "wasm.str"} (:ns d))
+                          "renamed entry; check arity coverage"
+                          (str short "-kind half only; needs the P2.9 dispatching entry"))]])
+                    (when-not ren
+                      (for [q ident]
+                        (cond
+                          (and (dup (:name d)) (not= "wasm.seq" (:ns d)))
+                          [q "low" (str "string-kind copy; seq.lg's " (:name d) " is the claim after D48")]
+                          (dup (:name d))
+                          [q "medium" "string-kind half lives in str.lg until P2.9 folds it in (D48)"]
+                          :else
+                          [q "high" "same name"]))))]
+               [twin (str (:ns d) "/" (:name d)) (str (:path d) ":" (:line d)) conf (:arities d) (inv twin) note])]
+    (println "# twin\truntime-var\tfile:line\tconfidence\truntime-arities\tnative-arities\tnote")
+    (doseq [r (sort-by (juxt first second) rows)]
+      (println (str/join "\t" r)))))
