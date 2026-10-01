@@ -51,6 +51,7 @@
     20 (keyword (bytes->str (wasm/get sq/Kw 0 r)) (bytes->str (wasm/get sq/Kw 1 r)))
     21 (symbol (bytes->str (wasm/get sq/Sym 0 r)) (bytes->str (wasm/get sq/Sym 1 r)))
     22 (wasm/get sq/Float 0 r)
+    23 [(<-w (wasm/get sq/MapEntry 0 r)) (<-w (wasm/get sq/MapEntry 1 r))]   ; a map's seq yields MapEntry (P2.7)
     18 (cond (wasm/is? m/HMap r) (into {} (map (fn [[k v]] [(<-w k) (<-w v)]) (partition 2 (arr->vec* (m/entries r)))))
              (wasm/is? s/HSet r) (set (map <-w (arr->vec* (s/sseq r))))
              :else (throw (ex-info "<-w: unknown foreign ref" {})))

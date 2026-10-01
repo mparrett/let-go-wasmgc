@@ -38,8 +38,9 @@
 
 (wasm/defarray HSlots :ref)
 ;; count, root (null = ordered array-map mode, persistent_map.go:629),
-;; okvs (ordered mode: exactly 2*count slots; HAMT mode: null), hash cache (-1 = none).
-(wasm/defstruct HMap [:i64 :ref :ref [:mut :i64]])
+;; okvs (ordered mode: exactly 2*count slots; HAMT mode: null), hash cache (-1 = none),
+;; meta (null = none; assoc/dissoc keep it, persistent! of a transient drops it).
+(wasm/defstruct HMap [:i64 :ref :ref [:mut :i64] :ref])
 ;; bitmap, edit token (null = persistent), pairs [key val] or [null child].
 (wasm/defstruct HBitmapNode [[:mut :i64] :ref [:mut :ref]])
 ;; hash, count, pairs in insertion order (persistent_map.go:489-493).
@@ -320,7 +321,11 @@
 ;; ---------------------------------------------------------------------------
 ;; PersistentMap (:596-1047)
 
-(defn- mk [cnt root okvs] (wasm/new HMap cnt root okvs -1))
+(defn- mk [cnt root okvs] (wasm/new HMap cnt root okvs -1 (wasm/null)))
+(defn mmeta [m] (wasm/get HMap 4 m))
+(defn mwith-meta [m meta]                                  ; with-meta: structure and hash cache shared
+  (wasm/new HMap (wasm/get HMap 0 m) (wasm/get HMap 1 m) (wasm/get HMap 2 m) (wasm/get HMap 3 m) meta))
+(defn- carry-meta [m r] (if (if (wasm/ref-eq m r) true (wasm/null? (mmeta m))) r (mwith-meta r (mmeta m))))
 (defn- m-root [m] (wasm/get HMap 1 m))
 (defn- m-okvs [m] (wasm/get HMap 2 m))
 (defn- ordered? [m] (wasm/null? (m-root m)))               ; :629
@@ -370,7 +375,7 @@
     (tassoc! t key val)
     (tpersistent! t)))
 
-(defn massoc [m key val]                                    ; Assoc :865-898
+(defn- massoc* [m key val]                                  ; Assoc :865-898
   (if (ordered? m)
     (let [o (m-okvs m) len (wasm/alen o) i (okvs-index o len key)]
       (if (>= i 0)
@@ -392,7 +397,7 @@
         m
         (mk (if (flag? added) (inc (mcount m)) (mcount m)) nr (wasm/null))))))
 
-(defn mdissoc [m key]                                       ; Dissoc :900-931
+(defn- mdissoc* [m key]                                     ; Dissoc :900-931
   (if (ordered? m)
     (let [o (m-okvs m) len (wasm/alen o) i (okvs-index o len key)]
       (cond
@@ -409,6 +414,9 @@
         (wasm/null? nr) (mk 0 (wasm/null) (slots 0))
         ;; No demotion while entries remain (:928-930).
         :else (mk (dec (mcount m)) nr (wasm/null))))))
+
+(defn massoc [m key val] (carry-meta m (massoc* m key val)))
+(defn mdissoc [m key] (carry-meta m (mdissoc* m key)))
 
 (defn entries
   "Seq order as a fresh [k0 v0 k1 v1 ...] array (mapEntries :669-678)."
@@ -430,7 +438,7 @@
         out))))
 
 (defn entry-seq
-  "The seq of m as seq.lg sees it: a Cons chain of [k v] vectors in seq order,
+  "The seq of m as seq.lg sees it: a Cons chain of MapEntry in seq order,
    or null when empty (Seq :1002-1008 returns EmptyList; seq.lg's `seq`
    turns that into nil either way)."
   [m]
@@ -438,7 +446,7 @@
     (loop [i (- (wasm/alen e) 2) acc (wasm/null)]
       (if (< i 0)
         acc
-        (recur (- i 2) (sq/cons (pv/vconj (pv/vconj (pv/empty-vec) (sget e i)) (sget e (inc i))) acc))))))
+        (recur (- i 2) (sq/cons (wasm/new sq/MapEntry (sget e i) (sget e (inc i))) acc))))))
 
 (defn mkeys "(map first (seq m)) (core.lg:1679)." [m] (half m 0))
 (defn mvals "(map second (seq m)) (core.lg:1683)." [m] (half m 1))

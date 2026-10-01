@@ -389,6 +389,9 @@
   (testing "a foreign kind traps until a runtime installs its hooks, then composes"
     (let [bag (wasm/new Bag (wl [3 4 5]))
           inner #(wasm/get Bag 0 %)]
+      ;; the generic slot is process-global and wasm.core/install! fills it
+      ;; (core-test may run first): start from an empty slot
+      (sq/set-hooks! (wasm/null) (wasm/null) (wasm/null) (wasm/null))
       (is (= [:err "wasm.seq: foreign value and no hook installed (phm/phs not linked)"] (res #(sq/first bag))))
       (try
         (sq/set-hooks! (clo #(inner %)) (clo #(<-w (sq/count (inner %))))

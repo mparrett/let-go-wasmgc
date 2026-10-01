@@ -46,7 +46,7 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `string-of-bytes` | 1 | none (identity) | [:any] → :string | reference/test boundary only |
 | `host-write` `host-sleep` `host-nanotime` `host-getenv` | 2/1/0/1 | call $env.* | | IO (D6, D11's `env.write`) |
 | `trap` | 1 | unreachable | [:string] → :bottom | P V |
-| `funcref` / `call-ref` | 2 / 2–6 | ref.func / call_ref $Sig | | C |
+| `funcref` / `call-ref` | 2 / 2–7 | ref.func / call_ref $Sig (7 = `$Code4`: closure + 4 args, P2.7) | | C |
 
 42 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-09-30.
 `new` gained its 7-field arity on 2026-10-01 for D52's `$Fn`.

@@ -1,0 +1,630 @@
+;; wasm.core (rt/wasm/core.lg) checked against native lg on the same inputs:
+;; the generic dispatchers on every collection kind, the numeric natives as
+;; values, state, metadata, exceptions, calls through values, sort, printing
+;; through the hooks, and the dialect claim. Every expectation is computed
+;; live from native lg. Errors compare by message: a native exception's
+;; ex-message, a raised runtime Err's caught message (field 2), or a
+;; reference trap's text without its "wasm trap: " prefix. Messages that
+;; embed a heap address compare by "both throw".
+(ns core-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.phm :as m]
+            [wasm.phs :as hs]
+            [wasm.core :as c]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; ---------------------------------------------------------------------------
+;; Boundary glue (test only): lg values to runtime refs and back, deep.
+
+(declare ->w <-w)
+
+(def ^:private array-type (type (object-array 0)))
+(defn- wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
+
+(defn clo
+  "An lg fn as a runtime closure of arities 0-4, converting at the boundary."
+  [f]
+  (wasm/new sq/Fn
+            (wasm/funcref sq/Code0 (fn [_] (->w (f))))
+            (wasm/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
+            (wasm/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
+            (wasm/null)
+            (wasm/funcref sq/Code3 (fn [_ a b cc] (->w (f (<-w a) (<-w b) (<-w cc)))))
+            (wasm/funcref sq/Code4 (fn [_ a b cc d] (->w (f (<-w a) (<-w b) (<-w cc) (<-w d)))))
+            (wasm/new sq/FnInfo 0 1 (wasm/null))))
+
+(defn- with-native-meta [w x] (if (meta x) (c/with-meta w (->w (meta x))) w))
+
+(defn ->w [x]
+  (cond (nil? x) (wasm/null)
+        (wref? x) x
+        (int? x) (sq/box-int x)
+        (boolean? x) (sq/bool x)
+        (string? x) (s/mk-str (wasm/bytes-of-string x))
+        (char? x) (s/mk-char (int x))
+        (keyword? x) (s/kw-of-bytes (wasm/bytes-of-string (subs (str x) 1)))
+        (symbol? x) (s/sym-of-bytes (wasm/bytes-of-string (str x)))
+        (float? x) (s/box-float x)
+        (map-entry? x) (c/map-entry (->w (key x)) (->w (val x)))
+        (vector? x) (with-native-meta (reduce (fn [v e] (pv/vconj v (->w e))) (pv/empty-vec) x) x)
+        (map? x) (with-native-meta (reduce (fn [w [k v]] (c/assoc w (->w k) (->w v))) (m/empty-map) (seq x)) x)
+        (set? x) (with-native-meta (reduce (fn [w e] (hs/sconj w (->w e))) (hs/empty-set) (seq x)) x)
+        (fn? x) (clo x)
+        (seq? x) (with-native-meta (reduce (fn [l e] (sq/conj l (->w e))) (sq/list) (reverse x)) x)
+        :else (throw (ex-info (str "->w: no runtime form for " (pr-str x)) {}))))
+
+(defn- bytes->str [b] (when-not (wasm/null? b) (wasm/string-of-bytes b)))
+(defn- arr->vec [a] (mapv #(wasm/aget m/HSlots a %) (range (wasm/alen a))))
+
+(defn <-w [r]
+  (let [k (c/ckind r)
+        mt (when-not (wasm/null? (c/meta r)) (<-w (c/meta r)))
+        wm (fn [x] (if mt (with-meta x mt) x))]
+    (cond (= k 0) nil
+          (= k 1) (sq/unbox-int r)
+          (= k 15) (= 1 (wasm/get sq/Bool 0 r))
+          (= k 17) (wasm/string-of-bytes (s/str-bytes r))
+          (= k 19) (char (s/char-val r))
+          (= k 20) (keyword (bytes->str (wasm/get sq/Kw 0 r)) (bytes->str (wasm/get sq/Kw 1 r)))
+          (= k 21) (symbol (bytes->str (wasm/get sq/Sym 0 r)) (bytes->str (wasm/get sq/Sym 1 r)))
+          (= k 22) (s/unbox-float r)
+          (<= 2 k 10) (wm (loop [q (sq/seq r) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
+          (= k 11) (wm (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r))))
+          (= k 23) (clojure.lang.MapEntry/create (<-w (wasm/get sq/MapEntry 0 r)) (<-w (wasm/get sq/MapEntry 1 r)))
+          (= k 30) (wm (into {} (map (fn [[kk v]] [(<-w kk) (<-w v)]) (partition 2 (arr->vec (m/entries r))))))
+          (= k 31) (wm (set (map <-w (arr->vec (hs/sseq r)))))
+          (= k 24) [:atom (<-w (wasm/get sq/Atom 0 r))]
+          (= k 25) [:volatile (<-w (wasm/get sq/Volatile 0 r))]
+          (= k 26) [:ex (bytes->str (wasm/get sq/Err 2 r)) (<-w (wasm/get sq/Err 3 r))]
+          (= k 35) [:type (bytes->str (wasm/get c/TypeVal 0 r))]
+          (= k 16) (fn [& args] (<-w (c/invoke-vec r (->w (vec args)))))
+          :else [:opaque k])))
+
+(defn- err-msg [e]
+  (cond (and (wref? e) (wasm/is? sq/Err e)) (bytes->str (wasm/get sq/Err 2 e))
+        (wref? e) (str "thrown ref " (<-w e))
+        :else (string/replace (ex-message e) "wasm trap: " "")))
+
+(defn- res [f]
+  (try [:ok (f)] (catch Throwable e [:err (err-msg e)])))
+
+(defn- denan "NaN as a keyword, so a NaN result compares equal to itself." [v]
+  (cond (and (float? v) (not (== v v))) ::nan           ; not (not= v v): (not= ##NaN ##NaN) is false
+        (map-entry? v) v
+        (vector? v) (mapv denan v)
+        ;; a meta'd empty list seqs as (nil) through map natively: leave empties alone
+        (seq? v) (if (empty? v) v (apply list (map denan v)))
+        :else v))
+
+(defn tag
+  "A value with its type, so a map entry is not a vector and 1 is not 1.0.
+   ArrayVector and PersistentVector are one tag: wasm.pvec does not record
+   which one native would have built (and the glue's mapv promotes past 32)."
+  [v]
+  [(cond (map-entry? v) :entry (vector? v) :vector :else (type v)) (denan v)])
+
+(defmacro same
+  "Native expression and runtime expression agree on value and type, or on
+   the error message."
+  [native mine]
+  `(let [a# (res (fn [] ~native)) b# (res (fn [] (<-w ~mine)))]
+     (is (= (update a# 1 tag) (update b# 1 tag)) (pr-str '~native))))
+
+(defmacro same-pr
+  "pr-str of both sides agree (seq order of maps and sets, printing hooks)."
+  [native mine]
+  `(is (= (res (fn [] (pr-str ~native))) (res (fn [] (wasm/string-of-bytes (s/str-bytes (s/pr-str ~mine))))))
+       (pr-str '~native)))
+
+(defmacro both-throw [native mine]
+  `(is (= [:err :err] [(first (res (fn [] ~native))) (first (res (fn [] (<-w ~mine))))]) (pr-str '~native)))
+
+(defn W [x] (->w x))
+(defn- slow? [] (= "1" (os/getenv "SLOW")))
+
+;; one value of every kind the runtime models
+(def kinds
+  [nil 0 -7 1073741824 1.5 -0.0 "abc" "héllo" \x :k :ns/k 'sym true false
+   [] [1 2 3] '() '(1 2) {} {:a 1 :b 2} (zipmap (range 12) (range 12)) #{} #{1 2} (first {:a 1})])
+
+;; ---------------------------------------------------------------------------
+;; Lookup
+
+(defn- apply-get [x] (get x 0))
+
+(deftest lookup-get-contains-key-val
+  (c/install!)
+  (doseq [coll kinds k [0 1 2 3 -1 :a :b 1.0 nil 5 "a" 11]]
+    (same (get coll k) (c/get (W coll) (W k)))
+    (same (get coll k :nf) (c/get (W coll) (W k) (W :nf)))
+    (same (contains? coll k) (c/contains? (W coll) (W k))))
+  (doseq [x kinds]
+    (same (key x) (c/key (W x)))
+    (same (val x) (c/val (W x)))
+    (same (apply-get x) (c/get (W x) (W 0))))
+  (same (get "héllo" 5 :nf) (c/get (W "héllo") (W 5) (W :nf)))
+  (same (get "héllo" 1) (c/get (W "héllo") (W 1)))
+  (same (get {nil 1} nil) (c/get (W {nil 1}) (W nil)))
+  (same (get {:a nil} :a :nf) (c/get (W {:a nil}) (W :a) (W :nf)))
+  (same (get #{nil} nil :nf) (c/get (W #{nil}) (W nil) (W :nf)))
+  (same (clojure.lang.MapEntry/create 1 2) (c/map-entry (W 1) (W 2)))
+  (same (key (clojure.lang.MapEntry/create 1 2)) (c/key (c/map-entry (W 1) (W 2))))
+  (same (get (transient {:a 1}) :a) (c/get (c/transient (W {:a 1})) (W :a)))
+  (same (get (transient #{1}) 1) (c/get (c/transient (W #{1})) (W 1)))
+  (same (get (transient #{1}) 2 :nf) (c/get (c/transient (W #{1})) (W 2) (W :nf)))
+  (same (get (transient [5]) 0) (c/get (c/transient (W [5])) (W 0)))
+  (same (contains? (transient {:a 1}) :a) (c/contains? (c/transient (W {:a 1})) (W :a)))
+  (same (contains? (transient #{1}) 1) (c/contains? (c/transient (W #{1})) (W 1)))
+  (same (contains? (transient [1]) 0) (c/contains? (c/transient (W [1])) (W 0))))
+
+;; ---------------------------------------------------------------------------
+;; assoc / dissoc / conj / nth / subvec / peek / pop
+
+(deftest update-assoc-dissoc-conj
+  (c/install!)
+  (doseq [coll kinds [k v] [[0 :z] [2 :z] [3 :z] [-1 :z] [:a 9] [:c 3] [1.0 :z] [nil nil]]]
+    (same (assoc coll k v) (c/assoc (W coll) (W k) (W v)))
+    (same (dissoc coll k) (c/dissoc (W coll) (W k)))
+    (same (conj coll [k v]) (c/conj (W coll) (W [k v])))
+    (same (conj coll k) (c/conj (W coll) (W k))))
+  (same (assoc {:a 1} :a 1 :b 2) (c/assoc (W {:a 1}) (W :a) (W 1) (W :b) (W 2)))
+  (same (assoc {} :a 1 :b) (c/assoc (W {}) (W :a) (W 1) (W :b)))
+  (same (apply assoc {} [:a 1 :b 2]) (c/assoc-seq (W {}) (W '(:a 1 :b 2))))
+  (same (apply assoc {} [:a 1 :b]) (c/assoc-seq (W {}) (W '(:a 1 :b))))
+  (same (assoc [1] "k" 2) (c/assoc (W [1]) (W "k") (W 2)))
+  (same (dissoc {:a 1 :b 2} :a :c) (c/dissoc (W {:a 1 :b 2}) (W :a) (W :c)))
+  (same (dissoc 5) (c/dissoc (W 5)))
+  (same (dissoc) (c/dissoc))
+  (same-pr (dissoc (zipmap (range 12) (range 12)) 3 4) (c/dissoc (W (zipmap (range 12) (range 12))) (W 3) (W 4)))
+  (same (conj) (c/conj))
+  (same (conj [1]) (c/conj (W [1])))
+  (same (conj [1] 2 3 4) (c/conj (W [1]) (W 2) (W 3) (W 4)))
+  (same (conj '(1) 2 3 4) (c/conj (W '(1)) (W 2) (W 3) (W 4)))
+  (same (conj nil 1 2) (c/conj (W nil) (W 1) (W 2)))
+  (same (conj (range 3) 9) (c/conj (sq/range (W 3)) (W 9)))
+  (same (conj {} {:b 2 :c 3}) (c/conj (W {}) (W {:b 2 :c 3})))
+  (same (conj {} [:a 1 2]) (c/conj (W {}) (W [:a 1 2])))
+  (same (conj {} '(:a 1)) (c/conj (W {}) (W '(:a 1))))
+  (same (conj {:a 1} (first {:b 2})) (c/conj (W {:a 1}) (W (first {:b 2}))))
+  (same (conj #{1} 1 2) (c/conj (W #{1}) (W 1) (W 2)))
+  (same (apply conj [] (range 40)) (c/conj-seq (W []) (sq/range (W 40))))
+  (same-pr (reduce conj #{} (range 40)) (c/conj-seq (W #{}) (sq/range (W 40))))
+  (same-pr (reduce conj {} (map vector (range 20) (range 20))) (c/conj-seq (W {}) (W (map vector (range 20) (range 20))))))
+
+(deftest update-nth-subvec-peek-pop
+  (c/install!)
+  (doseq [coll kinds i [0 1 5 -1]]
+    (same (nth coll i :nf) (c/nth (W coll) (W i) (W :nf)))
+    (same (nth coll i) (c/nth (W coll) (W i))))
+  (same (nth (transient [5]) 0) (c/nth (c/transient (W [5])) (W 0)))
+  (same (nth (transient [5]) 3 :nf) (c/nth (c/transient (W [5])) (W 3) (W :nf)))
+  (doseq [coll kinds [a b] [[0 0] [1 3] [0 2] [2 1] [-1 2] [1 nil] [1.0 2] [nil 1]]]
+    (same (subvec coll a) (c/subvec (W coll) (W a)))
+    (same (subvec coll a b) (c/subvec (W coll) (W a) (W b))))
+  (same (subvec (with-meta [1 2 3] {:m 1}) 1) (c/subvec (W (with-meta [1 2 3] {:m 1})) (W 1)))
+  (same (subvec (vec (range 100)) 30 70) (c/subvec (W (vec (range 100))) (W 30) (W 70)))
+  (doseq [coll kinds]
+    (same (peek coll) (c/peek (W coll)))
+    (same (pop coll) (c/pop (W coll)))
+    (same (count coll) (sq/count (W coll)))
+    (same (seq coll) (sq/seq (W coll)))
+    (same (first coll) (sq/first (W coll)))
+    (same (rest coll) (sq/rest (W coll)))))
+
+;; ---------------------------------------------------------------------------
+;; Transients
+
+(deftest transients
+  (c/install!)
+  (doseq [x kinds]
+    (same (persistent! (transient x)) (c/persistent! (c/transient (W x))))
+    (same (persistent! x) (c/persistent! (W x)))
+    (same (conj! x 1) (c/conj! (W x) (W 1))))
+  (same (persistent! (conj! (transient [1]) 2)) (c/persistent! (c/conj! (c/transient (W [1])) (W 2))))
+  (same (persistent! (conj! (transient {}) [:a 1])) (c/persistent! (c/conj! (c/transient (W {})) (W [:a 1]))))
+  (same (persistent! (conj! (transient {}) (first {:a 1}))) (c/persistent! (c/conj! (c/transient (W {})) (W (first {:a 1})))))
+  (same (persistent! (conj! (transient {}) {:a 1 :b 2})) (c/persistent! (c/conj! (c/transient (W {})) (W {:a 1 :b 2}))))
+  (same (persistent! (conj! (transient {}) nil)) (c/persistent! (c/conj! (c/transient (W {})) (W nil))))
+  (same (conj! (transient {}) [1 2 3]) (c/conj! (c/transient (W {})) (W [1 2 3])))
+  (same (persistent! (conj! (transient #{}) 1 2)) (c/persistent! (c/conj! (c/transient (W #{})) (W 1) (W 2))))
+  (same (persistent! (conj!)) (c/persistent! (c/conj!)))
+  (same (persistent! (assoc! (transient [1]) 0 9)) (c/persistent! (c/assoc! (c/transient (W [1])) (W 0) (W 9))))
+  (same (persistent! (assoc! (transient [1]) 1 9)) (c/persistent! (c/assoc! (c/transient (W [1])) (W 1) (W 9))))
+  (same (assoc! (transient [1]) 2 9) (c/assoc! (c/transient (W [1])) (W 2) (W 9)))
+  (same (assoc! (transient [1]) :a 9) (c/assoc! (c/transient (W [1])) (W :a) (W 9)))
+  (same (persistent! (assoc! (transient {}) :a 1 :b 2)) (c/persistent! (c/assoc! (c/transient (W {})) (W :a) (W 1) (W :b) (W 2))))
+  (same (persistent! (assoc! (transient {}) :a)) (c/persistent! (c/assoc! (c/transient (W {})) (W :a))))
+  (same (assoc! (transient #{}) 1 2) (c/assoc! (c/transient (W #{})) (W 1) (W 2)))
+  (same (assoc! [1] 0 2) (c/assoc! (W [1]) (W 0) (W 2)))
+  (same (persistent! (dissoc! (transient {:a 1 :b 2}) :a)) (c/persistent! (c/dissoc! (c/transient (W {:a 1 :b 2})) (W :a))))
+  (same (dissoc! (transient [1]) 0) (c/dissoc! (c/transient (W [1])) (W 0)))
+  (same (let [t (transient [1])] (persistent! t) (conj! t 2)) (let [t (c/transient (W [1]))] (c/persistent! t) (c/conj! t (W 2))))
+  (same (let [t (transient {})] (persistent! t) (assoc! t 1 2)) (let [t (c/transient (W {}))] (c/persistent! t) (c/assoc! t (W 1) (W 2))))
+  (same (let [t (transient [])] (persistent! t) (persistent! t)) (let [t (c/transient (W []))] (c/persistent! t) (c/persistent! t)))
+  (same (meta (persistent! (transient (with-meta [1] {:m 1})))) (c/meta (c/persistent! (c/transient (W (with-meta [1] {:m 1}))))))
+  (same (meta (persistent! (transient (with-meta {:a 1} {:m 1})))) (c/meta (c/persistent! (c/transient (W (with-meta {:a 1} {:m 1}))))))
+  (doseq [t [(fn [] (transient [1 2])) (fn [] (transient {:a 1})) (fn [] (transient #{1}))]]
+    (let [nat (t) mine (c/transient (W (persistent! (t))))]
+      (same (count nat) (sq/count mine))
+      (same (str (type nat)) (s/str (c/type-of mine)))))
+  (same (pr-str (transient [1])) (s/pr-str (c/transient (W [1]))))
+  (let [nat (persistent! (reduce conj! (transient []) (range 100)))
+        mine (c/persistent! (sq/reduce (wasm/new sq/Fn (wasm/null) (wasm/null) (wasm/funcref sq/Code2 (fn [_ t x] (c/conj! t x)))
+                                                 (wasm/null) (wasm/null) (wasm/null) (wasm/null))
+                                       (c/transient (W [])) (sq/range (W 100))))]
+    (same nat mine)))
+
+;; ---------------------------------------------------------------------------
+;; Predicates, logic, type
+
+(def ^:private pred-pairs
+  [[map? c/map?] [set? c/set?] [seq? c/seq?] [sorted? c/sorted?] [number? c/number?] [vector? c/vector?]
+   [list? c/list?] [fn? c/fn?] [nil? c/nil?] [string? c/string?] [keyword? c/keyword?] [symbol? c/symbol?]
+   [coll? c/coll?] [sequential? c/sequential?] [not c/lnot]])
+
+(deftest predicates-logic-type
+  (c/install!)
+  (doseq [x (concat kinds [inc])                           ; real seq kinds: the next loop
+          [np mp] pred-pairs]
+    (is (= (np x) (<-w (mp (W x)))) (str np " " (pr-str x))))
+  (doseq [[x mine] [[(range 3) (sq/range (W 3))] [(range) (sq/range)] [(repeat 2 1) (sq/repeat (W 2) (W 1))]
+                    [(lazy-seq [1]) (sq/lazy-seq* (clo (fn [] [1])))] [(cons 1 nil) (sq/cons (W 1) (W nil))]
+                    [(seq [1 2]) (sq/seq (W [1 2]))] [(reduced 1) (sq/reduced (W 1))] [inc (clo inc)]
+                    [(atom 1) (c/atom (W 1))] [(volatile! 1) (c/volatile! (W 1))] [(ex-info "m" {}) (c/ex-info (W "m") (W {}))]
+                    [(type 1) (c/type-of (W 1))] [(with-meta [1] {:m 1}) (W (with-meta [1] {:m 1}))]]
+          [np mp] pred-pairs]
+    (is (= (np x) (<-w (mp mine))) (str np " " (pr-str x))))
+  (doseq [x kinds]
+    (same (str (type x)) (s/str (c/type-of (W x)))))
+  (doseq [[x mine] [[(range 3) (sq/range (W 3))] [(range) (sq/range)] [(repeat 2 1) (sq/repeat (W 2) (W 1))]
+                    [(lazy-seq [1]) (sq/lazy-seq* (clo (fn [] [1])))] [(cons 1 nil) (sq/cons (W 1) (W nil))]
+                    [(seq [1 2]) (sq/seq (W [1 2]))] [(reduced 1) (sq/reduced (W 1))] [inc (clo inc)]
+                    [(atom 1) (c/atom (W 1))] [(volatile! 1) (c/volatile! (W 1))] [(ex-info "m" {}) (c/ex-info (W "m") (W {}))]
+                    [(type 1) (c/type-of (W 1))] [(with-meta [1] {:m 1}) (W (with-meta [1] {:m 1}))]
+                    [(transient []) (c/transient (W []))] [(transient {}) (c/transient (W {}))] [(transient #{}) (c/transient (W #{}))]]]
+    (same (str (type x)) (s/str (c/type-of mine))))
+  (same (= (type 1) (type 2)) (sq/equals (c/type-of (W 1)) (c/type-of (W 2))))
+  (same (= (type 1) (type :a)) (sq/equals (c/type-of (W 1)) (c/type-of (W :a))))
+  (same (pr-str (type :a)) (s/pr-str (c/type-of (W :a))))
+  (same ((complement nil?) 1) (sq/invoke1 (c/complement (clo nil?)) (W 1)))
+  (same ((complement +)) (sq/invoke0 (c/complement (clo +))))
+  (same ((complement (fn [a b] (= a b))) 1 1) (sq/invoke2 (c/complement (clo =)) (W 1) (W 1)))
+  (same ((complement :a) {:a false}) (sq/invoke1 (c/complement (W :a)) (W {:a false})))
+  (same (complement 1) (c/complement (W 1)))
+  (same ((complement (fn [a b c d] (+ a b c d))) 1 2 3 4) (c/invoke4 (c/complement (clo +)) (W 1) (W 2) (W 3) (W 4))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+
+(def ^:private operands
+  [0 1 -1 7 -7 3 1073741823 1073741824 -1073741825 9223372036854775807 -9223372036854775808 4294967296
+   1.5 -2.25 0.0 -0.0 ##Inf ##NaN nil :a "s" [1]])
+
+;; natives as values, not the IR op
+(def ^:private nat {:+ + :- - :* * :< < :<= <= :> > :>= >= :== == :not= not= :max max :min min :mod mod :quot quot})
+
+(deftest numbers-binary-matrix
+  (c/install!)
+  (doseq [a operands b operands]
+    (do
+      (same ((:+ nat) a b) (c/add (W a) (W b)))
+      (same ((:- nat) a b) (c/sub (W a) (W b)))
+      (same ((:* nat) a b) (c/mul (W a) (W b)))
+      (same ((:< nat) a b) (c/lt (W a) (W b)))
+      (same ((:<= nat) a b) (c/le (W a) (W b)))
+      (same ((:> nat) a b) (c/gt (W a) (W b)))
+      (same ((:>= nat) a b) (c/ge (W a) (W b)))
+      (same ((:== nat) a b) (c/num-eq (W a) (W b)))
+      (same ((:not= nat) a b) (c/not-eq (W a) (W b)))
+      (same ((:max nat) a b) (c/max (W a) (W b)))
+      (same ((:min nat) a b) (c/min (W a) (W b)))
+      (when-not (or (float? a) (float? b))                ; float quot/mod: named limit (needs f64 div)
+        (same ((:mod nat) a b) (c/mod (W a) (W b)))
+        (same ((:quot nat) a b) (c/quot* (W a) (W b)))))))
+
+(deftest numbers-arities-and-unary
+  (c/install!)
+  (doseq [a operands]
+    (same ((:- nat) a) (c/sub (W a)))
+    (same ((:+ nat) a) (c/add (W a)))
+    (same ((:max nat) a) (c/max (W a)))
+    (same ((:< nat) a) (c/lt (W a)))
+    (same ((:== nat) a) (c/num-eq (W a)))
+    (same (number? a) (c/number? (W a)))
+    (same (inc a) (c/inc* (W a)))
+    (same (dec a) (c/dec* (W a))))
+  (same ((:+ nat)) (c/add)) (same ((:*  nat)) (c/mul)) (same ((:- nat)) (c/sub))
+  (same ((:max nat)) (c/max)) (same ((:< nat)) (c/lt)) (same ((:== nat)) (c/num-eq)) (same ((:not= nat)) (c/not-eq))
+  (doseq [[a b cc d] [[1 2 3 4] [4 3 2 1] [1 1 2 2] [1 2 2 3] [2 1 nil 0] [1 2 nil 0] [1.5 2 3 4] [1 ##NaN 3 4]
+                      [9223372036854775807 1 -5 0] [3 -3 4 -4] [1 1 1 1] [1 1.0 1 1]]]
+    (doseq [[k f] [[:+ c/add] [:- c/sub] [:* c/mul] [:< c/lt] [:<= c/le] [:> c/gt] [:>= c/ge] [:== c/num-eq] [:not= c/not-eq]
+                   [:max c/max] [:min c/min]]]
+      (same ((k nat) a b cc) (f (W a) (W b) (W cc)))
+      (same ((k nat) a b cc d) (f (W a) (W b) (W cc) (W d)))))
+  (doseq [xs [[] [1] [1 2 3 4 5 6] [9223372036854775807 0 1] [1.5 2 3] [1 nil] [3 2 1 0 -1 -2]]]
+    (same (apply + xs) (c/add-seq (W (apply list xs))))
+    (same (apply - xs) (c/sub-seq (W (apply list xs))))
+    (same (apply * xs) (c/mul-seq (W (apply list xs))))
+    (same (apply < xs) (c/cmp-seq 0 (W (apply list xs))))
+    (same (apply >= xs) (c/cmp-seq 3 (W (apply list xs))))
+    (same (apply max xs) (c/max-seq false (W (apply list xs))))
+    (same (apply min xs) (c/max-seq true (W (apply list xs)))))
+  (doseq [[a b] [[12 10] [-1 255] [12 nil] [1.5 1]]]
+    (same (bit-and a b) (c/bit-and* (W a) (W b))))
+  (same (apply bit-and [1]) (c/bit-and* (W 1)))
+  (same (apply bit-and [1 2 3]) (c/bit-and* (W 1) (W 2) (W 3)))
+  (same (apply quot [7.5 0]) (c/quot* (W 7.5) (W 0)))
+  (same (apply mod [7 0.0]) (c/mod (W 7) (W 0.0)))
+  (doseq [[a b] [[7.5 2] [7 2.0] [-7.5 2.5]]]                ; float quot/mod: named limit until f64 div/trunc
+    (is (string/starts-with? (second (res #(c/quot* (W a) (W b)))) "lower-wasm: ") (pr-str [:quot a b]))
+    (is (string/starts-with? (second (res #(c/mod (W a) (W b)))) "lower-wasm: ") (pr-str [:mod a b]))))
+
+;; ---------------------------------------------------------------------------
+;; Equality, compare, hash (incl. the seq.lg print hook)
+
+(deftest equality-compare-hash
+  (c/install!)
+  (doseq [a kinds b kinds]
+    (same (= a b) (sq/equals (W a) (W b))))
+  (doseq [x (remove #(= [] %) kinds)]                     ; [] hashes as ArrayVector natively, PersistentVector here (D18)
+    (same (hash x) (sq/hash (W x))))
+  (same (= (first {:a 1}) [:a 1]) (sq/equals (W (first {:a 1})) (W [:a 1])))
+  (same (= [:a 1] (first {:a 1})) (sq/equals (W [:a 1]) (W (first {:a 1}))))
+  (same (= (first {:a 1}) '(:a 1)) (sq/equals (W (first {:a 1})) (W '(:a 1))))
+  (same (hash {:a [1 "x"] "k" #{:z}}) (sq/hash (W {:a [1 "x"] "k" #{:z}})))
+  ;; NOT checked: a map's or set's seq is a MapSeq/SetSeq natively, hashed by
+  ;; FNV over String() like a Range; wasm.phm hands seq.lg a Cons chain, which
+  ;; hashes ordered ((hash (seq {:a 1 :b 2})) 450139980 vs 21852162). P2.7 finding.
+  (same (= {:a 1} (with-meta {:a 1} {:m 1})) (sq/equals (W {:a 1}) (W (with-meta {:a 1} {:m 1}))))
+  (same (hash (with-meta [1 2] {:m 1})) (sq/hash (W (with-meta [1 2] {:m 1}))))
+  (same (hash (with-meta '(1 2) {:m 1})) (sq/hash (W (with-meta '(1 2) {:m 1}))))
+  ;; Range/Repeat/PersistentVectorSeq hash by FNV over String(): non-int
+  ;; elements reach wasm.str's printer through seq.lg's print hook
+  (same (hash (repeat 3 "a")) (sq/hash (sq/repeat (W 3) (W "a"))))
+  (same (hash (repeat 2 [:k 1.5])) (sq/hash (sq/repeat (W 2) (W [:k 1.5]))))
+  (same (hash (repeat 2 {:a "x"})) (sq/hash (sq/repeat (W 2) (W {:a "x"}))))
+  (same (hash (seq (with-meta [:a "b" \c 1.5 nil] {:pv true}))) (sq/hash (sq/seq (W [:a "b" \c 1.5 nil]))))
+  (same (hash (rest (with-meta [1 "x"] {:pv true}))) (sq/hash (sq/rest (W [1 "x"]))))
+  (doseq [a [1 1.5 "a" "b" :a :b/c 'x \a nil true [1 2] [1 3] [1] (first {:a 1}) [:a 1]]
+          b [1 2.5 "a" :a 'y \b nil false [1 2] [:a 2]]]
+    (same (compare a b) (c/compare (W a) (W b)))))
+
+;; ---------------------------------------------------------------------------
+;; State
+
+(deftest state-atom-volatile
+  (c/install!)
+  (same (let [a (atom 1)] [(deref a) (reset! a 2) (deref a)])
+        (let [a (c/atom (W 1))] (W [(c/deref a) (c/reset! a (W 2)) (c/deref a)])))
+  (same (let [a (atom 1)] [(swap! a inc) (swap! a + 2) (swap! a + 2 3) (swap! a + 1 2 3) @a])
+        (let [a (c/atom (W 1))]
+          (W [(c/swap! a (clo inc)) (c/swap! a (clo +) (W 2)) (c/swap! a (clo +) (W 2) (W 3))
+              (c/swap! a (clo +) (W 1) (W 2) (W 3)) (c/deref a)])))
+  (same (let [a (atom {})] (swap! a assoc :k 1)) (let [a (c/atom (W {}))] (c/swap! a (clo assoc) (W :k) (W 1))))
+  (same (let [a (atom {:n 1})] (swap! a :n)) (let [a (c/atom (W {:n 1}))] (c/swap! a (W :n))))
+  (same (swap! 1 inc) (c/swap! (W 1) (clo inc)))
+  (same (swap! (atom 1) 2) (c/swap! (c/atom (W 1)) (W 2)))
+  (same (reset! 1 2) (c/reset! (W 1) (W 2)))
+  (same (deref 1) (c/deref (W 1)))
+  (same (deref (atom 1) 10 :x) (c/deref (c/atom (W 1)) (W 10) (W :x)))
+  (same (atom 1 :meta) (c/atom (W 1) (W :meta)))
+  (doseq [[cur old] [[1 1] [1 2] [:k :k] ["s" "s"] [1.5 1.5] [##NaN ##NaN] [nil nil] [true true] [\a \a] [1 1.0]]]
+    (same (let [a (atom cur)] [(compare-and-set! a old 9) @a])
+          (let [a (c/atom (W cur))] (W [(c/compare-and-set! a (W old) (W 9)) (c/deref a)]))))
+  (same (let [v [1] a (atom v)] [(compare-and-set! a v 9) @a])
+        (let [v (W [1]) a (c/atom v)] (W [(c/compare-and-set! a v (W 9)) (c/deref a)])))
+  (same (compare-and-set! 1 1 2) (c/compare-and-set! (W 1) (W 1) (W 2)))
+  (same (let [v (volatile! 1)] [@v (vreset! v 2) (vswap! v inc) (vswap! v + 1 2 3) @v])
+        (let [v (c/volatile! (W 1))]
+          (W [(c/deref v) (c/vreset! v (W 2)) (c/vswap! v (clo inc)) (c/vswap! v (clo +) (W 1) (W 2) (W 3)) (c/deref v)])))
+  (same (vreset! 1 2) (c/vreset! (W 1) (W 2)))
+  (same (vswap! 1 inc) (c/vswap! (W 1) (clo inc)))
+  (same (vswap! (volatile! 1) 2) (c/vswap! (c/volatile! (W 1)) (W 2)))
+  (same (pr-str (atom [1 "x"])) (s/pr-str (c/atom (W [1 "x"]))))
+  (same (string/replace (pr-str (volatile! :v)) #"0x[0-9a-f]+" "0x0") (s/pr-str (c/volatile! (W :v))))
+  (same (str (atom 1)) (s/str (c/atom (W 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Metadata
+
+(deftest metadata
+  (c/install!)
+  (doseq [x kinds mt [{:a 1} nil 5]]
+    (same (meta (with-meta x mt)) (c/meta (c/with-meta (W x) (W mt))))
+    (if (or (keyword? x) (symbol? x))
+      ;; a meta'd keyword/symbol is = only to itself, natively too
+      (do (same (pr-str (with-meta x mt)) (s/pr-str (c/with-meta (W x) (W mt))))
+          (same [(keyword? (with-meta x mt)) (symbol? (with-meta x mt)) (= x (with-meta x mt)) (str (type (with-meta x mt)))]
+                (let [y (c/with-meta (W x) (W mt))]
+                  (W [(<-w (c/keyword? y)) (<-w (c/symbol? y)) (<-w (sq/equals (W x) y)) (<-w (s/str (c/type-of y)))])))
+          (same (let [y (with-meta x mt)] (= y y)) (let [y (c/with-meta (W x) (W mt))] (sq/equals y y)))
+          (same (meta (with-meta (with-meta x mt) {:b 1})) (c/meta (c/with-meta (c/with-meta (W x) (W mt)) (W {:b 1})))))
+      ;; NOT mirrored: native List.WithMeta copies EmptyList, so the copy fails
+      ;; every `== EmptyList` test: (= (with-meta '() m) '()) is false and
+      ;; (vec (with-meta '() m)) is [nil]. The runtime keeps it empty (finding).
+      (when-not (= '() x)
+        (same (with-meta x mt) (c/with-meta (W x) (W mt))))))
+  (doseq [[nat mine] [[(conj (with-meta [1] {:m 1}) 2) (c/conj (W (with-meta [1] {:m 1})) (W 2))]
+                      [(assoc (with-meta [1] {:m 1}) 0 2) (c/assoc (W (with-meta [1] {:m 1})) (W 0) (W 2))]
+                      [(pop (with-meta [1 2] {:m 1})) (sq/pop (W (with-meta [1 2] {:m 1})))]
+                      [(pop (with-meta [1] {:m 1})) (sq/pop (W (with-meta [1] {:m 1})))]
+                      [(conj (with-meta (vec (range 32)) {:m 1}) 99) (c/conj (W (with-meta (vec (range 32)) {:m 1})) (W 99))]
+                      [(assoc (with-meta {:b 1} {:m 1}) :c 2) (c/assoc (W (with-meta {:b 1} {:m 1})) (W :c) (W 2))]
+                      [(dissoc (with-meta {:b 1} {:m 1}) :b) (c/dissoc (W (with-meta {:b 1} {:m 1})) (W :b))]
+                      [(dissoc (with-meta {:b 1} {:m 1}) :zz) (c/dissoc (W (with-meta {:b 1} {:m 1})) (W :zz))]
+                      [(assoc (with-meta (zipmap (range 8) (range 8)) {:m 1}) 99 1) (c/assoc (W (with-meta (zipmap (range 8) (range 8)) {:m 1})) (W 99) (W 1))]
+                      [(assoc (with-meta (zipmap (range 20) (range 20)) {:m 1}) 99 1) (c/assoc (W (with-meta (zipmap (range 20) (range 20)) {:m 1})) (W 99) (W 1))]
+                      [(conj (with-meta #{1} {:m 1}) 2) (c/conj (W (with-meta #{1} {:m 1})) (W 2))]
+                      [(disj (with-meta #{1} {:m 1}) 1) (hs/sdisj (W (with-meta #{1} {:m 1})) (W 1))]
+                      [(conj (with-meta '(1) {:m 1}) 2) (c/conj (W (with-meta '(1) {:m 1})) (W 2))]
+                      [(rest (with-meta '(1 2) {:m 1})) (sq/rest (W (with-meta '(1 2) {:m 1})))]
+                      [(subvec (with-meta [1 2] {:m 1}) 1) (c/subvec (W (with-meta [1 2] {:m 1})) (W 1))]
+                      [(with-meta (with-meta [1] {:a 1}) {:b 2}) (c/with-meta (W (with-meta [1] {:a 1})) (W {:b 2}))]
+                      [(with-meta (with-meta {} {:a 1}) nil) (c/with-meta (W (with-meta {} {:a 1})) (W nil))]]]
+    (same (meta nat) (c/meta mine))
+    (same nat mine))
+  (same (meta (with-meta inc {:a 1})) (c/meta (c/with-meta (clo inc) (W {:a 1}))))
+  (same ((with-meta inc {:a 1}) 1) (sq/invoke1 (c/with-meta (clo inc) (W {:a 1})) (W 1)))
+  (same ((with-meta + {:a 1}) 1 2 3 4) (c/invoke4 (c/with-meta (clo +) (W {:a 1})) (W 1) (W 2) (W 3) (W 4)))
+  (same (meta (with-meta (with-meta inc {:a 1}) {:b 1})) (c/meta (c/with-meta (c/with-meta (clo inc) (W {:a 1})) (W {:b 1}))))
+  (same (meta (fn [])) (c/meta (clo (fn []))))
+  (same (= inc (with-meta inc {})) (let [f (clo inc)] (sq/equals f (c/with-meta f (W {})))))
+  (same (fn? (with-meta inc {})) (c/fn? (c/with-meta (clo inc) (W {}))))
+  (both-throw ((with-meta (fn [a] a) {}) 1 2)
+              (c/invoke-args (c/with-meta (wasm/new sq/Fn (wasm/null) (wasm/funcref sq/Code1 (fn [_ a] a)) (wasm/null) (wasm/null)
+                                                    (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 1 (wasm/null)))
+                                          (W {}))
+                             2 (W 1) (W 2) nil nil))
+  (is (string/starts-with? (second (res #(c/with-meta (c/atom (W 1)) (W {:a 1})))) "lower-wasm: ") "with-meta on an atom: named limit")
+  (same (meta (with-meta (range 3) {:a 1})) (c/meta (c/with-meta (sq/range (W 3)) (W {:a 1}))))
+  (same (meta (with-meta (cons 1 nil) {:a 1})) (c/meta (c/with-meta (sq/cons (W 1) (W nil)) (W {:a 1}))))
+  (same (meta (with-meta (seq [1 2]) {:a 1})) (c/meta (c/with-meta (sq/seq (W [1 2])) (W {:a 1}))))
+  (same (meta (empty (with-meta [1] {:a 1}))) (c/meta (sq/pop (W (with-meta [1] {:a 1}))))))
+
+;; ---------------------------------------------------------------------------
+;; Exceptions
+
+(deftest exceptions
+  (c/install!)
+  (same (ex-message (ex-info "m" {:a 1})) (c/ex-message (c/ex-info (W "m") (W {:a 1}))))
+  (same (ex-data (ex-info "m" {:a 1 :b [2]})) (c/ex-data (c/ex-info (W "m") (W {:a 1 :b [2]}))))
+  (same (ex-message (ex-info "m" {} (ex-info "c" {}))) (c/ex-message (c/ex-info (W "m") (W {}) (c/ex-info (W "c") (W {})))))
+  (same (ex-data (ex-cause (ex-info "m" {} (ex-info "c" {:k 1}))))
+        (c/ex-data (c/ex-cause (c/ex-info (W "m") (W {}) (c/ex-info (W "c") (W {:k 1}))))))
+  (same (ex-cause (ex-info "m" {} 5)) (c/ex-cause (c/ex-info (W "m") (W {}) (W 5))))
+  (doseq [[msg data] [["m" nil] [:m {}] ["m" []] ["m" #{}] [nil {}]]]
+    (same (ex-info msg data) (c/ex-info (W msg) (W data))))
+  (same (ex-info "m") (c/ex-info (W "m")))
+  (doseq [x [nil 5 "s" :k [1 "x"] {:a 1} 1.5]]
+    (same (ex-message x) (c/ex-message (W x)))
+    (same (ex-data x) (c/ex-data (W x))))
+  (same (pr-str (ex-info "m" {:a "x"})) (s/pr-str (c/ex-info (W "m") (W {:a "x"}))))
+  (same (str (ex-info "m" {:a 1})) (s/str (c/ex-info (W "m") (W {:a 1}))))
+  (same (= (ex-info "m" {}) (ex-info "m" {})) (sq/equals (c/ex-info (W "m") (W {})) (c/ex-info (W "m") (W {}))))
+  (same (let [t throw] (try (t (ex-info "x" {:k 1})) (catch Throwable e (ex-data e))))
+        (try (c/throw-value (c/ex-info (W "x") (W {:k 1}))) (catch Throwable e (c/ex-data e))))
+  (same (let [t throw] (try (t 5) (catch Throwable e e))) (try (c/throw-value (W 5)) (catch Throwable e e)))
+  (same (try (throw (ex-info "x" {})) (catch Throwable e (ex-message e))) (try (c/throw-value (c/ex-info (W "x") (W {}))) (catch Throwable e (c/ex-message e))))
+  ;; a raised runtime error is the backend's kind-1 $Err with both messages
+  (let [e (try (c/add (W 9223372036854775807) (W 1)) (catch Throwable e e))]
+    (is (= [1 "integer overflow" "integer overflow"]
+           [(wasm/get sq/Err 0 e) (bytes->str (wasm/get sq/Err 1 e)) (bytes->str (wasm/get sq/Err 2 e))])))
+  (let [e (try (c/inc* (W 9223372036854775807)) (catch Throwable e e))]
+    (is (= ["integer overflow" "ExecutionError: integer overflow"] [(bytes->str (wasm/get sq/Err 1 e)) (bytes->str (wasm/get sq/Err 2 e))]))
+    (same (try (inc 9223372036854775807) (catch Exception e (ex-message e))) (s/mk-str (wasm/get sq/Err 2 e)))))
+
+;; ---------------------------------------------------------------------------
+;; Calls through values, gensym, sort, host
+
+(deftest calls-gensym-sort-host
+  (c/install!)
+  (doseq [[f args] [[+ [1 2]] [+ nil] [+ '(1 2 3)] [+ [1 2 3 4]] [vector [1 2 3 4]] [+ (range 3)] [+ {:a 1}] [+ "ab"] [str "ab"]
+                    [list #{1}] [:a [{:a 1}]] [:a [{} 7]] [{:a 1} [:a]] [{:a 1} [:b 2]] [[1 2] [1]] [[1 2] [5]] [#{1} [1]] ['a [{'a 3}]]
+                    [1 [1]] [+ 5] [:a [1 2 3]] [+ [1 2 3 4 5]]]]
+    (if (and (fn? f) (coll? args) (< 4 (count args)))
+      (is (= :err (first (res #(c/apply* (W f) (W args))))) "more than 4 args: named limit")
+      (same (apply* f args) (c/apply* (W f) (if (seq? args) (W args) (W args))))))
+  (same (apply* + (range 4)) (c/apply* (clo +) (sq/range (W 4))))
+  (same ((bound-fn* inc) 1) (sq/invoke1 (c/bound-fn* (clo inc)) (W 1)))
+  (same (bound-fn* 1) (c/bound-fn* (W 1)))
+  (let [a (<-w (c/gensym)) b (<-w (c/gensym)) p (<-w (c/gensym (W "foo")))]
+    (is (and (symbol? a) (re-matches #"G__\d+" (name a)) (re-matches #"foo\d+" (name p))) (pr-str [a p]))
+    (is (< (parse-long (subs (name a) 3)) (parse-long (subs (name b) 3)))))
+  (same (gensym :a) (c/gensym (W :a)))
+  (same (gensym nil) (c/gensym (W nil)))
+  (doseq [coll [[3 1 2] '(3 1 2) [] '() #{3 1 2} {:b 1 :a 2 :c 0} "cab" "héllo" [[2 1] [1 2] [1 1]] [1 1.5 0 -2.5]
+                [:b :a :c/d] ["b" "a" "ab"] nil 5 [1 "a"] (first {:z 1})]]
+    (same (sort coll) (c/sort (W coll)))
+    (same (sort > coll) (c/sort (clo >) (W coll)))
+    (same (sort compare coll) (c/sort (clo compare) (W coll))))
+  (same (sort (range 5)) (c/sort (sq/range (W 5))))
+  (same (sort (map inc [3 1 2])) (c/sort (sq/map* (clo inc) (W [3 1 2]))))
+  ;; stability: equal keys keep their order, with a boolean and a numeric comparator
+  (let [xs (mapv (fn [i] [(mod (* i 7) 5) i]) (range 40))]
+    (same (sort (fn [a b] (< (first a) (first b))) xs) (c/sort (clo (fn [a b] (< (first a) (first b)))) (W xs)))
+    (same (sort (fn [a b] (- (first a) (first b))) xs) (c/sort (clo (fn [a b] (- (first a) (first b)))) (W xs))))
+  (same (sort (fn [a b] nil) [2 1]) (c/sort (clo (fn [a b] nil)) (W [2 1])))
+  (same (sort 1 [2 1]) (c/sort (W 1) (W [2 1])))
+  (same (key (first (sort {:b 1 :a 2}))) (c/key (sq/first (c/sort (W {:b 1 :a 2})))))
+  (same (os/getenv "LG_WASM_SURELY_UNSET_VAR") (c/getenv (W "LG_WASM_SURELY_UNSET_VAR")))
+  (same (os/getenv 1) (c/getenv (W 1)))
+  (same (os/getenv nil) (c/getenv (W nil)))
+  (is (= "v" (binding [wasm/*host-env* {"K" "v"}] (<-w (c/getenv (W "K"))))))
+  (doseq [f [#(c/slurp (W "f")) #(c/open (W "f")) #(c/read-string (W "1"))]]
+    (is (string/starts-with? (second (res f)) "lower-wasm: ") "named limit")))
+
+;; ---------------------------------------------------------------------------
+;; Printing maps and sets through wasm.str's hook
+
+(deftest printing-hooks
+  (c/install!)
+  (doseq [x [{} {:a 1 :b "x"} {"k" [1 \c] nil nil} (zipmap (range 12) (map str (range 12))) #{} #{"a" :b 1}
+             [{:a #{1}} (first {:k "v"})] (list {:a "s"}) (first {"k" "v"})]]
+    (same (pr-str x) (s/pr-str (W x)))
+    (same (str x) (s/str (W x)))
+    (same (print-str x) (s/print-str (W x))))
+  (same (pr-str (seq {:a 1 :b 2})) (s/pr-str (sq/seq (W {:a 1 :b 2}))))
+  (same (str (sort {:b 1 :a 2})) (s/str (c/sort (W {:b 1 :a 2})))))
+
+;; ---------------------------------------------------------------------------
+;; The dialect claim, as in seq_test/str_test: every var a defn body
+;; references after IR macroexpansion is a runtime var, an intrinsic or
+;; declaration, a core fn the IR lowers to an op, or core/throw, which the
+;; backend lowers to the wasm throw instruction (D25, D31).
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot throw})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/wasm/core.lg") "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        globals (filter #(and (seq? %) (= 'def (first %))) forms)
+        in-ns* #(binding [*ns* (find-ns 'wasm.core)] (%))
+        offending
+        (for [d defns
+              [params & body] (arities d)
+              sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
+              :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                    vname (str v)]
+              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["core" "seq" "pvec" "str" "phm" "phs"])
+                             (and (string/starts-with? vname "#'wasm.intrinsics/")
+                                  (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [(second d) sym])]
+    (is (< 100 (count defns)))
+    (is (= '[globals] (mapv second globals)) "one runtime global: gensym counter + type table")
+    (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))

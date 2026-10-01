@@ -18,11 +18,14 @@
             [wasm.phm :as m]
             [wasm.seq :as sq]))
 
-;; impl (an HMap in HAMT mode), hash cache (-1 = none).
-(wasm/defstruct HSet [:ref [:mut :i64]])
+;; impl (an HMap in HAMT mode), hash cache (-1 = none), meta (null = none).
+(wasm/defstruct HSet [:ref [:mut :i64] :ref])
 
 (defn- impl [s] (wasm/get HSet 0 s))
-(defn- mkset [i] (wasm/new HSet i -1))
+(defn- mkset [i] (wasm/new HSet i -1 (wasm/null)))
+(defn smeta [s] (wasm/get HSet 2 s))
+(defn swith-meta [s meta] (wasm/new HSet (impl s) (wasm/get HSet 1 s) meta))
+(defn- carry-meta [s r] (if (if (wasm/ref-eq s r) true (wasm/null? (smeta s))) r (swith-meta r (smeta s))))
 
 (defn empty-set [] (mkset (m/empty-hamt-map)))            ; EmptyPersistentSet :32
 
@@ -30,15 +33,15 @@
 
 (defn sconj [s x]                                           ; Conj :114-120
   (let [i (impl s) ni (m/massoc i x x)]
-    (if (wasm/ref-eq ni i) s (mkset ni))))
+    (if (wasm/ref-eq ni i) s (carry-meta s (mkset ni)))))
 
 (defn sdisj [s x]                                           ; Disj :124-135
   (let [i (impl s) ni (m/mdissoc i x)]
     (cond
       (wasm/ref-eq ni i) s
       ;; mdissoc drains to the ORDERED empty map; a set must not regrow from it.
-      (= 0 (m/mcount ni)) (mkset (m/empty-hamt-map))
-      :else (mkset ni))))
+      (= 0 (m/mcount ni)) (carry-meta s (mkset (m/empty-hamt-map)))
+      :else (carry-meta s (mkset ni)))))
 
 (defn scontains? [s x]                                      ; Contains :137-146
   (if (= 0 (scount s)) false (m/mcontains? (impl s) x)))

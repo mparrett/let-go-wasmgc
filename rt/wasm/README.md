@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Six namespaces that load together under native lg as one runtime (P2.9),
+Seven namespaces that load together under native lg as one runtime (P2.9),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go 4e769212. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -15,16 +15,23 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 4 | `str.lg` | `wasm.str` | 1 2 3 | building the scalar boxes, keyword/symbol interning, `str`/`pr-str`/`print-str`, float formatting, the string natives, `compare` (STR.md) |
 | 5 | `phm.lg` | `wasm.phm` | 1 2 3 | the persistent/transient map (array-map + HAMT), map hooks (slot 0) |
 | 6 | `phs.lg` | `wasm.phs` | 1 3 5 | the persistent/transient set, set hooks (slot 1) |
+| 7 | `core.lg` | `wasm.core` | 1-6 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the
 collections reach seq.lg's generic natives through hooks. The link step is
-one call, `(wasm.phs/install-hooks!)`, which registers maps (slot 0) and sets
-(slot 1); `wasm.str/set-print-hook!` installs the printer for them.
+one call, `(wasm.core/install!)`: maps (slot 0) and sets (slot 1) through
+`wasm.phs/install-hooks!`, wasm.core's own foreign values (transients, types,
+meta'd keywords/symbols) in the generic slot 2, the printer wasm.str uses for
+foreign values (`set-print-hook!`, called with a mode: 0 `Value.String()`,
+1 `pr-str`, 2 `print-str`; a map's String() has no commas, its pr-str does),
+and the printer seq.lg hashes Range/Repeat/PVecSeq elements with
+(`wasm.seq/set-print-hook!`, given `wasm.str/value-string`).
 
 Runtime globals (D39), one per namespace that has state: `wasm.seq/hooks`
-(three Handler slots) and `wasm.str/globals` (intern table, its count, the
-print hook).
+(three Handler slots and the hashing printer), `wasm.str/globals` (intern
+table, its count, the print hook) and `wasm.core/globals` (gensym counter,
+interned types).
 
 ## Kind table (`wasm.seq/kind`, the one dispatch point)
 
@@ -53,6 +60,14 @@ print hook).
 | 20 | Kw | `Kw` (interned by wasm.str) |
 | 21 | Sym | `Sym` (interned by wasm.str) |
 | 22 | Float | `Float` |
+| 23 | MapEntry | `MapEntry` (key, val): what a map's seq yields; = and hash as the 2-vector, but a Seq, and the only thing `key`/`val` accept |
+| 24 | Atom | `Atom` (the backend's `$Atom`: one mutable slot) |
+| 25 | Volatile | `Volatile` (same shape) |
+| 26 | Err | `Err` (the backend's `$Err` plus a cause: kind 0 ex-info / 1 raw / 2 caught, msg, caught msg, data, cause) |
+
+wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
+(phm's `HTransient`), 33 TransientSet (`TSet`), 34 TransientVector (`TVec`),
+35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`).
 
 Equality and hash of every kind follow corpus/hash/SPEC.md (D19). Kind 18
 dispatches through per-kind Handlers, slot 0 maps, 1 sets, 2 a generic
@@ -62,10 +77,36 @@ fallback (SEQ.md, "Composition hooks").
 
 Public defns that implement a let-go native carry `^{:twin "core/name"}`
 (D58); `lg tools/twin-manifest.lg` lists them and
-`checks/native-twins.sh corpus/natives/natives-shared.txt` scores what the
-shipped programs reach. One-kind entries (`massoc`, `vnth`, `sconj`, ...)
-carry no marker: the dispatching `assoc`/`get`/... entries do not exist yet
-(P2.7).
+`checks/native-twins.sh corpus/natives/natives-shared.txt --exclude 'term/'`
+scores what the shipped programs reach (MISSING 0 since P2.7). One-kind
+entries (`massoc`, `vnth`, `sconj`, ...) carry no marker; the dispatching
+entries do, and where wasm.core's dispatcher supersedes a seq.lg/str.lg one
+(`conj`, `nth`, `peek`, `pop`, `compare`) the marker moved to wasm.core.
+`slurp`, `open` and `read-string` are named-limit twins: they claim the
+native and trap with a `lower-wasm:` message.
+
+## Errors
+
+wasm.core raises let-go's catchable errors as the backend's exception value,
+`(throw (wasm/new sq/Err 1 msg cmsg nil nil))`: the backend lowers #'throw to
+`throw $lgex`. A native called as a value reports unprefixed messages (msg =
+cmsg); `inc`/`dec`, being IR-op fns natively, carry the "ExecutionError: "
+prefix once caught. Under native lg the Err is a wasm ref, so only `catch
+Throwable` sees it (core_test's `res` does). The older files still `wasm/trap`
+their catchable errors with static text; converting them is follow-up work.
+
+## read-string and edn.lg (plan D8)
+
+`read-string` is a named limit here. The plan (section 1, item 6) routes it
+through `pkg/rt/core/edn.lg` compiled by the backend like any program, on the
+premise that edn.lg is an lg EDN reader. At 4e769212 it is not: edn.lg's
+`read-string` is one line, `(core/read-data-string s)`, a Go native, so
+compiling edn.lg buys nothing until there is a reader written in lg. The
+route that stays inside the campaign's rules is a reader in the runtime
+dialect (or in plain lg compiled by the backend once top-level defs and
+`case` chains lower, P1.6) checked against `read-data-string` the way
+str.lg's printer is checked against `pr-str`; the float-literal half needs
+the inverse of D45's formatter (Go's strconv parse) in the dialect.
 
 ## Checks
 
@@ -78,5 +119,5 @@ Run from `dev/lower-wasm/`:
   the 1e6 reduce gate (D51). `checks/gate.sh 2` sets `SLOW=1`.
 - `checks/map-order.sh --native`: the map/set iteration-order corpus
   (corpus/maporder) is current against native lg.
-- `checks/native-twins.sh <reach-list>`: natives a program reaches that no
-  runtime defn claims.
+- `checks/native-twins.sh <reach-list> [--exclude REGEX]`: natives a program
+  reaches that no runtime defn claims.

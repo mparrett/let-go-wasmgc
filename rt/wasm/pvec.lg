@@ -9,7 +9,7 @@
 (ns wasm.pvec
   (:require [wasm.intrinsics :as wasm]))
 
-(wasm/defstruct PVec [:i64 :i64 :ref :ref]) ; cnt, shift, root, tail
+(wasm/defstruct PVec [:i64 :i64 :ref :ref :ref]) ; cnt, shift, root, tail, meta (null = none)
 (wasm/defarray Node :ref)                    ; trie node (32 slots) or tail (1..32)
 
 (defn- node-clone [src n]
@@ -18,7 +18,11 @@
     dst))
 
 (defn empty-vec []
-  (wasm/new PVec 0 5 (wasm/array-new Node 32 (wasm/null)) (wasm/array-new Node 0 (wasm/null))))
+  (wasm/new PVec 0 5 (wasm/array-new Node 32 (wasm/null)) (wasm/array-new Node 0 (wasm/null)) (wasm/null)))
+
+(defn vmeta [v] (wasm/get PVec 4 v))
+(defn vwith-meta [v m]                       ; with-meta: the trie is shared
+  (wasm/new PVec (wasm/get PVec 0 v) (wasm/get PVec 1 v) (wasm/get PVec 2 v) (wasm/get PVec 3 v) m))
 
 (defn vcount [v] (wasm/get PVec 0 v))
 
@@ -67,14 +71,14 @@
     (if (< (- cnt (tailoff cnt)) 32)
       (let [nt (node-clone tail (inc (wasm/alen tail)))]
         (wasm/aset! Node nt (wasm/alen tail) x)
-        (wasm/new PVec (inc cnt) shift root nt))
+        (wasm/new PVec (inc cnt) shift root nt (vmeta v)))
       (let [nt (wasm/array-new Node 1 x)]
         (if (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
           (let [nr (wasm/array-new Node 32 (wasm/null))]
             (wasm/aset! Node nr 0 root)
             (wasm/aset! Node nr 1 (new-path shift tail))
-            (wasm/new PVec (inc cnt) (+ shift 5) nr nt))
-          (wasm/new PVec (inc cnt) shift (push-tail cnt shift root tail) nt))))))
+            (wasm/new PVec (inc cnt) (+ shift 5) nr nt (vmeta v)))
+          (wasm/new PVec (inc cnt) shift (push-tail cnt shift root tail) nt (vmeta v)))))))
 
 (defn- do-assoc [level node i x]
   (let [ret (node-clone node 32)]
@@ -92,10 +96,10 @@
           (if (>= i (tailoff cnt))
             (let [tail (wasm/get PVec 3 v) nt (node-clone tail (wasm/alen tail))]
               (wasm/aset! Node nt (bit-and i 31) x)
-              (wasm/new PVec cnt (wasm/get PVec 1 v) (wasm/get PVec 2 v) nt))
+              (wasm/new PVec cnt (wasm/get PVec 1 v) (wasm/get PVec 2 v) nt (vmeta v)))
             (wasm/new PVec cnt (wasm/get PVec 1 v)
                       (do-assoc (wasm/get PVec 1 v) (wasm/get PVec 2 v) i x)
-                      (wasm/get PVec 3 v)))))))
+                      (wasm/get PVec 3 v) (vmeta v)))))))
 
 (defn- pop-tail [cnt level node]
   (let [subidx (bit-and (unsigned-bit-shift-right (- cnt 2) level) 31)]
@@ -117,13 +121,13 @@
         root (wasm/get PVec 2 v) tail (wasm/get PVec 3 v)]
     (cond
       (= cnt 0) (wasm/trap "pvec: can't pop empty vector")
-      (= cnt 1) (empty-vec)
+      (= cnt 1) (vwith-meta (empty-vec) (vmeta v))
       (> (- cnt (tailoff cnt)) 1)
-      (wasm/new PVec (dec cnt) shift root (node-clone tail (dec (wasm/alen tail))))
+      (wasm/new PVec (dec cnt) shift root (node-clone tail (dec (wasm/alen tail))) (vmeta v))
       :else
       (let [nt (array-for v (- cnt 2))
             nr0 (pop-tail cnt shift root)
             nr (if (wasm/null? nr0) (wasm/array-new Node 32 (wasm/null)) nr0)]
         (if (if (> shift 5) (wasm/null? (wasm/aget Node nr 1)) false)
-          (wasm/new PVec (dec cnt) (- shift 5) (wasm/aget Node nr 0) nt)
-          (wasm/new PVec (dec cnt) shift nr nt))))))
+          (wasm/new PVec (dec cnt) (- shift 5) (wasm/aget Node nr 0) nt (vmeta v))
+          (wasm/new PVec (dec cnt) shift nr nt (vmeta v)))))))

@@ -37,3 +37,8 @@
 - S2. `(count (seq (map inc (range 3))))` throws (ChunkedCons has no count); `(peek (cons 1 nil))` throws; a throwing lazy-seq thunk is NOT re-run natively (error cached). Reproduced except the last (needs ex-info, P2.7).
 - I8. `optimize-fn` DCEs an unused op that would throw (`(+ (id MaxInt64) 1)` at top level exits 0 under wasm, native throws); `quot` is kept. The pass treats checked arithmetic as pure; lower-go likely inherits it. Parity gap, recorded not fixed.
 - I9. The oracle reports MATCH when both sides fail identically (e.g. a reader error in the program); check line counts when a new corpus program "passes" first time.
+
+## From P2.7 (2026-10-01)
+- R5. A map's or set's `seq` hashes over its printed form natively (450139980 vs the ordered-seq hash 21852162); the runtime still hashes it as an ordered seq. Open seam in phm.
+- R6. Native bug: `with-meta` on `'()` breaks the empty list: `(= (with-meta '() m) '())` is false and `(vec …)` gives `[nil]`. Not mirrored.
+- R7. Possible lg bug: an unclosed form makes `require` skip the rest of the file silently (9 deftests failed to register with no error).

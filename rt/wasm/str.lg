@@ -465,7 +465,8 @@
 
 (defn set-print-hook!
   "Install the printer for foreign values (maps, sets): a closure called as
-   (f x readably-Bool) returning a Str."
+   (f x mode) returning a Str, mode a boxed Int as write-val's (0 String(),
+   1 pr-str, 2 print-str)."
   [f] (wasm/set! Globals 2 globals f))
 
 (defn- write-quoted [b s]                                ; String.String() (string.go:309)
@@ -504,26 +505,29 @@
 
 (declare write-val)
 
-(defn- write-seq [b x readably]
+(defn- write-seq [b x mode]
   (buf-byte! b 40)
   (loop [s (sq/seq x) first? true]
     (when-not (wasm/null? s)
       (when-not first? (buf-byte! b 32))
-      (write-val b (sq/first s) readably)
+      (write-val b (sq/first s) mode)
       (recur (sq/next s) false)))
   (buf-byte! b 41))
 
-(defn- write-pvec [b v readably]
+(defn- write-pvec [b v mode]
   (buf-byte! b 91)
   (loop [i 0]
     (when (< i (pv/vcount v))
       (when (> i 0) (buf-byte! b 32))
-      (write-val b (pv/vnth v i) readably)
+      (write-val b (pv/vnth v i) mode)
       (recur (inc i))))
   (buf-byte! b 93))
 
-(defn- write-val [b x readably]
-  (let [k (sq/kind x)]
+;; mode: 0 Value.String() (str's nested values), 1 pr-str, 2 print-str (not
+;; readably). 0 and 1 differ only in the foreign printer: a map's String()
+;; separates entries with " ", its print-method with ", " (print_method.go).
+(defn- write-val [b x mode]
+  (let [k (sq/kind x) readably (if (= mode 2) false true)]
     (cond (= k 0) (buf-bytes! b (wasm/bytes-of-string "nil"))
           (= k 1) (buf-int! b (sq/unbox-int x))
           (= k 15) (buf-bytes! b (if (= 1 (wasm/get sq/Bool 0 x)) (wasm/bytes-of-string "true") (wasm/bytes-of-string "false")))
@@ -532,12 +536,14 @@
           (= k 20) (do (buf-byte! b 58) (write-named b x))
           (= k 21) (write-named b x)
           (= k 22) (write-float-bits! b (sq/float-bits (unbox-float x)))
-          (if (>= k 2) (<= k 10) false) (write-seq b x readably)
-          (= k 11) (write-pvec b x readably)
-          (= k 18) (let [h (wasm/get Globals 2 globals)]
+          (if (>= k 2) (<= k 10) false) (write-seq b x mode)
+          (= k 11) (write-pvec b x mode)
+          (= k 23) (write-pvec b (sq/entry-vec x) mode)       ; MapEntry.String(): [k v]
+          ;; foreign kinds and the P2.7 boxes (atom, volatile, exception) print through wasm.core
+          (if (= k 18) true (>= k 24)) (let [h (wasm/get Globals 2 globals)]
                      (if (wasm/null? h)
                        (wasm/trap "wasm.str: printing a foreign value and no print hook installed")
-                       (buf-bytes! b (str-bytes (sq/invoke2 h x (sq/bool readably))))))
+                       (buf-bytes! b (str-bytes (sq/invoke2 h x (sq/box-int mode))))))
           :else (wasm/trap "wasm.str: printing this kind is not implemented"))))
 
 (defn- write-str-val [b x]                               ; strValue (lang.go:5006)
@@ -549,12 +555,12 @@
                      (cond (> f 1.7976931348623157e308) (buf-bytes! b (wasm/bytes-of-string "Infinity"))
                            (< f -1.7976931348623157e308) (buf-bytes! b (wasm/bytes-of-string "-Infinity"))
                            :else (write-float-bits! b (sq/float-bits f))))
-          :else (write-val b x true))))
+          :else (write-val b x 0))))
 
 ;; mode 0 = str, 1 = pr-str, 2 = print-str (prThroughToString: space-separated)
 (defn- write-arg [b x mode first?]
   (cond (= mode 0) (write-str-val b x)
-        :else (do (when-not first? (buf-byte! b 32)) (write-val b x (= mode 1)))))
+        :else (do (when-not first? (buf-byte! b 32)) (write-val b x mode))))
 
 (defn- out1 [mode a] (let [b (buf-new)] (write-arg b a mode true) (buf-done b)))
 (defn- out2 [mode a c] (let [b (buf-new)] (write-arg b a mode true) (write-arg b c mode false) (buf-done b)))
@@ -572,6 +578,8 @@
 (defn ^{:twin "core/pr-str"} pr-str ([] (lit "")) ([a] (out1 1 a)) ([a b] (out2 1 a b)) ([a b c] (out3 1 a b c)))
 (defn ^{:twin "core/print-str"} print-str ([] (lit "")) ([a] (out1 2 a)) ([a b] (out2 2 a b)) ([a b c] (out3 2 a b c)))
 (defn str-seq [xs] (out-seq 0 xs))
+(defn value-string "Value.String(): what Go hashes a non-Hashable seq's elements by." [x]
+  (let [b (buf-new)] (write-val b x 0) (buf-done b)))
 (defn pr-str-seq [xs] (out-seq 1 xs))
 (defn print-str-seq [xs] (out-seq 2 xs))
 
@@ -625,7 +633,9 @@
 (defn- num-kind? [k] (if (= k 1) true (= k 22)))
 
 (defn compare* [a b]
-  (let [ka (sq/kind a) kb (sq/kind b)]
+  (let [a (if (= 23 (sq/kind a)) (sq/entry-vec a) a)       ; a MapEntry compares as its 2-vector
+        b (if (= 23 (sq/kind b)) (sq/entry-vec b) b)
+        ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka 0) (= kb 0) false) 0
           (= ka 0) -1
           (= kb 0) 1
@@ -638,7 +648,7 @@
           (if (= ka 11) (= kb 11) false) (pvec-cmp a b)
           :else (wasm/trap "cannot compare these types"))))
 
-(defn ^{:twin "core/compare"} compare [a b] (sq/box-int (compare* a b)))
+(defn compare [a b] (sq/box-int (compare* a b)))           ; the core/compare twin is wasm.core/compare (let-go's error text)
 
 ;; ---------------------------------------------------------------------------
 ;; Named values: name, namespace, keyword, symbol

@@ -48,7 +48,7 @@
 (wasm/defstruct Env2 [:ref :ref])
 
 ;; Seq kinds (field order follows the Go structs).
-(wasm/defstruct List [:ref :ref :i64])             ; first, next, count; count 0 = EmptyList (list.go:41)
+(wasm/defstruct List [:ref :ref :i64 :ref])        ; first, next, count, meta; count 0 = EmptyList (list.go:41)
 (wasm/defstruct Cons [:ref :ref])                  ; first, more (a seq, or null) (cons.go:12)
 (wasm/defstruct LazySeq [[:mut :ref] [:mut :ref] [:mut :i64]]) ; fn, realised seq s, done (lazy_seq.go:16)
 (wasm/defstruct ArrayChunk [:ref :i64 :i64])       ; arr (pv/Node), off, end (chunk.go:39)
@@ -59,14 +59,25 @@
 (wasm/defstruct Repeat [:i64 :ref])                ; i (-1 = infinite), val (repeat.go:22)
 (wasm/defstruct PVecSeq [:ref :i64])               ; vec, i (persistent_vector.go:183)
 (wasm/defstruct Reduced [:ref])                    ; (reduced.go:6)
+;; P2.7 boxes. A MapEntry is its own Go type (persistent_map.go:56): Type()
+;; says ArrayVector and it equals/hashes as the 2-vector, but it is also a
+;; Seq, key/val accept only it, peek/assoc/subvec refuse it, and with-meta
+;; returns it unchanged. Atom and Volatile are the backend's $Atom shape
+;; (one mutable slot; validators and watches are named limits, wasm.core).
+;; Err is the backend's $Err (kind 0 ex-info, 1 raw runtime error, 2 caught
+;; runtime error; message bytes; message once caught; ex-data) plus a cause.
+(wasm/defstruct MapEntry [:ref :ref])              ; key, val
+(wasm/defstruct Atom [[:mut :ref]])
+(wasm/defstruct Volatile [[:mut :ref]])
+(wasm/defstruct Err [:i32 :ref :ref :ref :ref])    ; kind, msg bytes, caught msg bytes, data, cause
 ;; Foreign-kind hooks (kind 18: maps from phm, sets from phs, anything else),
 ;; one Handler per slot so registrations never overwrite each other's:
 ;; slot 0 maps, 1 sets, 2 the generic fallback. A Handler is [pred seq count
 ;; equiv hash], each a Fn; pred (null = matches every foreign value) answers
 ;; whether the value is this handler's. Dispatch tries 0, 1, then 2.
 (wasm/defstruct Handler [:ref :ref :ref :ref :ref])
-(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref]])
-(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null)))
+(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]]) ; slots 0-2, then the printer
+(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
 
 (defn box-int [n]
   (if (if (>= n -1073741824) (<= n 1073741823) false) (wasm/i31 n) (wasm/new Int n)))
@@ -97,6 +108,13 @@
   [seq-fn count-fn equiv-fn hash-fn]
   (set-kind-hooks! 2 (wasm/null) seq-fn count-fn equiv-fn hash-fn))
 
+(defn set-print-hook!
+  "Install the printer that hashing non-int Range/Repeat/PVecSeq elements
+   needs (Go hashes those kinds by FNV over String()): a Fn called as (f x)
+   returning a Str of x's readable form. wasm.core's install! passes
+   wasm.str's pr-str; seq.lg cannot require wasm.str."
+  [f] (wasm/set! Hooks 3 hooks f))
+
 (declare truthy?)
 
 (defn- claims? [h x]
@@ -123,7 +141,7 @@
 ;;  0 nil  1 int  2 EmptyList  3 List  4 Cons  5 LazySeq  6 ChunkedCons
 ;;  7 Range  8 InfiniteRange  9 Repeat  10 PVecSeq  11 PVec  12 ArrayChunk
 ;;  13 ChunkBuffer  14 Reduced  15 Bool  16 Fn  17 Str  18 foreign
-;;  19 Char  20 Kw  21 Sym  22 Float
+;;  19 Char  20 Kw  21 Sym  22 Float  23 MapEntry  24 Atom  25 Volatile  26 Err
 (defn kind [x]
   (cond (wasm/null? x) 0
         (wasm/i31? x) 1
@@ -148,6 +166,10 @@
         (wasm/is? Reduced x) 14
         (wasm/is? Bool x) 15
         (wasm/is? Fn x) 16
+        (wasm/is? MapEntry x) 23
+        (wasm/is? Atom x) 24
+        (wasm/is? Volatile x) 25
+        (wasm/is? Err x) 26
         :else 18))
 
 (defn- seq-kind? [k] (if (>= k 2) (<= k 10) false))     ; implements vm.Seq
@@ -155,8 +177,13 @@
 (defn truthy? [x]
   (let [k (kind x)] (cond (= k 0) false (= k 15) (= 1 (wasm/get Bool 0 x)) :else true)))
 
-(defn empty-list [] (wasm/new List (wasm/null) (wasm/null) 0))
-(defn- list-cons [l x] (wasm/new List x l (inc (wasm/get List 2 l))))  ; List.Cons (list.go:130)
+(defn empty-list [] (wasm/new List (wasm/null) (wasm/null) 0 (wasm/null)))
+;; List.Cons (list.go:130) keeps the list's meta: (conj (with-meta '(1) m) 2) has m.
+(defn- list-cons [l x] (wasm/new List x l (inc (wasm/get List 2 l)) (wasm/get List 3 l)))
+(defn list-with-meta "A List cell like l with meta m (with-meta on a list)." [l m]
+  (wasm/new List (wasm/get List 0 l) (wasm/get List 1 l) (wasm/get List 2 l) m))
+(defn entry-vec "A MapEntry as the 2-vector it equals." [e]
+  (pv/vconj (pv/vconj (pv/empty-vec) (wasm/get MapEntry 0 e)) (wasm/get MapEntry 1 e)))
 
 ;; ---------------------------------------------------------------------------
 ;; Strings as collections (moved from wasm.str at P2.9). A let-go String is a
@@ -252,7 +279,7 @@
 ;; LazySeq realisation (lazy_seq.go:47-150): the thunk runs once, its result
 ;; goes through Sequable.Seq() and an empty result is cached as null.
 
-(declare seq-view)
+(declare seq-view list)
 
 (defn- lazy-step [l]
   (if (= 1 (wasm/get LazySeq 2 l))
@@ -286,10 +313,11 @@
           (= k 11) (vec-seq x)
           (= k 17) (string-seq x)
           (= k 18) (invoke1 (hook 1 x) x)
+          (= k 23) (list (wasm/get MapEntry 0 x) (wasm/get MapEntry 1 x)) ; MapEntry.Seq: ArrayVector{k,v}.Seq()
           :else (no-iseq x))))
 
 (defn- can-seq? [x]
-  (let [k (kind x)] (cond (= k 0) true (seq-kind? k) true (= k 11) true (= k 17) true (= k 18) true :else false)))
+  (let [k (kind x)] (cond (= k 0) true (seq-kind? k) true (= k 11) true (= k 17) true (= k 18) true (= k 23) true :else false)))
 
 (defn seq-of
   "rt.seqOf (lang.go:1398): nil for nil and empty, a LazySeq unresolved, any
@@ -497,6 +525,7 @@
           (= k 13) (wasm/get ChunkBuffer 1 x)
           (= k 17) (rune-count* (wasm/get Str 0 x))   ; runes, not bytes (lang.go:6105)
           (= k 18) (unbox-int (invoke1 (hook 2 x) x))
+          (= k 23) 2
           :else (wasm/trap "count expected Counted"))))  ; incl. ChunkedCons, InfiniteRange
 
 (defn ^{:twin "core/count"} count [x] (box-int (count* x)))
@@ -533,11 +562,11 @@
           :else (let [hit (nth-in-seq (force-seq (seq-of coll)) i)]
                   (if (wasm/null? hit) (oob has-nf nf) (wasm/get Cons 0 hit))))))
 
-(defn ^{:twin "core/nth"} nth
+(defn nth                                                ; the core/nth twin is wasm.core/nth (adds TransientVector)
   ([coll i] (nth* coll (unbox-int i) false (wasm/null)))
   ([coll i nf] (nth* coll (unbox-int i) true nf)))
 
-(defn ^{:twin "core/peek"} peek [x]                                           ; CorePeek (lang.go:6707)
+(defn peek [x]                                                             ; CorePeek (lang.go:6707)
   (let [k (kind x)]
     (cond (= k 0) (wasm/null)
           (= k 11) (if (= 0 (pv/vcount x)) (wasm/null) (pv/vnth x (dec (pv/vcount x))))
@@ -547,14 +576,16 @@
           (if (= k 7) true (= k 8)) (wasm/trap "peek not supported on let-go.lang.Range")
           (= k 9) (wasm/trap "peek not supported on let-go.lang.Repeat")
           (= k 10) (wasm/trap "peek not supported on let-go.lang.Sequence")
+          (= k 23) (wasm/trap "peek not supported on let-go.lang.ArrayVector")
           (= k 1) (wasm/trap "peek not supported on let-go.lang.Int")
           :else (wasm/trap "peek not supported on this type"))))
 
-(defn ^{:twin "core/pop"} pop [x]                                            ; CorePop (lang.go:6739)
+(defn pop [x]                                                              ; CorePop (lang.go:6739)
   (let [k (kind x)]
     (cond (= k 0) (wasm/null)
           (= k 11) (if (< (pv/vcount x) 1) (wasm/trap "can't pop empty vector") (pv/vpop x))
           (= k 2) (wasm/trap "can't pop empty seq")
+          (= k 23) (list (wasm/get MapEntry 1 x))            ; MapEntry.More
           (seq-kind? k)
           ;; the Counted test walks a Cons/LazySeq to its end, as Go's does
           (if (if (= k 6) false (if (= k 8) false (= 0 (count* x))))
@@ -572,11 +603,12 @@
                        (list-cons l x)
                        (recur (dec i) (list-cons l (pv/vnth (wasm/get PVecSeq 0 coll) i)))))
           (= k 11) (pv/vconj coll x)
+          (= k 23) (pv/vconj (entry-vec coll) x)             ; MapEntry.Conj: as the ArrayVector
           (seq-kind? k) (wasm/new Cons x coll)
           (= k 17) (wasm/trap "conj expected Collection")
           :else (wasm/trap "wasm.seq: conj on this kind belongs to its own runtime (phm/phs)"))))
 
-(defn ^{:twin "core/conj"} conj
+(defn conj                                               ; the core/conj twin is wasm.core/conj (adds maps, sets)
   ([] (pv/empty-vec))                                    ; Go returns an empty ArrayVector
   ([coll] coll)
   ([coll x] (conj1 coll x))
@@ -776,7 +808,7 @@
         (= k 8) 7                                        ; InfiniteRange: RangeType
         :else k))
 
-(defn- sequential-kind? [k] (if (seq-kind? k) true (= k 11)))  ; isSequentialType (lang.go:1358)
+(defn- sequential-kind? [k] (if (seq-kind? k) true (if (= k 11) true (= k 23))))  ; isSequentialType (lang.go:1358)
 
 (defn- to-seq [v]                                        ; toSeq (lang.go:1374)
   (let [k (kind v)]
@@ -820,7 +852,9 @@
                   (named-eq? (wasm/get Sym 0 a) (wasm/get Sym 1 a) (wasm/get Sym 2 a) (wasm/get Sym 0 b) (wasm/get Sym 1 b) (wasm/get Sym 2 b)))))
 
 (defn equiv? [a b]
-  (let [ka (kind a) kb (kind b)]
+  (let [a (if (= 23 (kind a)) (entry-vec a) a)             ; MapEntry.Equals is the ArrayVector's
+        b (if (= 23 (kind b)) (entry-vec b) b)
+        ka (kind a) kb (kind b)]
     (cond
       (if (= ka 0) (= kb 0) false) true
       (if (= ka 0) true (= kb 0)) false
@@ -925,7 +959,10 @@
   (let [k (kind x)]
     (cond (= k 0) (fnv-bytes h (wasm/bytes-of-string "nil"))
           (= k 1) (fnv-int h (unbox-int x))
-          :else (wasm/trap "wasm.seq: hashing this seq prints its elements; non-int elements need wasm.str printing (no print hook in seq.lg)"))))
+          :else (let [p (wasm/get Hooks 3 hooks)]
+                  (if (wasm/null? p)
+                    (wasm/trap "wasm.seq: hashing this seq prints its elements; no print hook installed (wasm.core/install!)")
+                    (fnv-bytes h (wasm/get Str 0 (invoke1 p x))))))))
 
 (defn- fnv-walk [h s sep-first]                          ; "e1 e2 ...", walking s with s-next
   (loop [s s h h first? sep-first]
@@ -965,6 +1002,7 @@
                          v (wasm/get PVecSeq 0 x)]       ; prints the WHOLE vector, not from i (persistent_vector.go:748)
                      (fnv-bytes (fnv-walk h (vec-seq v) true) (wasm/bytes-of-string "])")))
           (= k 18) (unbox-int (invoke1 (hook 4 x) x))
+          (= k 23) (hash* (entry-vec x))                     ; MapEntry.Hash is the ArrayVector's
           :else (wasm/trap "wasm.seq: hash of this kind is not implemented"))))
 
 (defn ^{:twin "core/hash"} hash [x] (box-int (hash* x)))
