@@ -14,15 +14,23 @@
   (:require [clojure.string :as str]))
 
 (def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
-(def rt-dir (str src-dir "/../rt/wasm"))
+;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
+;; patch without editing rt/; the rtlib cache key covers the sources read)
+(def rt-dir (let [d (os/getenv "LW_RT_DIR")] (if (seq d) d (str src-dir "/../rt/wasm"))))
+
+(def ^:private row-file #"^\| [0-9]+ \| `([A-Za-z0-9_.-]+\.lg)` \|")
 
 (defn readme-order
-  "Files from README.md's load-order table (`| n | `file.lg` | ...`)."
+  "Files from README.md's load-order table (`| n | `file.lg` | ...`). Every
+   numbered row naming a file must parse (P2.11, D87: a name with a digit
+   used to be skipped silently, so its namespace was never loaded)."
   []
-  (vec (for [l (str/split-lines (slurp (str rt-dir "/README.md")))
-             :let [m (re-find #"^\| [0-9]+ \| `([a-z_]+\.lg)` \|" l)]
-             :when m]
-         (second m))))
+  (let [rows (filter #(re-find #"^\| [0-9]+ \| `[^`]+\.lg` \|" %)
+                     (str/split-lines (slurp (str rt-dir "/README.md"))))
+        bad (remove #(re-find row-file %) rows)]
+    (when (seq bad)
+      (throw (ex-info (str "lw-rt: unreadable load-order rows in rt/wasm/README.md: " (vec bad)) {})))
+    (vec (for [l rows] (second (re-find row-file l))))))
 
 (def files (readme-order))
 
@@ -44,6 +52,13 @@
 
 (def intrinsics-ns 'wasm.intrinsics)
 
+(defn intrinsic-meta?
+  "A defn whose calls the backend emits as an instruction sequence (D24): an
+   ^:intrinsic var with a :wasm description, in wasm.intrinsics or any other
+   runtime namespace (D97: wasm.term's term-read-key, term-key-pending,
+   term-size)."
+  [v] (let [m (meta v)] (and (:intrinsic m) (string? (:wasm m)))))
+
 (defn ns-var
   "The var nm names in ns, private ones included (ns-resolve skips those)."
   [ns-sym nm] (get (ns-interns ns-sym) nm))
@@ -58,6 +73,8 @@
 (defn head-var [ns-sym form]
   (when (and (seq? form) (symbol? (first form)) (not (#{'def 'defn 'defn- 'declare 'defmacro 'ns} (first form))))
     (binding [*ns* (the-ns ns-sym)] (resolve (first form)))))
+
+(def rt-nss (set (keep second file-forms)))
 
 (def decl-heads #{#'wasm.intrinsics/defstruct #'wasm.intrinsics/defarray #'wasm.intrinsics/deffunc})
 
@@ -99,12 +116,14 @@
       (mapv vec more))))
 
 (def defns
-  ;; [{:var v :ns sym :arities [[params & body] ...]}] in source order
+  ;; [{:var v :ns sym :arities [[params & body] ...]}] in source order;
+  ;; intrinsics (any namespace) are reference impls, never lowered
   (vec (for [[_ ns-sym forms] file-forms
              :when (not= ns-sym intrinsics-ns)
              form forms
              :when (and (seq? form) (#{'defn 'defn-} (first form)))
-             :let [[nm _] (strip-meta-name (second form))]]
+             :let [[nm _] (strip-meta-name (second form))]
+             :when (not (intrinsic-meta? (ns-var ns-sym nm)))]
          {:var (ns-var ns-sym nm) :ns ns-sym :name nm
           :arities (arities (drop 2 form))})))
 
@@ -126,7 +145,13 @@
 (defn runtime-var? [v] (or (contains? defn-by-var v) (contains? global-by-var v)))
 
 (defn intrinsic? [v]
-  (and (var? v) (:intrinsic (meta v)) (= intrinsics-ns (ns-name (:ns (meta v))))))
+  (and (var? v) (intrinsic-meta? v)
+       (contains? rt-nss (ns-name (:ns (meta v))))))
+
+(defn intrinsic-vars
+  "Every intrinsic var of the loaded runtime, for the backend's emitter check."
+  []
+  (for [ns-sym rt-nss [_ v] (ns-publics ns-sym) :when (intrinsic? v)] v))
 
 ;; D58: a runtime defn claims the native(s) it implements with :twin; the
 ;; native's var is what a program's call resolves to.

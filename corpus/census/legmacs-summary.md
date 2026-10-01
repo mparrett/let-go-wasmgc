@@ -29,7 +29,7 @@ Units (any bucket) holding at least one placeholder, by kind (sites in parenthes
 
 | kind | units | sites |
 |---|---:|---:|
-| vector | 66 | 86 |
+| vector | 68 | 89 |
 | map | 41 | 50 |
 | set | 14 | 18 |
 | list | 6 | 7 |

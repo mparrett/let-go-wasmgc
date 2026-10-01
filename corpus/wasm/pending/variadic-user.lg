@@ -2,6 +2,8 @@
 ;; (2026-10-01 07:45): compile-time `lower-wasm: unsupported variadic fn
 ;; {:fn "log!"}`, which fails the whole program. xsofy has 9 such heads.
 ;; Split from atoms.lg, closures-rt.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: lower-wasm: unsupported variadic fn
+;;  {:fn "u_log!"}`. P2.12.
 (defn show [label x] (println label (pr-str x)))
 (def log (atom []))
 (defn log! [& xs] (swap! log conj (vec xs)))

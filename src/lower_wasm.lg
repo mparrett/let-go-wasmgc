@@ -17,7 +17,7 @@
 ;; expansion needs.
 (ns lower-wasm
   (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st] [ir.passes.typeinfer]
-            [ir.passes.purity] [ir.passes.licm] [ir.passes.infer-arg-types]
+            [ir.passes.purity] [ir.passes.licm] [ir.passes.cse] [ir.passes.constfold] [ir.lattice :as lat] [ir.passes.infer-arg-types]
             [clojure.string :as str] [lw-rt]))
 
 (def ^:dynamic *f* nil)
@@ -88,6 +88,9 @@
 ;; true while analysing a fn whose params must stay boxed (P1.7 bug-01; see
 ;; the infer-arg-types pin below)
 (def ^:dynamic *box-params* false)
+;; P2.11 (F9, D87): param indices analysis must leave boxed although
+;; infer-arg-types would type them :int (see float-tainted-params)
+(def ^:dynamic *box-param-idx* #{})
 ;; P1.7 (bug-01): when bound to an atom, lowering records the call-boundary
 ;; facts the driver's param-typing fixpoint needs: {:viol #{[var argc]}} for
 ;; a call that passes a boxed value to a typed param, {:value #{var}} for a
@@ -120,7 +123,7 @@
 
 (declare str-wat bytes-wat const-box-wat kw-wat funcref-wrapper callee-sig rt-target rt-global!
          const-global! f64-arg intrinsic-call-wat direct-call-wat rt-overrides analyze-deps! rt-analyze!
-         expand-form qual-name var-sym)
+         expand-form qual-name var-sym analyze-fn* neg)
 
 (defn fail [msg data]
   (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
@@ -162,6 +165,12 @@
         ;; Int or Float -> f64 (a boxed operand of a float-typed op)
         (and (= from :box) (= to :float)) " (call $rt_to_f64)"
         (and (= from :int) (= to :float)) " (f64.convert_i64_s)"
+        ;; P2.11 (F9): a float where analysis chose i64 (a param typed :int by
+        ;; its uses, fed 1.5). The driver's fixpoint re-analyses a program
+        ;; defn with that param boxed (note-call-abi!); anywhere it cannot,
+        ;; the value reaches the slot as a box and the checked unbox throws
+        ;; the named error at run time, as a boxed non-Int does (bug-01).
+        (and (= from :float) (= to :int)) " (struct.new $Float) (call $rt_unbox_int)"
         :else (fail "unsupported coercion" {:from from :to to :fn *fname*})))
 
 (defn lget [nid] (str "(local.get $v" nid ")"))
@@ -209,6 +218,25 @@
     (loop [L {}]
       (let [L2 (step L)] (if (= L2 L) L (recur L2))))))
 
+;; P2.11 (F2): two constants are the same value only when they are the same
+;; kind with the same bits, all the way down. `=` is not that: [] = (), 0.0 =
+;; -0.0, {:a 1 :b 2} = {:b 2 :a 1} (whose print order differs), so anything
+;; that merges constants by `=` (ir.passes.cse's (op refs aux) table, src-of's
+;; leaf test) let the first spelling win. Floats key by their printed digits
+;; plus their hash, a function of the bits (-0.0 stays apart, and so do NaNs
+;; with different payloads, which `=` never merges), collections by kind,
+;; element keys in order, and meta.
+(defn strict-key [v]
+  ;; var? first: lg's collection predicates see through a Var to its value
+  ;; (a :load-var leaf's aux is the Var of a def'd vector), while mapv does not
+  (cond (var? v) [:var v]
+        (float? v) [:float (str v) (hash v)]   ; hash: NaN payloads print alike
+        (vector? v) [:vector (mapv strict-key v) (meta v)]
+        (seq? v) [:list (mapv strict-key v) (meta v)]
+        (map? v) [:map (mapv (fn [[k x]] [(strict-key k) (strict-key x)]) v) (meta v)]
+        (set? v) [:set (mapv strict-key v) (meta v)]
+        :else [(str (type v)) v]))
+
 (defn src-of*
   [nid]
   (if (= :block-arg (ir/op nid *f*))
@@ -219,7 +247,7 @@
           rep (first leaves)
           same? (fn [x] (or (= x rep)
                             (and (empty? (ir/refs x *f*)) (empty? (ir/refs rep *f*))
-                                 (= (ir/op x *f*) (ir/op rep *f*)) (= (ir/aux x *f*) (ir/aux rep *f*)))))]
+                                 (= (ir/op x *f*) (ir/op rep *f*)) (= (strict-key (ir/aux x *f*)) (strict-key (ir/aux rep *f*))))))]
       (if (and rep (every? same? leaves)) rep nid))
     nid))
 
@@ -547,8 +575,19 @@
 
 (declare const-global!)
 
+;; P2.11 (review2 bug-16, D80): NaNs differ in bits, and the bits are
+;; observable through hash. Go's ##NaN literal is 0x7FF8000000000001
+;; (math.NaN), Inf-Inf on this host is the canonical 0x7FF8000000000000, and
+;; negation flips the sign of either. lg cannot read a float's bits, but its
+;; hash is a function of them, so each NaN constant is told apart by hash and
+;; emitted with the exact payload (wasm's bare `nan` is the canonical one).
+(def nan-spellings
+  (let [lit ##NaN canon (- ##Inf ##Inf)]
+    {(hash lit) "nan:0x8000000000001" (hash (- lit)) "-nan:0x8000000000001"
+     (hash canon) "nan" (hash (- canon)) "-nan"}))
+
 (defn f64-lit [x]
-  (str "(f64.const " (cond (NaN? x) "nan" (= x ##Inf) "inf" (= x ##-Inf) "-inf" :else (str x)) ")"))
+  (str "(f64.const " (cond (NaN? x) (get nan-spellings (hash x) "nan") (= x ##Inf) "inf" (= x ##-Inf) "-inf" :else (str x)) ")"))
 
 (defn float-wat [x] (str "(struct.new $Float " (f64-lit x) ")"))
 
@@ -666,7 +705,9 @@
   "Record a call that hands a boxed value to an unboxed param (*abi-notes*)."
   [ent args sig]
   (when (and *abi-notes* (:var ent)
-             (some (fn [[a k]] (and (not= k :box) (not= k :func) (= :box (ty a)))) (map vector args (:params sig))))
+             (some (fn [[a k]] (or (and (not= k :box) (not= k :func) (= :box (ty a)))
+                                   (and (= k :int) (= :float (ty a)))))
+                   (map vector args (:params sig))))
     (swap! *abi-notes* update :viol (fnil conj #{}) [(:var ent) (count args)])))
 
 (defn direct-call-wat
@@ -693,10 +734,28 @@
 
 ;; Runtime defns the backend lowers as an instruction instead of a call:
 ;; float-bits is the stand-in for f64-bits (D28/D45), i64.reinterpret_f64.
+;; P2.11 (F6/F7): the runtime's own invoke helpers are a bare call_ref
+;; through the Fn's code slot: a closure without that arity derefs a null
+;; (reduce/map twins given a wrong-arity fn trapped uncatchably) and a
+;; keyword/set/map callable fails the cast. They lower as the backend's
+;; $rt_invokeN instead, which raises native's arity error for an empty slot
+;; and calls a non-Fn callable through wasm.core/invoke-args.
+(defn- rt-invoke-override [n]
+  (fn [nid args]
+    (let [call (str "(call $rt_invoke" n (apply str (map #(str " " (arg-as % :box)) args)) ")")]
+      (if (no-local? nid)
+        (str "(drop " call ")")
+        (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")")))))
+
 (def rt-overrides
   {#'wasm.seq/float-bits
    (fn [nid args]
-     (str "(local.set $v" nid " (i64.reinterpret_f64 " (f64-arg (first args)) ")" (coerce :int (ty nid)) ")"))})
+     (str "(local.set $v" nid " (i64.reinterpret_f64 " (f64-arg (first args)) ")" (coerce :int (ty nid)) ")"))
+   #'wasm.seq/invoke0 (rt-invoke-override 0)
+   #'wasm.seq/invoke1 (rt-invoke-override 1)
+   #'wasm.seq/invoke2 (rt-invoke-override 2)
+   #'wasm.core/invoke3 (rt-invoke-override 3)
+   #'wasm.core/invoke4 (rt-invoke-override 4)})
 
 (defn rt-call-expr
   "A boxed-result call of runtime defn v on boxed operand exprs."
@@ -722,9 +781,24 @@
    #'hash-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr #'wasm.core/assoc [acc k x]))
                                (rt-call-expr #'wasm.phm/empty-map []) (partition 2 xs)))})
 
+(defn neg-wat
+  "lower-wasm/neg: NumNeg. An int wraps ((- MinInt64) = MinInt64, D16), a
+   float is Go's -x (f64.neg: the sign flips, NaN included), anything else
+   goes to the runtime's 1-arity `-` (wasm.core/sub), which raises native's
+   message for a non-number."
+  [nid [x]]
+  (let [set (fn [e k] (str "(local.set $v" nid " " e (coerce k (ty nid)) ")"))]
+    (case (ty x)
+      :int (set (str "(i64.sub (i64.const 0) " (arg-as x :int) ")") :int)
+      :float (set (str "(f64.neg " (arg-as x :float) ")") :float)
+      (if *rt*
+        (set (rt-call-expr #'wasm.core/sub [(arg-as x :box)]) :box)
+        (set (str "(i64.sub (i64.const 0) (call $rt_int_sub " (arg-as x :box) "))") :int)))))
+
 (defn call-wat [nid v args]
   (let [ent (get @*sigs* v)]
     (cond
+      (and (= v #'neg) (= 1 (count args))) (neg-wat nid args)
       (and *rt* (rt-overrides v)) ((rt-overrides v) nid args)
       ent (direct-call-wat nid ent args)
       (exn-call-wat nid v args) (exn-call-wat nid v args)
@@ -891,6 +965,10 @@
       "host-nanotime" ["(call $host_nanotime)" :int]
       ;; the reference's *host-env* is {} (deterministic, D27): every name is unset
       "host-getenv" [(str "(block (result (ref null eq)) (drop " (arg-as (a 0) :box) ") (ref.null none))") :box]
+      ;; D97: the term host intrinsics (rt/wasm/term.lg, host/ABI.md)
+      "term-read-key" ["(call $rt_term_read_key)" :box]
+      "term-key-pending" ["(call $term.key_pending)" :bool]
+      "term-size" ["(call $rt_term_size)" :int]
       "trap" (if (string-const? (a 0))
                [(str "(call $rt_trap " (bytes-wat (const-val (a 0))) ")") :bottom]
                (fail "wasm/trap needs a string literal" {:nid (a 0) :fn *fname*}))
@@ -914,13 +992,15 @@
     "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
     "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
-    "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"})
+    "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
+    "term-read-key" "term-key-pending" "term-size"})
 
 ;; every ^:intrinsic var has an emitter: a new intrinsic fails the backend's
 ;; load, not a program's compile (D24: the set is read from the metadata)
-(let [missing (for [[s v] (ns-publics 'wasm.intrinsics)
-                    :when (and (lw-rt/intrinsic? v) (not (contains? emitted-intrinsics (str s))))]
-                s)]
+(let [missing (for [v (lw-rt/intrinsic-vars)
+                    :let [s (name (symbol v))]
+                    :when (not (contains? emitted-intrinsics s))]
+                (symbol v))]
   (when (seq missing)
     (throw (ex-info (str "lower-wasm: intrinsics without an emitter: " (vec (sort missing))) {}))))
 
@@ -1259,6 +1339,9 @@
       ;; a stack-VM marker cleanup strips; nothing to emit if one survives
       (= op :pop) nil
       (= op :set-var) (fail "unsupported op :set-var" {:op op :var (const-val (first refs)) :nid nid :fn *fname*})
+      ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
+      (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
+      (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
       (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
@@ -1295,7 +1378,7 @@
       (core-var-ops v) nil
       (and *rt* (rt-overrides v)) nil
       (get @*sigs* v) (direct (get @*sigs* v))
-      (contains? #{#'throw #'catch-matches? #'atom #'deref #'reset! #'swap!} v) nil
+      (contains? #{#'throw #'catch-matches? #'atom #'deref #'reset! #'swap! #'neg} v) nil
       (= v core-println) nil
       (and *rt* (coll-ctors v)) nil
       (and *rt* (rt-target v) (callee-sig v)) (direct (callee-sig v))
@@ -1549,6 +1632,9 @@
               rets (map ty rvals)
               ret (cond (and (seq rets) (every? #{:int} rets)) :int
                         (and (seq rets) (every? #{:bool} rets)) :bool
+                        ;; P2.11 (F4): a float result stays f64, so callers'
+                        ;; float ops see it typed (s/unbox-float, f64-of)
+                        (and (seq rets) (every? #{:float} rets)) :float
                         (and (seq rets) (some #{:func} rets) (every? #(or (= :func (ty %)) (nullish? %)) rvals)) :func
                         :else :box)]
           {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true
@@ -1566,6 +1652,55 @@
                   (ir/block-insts b f)))
           (ir/blocks f))))
 
+;; P2.11 (F9, D87): infer-arg-types types every param that + - * < ... touch
+;; :int, whatever the other operand is, so a float helper (wasm.math/exp*:
+;; (< x 0.0)) got an i64 param and its float callers could not be lowered.
+;; The guess is unsound exactly where the param's value meets a float: an
+;; arithmetic or comparison op with a :float operand and an :int operand
+;; that is the param, or computed from it by int arithmetic (expmulti's
+;; (- hi lo) then (* t 4.1e-08)), or meets a boxed operand in arithmetic or
+;; an ordering (modf-frac's (- f (trunc f)): trunc returns a box that is a
+;; Float at run time; that op takes the boxed path anyway, so boxing the param
+;; costs only its other uses). Those params are re-analysed boxed: the float
+;; ops then convert at run time ($rt_to_f64), which is right for an Int too,
+;; while an i64 param would reject a Float.
+(def int-flow-ops #{:add :sub :mul :inc :dec :quot :unchecked-add :unchecked-sub :unchecked-mul
+                    :bit-and :bit-or :bit-xor :bit-and-not :bit-not :bit-shift-left :bit-shift-right
+                    :unsigned-bit-shift-right})
+(def float-meet-ops #{:add :sub :mul :div :lt :lte :gt :gte :eq :zero? :pos? :neg? :inc :dec})
+
+(defn float-tainted-params
+  "Indices of :int params of analysed fn info whose value meets a float."
+  [{:keys [f params func-vals]}]
+  (binding [*f* f *memo* (atom {}) *func-vals* (or func-vals #{})]
+    (let [seeds (into {} (for [i (range (count params))
+                               :when (= :int (nth params i))
+                               :let [n (ir/fn-load-arg f i)] :when n]
+                           [n #{i}]))]
+      (if (empty? seeds)
+        #{}
+        (let [insts (all-insts f)
+              inc-of (into {} (for [b (ir/blocks f) [idx p] (map-indexed vector (ir/block-params b f))]
+                                [p (vec (incoming b idx))]))
+              step (fn [T]
+                     (reduce (fn [T u]
+                               (let [op (ir/op u f)
+                                     srcs (cond (= op :block-arg) (get inc-of u)
+                                                (and (contains? int-flow-ops op) (= :int (ty u))) (ir/refs u f)
+                                                :else nil)
+                                     t (reduce (fn [acc r] (into acc (get T r))) (get T u #{}) srcs)]
+                                 (if (seq t) (assoc T u t) T)))
+                             T insts))
+              T (loop [T seeds] (let [T2 (step T)] (if (= T2 T) T (recur T2))))]
+          (set (for [u insts
+                     :when (contains? float-meet-ops (ir/op u f))
+                     :let [rs (ir/refs u f)]
+                     :when (or (some #(= :float (ty %)) (cons u rs))
+                               (and (not= :eq (ir/op u f)) (some #(= :box (ty %)) rs)))
+                     r rs :when (= :int (ty r))
+                     i (get T r)]
+                 i)))))))
+
 (defn analyze-fn
   "Build, optimize and structurize one (already macroexpanded) defn form.
    Resolution of vars happens against *ns*, so the caller must have defined
@@ -1579,6 +1714,15 @@
    boxed path is ~2x the probe, the typed one well under it (bench-fib.sh)."
   ([src] (analyze-fn src (str (second src)) false))
   ([src wname multi?]
+   ;; float-tainted params are boxed and the fn re-analysed until stable
+   (loop [boxed *box-param-idx*]
+     (let [info (binding [*box-param-idx* boxed] (analyze-fn* src wname multi?))
+           more (remove boxed (float-tainted-params info))]
+       (if (empty? more) info (recur (into boxed more)))))))
+
+(defn analyze-fn*
+  [src wname multi?]
+  (do
    (let [nm (str (second src)) f (ir.build/build-fn src)]
      ;; a multi-arity fn's other arities share its name, so the optimistic
      ;; self typing would type them too: off for multi-arity
@@ -1844,6 +1988,22 @@
   (call $rt_print_bytes " (bytes-wat "wasm trap: ") ")
   (call $rt_print_bytes (ref.as_non_null (global.get $trap_msg)))
   (i32.const 1))
+;; term-read-key (D97): the host copies the key's UTF-8 bytes (<= 16) to
+;; offset 32 and returns the count; 0 is end of input (nil)
+(func $rt_term_read_key (result (ref null eq)) (local $n i32) (local $i i32) (local $r (ref null $Bytes))
+  (local.set $n (call $term.read_key (i32.const 32) (i32.const 16)))
+  (if (i32.eqz (local.get $n)) (then (return (ref.null none))))
+  (local.set $r (array.new_default $Bytes (local.get $n)))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+    (array.set $Bytes (local.get $r) (local.get $i) (i32.load8_u offset=32 (local.get $i)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (local.get $r))
+;; term-size (D97): cols << 32 | rows
+(func $rt_term_size (result i64) (local $c i32) (local $r i32)
+  (call $term.size) (local.set $r) (local.set $c)
+  (i64.or (i64.shl (i64.extend_i32_u (local.get $c)) (i64.const 32)) (i64.extend_i32_u (local.get $r))))
 ;; host-write: copy to linear memory, hand ptr+len to env.write
 (func $rt_host_write (param $fd i32) (param $b (ref $Bytes)) (result i32) (local $i i32) (local $n i32) (local $need i32)
   (local.set $n (array.len (local.get $b)))
@@ -2049,6 +2209,10 @@
          "(import \"env\" \"write\" (func $host_write (param i32 i32 i32) (result i32)))\n"
          "(import \"env\" \"sleep\" (func $host_sleep (param i64)))\n"
          "(import \"env\" \"nanotime\" (func $host_nanotime (result i64)))\n"
+         ;; D88/D97: the term imports (read_key suspends under JSPI)
+         "(import \"term\" \"read_key\" (func $term.read_key (param i32 i32) (result i32)))\n"
+         "(import \"term\" \"key_pending\" (func $term.key_pending (result i32)))\n"
+         "(import \"term\" \"size\" (func $term.size (result i32 i32)))\n"
          "(memory (export \"lw mem\") 1)\n"
          ";; every lg exception: the payload is the thrown value\n"
          "(tag $lgex (export \"lw lgex\") (param (ref null eq)))\n"
@@ -2119,10 +2283,17 @@
   "Does a binding vector / param list (destructuring included) bind `-`?"
   [b] (some #(= '- %) (tree-seq coll? seq b)))
 
+(defn neg
+  "Unary minus as the driver's rewrite emits it (unary-minus->unchecked);
+   the backend lowers calls to it itself (neg-wat). Native semantics."
+  [x] (- x))
+
 (defn unary-minus->unchecked
   "D35: build.lg turns (- x) into (sub 0 x), which throws on MinInt64 where
    native bytecode negates with a wrap. Rewrite unary core `-` to
-   (unchecked-subtract 0 x) before build so the IR path matches native.
+   (lower-wasm/neg x) before build so the IR path matches native: an int
+   negates with a wrap, a float flips its sign (P2.11 F9: the earlier
+   (unchecked-subtract 0 x) could not take a float, and gave 0.0 for -0.0).
    Runs on macroexpanded forms; quoted data is left alone. A local named `-`
    (let*/loop*/letfn* binding, fn* param or name, catch binding) shadows the
    core fn in its scope and is never rewritten (P1.7 bug-04)."
@@ -2158,7 +2329,7 @@
          (apply list 'catch (second form) (nth form 2) (map #(unary-minus->unchecked % sh) (drop 3 form))))
        (and (not shadowed) (seq? form) (= 2 (count form)) (symbol? (first form))
             (= core-minus (resolve (first form))))
-       (list 'unchecked-subtract 0 (rw (second form)))
+       (list 'lower-wasm/neg (rw (second form)))
        (seq? form) (apply list (map rw form))
        (vector? form) (mapv rw form)
        (map? form) (into {} (map (fn [[k v]] [(rw k) (rw v)]) form))
@@ -2240,7 +2411,7 @@
 ;; defn. The IR-op core fns (ir.build makes them ops at their op arity) are
 ;; here too: scanning `=` as the twin wasm.seq/equals would analyse equiv?
 ;; while kind, which compares with =, is still in progress.
-(def intercepted (into #{#'println #'throw #'catch-matches? #'atom #'deref #'reset! #'swap!
+(def intercepted (into #{#'neg #'println #'throw #'catch-matches? #'atom #'deref #'reset! #'swap!
                          #'vector #'hash-set #'array-map #'hash-map #'wasm.seq/float-bits
                          #'= #'bit-and #'bit-or #'bit-xor #'bit-and-not #'bit-not #'bit-shift-left
                          #'bit-shift-right #'unsigned-bit-shift-right #'unchecked-add
@@ -2267,6 +2438,7 @@
 
 (defn analyze-deps! [form]
   (when *rt*
+    (when (some #{#'neg} (form-vars form)) (rt-analyze! #'wasm.core/sub))
     (when (some #(contains? coll-ctors %) (form-vars form))
       (doseq [v [#'wasm.pvec/vconj #'wasm.pvec/empty-vec #'wasm.pvec/varray #'wasm.phs/sconj #'wasm.phs/empty-set
                  #'wasm.core/assoc #'wasm.phm/empty-map]]
@@ -2408,10 +2580,13 @@
       (when (and c (= :load-var (ir/op c f)))
         (let [v (ir/aux c f) args (rest refs)]
           (cond (lw-rt/intrinsic? v) (intrinsic-type v args)
+                (and (= v #'neg) (= 1 (count args)))
+                (let [t (ir/type-of (first args) f) t (if (and (vector? t) (= :const (first t))) (second t) t)]
+                  (when (contains? #{:int :float} t) t))
                 (and *rt* (= v #'wasm.seq/float-bits)) :int
                 :else (let [ent (or (get @*sigs* v) (when-let [t (rt-target v)] (get @*sigs* t)))
                             r (:ret (get-in ent [:arities (count args)]))]
-                        (case r :int :int :bool :bool nil))))))))
+                        (case r :int :int :bool :bool :float :float nil))))))))
 
 (alter-var-root #'ir.passes.typeinfer/call-declared-type
                 (fn [orig] (fn [inst f] (or (lw-call-type inst f) (orig inst f)))))
@@ -2457,14 +2632,87 @@
 (alter-var-root #'ir.passes.licm/pure-op?
                 (fn [orig] (fn [op] (and (orig op) (not (contains? may-raise-ops op))))))
 
+;; P2.11 (F2/F5): CSE keyed :const insts by (op refs aux) with `=`, merging
+;; [] with () and 0.0 with -0.0 inside one fn; and it merges equal :calls of
+;; the "pure" builtins (vector, list, hash-map, conj, ex-info, ...), each of
+;; which allocates natively: (= (vector nan) (vector nan)) is false because
+;; the two vectors are distinct objects (no identity shortcut, NaN elements),
+;; and merging them made it true. A :call's key carries its own id, so calls
+;; are never merged. Upstream IR findings.
+(let [ik (get (ns-interns 'ir.passes.cse) 'inst-key)]
+  (alter-var-root ik (fn [orig] (fn [nid f]
+                                  (let [[op refs aux] (orig nid f)]
+                                    (case op
+                                      :const [op refs (strict-key aux)]
+                                      :call [op refs aux nid]
+                                      [op refs aux]))))))
+
+;; P2.11 (F4 corpus nan-arith): constfold's algebraic identities ((+ x 0),
+;; (* x 1), (* x 0) -> 0, (- x 0), the bit-op ones) hold only for an int x:
+;; (* inf 0) is NaN, (+ -0.0 0) is 0.0, (+ nil 0) throws. They now fire only
+;; when the non-constant operand is typed :int. Upstream finding (D94 noted
+;; the non-number half).
+(let [ti (get (ns-interns 'ir.passes.constfold) 'try-identity)]
+  (alter-var-root ti (fn [orig] (fn [nid f]
+                                  (let [int-t? (fn [r] (let [t (ir/type-of r f)]
+                                                         (or (= :int t) (and (vector? t) (= :const (first t)) (= :int (second t))))))]
+                                    (when (every? #(or (= :const (ir/op % f)) (int-t? %)) (ir/refs nid f))
+                                      (orig nid f)))))))
+
 ;; P1.7 (bug-01): infer-arg-types types a param :int from its uses (+ x 1),
 ;; which makes the wasm signature i64, so a caller holding nil or a string
 ;; had to unbox it before the call (the uncatchable bare-cast trap). Analysing
 ;; with this bound true leaves every param :unknown (boxed): the driver binds it
 ;; for a program defn whose callers do not all pass ints, and lowering binds it
 ;; for closure code and try regions, whose params are boxed by the ABI.
-(alter-var-root #'ir.passes.infer-arg-types/infer-arg-types
-                (fn [orig] (fn ([f] (orig f)) ([f state] (if *box-params* state (orig f state))))))
+;; P2.11 (F1): ir.build's closure captures are keyed by local NAME, and two
+;; steps of it lose scoping (read-only upstream, so pinned here):
+;;   - free-vars' fn* case walks the body with only the fn's own params as
+;;     bound, dropping the enclosing scope, so in (fn [i] (fn [x] (+ x i)))
+;;     the inner fn's `i` bubbles out as free in the OUTER fn, which then
+;;     captures whatever `i` the enclosing function has in scope (a finished
+;;     loop's counter in _main). A fn*'s frees minus the bound set is exact.
+;;   - build-inner-fn-template binds the captures after the params in the
+;;     same frame, so a capture named like a param overwrites it (a
+;;     multi-arity fn shares one capture list across arities, so one
+;;     arity's capture can be another's param). Native: the param wins. The
+;;     clashing capture keeps its slot under a name no form can spell.
+;; Upstream IR finding (lower-go shares the builder).
+(let [fv (get (ns-interns 'ir.build) 'free-vars)]
+  (alter-var-root fv (fn [orig] (fn [form bound]
+                                  (let [r (orig form bound)]
+                                    (if (and (seq? form) (= 'fn* (first form)))
+                                      (into #{} (remove bound r))
+                                      r))))))
+(let [bt (get (ns-interns 'ir.build) 'build-inner-fn-template)]
+  (alter-var-root bt (fn [orig] (fn [name-sym args-vec body-forms capture-syms variadic?]
+                                  (let [params (set args-vec)]
+                                    (orig name-sym args-vec body-forms
+                                          (mapv #(if (contains? params %) (symbol (str "__lw_shadowed " %)) %) capture-syms)
+                                          variadic?))))))
+
+(defn- infer-arg-types-skipping
+  "infer-arg-types' two-arity body, leaving the params in *box-param-idx*
+   unjoined (boxed)."
+  [infer-one f state]
+  (reduce (fn [s nid]
+            (if (= :load-arg (ir/op nid f))
+              (let [idx (ir/aux nid f)
+                    arg-types (ir/fn-arg-types f)
+                    explicit (when (and (vector? arg-types) (< (int idx) (count arg-types))) (nth arg-types (int idx)))
+                    inferred (if (or (contains? *box-param-idx* idx) (and explicit (not= explicit :unknown)))
+                               :unknown
+                               (infer-one f nid))]
+                (if (= :unknown inferred) s (lat/join-inst-type! s nid inferred)))
+              s))
+          state (ir/block-insts (ir/entry-block f) f)))
+
+(let [infer-one (get (ns-interns 'ir.passes.infer-arg-types) 'infer-one-load-arg)]
+  (alter-var-root #'ir.passes.infer-arg-types/infer-arg-types
+                  (fn [orig] (fn ([f] (orig f))
+                               ([f state] (cond *box-params* state
+                                                (seq *box-param-idx*) (infer-arg-types-skipping @infer-one f state)
+                                                :else (orig f state)))))))
 
 (defn new-session
   "The module-wide state lowering accumulates (strings, lifted regions,

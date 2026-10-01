@@ -113,3 +113,7 @@
 (show "lazy-eq" [(= (map inc [1 2]) [2 3]) (= (range 3) '(0 1 2)) (= (list) [])])
 (show "lazy-hash" [(hash (range 3)) (hash (map inc [0 1 2])) (hash '(1 2 3))])
 (show "str-lazy" (str (map inc [1 2])))
+
+;; folded from pending/flatten-list-pred.lg (P2.11): `flatten`, `list?`
+(show "flatten" (flatten [1 [2 [3 [4]]]]))
+(show "list?" [(list? '(1)) (list? [1]) (list? (list)) (list? (cons 1 nil))])

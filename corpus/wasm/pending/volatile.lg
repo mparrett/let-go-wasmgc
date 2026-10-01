@@ -2,6 +2,8 @@
 ;; vswap!, vreset! throw the named limit `lower-wasm: deref/reset!/swap! of
 ;; a non-atom (Phase 2)` although the runtime has a Volatile kind (D67).
 ;; Split from atoms.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: lower-wasm: deref/reset!/swap! of a
+;;  non-atom (Phase 2)`.
 (defn show [label x] (println label (pr-str x)))
 (def vol (volatile! 1))
 (show "vol-deref" @vol)

@@ -3,6 +3,8 @@
 ;; with more than 4 arguments (D52: variadic ABI is Phase 3)`. `(apply +
 ;; [1 2 3 4])` works. xsofy's `(apply max coll)` hits this for any coll of
 ;; 5+. Split from closures-rt.lg, xsofy-shapes.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: wasm trap: lower-wasm: a call with more
+;;  than 4 arguments (D52: variadic ABI is Phase 3)`. P2.12.
 (defn show [label x] (println label (pr-str x)))
 (show "apply-assoc" (apply assoc {} [:a 1 :b 2]))
 (show "apply-lazy" (apply + (map inc (range 10))))

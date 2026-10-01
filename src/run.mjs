@@ -40,7 +40,11 @@ if (isMainThread) {
     nanotime: () => process.hrtime.bigint(),
   };
 
-  const { instance } = await WebAssembly.instantiate(fs.readFileSync(workerData), { env });
+  // D97 term imports: node has no terminal input here, so this host reads as
+  // the runtime's reference does with no input queued: end of input, nothing
+  // pending, the 80x24 default (host/ is the interactive JSPI host)
+  const term = { read_key: () => 0, key_pending: () => 0, size: () => [80, 24] };
+  const { instance } = await WebAssembly.instantiate(fs.readFileSync(workerData), { env, term });
   // the backend's own exports have names no lg symbol can spell (a space),
   // so a program defn exported under its lg name never collides (P1.7 bug-09)
   const ex = instance.exports;

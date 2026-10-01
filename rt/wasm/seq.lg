@@ -81,17 +81,28 @@
 ;; equiv hash], each a Fn; pred (null = matches every foreign value) answers
 ;; whether the value is this handler's. Dispatch tries 0, 1, then 2.
 (wasm/defstruct Handler [:ref :ref :ref :ref :ref])
-(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]]) ; slots 0-2, the printer, seqable?
-(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]]) ; slots 0-2, the printer, seqable?, ifn
+(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
 
 (defn box-int [n]
   (if (if (>= n -1073741824) (<= n 1073741823) false) (wasm/i31 n) (wasm/new Int n)))
 (defn unbox-int [x] (if (wasm/i31? x) (wasm/i31-get x) (wasm/get Int 0 x)))
 (defn bool [b] (wasm/new Bool (if b 1 0)))
 
-(defn invoke0 [f] (wasm/call-ref Code0 (wasm/get Fn 0 f) f))
-(defn invoke1 [f a] (wasm/call-ref Code1 (wasm/get Fn 1 f) f a))
-(defn invoke2 [f a b] (wasm/call-ref Code2 (wasm/get Fn 2 f) f a b))
+;; A non-Fn callable (keyword, symbol, map, set, vector: vm.AsFn) is called
+;; through the ifn hook wasm.core installs (slot 5: code 1 = callable?, code
+;; 4 = invoke with the argument count); seq.lg cannot require wasm.core. The
+;; backend lowers calls to these three as its own $rt_invokeN, which does the
+;; same and also raises native's arity error for a missing arity.
+(declare kind)
+(defn- invoke-ifn* [f n a b]
+  (let [h (wasm/get Hooks 5 hooks)]
+    (if (wasm/null? h)
+      (wasm/trap "wasm.seq: a non-Fn callable and no ifn hook installed (wasm.core not linked)")
+      (wasm/call-ref Code4 (wasm/get Fn 5 h) h f (box-int n) a b))))
+(defn invoke0 [f] (if (= 16 (kind f)) (wasm/call-ref Code0 (wasm/get Fn 0 f) f) (invoke-ifn* f 0 (wasm/null) (wasm/null))))
+(defn invoke1 [f a] (if (= 16 (kind f)) (wasm/call-ref Code1 (wasm/get Fn 1 f) f a) (invoke-ifn* f 1 a (wasm/null))))
+(defn invoke2 [f a b] (if (= 16 (kind f)) (wasm/call-ref Code2 (wasm/get Fn 2 f) f a b) (invoke-ifn* f 2 a b)))
 
 (defn mk-fn1 "A closure with only arity 1 (hook code)." [code]
   (wasm/new Fn (wasm/null) code (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
@@ -119,6 +130,21 @@
    returning a Str of x's readable form. wasm.core's install! passes
    wasm.str's pr-str; seq.lg cannot require wasm.str."
   [f] (wasm/set! Hooks 3 hooks f))
+
+(defn set-ifn-hook!
+  "Install the Fn wasm.core links non-Fn callables through: code 1 (f x) ->
+   Bool, is x callable (vm.AsFn); code 4 (f x n a b) -> x called with n
+   (0-2) of a b."
+  [f] (wasm/set! Hooks 5 hooks f))
+
+(declare truthy?)
+(defn callable?
+  "vm.AsFn: a Fn, or a value the ifn hook says calls itself."
+  [f]
+  (if (= 16 (kind f))
+    true
+    (let [h (wasm/get Hooks 5 hooks)]
+      (if (wasm/null? h) false (truthy? (wasm/call-ref Code1 (wasm/get Fn 1 h) h f))))))
 
 (defn set-seqable-hook!
   "Install the Fn (f x) -> Bool saying whether a foreign value is seqable
@@ -765,7 +791,7 @@
               (wasm/null) 0 (wasm/null))))
 
 (defn ^{:twin "core/map*"} map* [f coll]
-  (cond (if (= 16 (kind f)) false true) (wasm/trap "map expected Fn")
+  (cond (if (callable? f) false true) (wasm/trap "map expected Fn")
         (opaque? coll) (raise-b (wasm/bytes-of-string "map expected Sequable"))
         (if (can-seq? coll) false true) (wasm/trap "map expected Sequable")
         :else (let [s (seq-of coll)] (if (wasm/null? s) (empty-lazy-seq) (map-lazy f s)))))
@@ -824,14 +850,14 @@
                     (if (= 14 (kind r)) (wasm/get Reduced 0 r) (recur r (cnext cs)))))))))))))
 
 (defn ^{:twin "core/reduce"} reduce
-  ([f coll] (if (= 16 (kind f)) (reduce-coll f coll false (wasm/null)) (wasm/trap "reduce expected Fn")))
+  ([f coll] (if (callable? f) (reduce-coll f coll false (wasm/null)) (wasm/trap "reduce expected Fn")))
   ([f init coll]
    (cond (wasm/null? coll) init
-         (= 16 (kind f)) (reduce-coll f coll true init)
+         (callable? f) (reduce-coll f coll true init)
          :else (wasm/trap "reduce expected Fn"))))
 
 (defn ^{:twin "core/some"} some [pred coll]                                   ; Some (native_prims.go:612)
-  (cond (if (= 16 (kind pred)) false true) (wasm/trap "some expected Fn")
+  (cond (if (callable? pred) false true) (wasm/trap "some expected Fn")
         (opaque? coll) (raise-b (wasm/bytes-of-string "some expected Seq"))
         (if (can-seq? coll) false true) (wasm/trap "some expected Seq")
         :else
@@ -882,6 +908,17 @@
       (if (equiv? (s-first as) (s-first bs)) (recur (s-next as) (s-next bs)) false)
       (if (wasm/null? as) (wasm/null? bs) false))))
 
+;; *List.Equals' element test (lang.go:1345 listElementEquals): two NaNs are
+;; equal inside a list, so (= (list ##NaN) (list ##NaN)) is true while the
+;; vector form is false.
+(defn- nan-box? [x] (if (= 22 (kind x)) (let [f (wasm/get Float 0 x)] (if (< f 0.0) false (if (>= f 0.0) false true))) false))
+(defn- walk-equal-list? [as bs]
+  (loop [as as bs bs]
+    (if (if (wasm/null? as) false (if (wasm/null? bs) false true))
+      (let [x (s-first as) y (s-first bs)]
+        (if (if (if (nan-box? x) (nan-box? y) false) true (equiv? x y)) (recur (s-next as) (s-next bs)) false))
+      (if (wasm/null? as) (wasm/null? bs) false))))
+
 (defn- nil-list-equivalent? [a b]                        ; nilListEquivalent (lang.go:1352)
   (let [ka (kind a) kb (kind b)] (if (if (= ka 0) (= kb 2) false) true (if (= ka 2) (= kb 0) false))))
 
@@ -923,7 +960,7 @@
       (if (if (sequential-kind? ka) (sequential-kind? kb) false) (walk-equal? (to-seq a) (to-seq b)) false)
       ;; same Go type from here on
       (= ka 2) (if (= kb 2) true (wasm/null? (to-seq b)))  ; EmptyList (lang.go:1131)
-      (= ka 3) (if (= kb 2) false (walk-equal? a b))     ; *List vs any Seq, b unresolved (lang.go:1140)
+      (= ka 3) (if (= kb 2) false (walk-equal-list? a b)) ; *List vs any Seq, b unresolved (lang.go:1140)
       (= ka 11) (let [n (pv/vcount a)]                   ; PersistentVector.Equals (persistent_vector.go:130)
                   (if (= n (pv/vcount b))
                     (loop [i 0]

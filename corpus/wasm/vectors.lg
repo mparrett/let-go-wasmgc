@@ -117,3 +117,19 @@
 (show "empty" [(empty? []) (empty? [1]) (not-empty [])])
 (show "contains" [(contains? [1 2] 0) (contains? [1 2] 2) (contains? [] 0)])
 (show "count-nested" (count [[1 2] [3]]))
+
+;; folded from pending/even-odd.lg (P2.11): `even?` / `odd?`
+(show "into-filter-xform" (into [] (filter even?) (range 10)))
+(show "even-odd" [(even? 0) (even? -3) (odd? 7) (odd? 0)])
+(show "filter-odd" (filter odd? (range 10)))
+(show "loop-try-odd" (loop [i 0 acc []] (if (= i 4) acc (recur (inc i) (conj acc (try (if (odd? i) (throw (ex-info "odd" {})) i) (catch Exception e :odd)))))))
+
+;; folded from pending/iterate.lg (P2.11): `iterate`
+(show "pop-1057-x33" (peek (nth (iterate pop v1057) 33)))
+(show "iterate-take" (take 5 (iterate inc 0)))
+(show "iterate-double" (nth (iterate (fn [x] (* 2 x)) 1) 40))
+;; from seqs.lg: realisation count through iterate
+(def hits (atom 0))
+(defn tick [x] (swap! hits inc) x)
+(def lz5 (take 3 (map tick (iterate inc 0))))
+(show "iterate-take-count" [(vec lz5) @hits])

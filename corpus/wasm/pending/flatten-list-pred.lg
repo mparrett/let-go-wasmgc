@@ -1,7 +1,0 @@
-;; PENDING construct: `flatten` and `list?` (core.lg code reaching the
-;; unbound native core/list?; `list?` has a runtime fn in wasm.core but no
-;; twin binding at this build). Backend (2026-10-01 06:55): `TypeError: nil
-;; is not a function`. Split from seqs.lg.
-(defn show [label x] (println label (pr-str x)))
-(show "flatten" (flatten [1 [2 [3 [4]]]]))
-(show "list?" [(list? '(1)) (list? [1]) (list? (list)) (list? (cons 1 nil))])

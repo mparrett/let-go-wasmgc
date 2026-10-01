@@ -5,6 +5,7 @@
 ;;   r1-08-try-recur  review bug-08: compile-time `ir/build: recur argument
 ;;                    count must match function argument count (got 1, need 0)`
 ;; Split from review-shapes.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: wasm trap: seq expected Seqable`.
 (defn show [label x] (println label (pr-str x)))
 (defn msg [f] (try (f) (catch Exception e (ex-message e))))
 (show "r2-11-apply-int" (msg (fn [] (apply + 5))))

@@ -90,3 +90,21 @@
 (show "assoc-in-vec-path" (assoc-in {:rows [[0 0] [0 0]]} [:rows 1 0] 7))
 (show "entity-at" (let [idx (into {} (map (fn [e] [[(:x e) (:y e)] (:id e)]) (ents w0)))] [(get idx [4 4]) (get idx [0 0])]))
 (show "path-cost" (reduce + (map (fn [[a b]] (+ (abs-diff a b) 1)) [[1 4] [6 2] [3 3]])))
+
+;; folded from pending/int-array.lg (P2.11): `int-array` / `aget` / `aset` / `alength`
+;; int-array / aget / aset (terrain.lg's grid idiom)
+(def bw 6)
+(def bh 4)
+(def grid (int-array (* bw bh)))
+(dotimes [y bh] (dotimes [x bw] (aset grid (+ x (* y bw)) (if (or (= x 0) (= y 0) (= x (dec bw)) (= y (dec bh))) 1 0))))
+(show "grid-count" (alength grid))
+(show "grid-row0" (mapv (fn [x] (aget grid x)) (range bw)))
+(show "grid-row1" (mapv (fn [x] (aget grid (+ x bw))) (range bw)))
+(show "grid-sum" (reduce + (map (fn [i] (aget grid i)) (range (* bw bh)))))
+(aset grid 7 9)
+(show "grid-aset" (aget grid 7))
+(show "grid-vec" (vec grid))
+
+;; folded from pending/nil-into-int-param.lg (P2.11): nil into an i64-typed param (review bug-01)
+(show "update-in-missing-fn" (get-in (update-in w0 [:stats :kills] (fn [k] (if k (inc k) 0))) [:stats]))
+(show "count-by-kind" (reduce (fn [m e] (update m (:kind e) (fn [n] (if n (inc n) 1)))) {} (ents w0)))

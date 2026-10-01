@@ -2,6 +2,8 @@
 ;; as unsupported variadic fn (& args)", which names the wrong construct).
 ;; Backend (2026-10-01 08:15): compile-time `lower-wasm: unsupported variadic
 ;; fn (& args) as a closure {:fn "_main", :name nil}`. Split from control-rt.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: lower-wasm: unsupported variadic fn (&
+;;  args) as a closure {:fn "_main", :name nil}`. P2.12 (letfn expands through a variadic fn).
 (defn show [label x] (println label (pr-str x)))
 (show "letfn" (letfn [(f [x] (if (= x 0) :done (g (dec x)))) (g [x] (f x))] (f 3)))
 (show "letfn-self" (letfn [(fact [n] (if (= n 0) 1 (* n (fact (dec n)))))] (fact 10)))

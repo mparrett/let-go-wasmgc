@@ -1,6 +1,8 @@
 ;; PENDING construct: `deref` of a non-atom (a Reduced). Backend (2026-10-01
 ;; 06:55): named limit `lower-wasm: deref/reset!/swap! of a non-atom (Phase
 ;; 2)`; native returns the wrapped value. Split from seqs.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: lower-wasm: deref/reset!/swap! of a
+;;  non-atom (Phase 2)`.
 (defn show [label x] (println label (pr-str x)))
 (show "deref-reduced" (deref (reduced 2)))
 (show "at-reduced" @(reduced :x))

@@ -4,6 +4,9 @@
 ;; unsupported variadic fn (& args) as a closure ...)`; 3-fn comp says
 ;; `function <mfn comp 0x0> doesn't have a 3-arity variant` (D78 drop).
 ;; Split from closures-rt.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: lower-wasm: core/partial#3 did not
+;;  compile (lower-wasm: unsupported variadic fn (& args) as a closure {:fn "core/partial#3",)`.
+;;  variadic closures are P2.12.
 (defn show [label x] (println label (pr-str x)))
 (show "partial" ((partial + 1 2) 3))
 (show "partial-map" (map (partial * 2) [1 2 3]))

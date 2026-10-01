@@ -204,6 +204,9 @@
           (if (= k 20) true (= k 21)) (get-nf a f (if (= n 2) b (wasm/null)))
           :else (get-nf f a (if (= n 2) b (wasm/null))))))
 
+(defn- ifn-pred [self x] (sq/bool (callable? x)))              ; seq.lg's ifn hook (slot 5)
+(defn- ifn-call [self f n a b] (invoke-ifn f (sq/unbox-int n) a b))
+
 (defn invoke-args
   "Call f with the n (<= 4) arguments a..d."
   [f n a b c d]
@@ -1109,6 +1112,8 @@
                       (sq/mk-fn2 (wasm/funcref sq/Code2 foreign-equiv))
                       (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-hash)))
   (sq/set-seqable-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-seqable)))
+  (sq/set-ifn-hook! (wasm/new sq/Fn (wasm/null) (wasm/funcref sq/Code1 ifn-pred) (wasm/null) (wasm/null)
+                              (wasm/null) (wasm/funcref sq/Code4 ifn-call) (wasm/null)))
   (s/set-print-hook! (sq/mk-fn2 (wasm/funcref sq/Code2 print-foreign)))
   (arr/set-type-name-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 tn-hook)))
   (sq/set-print-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 pr-hook))))

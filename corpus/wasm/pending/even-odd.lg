@@ -1,9 +1,0 @@
-;; PENDING construct: `even?` / `odd?` (core.lg fns that call the unbound
-;; natives `int?` and `let-go.types/bigint?`). Backend (2026-10-01 06:15):
-;; `TypeError: nil is not a function` (unbound var, D63 shape). Split from
-;; vectors.lg, seqs.lg.
-(defn show [label x] (println label (pr-str x)))
-(show "into-filter-xform" (into [] (filter even?) (range 10)))
-(show "even-odd" [(even? 0) (even? -3) (odd? 7) (odd? 0)])
-(show "filter-odd" (filter odd? (range 10)))
-(show "loop-try-odd" (loop [i 0 acc []] (if (= i 4) acc (recur (inc i) (conj acc (try (if (odd? i) (throw (ex-info "odd" {})) i) (catch Exception e :odd)))))))

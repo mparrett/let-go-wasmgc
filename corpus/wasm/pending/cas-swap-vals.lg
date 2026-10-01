@@ -3,6 +3,7 @@
 ;; nil is not a function`. Native quirk kept on purpose: compare-and-set! on
 ;; a vector value throws "comparing uncomparable type vm.ArrayVector".
 ;; Split from atoms.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: TypeError: nil is not a function`.
 (defn show [label x] (println label (pr-str x)))
 (def a (atom 100))
 (show "cas-ok" (compare-and-set! a 100 5))

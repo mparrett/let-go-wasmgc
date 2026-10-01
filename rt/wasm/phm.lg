@@ -70,17 +70,47 @@
 (defn- flag? [f] (= 1 (wasm/get HFlag 0 f)))
 
 ;; Key hash and equality: hashValue and valueEquiv (hash.go:23, :143-210).
-;; valueEquiv is lg's `=` (wasm.seq/equiv?) plus one rule `=` lacks: nil and
-;; the empty list are equivalent (hash.go:161-163), so {nil 1} finds () in
-;; ordered mode; the HAMT never sees that pair together (hashes 0 and
-;; 1257683291). The ref-eq is valueEquiv's identity fast path (:165-168).
+;; valueEquiv is NOT lg's `=`. It is asymmetric: when its first operand has a
+;; Go Equals method (ArrayVector/PersistentVector/MapEntry, PersistentMap),
+;; that decides, and Equals takes only its own kind: a vector equals only a
+;; vector (elements by `=`), a map only a map (values by valueEquiv). Any
+;; other first operand falls back to `=`. So {:a [1]} != {:a '(1)} but
+;; {:a '(1)} = {:a [1]}, and (contains? #{[1]} '(1)) is true while
+;; (contains? #{'(1)} [1]) is false: lookups pass the probe first. One rule
+;; `=` lacks: nil and the empty list are equivalent (hash.go:161-163), so
+;; {nil 1} finds () in ordered mode; the HAMT never sees that pair together
+;; (hashes 0 and 1257683291). Identity (:165-168) is a shortcut only for
+;; Go-comparable values: Equals has none, so a vector holding NaN is not
+;; valueEquiv to itself.
+(declare mequiv)
 (defn- khash [k] (sq/unbox-int (sq/hash k)))
+(defn- vec-like? [k] (if (= k 11) true (= k 23)))
+(defn- vequals [a b]                                          ; ArrayVector/PersistentVector.Equals
+  (let [a (if (= 23 (sq/kind a)) (sq/entry-vec a) a)
+        b (if (= 23 (sq/kind b)) (sq/entry-vec b) b)
+        n (pv/vcount a)]
+    (if (= n (pv/vcount b))
+      (loop [i 0]
+        (if (< i n)
+          (let [x (pv/vnth a i) y (pv/vnth b i)]
+            (if (if (wasm/null? x) (= 2 (sq/kind y)) (if (wasm/null? y) (= 2 (sq/kind x)) false))
+              (recur (inc i))
+              (if (sq/equiv? x y) (recur (inc i)) false)))
+          true))
+      false)))
 (defn- kequiv [a b]
-  (cond (wasm/ref-eq a b) (if (= 22 (sq/kind a)) (sq/equiv? a b) true) ; Go's a == b is false for one NaN
+  (cond (wasm/ref-eq a b) (let [k (sq/kind a)]
+                            (cond (= 22 k) (sq/equiv? a b)     ; Go's a == b is false for one NaN
+                                  (vec-like? k) (vequals a b)
+                                  (wasm/is? HMap a) (mequiv a b)
+                                  :else true))
         ;; equiv? says nil equals only nil, so a null side decides here
         (wasm/null? a) (= 2 (sq/kind b))
         (wasm/null? b) (= 2 (sq/kind a))
-        :else (sq/equiv? a b)))
+        :else (let [k (sq/kind a)]
+                (cond (vec-like? k) (if (vec-like? (sq/kind b)) (vequals a b) false)
+                      (wasm/is? HMap a) (if (wasm/is? HMap b) (mequiv a b) false)
+                      :else (sq/equiv? a b)))))
 
 (defn- u32 [x] (bit-and x 0xffffffff))
 

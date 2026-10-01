@@ -5,6 +5,7 @@
 ;; `wasm trap: nth index out of bounds`, `count expected Counted`, `first
 ;; expected Seq`, `seq expected Seqable`, `string index out of range`,
 ;; `can't pop empty vector`. Split from errors.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: wasm trap: nth index out of bounds`.
 (defn show [label x] (println label (pr-str x)))
 (defn msg [f] (try (f) (catch Exception e (ex-message e))))
 (show "nth-oob-vec" (msg (fn [] (nth [1 2] 5))))

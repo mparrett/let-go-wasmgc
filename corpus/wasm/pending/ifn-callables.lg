@@ -3,6 +3,9 @@
 ;; expected Fn` / `some expected Fn`; native accepts any callable. Direct
 ;; calls `(f x)` with f a keyword/map/set/vector work, and `filter` works.
 ;; Split from seqs.lg, xsofy-shapes.lg, closures-rt.lg.
+;; Status after P2.11 (2026-10-01): still fails with `error: wasm trap: map expected Fn`. MATCHes
+;;  once rt patch B (P2.11 report: seq.lg map*/reduce/some accept any callable) is applied; the
+;;  backend half ($rt_invokeN dispatch for the runtime's invoke helpers) is in.
 (defn show [label x] (println label (pr-str x)))
 (show "map-kw" (map :a [{:a 1} {:a 2} {}]))
 (show "some-set" (some #{3} [1 3]))

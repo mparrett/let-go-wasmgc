@@ -2,6 +2,8 @@
 ;; them when core.lg compiles). Backend (2026-10-01 06:17): e.g.
 ;; `function <fn mapv 0x0> expected 2 args, got 3`; native returns values.
 ;; Split from vectors.lg (and others as noted inline).
+;; Status after P2.11 (2026-10-01): still fails with `error: function <fn mapv 0x0> expected 2 args,
+;;  got 3`. P2.12.
 (defn show [label x] (println label (pr-str x)))
 (show "mapv-2" (mapv + [1 2 3] [10 20 30]))
 ;; from maps.lg: `merge` with 2+ maps is the `[m & maps]` arity. Backend:

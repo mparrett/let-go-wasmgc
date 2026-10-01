@@ -79,3 +79,38 @@
 (show "int-ovf-caught" (try (+ 9223372036854775807 1) (catch Exception e (ex-message e))))
 (show "int-div-zero" (try (quot 1 0) (catch Exception e (ex-message e))))
 (show "bit-ops" [(bit-and 12 10) (bit-or 12 10) (bit-xor 12 10) (bit-shift-left 1 40) (bit-shift-right -16 2)])
+
+;; folded from pending/compare-float.lg (P2.11): `compare`, `sort`, `sort-by` with a float operand (F4)
+(show "compare-int-float" (compare 1 2.5))
+(show "compare-floats" [(compare 1.5 2.5) (compare 2.5 2.5) (compare -0.0 0.0)])
+(show "sort-mixed-num" (sort [3 1.5 2 -0.5]))
+(show "sort-floats" (sort [2.5 -1.0 0.0 1e10]))
+
+;; folded from pending/float-max-min.lg (P2.11): `max` / `min` with a float operand (F8)
+(show "max-min" [(max 1 2.5) (min 1 2.5) (max 3 1.0) (min -0.0 0.0)])
+
+;; folded from pending/negate-float.lg (P2.11): unary `-` on a float (F9)
+(def x 1.5)
+(show "neg-var" (- x))
+(show "neg-lit" [(- 1.5) (- 0.0)])
+
+;; folded from pending/typed-param-float.lg (P2.11): float args to a fn whose params typeinfer typed :int (F9)
+(defn lt [a b] (< a b))
+(println "lt-floats" (lt 1.5 2.5))
+(println "lt-mixed" (lt 1 2.5))
+(println "fn-avg" (pr-str [(favg 1.0 2.0) (favg 1 2) (favg -0.5 0.5)]))
+
+;; folded from pending/float-in-fns.lg (P2.11): floats through closures, fn params and loop locals (F4/F8)
+(show "fn-closure" (mapv (fscale 0.5) [1 2 3]))
+(show "fn-closure-float" (mapv (fscale 2.5) [0.5 1.5]))
+(show "loop-halve" (loop [x 1.0 n 0] (if (< x 1e-10) [x n] (recur (/ x 2) (inc n)))))
+(show "float-cond" (mapv (fn [x] (cond (< x 0.0) :neg (> x 0.0) :pos :else :zero)) [-1.5 0.0 2.5]))
+
+;; folded from pending/float-runtime-arith.lg (P2.11): float arithmetic/equality in the runtime's numeric twins (F4)
+(show "sum-mixed" (reduce + 0 [1 2.5 3 0.25]))
+(show "product-mixed" (reduce * 1 [2 0.5 4]))
+(show "eq-mixed" [(= 1 1.0) (= 1.0 1.0) (== 1 1.0) (= 0.0 -0.0) (== 0.0 -0.0)])
+(show "nan-eq" [(= nan nan) (== nan nan) (< nan 1) (> nan 1) (= nan 1.0)])
+(show "nan-arith" [(+ nan 1) (* 0 inf) (- inf inf) (* inf -1)])
+(show "inf-arith" [(+ inf 1) (/ 1.0 0.0) (/ -1.0 0.0) (/ 0.0 inf)])
+(show "lcg-sum" (reduce + lcg-floats))

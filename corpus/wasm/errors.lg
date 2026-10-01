@@ -81,3 +81,7 @@
 (show "validate-ok" (validate 3))
 (show "validate-bad" (try (validate -3) (catch Exception e [(ex-message e) (:path (ex-data e)) (:value (ex-data e))])))
 (show "errors-in-map" (mapv (fn [x] (try (validate x) (catch Exception e :bad))) [1 -1 2]))
+
+;; folded from pending/hof-wrong-arity.lg (P2.11): a wrong-arity closure invoked by a runtime HOF (F7)
+(show "reduce-arity-fn" (amsg (fn [] (reduce (fn [a] a) [1 2]))))
+(show "map-arity-fn" (try (doall (map (fn [] 1) [1])) (catch Exception e :caught)))

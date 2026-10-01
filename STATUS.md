@@ -27,6 +27,8 @@
 | P2.1-corpus | done 2026-10-01 | opus | 14 programs, 5 MATCH; F1–F9 → P2.11; variadics → P2.12 |
 | P3.1 | done 2026-10-01 | opus | xsofy MISSING 0/135; xxh3 200 vectors; 106 tests; verified |
 | P4.0 | done 2026-10-01 | opus | host glue + ABI; hello MATCH in Chromium/node/wasmtime; no COI needed; JSPI depth risk D89 |
-| P2.11 | running | opus | backend oracle fixes F1–F9 + D87 |
+| P2.11 | done 2026-10-01 | opus | F1–F9 fixed; corpus/wasm 13/14 with rt patches A/B/C applied by orchestrator; gate green 1.37× |
 | P4.1-runtime | done 2026-10-01 | opus | 24 term twins; xsofy MISSING 0/143; depth max 20 (D89 closed) |
 | P4.1-host | done 2026-10-01 | opus | real shell boots emitted modules; coalescing; --xsofy-shell green; emit/url_param defined (D100) |
+| P2.12 | running | opus | variadic ABI (D83) |
+| P2.13 | running | opus | rt seams: MapSeq/SetSeq kind (R5), f64.neg, raise sweep (D74) |

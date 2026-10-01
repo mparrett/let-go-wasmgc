@@ -6,9 +6,33 @@ runs let-go's own Go natives. The backend side compiles the program plus `rt/was
 
 ```
 checks/run-corpus.sh corpus/wasm              # the 14 programs
-checks/run-corpus.sh corpus/wasm/pending      # the backlog (31 files)
+checks/run-corpus.sh corpus/wasm/pending      # the backlog (19 files after P2.11)
 checks/run-corpus.sh --update-expected corpus/wasm corpus/wasm/pending
 ```
+
+## P2.11 status (2026-10-01)
+
+Backend fixes for F1, F2, F4/F8/F9, F5, F7, review2 bug-16 (the `##NaN` literal's payload)
+and constfold's `(* x 0)` identity on floats are in `src/`. On the tree as it stands,
+**10/14** programs MATCH. The four that still fail are runtime-side, and `src/` cannot fix them:
+
+- F3 (maps.lg `eq`, sets.lg `eq-vec-vs-list-member`, hashing.lg `agree-nested`): native's
+  map/set equality is `valueEquiv`, which is asymmetric. A vector or map on the left decides by
+  its own Go `Equals`, so it equals only its own kind. The runtime's `kequiv` uses plain `=`.
+  The README's earlier "native-tier run gives false" was wrong: the runtime under native lg
+  returns `true` too. The fix is rt patch A in the P2.11 report.
+- review-shapes.lg `r2-R5-map-seq-hash`: native map and set seqs are `MapSeq`/`SetSeq`, which
+  have no `Hash()` and hash by FNV over the printed form. The runtime builds a Cons chain.
+  This needs a new seq kind in rt (open, R5).
+
+With rt patch A+B applied (verified against a patched copy via `LW_RT_DIR`), the result is
+13/14 (only R5 fails), and `pending/ifn-callables.lg` MATCHes as well.
+
+Folded back into their programs (marked `;; folded from pending/...`): compare-float,
+float-max-min, negate-float, typed-param-float, float-in-fns, float-runtime-arith (floats.lg),
+even-odd, iterate (vectors.lg), flatten-list-pred (seqs.lg), hof-wrong-arity (errors.lg),
+int-array, nil-into-int-param (xsofy-shapes.lg). pending/ went from 31 files to 19, and each
+remaining header carries a dated "Status after P2.11" line.
 
 **Final run: 2026-10-01 07:15–07:28 PDT**, lg-4e76921230, on the working tree as it stood.
 Two other agents were editing `src/` and `rt/` throughout, and the driver failed to load
