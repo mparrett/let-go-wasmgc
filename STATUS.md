@@ -11,5 +11,6 @@
 | P2.4-hamt | running | opus | HAMT in the dialect over intrinsics, order parity vs native |
 | P2.5-native | done 2026-10-01 | opus | seq.lg 786 lines, 11 tests/12k asserts, chunk parity, 4 gate programs match natively |
 | P1.1-backend | done 2026-10-01 | opus | 44/44 incl. typed probe; hybrid i31 (fib 15.5 ms); verified |
-| P2.6-native | running | opus | strings/chars/str/pr-str in the dialect; float formatting decision |
+| P2.6-native | done 2026-10-01 | opus | str.lg 1122 lines; 20 tests/2239 asserts; floats 281/281 exact (Go strconv port) |
 | P1.3 | running | opus | closures (D36 ABI), var table, unknown-callee calls |
+| P2.8 | running | opus | native-twin report tooling |

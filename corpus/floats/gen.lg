@@ -1,0 +1,7 @@
+;; Snapshot native lg's pr-str of every corpus value, one per line. From
+;; dev/lower-wasm:
+;;   lg corpus/floats/gen.lg > corpus/floats/pr-str.expected
+;; str_test re-derives each line live and fails on a stale snapshot (D13).
+(binding [*ns* *ns*]
+  (doseq [f (read-string (str "[" (slurp "corpus/floats/corpus.lg") "\n]"))] (eval f)))
+(doseq [x @(resolve 'floats.corpus/values)] (println (pr-str x)))
