@@ -1,0 +1,16 @@
+;; pending: term/read-key, term/key-pending?, term/size have no wasm twin and
+;; no lowering yet (Phase 4; checks/native-twins.sh excludes term/*). As of
+;; 2026-10-01 `(println (term/read-key))` compiles but fails at run time with
+;; `error: TypeError: nil is not a function` (an unbound var-table slot).
+;; Until it lowers, host/keys-probe.wat exercises the same host imports
+;; (term.read_key / key_pending / size, host/ABI.md). When it does: move this
+;; file to corpus/host/keys.lg and run it in checks/browser-boot.sh with keys
+;; a, b, q. Native lg reads a real TTY here, so the expected output is the
+;; probe's, not an oracle run.
+(println "size" (term/size))
+(println "ready")
+(loop []
+  (let [k (term/read-key)]
+    (cond (nil? k) (println "eof")
+          (= k "q") (do (println "key" (mapv int k)) (println "pending" (if (term/key-pending?) 1 0)) (println "bye"))
+          :else (do (println "key" (mapv int k)) (recur)))))

@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- Minimal host page for lower-wasm modules (P4.0). Not the game shell:
+     P4.1 swaps this page's <pre> "shell" for xsofy/tools/xsofy-shell.html,
+     which binds only through window.LetGoHost, so the surface below keeps
+     let-go's shape (onReady / onOutput / onEmit / sendInput / setSize).
+     ?module=<url> picks the .wasm (default module.wasm). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lower-wasm host</title>
+<style>
+  :root { --bg: #0a0e14; --fg: #d4c5a0; --dim: #6b7280; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 ui-monospace, Menlo, monospace; }
+  #status { color: var(--dim); margin-bottom: 8px; }
+  #out { margin: 0; white-space: pre-wrap; word-break: break-all; outline: none; }
+  .err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<div id="status">loading…</div>
+<pre id="out" tabindex="0"></pre>
+<script>
+// window.LetGoHost — defined by a classic script before any shell code, as
+// let-go's lg-host-core.js is, so a shell can bind at parse time. Output and
+// the ready signal are buffered until the shell registers.
+window.LetGoHost = (function () {
+  let outputSink = null; const outputBuffer = [];
+  let readyCb = null, readyMode = null;
+  let emitSink = (name, data) => window.dispatchEvent(new CustomEvent(name, { detail: data }));
+  return {
+    onReady(cb) { readyCb = cb; if (readyMode !== null) cb(readyMode); },
+    onOutput(cb) { outputSink = cb; for (const s of outputBuffer.splice(0)) cb(s); },
+    onEmit(cb) { emitSink = cb; },
+    sendInput(s) { return window._lgwHost ? window._lgwHost.sendInput(s) : false; },
+    setSize(c, r) { if (window._lgwHost) window._lgwHost.setSize(c, r); },
+    _output(s) { if (outputSink) outputSink(s); else outputBuffer.push(s); },
+    _emit(name, data) { emitSink(name, data); },
+    _ready(mode) { readyMode = mode; if (readyCb) readyCb(mode); },
+  };
+})();
+</script>
+<script>
+// This page's own stand-in shell: a <pre> and a keydown listener.
+(function () {
+  const out = document.getElementById('out');
+  const KEYS = { Enter: '\r', Escape: '\x1b', Backspace: '\x7f', Tab: '\t',
+    ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D' };
+  window.LetGoHost.onReady(() => {
+    window.LetGoHost.onOutput((s) => out.append(s));
+    window.LetGoHost.setSize(80, 24);
+    document.addEventListener('keydown', (e) => {
+      const k = e.key.length === 1 && !e.ctrlKey && !e.metaKey ? e.key : KEYS[e.key];
+      if (k === undefined) return;
+      e.preventDefault();
+      window.LetGoHost.sendInput(k);
+    });
+    out.focus();
+  });
+})();
+</script>
+<script type="module">
+import { LgWasmHost, hasJSPI } from './lg-wasm-host.js';
+const status = document.getElementById('status');
+const url = new URLSearchParams(location.search).get('module') || 'module.wasm';
+// what checks/browser-boot.mjs reads back
+const result = window.__lgw = { module: url, coi: self.crossOriginIsolated === true, jspi: hasJSPI,
+  sab: typeof SharedArrayBuffer === 'function',
+  stdout: '', stderr: '', done: false };
+status.textContent = `${url} · JSPI ${hasJSPI ? 'yes' : 'NO'} · crossOriginIsolated ${result.coi}`;
+const host = window._lgwHost = new LgWasmHost({
+  onOutput(text, fd) {
+    if (fd === 2) result.stderr += text; else result.stdout += text;
+    if (result.tFirstOutputPage === undefined) result.tFirstOutputPage = performance.now();
+    window.LetGoHost._output(text);
+  },
+});
+try {
+  const bytes = await (await fetch(url)).arrayBuffer();
+  // 'jspi': input works on the main thread with no SharedArrayBuffer. let-go's
+  // modes are 'worker' (input) and 'main' (output only); see host/ABI.md for
+  // what xsofy-shell.html's `mode === 'worker'` gate means for P4.1.
+  window.LetGoHost._ready('jspi');
+  const r = await host.run(bytes);
+  Object.assign(result, r, { tDonePage: performance.now() });
+  status.textContent += ` · exit ${r.code} · first output ${r.tFirstOutput?.toFixed(1)} ms · total ${r.tTotal.toFixed(1)} ms`;
+} catch (e) {
+  Object.assign(result, { code: -1, error: String((e && e.message) || e) });
+  status.textContent += ` · host error: ${result.error}`;
+  status.className = 'err';
+}
+result.done = true;
+</script>
+</body>
+</html>

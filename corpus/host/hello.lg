@@ -1,0 +1,21 @@
+;; P4.0 host smoke: output, two JSPI sleeps through (<!! (timeout 50)),
+;; vectors/maps, and a nanoTime bucket that is the same on every host
+;; (elapsed >= the 100 ms slept, printed as a class, not a number).
+(ns hello
+  (:require [async :refer [timeout <!!]]))
+
+(println "hello from lower-wasm")
+(def t0 (System/nanoTime))
+(println "sleep 1")
+(<!! (timeout 50))
+(println "sleep 2")
+(<!! (timeout 50))
+(def elapsed-ms (quot (- (System/nanoTime) t0) 1000000))
+(println "slept >= 100ms:" (>= elapsed-ms 100))
+(println "elapsed bucket:" (if (>= elapsed-ms 0) ">=0" "<0"))
+(def v (mapv #(* % %) (range 10)))
+(println "squares" v "sum" (reduce + v))
+(def m (reduce (fn [acc x] (let [k (if (even? x) :even :odd)] (assoc acc k (conj (get acc k []) x)))) {} (range 7)))
+(println "parity" (:even m) (:odd m) (count m))
+(prn {:a 1 :b [2 3] :c "s"})
+(println "bye")

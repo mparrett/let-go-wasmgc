@@ -26,3 +26,4 @@
 | P1.7 | running | opus | Phase 1 review fixes |
 | P2.1-corpus | done 2026-10-01 | opus | 14 programs, 5 MATCH; F1–F9 → P2.11; variadics → P2.12 |
 | P3.1 | done 2026-10-01 | opus | xsofy MISSING 0/135; xxh3 200 vectors; 106 tests; verified |
+| P4.0 | done 2026-10-01 | opus | host glue + ABI; hello MATCH in Chromium/node/wasmtime; no COI needed; JSPI depth risk D89 |
