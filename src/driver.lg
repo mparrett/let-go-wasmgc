@@ -61,10 +61,13 @@
         more (if (string? (first more)) (rest more) more)
         more (if (map? (first more)) (rest more) more)]
     (cond
-      (vector? (first more)) [(apply list 'defn name (first more) (map expand (rest more)))]
+      (vector? (first more)) (let [[params body] (lw/split-rest-pattern (first more) (rest more))]
+                               [(apply list 'defn name params (map expand body))])
       ;; multi-arity (P2.1): one fn per arity, `name#argc` in wasm
       (and (seq more) (every? #(and (seq? %) (vector? (first %))) more))
-      (vec (for [[params & body] more] (with-meta (apply list 'defn name params (map expand body)) {::multi true})))
+      (vec (for [[params & body] more
+                 :let [[params body] (lw/split-rest-pattern params body)]]
+             (with-meta (apply list 'defn name params (map expand body)) {::multi true})))
       :else (throw (ex-info (str "lower-wasm: unsupported defn shape (attr-map or return hint) in " name)
                             {:name name})))))
 
@@ -76,20 +79,32 @@
 ;; the failure is reported as that test's ERROR rather than hiding the file.
 (def ^:dynamic *stub-failures* false)
 
+(defn arity-key
+  "A defn arity's key: its param count, or \"v\" for the variadic one
+   (P2.12: `[a & r]` and `[a b c]` both have 3 symbols)."
+  [params]
+  (if (lw/variadic-params? params) "v" (count params)))
+
+(defn param-count
+  "The wasm param count of an arity: a variadic one takes the rest seq as
+   one more param after its fixed ones."
+  [params]
+  (if (lw/variadic-params? params) (inc (lw/fixed-count params)) (count params)))
+
 (defn wasm-name
   "The wasm function id of a program defn form (P1.7 bug-09: mangled into
    its own namespace) and the export string that keeps its lg name."
   [src]
-  (let [nm (str (second src)) argc (count (nth src 2))]
+  (let [nm (str (second src)) argc (arity-key (nth src 2))]
     (if (::multi (meta src))
       [(lw/prog-id nm argc) (str nm "#" argc)]
       [(lw/prog-id nm) nm])))
 
 (defn stub-info [src e]
-  (let [nm (first (wasm-name src))]
-    {:stub (lw/stub-fn {:name nm :params (vec (repeat (count (nth src 2)) :box)) :ret :box}
+  (let [nm (first (wasm-name src)) n (param-count (nth src 2))]
+    {:stub (lw/stub-fn {:name nm :params (vec (repeat n :box)) :ret :box}
                        (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))
-     :name nm :params (vec (repeat (count (nth src 2)) :box)) :ret :box}))
+     :name nm :params (vec (repeat n :box)) :ret :box}))
 
 (defn analyze-program!
   "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint)."
@@ -99,7 +114,7 @@
      (do (lw/analyze-deps! src)
          (let [main? (= main-src src)
                multi? (::multi (meta src))
-               argc (count (nth src 2))
+               argc (arity-key (nth src 2))
                v (when-not main? (resolve (second src)))
                [wname ename] (if main? ["_main" "lw main"] (wasm-name src))
                info (try (binding [lw/*box-params* (contains? boxed [v argc])]
@@ -110,8 +125,11 @@
                                     (throw e))))]
            (when v
              (swap! lw/*sigs* update v
-                    (fn [e] (assoc-in (or e {:base (str (second src)) :multi? (boolean multi?) :var v})
-                                      [:arities (count (:params info))] (select-keys info [:name :params :ret])))))
+                    (fn [e] (let [e (or e {:base (str (second src)) :multi? (boolean multi?) :var v})
+                                  sig (select-keys info [:name :params :ret])]
+                              (if (= "v" argc)
+                                (assoc e :variadic (assoc sig :fixed (lw/fixed-count (nth src 2))))
+                                (assoc-in e [:arities (count (:params info))] sig))))))
            info)))))
 
 (defn boxing-needed

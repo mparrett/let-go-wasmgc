@@ -187,8 +187,7 @@
 ;; can claim them (they are not natives), so their own source compiles
 ;; through the backend like a runtime defn, read from core.lg at the commit
 ;; the pinned lg was built from (the checkout itself may have moved on).
-;; Variadic arities are left out (D52); a defn whose every arity is variadic
-;; is not offered.
+;; Variadic arities compile too since P2.12 (D83, amending D78).
 
 (def letgo-commit "4e769212")
 (def letgo-dir (str (os/getenv "HOME") "/projects-new/3p/let-go"))
@@ -203,16 +202,31 @@
   (let [m (meta v)] (and (= "<embedded:core>" (:file m)) (:line m))))
 
 (def core-defns
-  ;; var -> {:var :ns 'core :name :arities [...fixed...]}
+  ;; var -> {:var :ns 'core :name :arities [...]}
   (into {} (for [form core-forms
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
                        v (ns-var 'core nm)
-                       ars (filterv #(not (some #{'&} (first %))) (arities (drop 2 form)))]
+                       ars (arities (drop 2 form))]
                  :when (and v (lg-defined? v) (seq ars))]
              [v {:var v :ns 'core :name nm :arities ars :core-lg true}])))
 
+;; P2.12: lg defns the backend adds where rt/ has no form for a native's
+;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
+;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
+(def ext-path (str src-dir "/lw_ext.lg"))
+(load-string (slurp ext-path))
+(in-ns 'lw-rt)
+
+(def ext-defns
+  (into {} (for [form (read-forms ext-path)
+                 :when (and (seq? form) (#{'defn 'defn-} (first form)))
+                 :let [[nm _] (strip-meta-name (second form))
+                       v (ns-var 'lw-ext nm)]
+                 :when v]
+             [v {:var v :ns 'lw-ext :name nm :arities (arities (drop 2 form)) :core-lg true}])))
+
 (defn source-defn
-  "The source defn the backend compiles for v: a runtime defn, or an
-   lg-defined core fn."
-  [v] (or (get defn-by-var v) (get core-defns v)))
+  "The source defn the backend compiles for v: a runtime defn, an lg-defined
+   core fn, or one of src/lw_ext.lg's."
+  [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v)))

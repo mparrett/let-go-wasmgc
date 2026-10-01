@@ -1,0 +1,47 @@
+;; P2.12: user `& rest` fns end to end (D83). Native's rest seq is a
+;; PersistentList (nil when no arg is left over), whatever built the call:
+;; a direct call, a call through a value, or apply.
+(defn show [label x] (println label (pr-str x)))
+(defn rest-of [& xs] xs)
+(defn rest-1 [a & xs] [a xs])
+(defn rest-2 [a b & xs] [a b xs])
+(show "rest-direct" [(rest-of) (rest-of 1) (rest-of 1 2 3)])
+(show "rest-fixed" [(rest-1 :a) (rest-1 :a :b) (rest-2 1 2) (rest-2 1 2 3 4 5 6 7)])
+(show "rest-type" [(type (rest-of 1 2)) (type (rest-of)) (list? (rest-of 1)) (seq? (rest-of 1)) (count (rest-of 1 2 3))])
+(show "rest-eq-hash" [(= (rest-of 1 2) [1 2]) (= (rest-of 1 2) '(1 2)) (= (hash (rest-of 1 2)) (hash '(1 2)))])
+(show "rest-conj" [(conj (rest-of 1 2) 0) (str (rest-of 1 2)) (rest (rest-of 1 2 3)) (next (rest-of 1))])
+;; through a value: map, a local, a vector of fns
+(def rv rest-of)
+(show "rest-value" [(rv) (rv 1 2 3 4 5 6) (map rest-1 [1 2]) (mapv #(apply rest-2 %) [[1 2] [1 2 3]])])
+;; anonymous and capturing variadic closures
+(defn adder [n] (fn [& xs] (reduce + n xs)))
+(show "closure-capture" [((adder 10)) ((adder 10) 1 2 3) ((adder 10) 1 2 3 4 5 6 7 8 9)])
+(show "anon" [((fn [& r] r)) ((fn [a & r] (cons a r)) 1 2 3) ((fn [a b c d & r] [d r]) 1 2 3 4 5 6)])
+;; multi-arity with a variadic arm: fixed arities win where they exist
+(defn mv ([] :zero) ([a] [:one a]) ([a b & r] [:many a b r]))
+(show "multi" [(mv) (mv 1) (mv 1 2) (mv 1 2 3 4 5)])
+(def amv (fn ([x] [:x x]) ([x & r] [:xr x r])))
+(show "multi-anon" [(amv 1) (amv 1 2) (amv 1 2 3)])
+;; recur in a variadic fn passes the rest as ONE arg (native semantics)
+(defn cnt [n & r] (if (zero? n) r (recur (dec n) (cons n r))))
+(show "recur" [(cnt 3) (cnt 3 :x) (cnt 0)])
+(defn sum-loop [acc & xs] (if (seq xs) (recur (+ acc (first xs)) (next xs)) acc))
+(show "recur-sum" (sum-loop 0 1 2 3 4 5 6 7 8 9 10))
+;; destructuring the rest
+(defn dest [a & [b c :as more]] [a b c more])
+(show "rest-destructure" [(dest 1) (dest 1 2) (dest 1 2 3 4)])
+(defn kw-args [a & {:keys [x y] :or {y 9}}] [a x y])
+(show "rest-kwargs" [(kw-args 1) (kw-args 1 :x 2) (kw-args 1 :y 3 :x 4)])
+(show "anon-rest-destructure" ((fn [& [p q]] [q p]) 1 2 3))
+;; self and mutual recursion through variadic arities
+(defn vlen [& xs] (if (seq xs) (inc (apply vlen (rest xs))) 0))
+(show "self-apply" (vlen 1 2 3 4 5 6 7))
+;; too few args: native's message (caught carries ExecutionError:)
+(defn need2 [a b & r] r)
+;; native embeds a heap address in a fn's name: keep the text around it
+(defn try-msg [f] (try (f) (catch Exception e (let [m (ex-message e)] (str (subs m 0 (index-of m "0x")) (subs m (index-of m ">")))))))
+(show "arity-few" (try-msg (fn [] (need2 1))))
+(show "arity-few-value" (try-msg (fn [] (rv) (let [g need2] (g)))))
+(show "arity-multi" (try-msg (fn [] (let [g mv] (g)) (let [h amv] (h)))))
+(show "arity-apply" (try-msg (fn [] (apply need2 [1]))))
+(show "arity-anon" (try-msg (fn [] ((fn [a b c & r] r) 1 2))))

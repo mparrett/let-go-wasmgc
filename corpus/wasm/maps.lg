@@ -110,3 +110,7 @@
 (show "hash-order-indep" (= (hash {:a 1 :b 2}) (hash {:b 2 :a 1})))
 (show "str" (str {:a "s" :b [1]}))
 (show "map?" [(map? {}) (map? lit9) (map? []) (map? (transient {}))])
+;; folded from pending/merge-with.lg (P2.12: core.lg's variadic-only
+;; `[f & maps]` compiles now)
+(show "merge-with" (merge-with + {:a 1 :b 2} {:a 10 :c 3}))
+(show "merge-with-3" (merge-with into {:a [1]} {:a [2]} {:a [3] :b [0]}))

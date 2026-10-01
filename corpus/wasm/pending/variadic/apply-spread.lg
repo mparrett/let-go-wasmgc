@@ -1,0 +1,30 @@
+;; P2.12: apply spreads a seq of any length (D52's 4-arg ceiling lifted):
+;; fixed slots take the first args, the rest goes whole into the variadic
+;; arity. 0, 1, 5, 50 and 1000 elements, through natives, lg core fns and
+;; user fns.
+(defn show [label x] (println label (pr-str x)))
+(def r0 []) (def r1 [7]) (def r5 (vec (range 5))) (def r50 (vec (range 50))) (def r1000 (range 1000))
+(defn cnt-args [& xs] (count xs))
+(show "apply-count" [(apply cnt-args r0) (apply cnt-args r1) (apply cnt-args r5) (apply cnt-args r50) (apply cnt-args r1000)])
+(show "apply-count-lead" [(apply cnt-args 1 r0) (apply cnt-args 1 2 r5) (apply cnt-args 1 2 3 r50) (apply cnt-args 1 2 3 4 r1000)])
+(show "apply-plus" [(apply + r0) (apply + r1) (apply + r5) (apply + r50) (apply + r1000)])
+(show "apply-max" [(apply max r1) (apply max r5) (apply max r50) (apply max r1000) (apply max (reverse r1000))])
+(show "apply-min" [(apply min r1) (apply min (reverse r5)) (apply min r1000)])
+(show "apply-max-lead" (apply max 2000 r1000))
+(show "apply-str" [(apply str r0) (apply str r5) (count (apply str r1000))])
+(show "apply-vector-fn" [(apply vector r0) (apply vector r5) (count (apply vector r50))])
+(show "apply-list" [(apply list r5) (apply list 1 2 r5)])
+(show "apply-conj" (apply conj [] r50))
+(show "apply-assoc" (apply assoc {} :a 1 [:b 2 :c 3 :d 4]))
+(show "apply-hash-map" (apply hash-map [:a 1 :b 2 :c 3]))
+(show "apply-lt" [(apply < r5) (apply < (reverse r5)) (apply <= [1 1 2 3 5 8]) (apply > (reverse r50))])
+(defn tail-of [a b & r] [a b (count r) (first r) (last r)])
+(show "apply-user" [(apply tail-of r5) (apply tail-of r1000) (apply tail-of :x :y r0)])
+(show "apply-fixed-only" [(apply (fn [a b c d] [d c b a]) r1 [2 3 4]) (apply (fn [a] a) r1)])
+(show "apply-lazy" [(apply + (map inc (range 100))) (apply max (filter even? (range 1000)))])
+(show "apply-rest-type" [(apply (fn [& r] (type r)) r1000) (apply (fn [& r] r) r0)])
+(show "apply-seq-of-map" (apply (fn [& es] (count es)) {:a 1 :b 2 :c 3 :d 4 :e 5}))
+;; native embeds a heap address in a fn's name: keep the text around it
+(defn try-msg [f] (try (f) (catch Exception e (let [m (ex-message e)] (str (subs m 0 (index-of m "0x")) (subs m (index-of m ">")))))))
+(show "apply-too-many" (try-msg (fn [] (apply (fn [a b] a) r5))))
+(show "apply-too-many-named" (try-msg (fn [] (apply tail-of r1))))

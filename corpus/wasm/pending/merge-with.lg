@@ -1,7 +1,0 @@
-;; PENDING construct: `merge-with` (core.lg `[f & maps]`, variadic-only, so
-;; D78 drops it entirely: unbound). Backend (2026-10-01 06:30): `TypeError:
-;; nil is not a function`. Split from maps.lg.
-;; Status after P2.11 (2026-10-01): still fails with `error: TypeError: nil is not a function`.
-(defn show [label x] (println label (pr-str x)))
-(show "merge-with" (merge-with + {:a 1 :b 2} {:a 10 :c 3}))
-(show "merge-with-3" (merge-with into {:a [1]} {:a [2]} {:a [3] :b [0]}))

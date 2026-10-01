@@ -30,7 +30,10 @@
 | P2.11 | done 2026-10-01 | opus | F1–F9 fixed; corpus/wasm 13/14 with rt patches A/B/C applied by orchestrator; gate green 1.37× |
 | P4.1-runtime | done 2026-10-01 | opus | 24 term twins; xsofy MISSING 0/143; depth max 20 (D89 closed) |
 | P4.1-host | done 2026-10-01 | opus | real shell boots emitted modules; coalescing; --xsofy-shell green; emit/url_param defined (D100) |
-| P2.12 | running | opus | variadic ABI (D83) |
+| P2.12 | done 2026-10-01 | opus | $FnV ABI; 9/9 + 3 refused; rtlib 0 lowering failures; bench 1.375; verified |
 | P2.13 | done 2026-10-01 | opus | kind 27; f64-neg; raise sweep (~80 sites); 116 tests/37.8k asserts; corpus/wasm 14/14; verified |
 | perf | investigated 2026-10-01 | fable | corpus/perf-report.md; D106; P0.1 queued for application |
 | P2.1 + P2.11 | GREEN 2026-10-01 | — | checks/run-corpus.sh corpus/wasm = 14/14 |
+| P0.1 | running | sonnet | apply D106 speedups |
+| P3.2 | running | opus | driver resolves xsofy; world parity 20 seeds |
+| P2.3 | running | sonnet | run core-tests.txt under the backend; measure |

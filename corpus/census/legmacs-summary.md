@@ -2,24 +2,22 @@
 
 Each top-level fn unit (one row per arity) lowered alone by lower-wasm and its module validated with wasm-tools; nothing is run. Regenerate with `checks/census.sh legmacs`; per-unit rows in `legmacs.tsv`.
 
-**813/816 units compile** (99.6%): ok 122, unbound-var 686, phase2-const 5. unsupported op: 0; invalid-wat: 0; goto fallback: 0; unsupported tree node: 0.
+**814/816 units compile** (99.8%): ok 122, unbound-var 687, phase2-const 5. unsupported op: 0; invalid-wat: 0; goto fallback: 0; unsupported tree node: 0.
 
 | bucket | units |
 |---|---:|
-| `unbound-var` | 686 |
+| `unbound-var` | 687 |
 | `ok` | 122 |
 | `phase2-const` | 5 |
-| `other unsupported call through a fn value with more than 4 args {:` | 1 |
 | `other unsupported closure arity > 4 {:fn "u520_eval-last-sexp", :a` | 1 |
 | `other unsupported closure arity > 4 {:fn "u521_eval-print-last-sex` | 1 |
 
 `unbound-var` = compiles; reaches at least one var outside the corpus with no wasm definition yet (a run-time `TypeError: nil is not a function `). `phase2-const` = compiles, no unbound var, at least one Phase-2 constant placeholder. Units reaching only the corpus's own vars count as ok: a whole-program compile makes those direct calls.
 
-## Top error heads (3 distinct)
+## Top error heads (2 distinct)
 
 | n | head | example | detail |
 |---:|---|---|---|
-| 1 | `other unsupported call through a fn value with more than N args {:` | legmacs/modes/letgo.lg run-eval (1) | lower-wasm: unsupported call through a fn value with more than 4 args {:argc 5, :fn "u519_run-eval__try82_body"} |
 | 1 | `other unsupported closure arity > N {:fn "<fn>", :a` | legmacs/modes/letgo.lg eval-last-sexp (1) | lower-wasm: unsupported closure arity > 4 {:fn "u520_eval-last-sexp", :arity 5} |
 | 1 | `other unsupported closure arity > N {:fn "uN_eval-print-last-sex` | legmacs/modes/letgo.lg eval-print-last-sexp (1) | lower-wasm: unsupported closure arity > 4 {:fn "u521_eval-print-last-sexp", :arity 5} |
 
@@ -41,10 +39,10 @@ Units (any bucket) holding at least one placeholder, by kind (sites in parenthes
 
 | var | units |
 |---|---:|
-| `core/assoc` | 184 |
-| `core/nth` | 177 |
+| `core/assoc` | 185 |
+| `core/nth` | 178 |
+| `core/str` | 154 |
 | `core/count` | 153 |
-| `core/str` | 153 |
 | `core/vector` | 132 |
 | `core/array-map` | 114 |
 | `core/get` | 108 |
@@ -62,8 +60,8 @@ Units (any bucket) holding at least one placeholder, by kind (sites in parenthes
 | `core/some` | 28 |
 | `core/max` | 27 |
 | `string/blank?` | 27 |
+| `core/reduce` | 24 |
 | `string/join` | 24 |
-| `core/reduce` | 23 |
 | `core/empty?` | 23 |
 | `core/nil?` | 22 |
 

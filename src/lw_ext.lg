@@ -1,0 +1,29 @@
+;; lw-ext: lg defns the backend compiles where rt/wasm has no form for a
+;; native's variadic use (P2.12). Plain lg over core fns, built like the lg
+;; core fns (lw_rt's core-defns); lower-wasm's seq-variant-table routes the
+;; native to them past its fixed arities.
+(ns lw-ext)
+
+(defn map-n
+  "map* over two or more colls (lang.go mapf's multi-collection path,
+   mapLazyN): lazy, ends with the shortest coll; an empty coll gives the
+   empty lazy seq. Each step realises one element of every coll (native
+   bulk-applies over chunked inputs; only side effects could tell)."
+  [f colls]
+  (lazy-seq
+    (let [ss (map seq colls)]
+      (when (every? some? ss)
+        (cons (apply f (map first ss)) (map-n f (map rest ss)))))))
+
+(defn list-n
+  "core/list past rt/'s fixed arities: the args already arrive as the
+   PersistentList native builds (the variadic rest seq); none is ()."
+  [xs]
+  (if (nil? xs) () xs))
+
+;; vector, hash-map and hash-set as VALUES (direct calls build literals
+;; inline, lower-wasm's coll-ctors): native's variadic natives, as variadic
+;; fns over the runtime's own constructors
+(defn vector-v [& xs] (vec xs))
+(defn hash-map-v [& kvs] (if (nil? kvs) {} (apply assoc {} kvs)))
+(defn hash-set-v [& xs] (into #{} xs))

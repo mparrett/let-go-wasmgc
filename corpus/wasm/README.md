@@ -6,9 +6,24 @@ runs let-go's own Go natives. The backend side compiles the program plus `rt/was
 
 ```
 checks/run-corpus.sh corpus/wasm              # the 14 programs
-checks/run-corpus.sh corpus/wasm/pending      # the backlog (19 files after P2.11)
-checks/run-corpus.sh --update-expected corpus/wasm corpus/wasm/pending
+checks/run-corpus.sh corpus/wasm/pending      # the backlog (13 files after P2.12)
+checks/run-corpus.sh corpus/wasm/pending/variadic   # P2.12's row (9 programs)
+checks/run-corpus.sh --update-expected corpus/wasm corpus/wasm/pending corpus/wasm/pending/variadic
 ```
+
+## P2.12 status (2026-10-01)
+
+Variadics (D83) are in `src/`: user `& rest` fns (closures, defns, multi-arity with a variadic
+arm, destructured rest, recur), core.lg's variadic arities, `apply` over any count, and n-ary
+natives as values. `pending/variadic/` holds the five variadic files that were in `pending/`
+(apply-over-4, core-variadic-closures, letfn, variadic-core, variadic-user) plus four new
+programs: user-variadic, apply-spread (0/1/5/50/1000 elements), hof-chains, coll-extra-args.
+All nine MATCH. The directory keeps its name because items.tsv's P2.12 row names it.
+
+`merge-with` MATCHes and is folded back into maps.lg. The main programs are 14/14 on the tree
+with P2.13's rt (13/14, R5 only, on the rt before it).
+Not covered: `%&` (native lg rejects it: `Can't resolve %&`), and a variadic fn wrapped by
+`with-meta` (rt's wrapper copies the fixed code slots only, so its variadic arity is lost).
 
 ## P2.11 status (2026-10-01)
 
