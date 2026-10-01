@@ -1,0 +1,26 @@
+;; bug-11: seq natives on a type value, a transient set or a transient vector raise one generic
+;; message where native names the native; (nth t i nf) on a type value raises where native returns nf.
+;; Run: lg -source-paths rt corpus/review2/bug-11-foreign-nonseqable-error.lg
+;; native : (first (type 1)) "first expected Seq"   (rest ..) "rest expected Seq"
+;;          (seq ..) "seq expected Seqable"   (reduce + 0 ..) "reduce expected Seq"
+;;          (map inc ..) realised: "map expected Sequable"   (nth (type 1) 0 :nf) => :nf
+;; runtime: every one raises "don't know how to create ISeq from let-go.lang.Type"
+;;          (TransientSet / TransientVector likewise); nth-with-default raises too
+;; Same class, different native: (apply f 5) natively "seq expected Seqable" (apply seqs its
+;; argument first); runtime "apply expected Seq" (wasm.core/apply*). 117 fuzz hits, tallied as
+;; :found/bug-apply-msg.
+;; Implicated: wasm.core foreign-seq (slot-2 seq hook) raises raise-not-supported for every non-seqable
+;; foreign value, before the caller's own check; sq/nth* reaches it through seq-of instead of
+;; returning nf. Messages are catchable on both sides, so this is a wrong-message bug except for nth.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(defn em [e] (if (= (type e) (type (object-array 0))) (wasm/string-of-bytes (wasm/get sq/Err 2 e)) (ex-message e)))
+(defn r [f] (try (let [v (f)] (str "=> " (if (= (type v) (type (object-array 0))) (wasm/string-of-bytes (s/str-bytes (s/pr-str v))) (pr-str v)))) (catch Throwable e (str "THROWS " (em e)))))
+(def nt (type 1))
+(def wt (c/type-of (sq/box-int 1)))
+(def nf (s/kw-of-bytes (wasm/bytes-of-string "nf")))
+(println "native  first" (r #(first nt)) "| rest" (r #(rest nt)) "| seq" (r #(seq nt)) "| nth-nf" (r #(nth nt 0 :nf)))
+(println "runtime first" (r #(sq/first wt)) "| rest" (r #(sq/rest wt)) "| seq" (r #(sq/seq wt)) "| nth-nf" (r #(c/nth wt (sq/box-int 0) nf)))
+(def idf (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] x))))
+(println "native  (apply identity 5)" (r #(apply identity 5)))
+(println "runtime (apply identity 5)" (r #(c/apply* idf (sq/box-int 5))))

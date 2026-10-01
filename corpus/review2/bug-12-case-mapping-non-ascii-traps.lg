@@ -1,0 +1,16 @@
+;; bug-12: upper-case / lower-case on any non-ASCII string traps (uncatchable) with an unprefixed
+;; message; it is neither parity nor a named `lower-wasm:` limit.
+;; Run: lg -source-paths rt corpus/review2/bug-12-case-mapping-non-ascii-traps.lg
+;; native : (upper-case "é") "É"   (lower-case "ÉA") "éa"   (upper-case "日本") "日本"
+;; runtime: wasm trap "wasm.str: case mapping of non-ASCII text is not implemented" for all three,
+;;          including "日本", which has no case mapping at all
+;; Same class: (int ##NaN) natively 0 on this host; runtime traps "wasm.str: (int ##NaN) is
+;; platform-defined in Go; not reproduced" (2 fuzz hits). A defensible limit, but unprefixed.
+;; Implicated: wasm.str map-ascii / upper-case / lower-case (str.lg ~910-921). At least strings
+;; whose non-ASCII runes have no case could pass through; otherwise the trap wants the prefix.
+(require '[wasm.intrinsics :as wasm] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(defn r [f] (try (wasm/string-of-bytes (s/str-bytes (f))) (catch Throwable e (str "THROWS " (ex-message e)))))
+(defn st [x] (s/mk-str (wasm/bytes-of-string x)))
+(println "native " (upper-case "é") (lower-case "ÉA") (upper-case "日本"))
+(println "runtime" (r #(s/upper-case (st "é"))) "|" (r #(s/lower-case (st "ÉA"))) "|" (r #(s/upper-case (st "日本"))))

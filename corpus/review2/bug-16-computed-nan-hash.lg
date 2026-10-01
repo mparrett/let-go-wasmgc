@@ -1,0 +1,14 @@
+;; bug-16 (reference stand-in only, probably): a NaN produced by arithmetic hashes differently from
+;; the ##NaN literal natively; the runtime hashes every NaN as the literal.
+;; Run: lg -source-paths rt corpus/review2/bug-16-computed-nan-hash.lg
+;; native : (hash ##NaN) 3363640502   (hash (- ##Inf ##Inf)) 1476737925  (bits differ: Go's math.NaN()
+;;          is 0x7FF8000000000001, the hardware's default NaN is 0x7FF8000000000000 on arm64/amd64)
+;; runtime: 3363640502 for both
+;; Implicated: wasm.seq/float-bits returns 0x7FF8000000000001 for every NaN (D28/D45 stand-in for
+;; f64-bits). The real i64.reinterpret_f64 intrinsic should give the operation's actual bits;
+;; re-check this row when P2.2-wasm lands rather than patching the stand-in.
+(require '[wasm.intrinsics :as wasm] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(def inf (s/box-float ##Inf))
+(println "native " (hash ##NaN) (hash (- ##Inf ##Inf)))
+(println "runtime" (sq/unbox-int (sq/hash (s/box-float ##NaN))) (sq/unbox-int (sq/hash (c/sub inf inf))))

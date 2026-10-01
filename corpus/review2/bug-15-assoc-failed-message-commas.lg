@@ -1,0 +1,13 @@
+;; bug-15: the "assoc failed for key K" message prints K with pr-str; native embeds K's String(),
+;; so a map key loses its commas natively (and strings inside would print unquoted in mode 0).
+;; Run: lg -source-paths rt corpus/review2/bug-15-assoc-failed-message-commas.lg
+;; native : (assoc [] {:a 1 :b 2} 1) throws "assoc failed for key {:a 1 :b 2}"
+;; runtime: raises "assoc failed for key {:a 1, :b 2}"
+;; Implicated: wasm.core assoc1 (core.lg ~585) and dissoc1 build the message with s/pr-str; native
+;; uses the key's String() (mode 0, wasm.str/value-string). Catchable both sides: wrong message.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(c/install!)
+(defn kw [x] (s/kw-of-bytes (wasm/bytes-of-string x)))
+(def wk (c/assoc (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)) (kw "b") (sq/box-int 2)))
+(println "native " (try (assoc [] {:a 1 :b 2} 1) (catch Throwable e (ex-message e))))
+(println "runtime" (try (c/assoc (pv/empty-vec) wk (sq/box-int 1)) (catch Throwable e (wasm/string-of-bytes (wasm/get sq/Err 2 e)))))

@@ -1,0 +1,20 @@
+;; bug-01: (hash []) is wrong, so every hash-ordered collection holding [] diverges.
+;; Run: lg -source-paths rt corpus/review2/bug-01-empty-vector-hash.lg
+;; native : (hash []) 1364076727   (hash [[]]) 193999046   (pr-str #{[] :a :b :c}) "#{:b :a [] :c}"
+;; runtime: (hash []) 1257683291   (hash [[]]) 962017705   (pr-str #{[] :a :b :c}) "#{:b :a :c []}"
+;; 1257683291 is the empty-PersistentVector / () hash.
+;; Implicated: wasm.seq/hash* kind 11 -> (hash-ordered (vec-seq x)); vec-seq of an empty vector is
+;; EmptyList, which hashOrdered counts as one nil (H1). Native's literal/vec/pop-to-empty vector is an
+;; ArrayVector whose hash folds zero elements (mixFinish 1). Only a meta'd or >32-conj'd vector is a
+;; PersistentVector natively (with-meta [] m) hashes 1257683291.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s]
+         '[wasm.phs :as hs] '[wasm.core :as c])
+(c/install!)
+(defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
+(println "native  (hash [])" (hash []) " (hash (vec ()))" (hash (vec ())) " (hash [[]])" (hash [[]]))
+(println "runtime (hash [])" (sq/unbox-int (sq/hash (pv/empty-vec)))
+         " (hash (vec ()))" (sq/unbox-int (sq/hash (sq/vec (sq/list))))
+         " (hash [[]])" (sq/unbox-int (sq/hash (c/conj (pv/empty-vec) (pv/empty-vec)))))
+(println "native  set" (pr-str (conj #{} [] :a :b :c)))
+(println "runtime set" (P (c/conj (c/conj (c/conj (c/conj (hs/empty-set) (pv/empty-vec)) (s/kw-of-bytes (wasm/bytes-of-string "a")))
+                                          (s/kw-of-bytes (wasm/bytes-of-string "b"))) (s/kw-of-bytes (wasm/bytes-of-string "c")))))

@@ -1,0 +1,73 @@
+;; Targeted seam probes, run through the fuzzer's glue:
+;;   lg -source-paths rt corpus/review2/fuzz.lg --eval corpus/review2/seams.lg
+;; Each row: label, native result, runtime result (pr-str both sides), MATCH/DIFF.
+(def rows (atom []))
+ (defn wpr [w] (rs* (s/pr-str w)))
+ (defmacro row [label native mine]
+   `(let [a# (res (pr-str ~native)) b# (res (wpr ~mine))]
+      (swap! rows conj [~label a# b#])))
+ (defn K [x] (->w x))
+(defn run-seams []
+ ;; D49: transient drain to 0 then regrow inside the same transient stays HAMT-ordered
+ (let [ks (map #(keyword (str "k" %)) (range 12))]
+   (row "D49 drain-regrow"
+        (let [t (transient (zipmap ks (range)))] (doseq [k ks] (dissoc! t k)) (doseq [k (take 5 ks)] (assoc! t k 1)) (persistent! t))
+        (let [t (c/transient (K (zipmap ks (range))))] (doseq [k ks] (c/dissoc! t (K k))) (doseq [k (take 5 ks)] (c/assoc! t (K k) (B 1))) (c/persistent! t)))
+   (row "D49 drain-persist-regrow"
+        (let [t (transient (zipmap ks (range)))] (doseq [k ks] (dissoc! t k)) (into (persistent! t) (map vector (take 5 ks) (repeat 1))))
+        (let [t (c/transient (K (zipmap ks (range))))] (doseq [k ks] (c/dissoc! t (K k))) (winto (c/persistent! t) (K (mapv vector (take 5 ks) (repeat 1)))))))
+ ;; M1: 2-entry collision bucket loses a key in a >8 map
+ (let [base (zipmap (map #(keyword (str "z" %)) (range 9)) (range))]
+   (doseq [[a b] [[97 \a] ["snpfo" "s6rja"] [:kby0z :kcxik] [[97] [\a]] [4611686018427387904 2.0]]]
+     (let [n (-> base (assoc a 1) (assoc b 2) (dissoc a))
+           w (-> (K base) (c/assoc (K a) (B 1)) (c/assoc (K b) (B 2)) (c/dissoc (K a)))]
+       (row (str "M1 " (pr-str [a b]) " seq") n w)
+       (row (str "M1 " (pr-str [a b]) " get") (get n b :miss) (c/get w (K b) (K :miss)))
+       (row (str "M1 " (pr-str [a b]) " re-assoc count") (count (assoc n b 3)) (sq/count (c/assoc w (K b) (B 3)))))))
+ ;; D46: string index semantics
+ (doseq [st ["héllo" "日本語" "😀x" "" "a\u0000b"]]
+   (doseq [[i j] [[0 1] [1 2] [0 0] [2 5] [-1 1] [1 0] [3 3] [0 6]]]
+     (row (str "D46 subs " (pr-str st) " " i " " j) (subs st i j) (s/subs (K st) (B i) (B j))))
+   (doseq [i [0 1 2 3 4 5 6 -1]]
+     (row (str "D46 nth " (pr-str st) " " i) (nth st i :nf) (c/nth (K st) (B i) (K :nf)))
+     (row (str "D46 get " (pr-str st) " " i) (get st i :nf) (c/get (K st) (B i) (K :nf))))
+   (row (str "D46 count/seq " (pr-str st)) [(count st) (seq st) (vec st)] (c/conj (c/conj (c/conj (pv/empty-vec) (sq/count (K st))) (sq/seq (K st))) (sq/vec (K st))))
+   (row (str "D46 index-of " (pr-str st)) [(index-of st "l") (index-of st "語") (last-index-of st "x")]
+        (K [(<-w (s/index-of (K st) (K "l"))) (<-w (s/index-of (K st) (K "語"))) (<-w (s/last-index-of (K st) (K "x")))])))
+ ;; D67: print modes on nested values (str/pr-str/print-str of containers with strings, chars, nil, entries)
+ (doseq [v [["a" \b nil :k 'sym 1.5 -0.0 ##NaN] {"k" \v} #{"s"} (list "x" [\y]) (first {"k" "v"}) [{"a" ["b" #{\c}]}] '() [] {} #{} [nil] (list nil) "\u0001\u007f "]]
+   (row (str "D67 str " (pr-str v)) (str v) (s/str (K v)))
+   (row (str "D67 pr-str " (pr-str v)) v (K v))
+   (row (str "D67 print-str " (pr-str v)) (print-str v) (s/print-str (K v))))
+ ;; D69: metadata kept/dropped
+ (let [mv (with-meta [1 2] {:m 1}) mm (with-meta {:a 1} {:m 1}) ms (with-meta #{1} {:m 1}) ml (with-meta '(1 2) {:m 1})
+       wv (c/with-meta (K [1 2]) (K {:m 1})) wm (c/with-meta (K {:a 1}) (K {:m 1})) ws (c/with-meta (K #{1}) (K {:m 1})) wl (c/with-meta (K '(1 2)) (K {:m 1}))]
+   (doseq [[nm nf wf] [["conj" #(conj % [9 9]) #(c/conj % (K [9 9]))] ["pop" pop c/pop] ["rest" rest sq/rest] ["next" next sq/next]
+                       ["into" #(into % []) #(winto % (pv/empty-vec))] ["persistent!" #(persistent! (transient %)) #(c/persistent! (c/transient %))]
+                       ["assoc" #(assoc % 0 5) #(c/assoc % (B 0) (B 5))] ["dissoc" #(dissoc % :a) #(c/dissoc % (K :a))] ["disj" #(disj % 1) #(hs/sdisj % (B 1))]
+                       ["empty-via-pop" #(pop (pop %)) #(c/pop (c/pop %))] ["seq" seq sq/seq] ["cons" #(cons 0 %) #(sq/cons (B 0) %)] ["vec" vec sq/vec] ["subvec" #(subvec % 0 1) #(c/subvec % (B 0) (B 1))]]]
+     (doseq [[kn nv wv*] [["vec" mv wv] ["map" mm wm] ["set" ms ws] ["list" ml wl]]]
+       (row (str "D69 " nm " " kn " meta") (res (meta (nf nv))) (K (res (<-w (c/meta (wf wv*)))))))))
+ (row "D69 type meta'd vec" (str (type (with-meta [] {:a 1}))) (s/str (c/type-of (c/with-meta (pv/empty-vec) (K {:a 1})))))
+ (row "D69 with-meta scalar" (with-meta 1 nil) (c/with-meta (B 1) (wasm/null)))
+ (row "D69 with-meta non-map meta" (res (with-meta [1] 5)) (K (res (<-w (c/with-meta (K [1]) (B 5))))))
+ (row "D69 meta'd kw =" (= (with-meta :a {:x 1}) :a) (sq/equals (c/with-meta (K :a) (K {:x 1})) (K :a)))
+ (row "D69 meta'd kw pr" (with-meta :a {:x 1}) (c/with-meta (K :a) (K {:x 1})))
+ ;; R5: seq of a map/set hashes over its printed form
+ (row "R5 seq map hash" (hash (seq {:a 1 :b 2})) (sq/hash (sq/seq (K {:a 1 :b 2}))))
+ (row "R5 seq set hash" (hash (seq #{1 2})) (sq/hash (sq/seq (K #{1 2}))))
+ ;; S2: a throwing thunk
+ (let [n (atom 0) ls (lazy-seq (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) (list 1)))
+       m (atom 0) wl (sq/lazy-seq* (rfn0 (fn [] (if (= 1 (swap! m inc)) (throw (ex-info "boom" {})) (K '(1))))))]
+   (res (pr-str ls)) (res (wpr wl))
+   (row "S2 second access" ls wl))
+ ;; S1 hashes, H1/H2
+ (row "S1 range hash" (hash (range 3)) (sq/hash (sq/range (B 3))))
+ (row "H1 [] vs () set" (contains? #{[]} ()) (c/contains? (c/conj (hs/empty-set) (pv/empty-vec)) (sq/list)))
+ (row "H2 -0.0 key small" (get {0.0 :z} -0.0) (c/get (K {0.0 :z}) (K -0.0)))
+ (row "H2 -0.0 key big" (get (assoc (zipmap (range 9) (range)) 0.0 :z) -0.0) (c/get (c/assoc (K (zipmap (range 9) (range))) (K 0.0) (K :z)) (K -0.0)))
+ (row "NaN key" (get {##NaN 1} ##NaN) (c/get (K {##NaN 1}) (K ##NaN)))
+ (row "nil/() one key" (assoc {nil 1} () 2) (c/assoc (K {nil 1}) (sq/list) (B 2)))
+ (doseq [[l a b] @rows]
+   (println (if (same? a b) "MATCH" "DIFF ") l (if (same? a b) "" (str "\n   native  " (shorten a) "\n   runtime " (shorten b))))))
+(run-seams)

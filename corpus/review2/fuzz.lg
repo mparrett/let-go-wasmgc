@@ -1,0 +1,606 @@
+;; corpus/review2/fuzz.lg: differential fuzzer for the Phase 2 runtime.
+;; A program is a vector of steps over a pool of [native runtime] pairs; each
+;; step runs in both worlds and the result (or error) is compared: pr-str, str,
+;; print-str, hash, count, type, meta, and a structural bridge (= native
+;; (<-w runtime)). Pool refs are taken mod the pool size, so deleting steps
+;; keeps a program runnable: that is what the shrinker relies on.
+;;
+;;   lg -source-paths rt corpus/review2/fuzz.lg <seed-from> <seed-to> [maxlen]
+;;   lg -source-paths rt corpus/review2/fuzz.lg --replay '<edn program>'
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s]
+         '[wasm.phm :as m] '[wasm.phs :as hs] '[wasm.core :as c] '[wasm.reader :as rd] '[string])
+
+(c/install!)
+
+;; ---------------------------------------------------------------------------
+;; Boundary glue (from corpus/intrinsics/core_test.lg), used for leaves,
+;; closures and the bridge only; collections are built by steps in both worlds.
+
+(declare ->w <-w)
+(def array-type (type (object-array 0)))
+(defn wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
+
+(defn clo [f]
+  (wasm/new sq/Fn
+            (wasm/funcref sq/Code0 (fn [_] (->w (f))))
+            (wasm/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
+            (wasm/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
+            (wasm/null)
+            (wasm/funcref sq/Code3 (fn [_ a b cc] (->w (f (<-w a) (<-w b) (<-w cc)))))
+            (wasm/funcref sq/Code4 (fn [_ a b cc d] (->w (f (<-w a) (<-w b) (<-w cc) (<-w d)))))
+            (wasm/new sq/FnInfo 0 1 (wasm/null))))
+
+(defn rfn2 "a runtime-only arity-2 Fn" [f] (sq/mk-fn2 (wasm/funcref sq/Code2 (fn [_ a b] (f a b)))))
+(defn rfn1 [f] (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ a] (f a)))))
+(defn rfn0 [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+
+(defn ->w [x]
+  (cond (nil? x) (wasm/null)
+        (wref? x) x
+        (int? x) (sq/box-int x)
+        (boolean? x) (sq/bool x)
+        (string? x) (s/mk-str (wasm/bytes-of-string x))
+        (char? x) (s/mk-char (int x))
+        (keyword? x) (s/kw-of-bytes (wasm/bytes-of-string (subs (str x) 1)))
+        (symbol? x) (s/sym-of-bytes (wasm/bytes-of-string (str x)))
+        (float? x) (s/box-float x)
+        (map-entry? x) (c/map-entry (->w (key x)) (->w (val x)))
+        (vector? x) (reduce (fn [v e] (c/conj v (->w e))) (pv/empty-vec) x)
+        (map? x) (reduce (fn [w [k v]] (c/assoc w (->w k) (->w v))) (m/empty-map) (seq x))
+        (set? x) (reduce (fn [w e] (c/conj w (->w e))) (hs/empty-set) (seq x))
+        (fn? x) (clo x)
+        (seq? x) (reduce (fn [l e] (sq/conj l (->w e))) (sq/list) (reverse x))
+        :else (throw (ex-info (str "->w: no runtime form for " (pr-str x)) {}))))
+
+(defn bytes->str [b] (when-not (wasm/null? b) (wasm/string-of-bytes b)))
+(defn arr->vec [a] (mapv #(wasm/aget m/HSlots a %) (range (wasm/alen a))))
+
+(defn <-w [r]
+  (let [k (c/ckind r)
+        mt (when-not (wasm/null? (c/meta r)) (<-w (c/meta r)))
+        wm (fn [x] (if mt (with-meta x mt) x))]
+    (cond (= k 0) nil
+          (= k 1) (sq/unbox-int r)
+          (= k 15) (= 1 (wasm/get sq/Bool 0 r))
+          (= k 17) (wasm/string-of-bytes (s/str-bytes r))
+          (= k 19) (char (s/char-val r))
+          (= k 20) (keyword (bytes->str (wasm/get sq/Kw 0 r)) (bytes->str (wasm/get sq/Kw 1 r)))
+          (= k 21) (symbol (bytes->str (wasm/get sq/Sym 0 r)) (bytes->str (wasm/get sq/Sym 1 r)))
+          (= k 22) (s/unbox-float r)
+          (<= 2 k 10) (wm (loop [q (sq/seq r) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
+          (= k 11) (wm (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r))))
+          (= k 23) (clojure.lang.MapEntry/create (<-w (wasm/get sq/MapEntry 0 r)) (<-w (wasm/get sq/MapEntry 1 r)))
+          (= k 30) (wm (into {} (map (fn [[kk v]] [(<-w kk) (<-w v)]) (partition 2 (arr->vec (m/entries r))))))
+          (= k 31) (wm (set (map <-w (arr->vec (hs/sseq r)))))
+          (= k 16) (fn [& args] (<-w (c/invoke-vec r (->w (vec args)))))
+          (= k 14) (reduced (<-w (sq/unreduced r)))
+          (= k 36) (let [x (<-w (wasm/get c/MetaNamed 0 r))] (with-meta x mt))
+          :else [:opaque k])))
+
+(defn rs* [w] (wasm/string-of-bytes (s/str-bytes w)))
+
+(defn norm-msg [msg]
+  (-> (str msg)
+      (string/replace #"0x[0-9a-f]+" "0x?")
+      (string/trim)))
+
+(defn err-of [e]
+  (cond (and (wref? e) (wasm/is? sq/Err e)) [:err (norm-msg (bytes->str (wasm/get sq/Err 2 e)))]
+        (wref? e) [:err (str "thrown ref " (pr-str (<-w e)))]
+        :else (let [msg (str (ex-message e))]
+                (if (string/starts-with? msg "wasm trap: ")
+                  [:trap (norm-msg (subs msg 11))]
+                  [:err (norm-msg msg)]))))
+
+(defmacro res [& body] `(try [:ok (do ~@body)] (catch Throwable e# (err-of e#))))
+
+(defn denan [v]
+  (cond (and (float? v) (not (== v v))) ::nan
+        (map-entry? v) v
+        (vector? v) (mapv denan v)
+        (seq? v) (if (empty? v) v (apply list (map denan v)))
+        (map? v) (into {} (map (fn [[a b]] [(denan a) (denan b)]) v))
+        (set? v) (set (map denan v))
+        :else v))
+
+;; ---------------------------------------------------------------------------
+;; Deterministic randomness (LCG; the seed is printed on every failure)
+
+(def rs (atom 1))
+(defn rnd [n] (mod (quot (swap! rs (fn [x] (mod (+ (* x 1103515245) 12345) 2147483648))) 64) n))
+(defn pick [xs] (nth xs (rnd (count xs))))
+
+;; ---------------------------------------------------------------------------
+;; Leaves: index into this vector (stable across runs, so programs replay)
+
+(def leaves
+  [nil true false
+   0 1 -1 2 7 31 32 33 97 1055 1056 1057 1073741823 1073741824 -1073741824 -1073741825
+   2147483647 2147483648 -2147483649 9223372036854775807 -9223372036854775808 4611686018427387904
+   0.0 -0.0 ##NaN ##Inf ##-Inf 1.5 -2.5 0.1 1e21 1e-7 4.9e-324 2.2250738585072014E-308
+   1.7976931348623157E308 2.0 97.0 4.8e-322 100.0 1e16 123456789.125 -1.0
+   "" "a" "abc" "héllo" "日本語" "😀x" "a\nb" "\t\"\\" "\u0000\u0001\u001f\u007f" "xe2tiazy" "snpfo" "s6rja"
+   " pad " "a,b,,c" "ab" "b" "é" "\r\n" "\b\f" "," "-12" "0x1F" ":k" "nil" "a/b"
+   \a \b \é \newline \space \tab \u0000 \\ \" \日 \return \backspace \formfeed (char 128512) \,
+   :a :b :k :ns/k :a/b :kby0z :kcxik :x.y/z :nil
+   'a 'sym 'ns/s 'kby0z 'kcxik '/ 'a/b
+   [] '() {} #{}])
+
+(def colliders [97 \a 4.8e-322 "xe2tiazy" "snpfo" "s6rja" :kby0z :kcxik 'kby0z 'kcxik 4611686018427387904 2.0 [97] [\a]])
+
+(defn key-of [kind i]
+  (case kind
+    0 i
+    1 (keyword (str "k" i))
+    2 (str "s" i)
+    3 (nth colliders (mod i (count colliders)))
+    4 (nth leaves (mod (* i 7) (count leaves)))
+    5 (if (even? i) i (keyword (str "q" i)))))
+
+(defn shuffle-idx [n seed]
+  (loop [v (vec (range n)) i (dec n) st seed]
+    (if (<= i 0) v
+        (let [st (mod (+ (* st 1103515245) 12345) 2147483648) j (mod (quot st 64) (inc i))]
+          (recur (assoc v i (v j) j (v i)) (dec i) st)))))
+
+;; ---------------------------------------------------------------------------
+;; Functions passed as values: same native fn both sides, the runtime gets it
+;; through the boundary closure (so the runtime's call protocol is tested)
+
+(def fns
+  [["inc" inc] ["identity" identity] ["str" str] ["even?" even?] ["keyword?" keyword?] ["nil?" nil?]
+   ["count" count] ["vector" vector] ["rcmp" (fn [a b] (compare b a))] ["<" <] [">" >] ["compare" compare]
+   ["ctrue" (constantly true)] ["cfloat" (constantly 1.5)] ["list" list] ["cnil" (constantly nil)]
+   ["hash" hash] ["first" first]])
+(def wfns (mapv (fn [[_ f]] (clo f)) fns))
+
+;; runtime ports of the lg-defined core fns the fuzzer composes (core.lg at 4e769212)
+(declare wfilter wtake)
+(defn wpos? [x] (> (sq/unbox-int x) 0))
+(defn wfilter [f xs]
+  (sq/lazy-seq*
+   (rfn0 (fn []
+           (let [sx (sq/seq xs)]
+             (when-not (wasm/null? sx)
+               (if (sq/truthy? (sq/chunked-seq? sx))
+                 (let [cc (sq/chunk-first sx) size (sq/unbox-int (sq/count cc)) b (sq/chunk-buffer (sq/box-int size))]
+                   (loop [i 0] (when (< i size) (let [v (c/nth cc (sq/box-int i))] (when (sq/truthy? (c/invoke-vec f (->w [v]))) (sq/chunk-append b v))) (recur (inc i))))
+                   (sq/chunk-cons (sq/chunk b) (wfilter f (sq/chunk-rest sx))))
+                 (let [x (sq/first sx) r (sq/next sx)]
+                   (if (sq/truthy? (c/invoke-vec f (pv/vconj (pv/empty-vec) x))) (sq/cons x (wfilter f r)) (wfilter f r))))))))))
+(defn wtake [n coll]
+  (sq/lazy-seq*
+   (rfn0 (fn []
+           (when (> n 0)
+             (let [sx (sq/seq coll)]
+               (when-not (wasm/null? sx)
+                 (if (sq/truthy? (sq/chunked-seq? sx))
+                   (let [cc (sq/chunk-first sx) size (sq/unbox-int (sq/count cc))]
+                     (if (<= size n)
+                       (sq/chunk-cons cc (wtake (- n size) (sq/chunk-rest sx)))
+                       (sq/cons (sq/first sx) (when (> n 1) (wtake (dec n) (sq/rest sx))))))
+                   (sq/cons (sq/first sx) (when (> n 1) (wtake (dec n) (sq/rest sx))))))))))))
+(defn wlazy-cat [seqs]
+  (sq/lazy-seq*
+   (rfn0 (fn []
+           (let [sx (sq/seq seqs)]
+             (when-not (wasm/null? sx)
+               (let [cur (sq/seq (sq/first sx))]
+                 (if (wasm/null? cur)
+                   (wlazy-cat (sq/rest sx))
+                   (sq/cons (sq/first cur) (wlazy-cat (sq/cons (sq/rest cur) (sq/rest sx))))))))))))
+(defn wtransientable? [x] (contains? #{11 30 31} (c/ckind x)))
+(def w-conj! (rfn2 c/conj!))
+(def w-conj (rfn2 c/conj))
+(defn winto [to from]
+  (if (wtransientable? to)
+    (c/persistent! (sq/reduce w-conj! (c/transient to) from))
+    (sq/reduce w-conj to from)))
+
+(defn flaky-n [] (let [cnt (atom 0)] (fn [x] (if (= 1 (swap! cnt inc)) (throw (ex-info "flaky" {})) x))))
+
+(defn red-at-n [k] (fn [acc x] (let [a (conj acc x)] (if (= (count a) k) (reduced a) a))))
+(defn red-at-w [k] (rfn2 (fn [acc x] (let [a (c/conj acc x)] (if (= (sq/unbox-int (sq/count a)) k) (sq/reduced a) a)))))
+
+;; ---------------------------------------------------------------------------
+;; Ops. :a lists argument kinds: :v pool value, :i immediate int, :f fn id.
+
+(def B sq/box-int)
+(defn cap [n] (if (> n 40) (mod n 41) n))
+(defn bigx? [x] (try (> (bounded-count 101 x) 100) (catch Throwable e false)))
+(defn wbig? [x] (try (> (sq/unbox-int (sq/count x)) 100) (catch Throwable e false)))
+(defn rcap [n] (if (> (abs n) 1500) (rem n 1500) n))
+(defn W1 [x] (->w x))
+
+(def ops
+  {:conj      [[:v :v] conj c/conj]
+   :conj3     [[:v :v :v] conj c/conj]
+   :assoc     [[:v :v :v] assoc c/assoc]
+   :assoc-i   [[:v :i :v] assoc c/assoc]
+   :dissoc    [[:v :v] dissoc c/dissoc]
+   :dissoc2   [[:v :v :v] dissoc c/dissoc]
+   :disj      [[:v :v] disj (fn [st x] (if (= 31 (c/ckind st)) (hs/sdisj st x) (wasm/trap "disj on non-set")))]
+   :get       [[:v :v] get c/get]
+   :get-nf    [[:v :v :v] get c/get]
+   :get-i     [[:v :i] get c/get]
+   :contains  [[:v :v] contains? c/contains?]
+   :contains-i [[:v :i] contains? c/contains?]
+   :nth       [[:v :i] nth c/nth]
+   :nth-nf    [[:v :i :v] nth c/nth]
+   :peek      [[:v] peek c/peek]
+   :pop       [[:v] pop c/pop]
+   :first     [[:v] first sq/first]
+   :second    [[:v] second sq/second]
+   :rest      [[:v] rest sq/rest]
+   :next      [[:v] next sq/next]
+   :seq       [[:v] seq sq/seq]
+   :count     [[:v] count sq/count]
+   :cons      [[:v :v] cons sq/cons]
+   :vec       [[:v] vec sq/vec]
+   :into      [[:v :v] into winto]
+   :key       [[:v] key c/key]
+   :val       [[:v] val c/val]
+   :sort      [[:v] sort c/sort]
+   :sort-f    [[:f :v] sort c/sort]
+   :compare   [[:v :v] compare c/compare]
+   :eq        [[:v :v] = sq/equals]
+   :hasheq    [[:v :v] (fn [a b] (= (= a b) (= (hash a) (hash b)))) (fn [a b] (sq/bool (= (sq/truthy? (sq/equals a b)) (= (sq/unbox-int (sq/hash a)) (sq/unbox-int (sq/hash b))))))]
+   :with-meta [[:v :v] with-meta c/with-meta]
+   :meta      [[:v] meta c/meta]
+   :transient [[:v] transient c/transient]
+   :conj!     [[:v :v] conj! c/conj!]
+   :assoc!    [[:v :v :v] assoc! c/assoc!]
+   :assoc!-i  [[:v :i :v] assoc! c/assoc!]
+   :dissoc!   [[:v :v] dissoc! c/dissoc!]
+   :persistent! [[:v] persistent! c/persistent!]
+   :subvec    [[:v :i :i] subvec c/subvec]
+   :subs1     [[:v :i] subs s/subs]
+   :subs      [[:v :i :i] subs s/subs]
+   :split     [[:v :v] split s/split]
+   :split3    [[:v :v :i] split s/split]
+   :index-of  [[:v :v] index-of s/index-of]
+   :last-index-of [[:v :v] last-index-of s/last-index-of]
+   :starts-with [[:v :v] starts-with? s/starts-with?]
+   :ends-with [[:v :v] ends-with? s/ends-with?]
+   :includes  [[:v :v] includes? s/includes?]
+   :trim      [[:v] trim s/trim]
+   :triml     [[:v] triml s/triml]
+   :trimr     [[:v] trimr s/trimr]
+   :upper     [[:v] upper-case s/upper-case]
+   :lower     [[:v] lower-case s/lower-case]
+   :replace   [[:v :v :v] str-replace s/str-replace]
+   :parse-long [[:v] parse-long s/parse-long]
+   :keyword   [[:v] keyword s/keyword]
+   :keyword2  [[:v :v] keyword s/keyword]
+   :symbol    [[:v] symbol s/symbol]
+   :name      [[:v] name s/name]
+   :namespace [[:v] namespace s/namespace]
+   :char      [[:v] char s/char]
+   :int       [[:v] int s/int]
+   :str2      [[:v :v] str s/str]
+   :pr-str2   [[:v :v] pr-str s/pr-str]
+   :print-str2 [[:v :v] print-str s/print-str]
+   :add       [[:v :v] + c/add]
+   :sub       [[:v :v] - c/sub]
+   :mul       [[:v :v] * c/mul]
+   :quot      [[:v :v] quot c/quot*]
+   :mod       [[:v :v] mod c/mod]
+   :max       [[:v :v] max c/max]
+   :min       [[:v :v] min c/min]
+   :lt        [[:v :v] < c/lt]
+   :ge        [[:v :v] >= c/ge]
+   :num-eq    [[:v :v] == c/num-eq]
+   :not-eq    [[:v :v] not= c/not-eq]
+   ;; bounds fold into [-1500, 1500]: (range 100 1073741824) prints for hours
+   :range     [[:i :i] (fn [a b] (range (rcap a) (rcap b))) (fn [a b] (sq/range (B (rcap (sq/unbox-int a))) (B (rcap (sq/unbox-int b)))))]
+   ;; step 0 is an infinite seq natively: nudged to 1 on both sides
+   :range3    [[:i :i :i] (fn [a b st] (range (rcap a) (rcap b) (if (zero? st) 1 st))) (fn [a b st] (sq/range (B (rcap (sq/unbox-int a))) (B (rcap (sq/unbox-int b))) (if (= 0 (sq/unbox-int st)) (B 1) st)))]
+   ;; counts above 40 fold down: n copies of a 1057-vector print for minutes
+   :repeat    [[:i :v] (fn [n x] (repeat (if (bigx? x) (min n 3) (cap n)) x)) (fn [n x] (sq/repeat (B (if (wbig? x) (min (sq/unbox-int n) 3) (cap (sq/unbox-int n)))) x))]
+   :take      [[:i :v] take (fn [n coll] (wtake (sq/unbox-int n) coll))]
+   :take-inf  [[:i] (fn [n] (take (rcap n) (range))) (fn [n] (wtake (rcap (sq/unbox-int n)) (sq/range)))]
+   :take-rep  [[:i :v] (fn [n x] (take (if (bigx? x) (min n 3) (cap n)) (repeat x))) (fn [n x] (wtake (if (wbig? x) (min (sq/unbox-int n) 3) (cap (sq/unbox-int n))) (sq/repeat x)))]
+   :filter    [[:f :v] filter wfilter]
+   :map       [[:f :v] map sq/map*]
+   :concat    [[:v :v] concat (fn [a b] (wlazy-cat (sq/list a b)))]
+   :lazy      [[:v] (fn [x] (lazy-seq (seq x))) (fn [x] (sq/lazy-seq* (rfn0 (fn [] (sq/seq x)))))]
+   :flaky     [[:v] (fn [x] (map (flaky-n) x)) (fn [x] (sq/map* (clo (flaky-n)) x))]
+   :apply     [[:f :v] apply c/apply*]
+   :reduce-f  [[:f :v] reduce sq/reduce]
+   :reduce-init [[:f :v :v] reduce sq/reduce]
+   :reduce-red [[:i :v] (fn [k coll] (reduce (red-at-n k) [] coll)) (fn [k coll] (sq/reduce (red-at-w (sq/unbox-int k)) (pv/empty-vec) coll))]
+   :atom      [[:v] atom c/atom]
+   :deref     [[:v] deref c/deref]
+   :reset     [[:v :v] reset! c/reset!]
+   :swap      [[:v :f] swap! c/swap!]
+   :volatile  [[:v] volatile! c/volatile!]
+   :vswap     [[:v :f] vswap! c/vswap!]
+   :read-rt   [[:v] (fn [x] (read-string (pr-str x))) (fn [x] (rd/read-string (s/pr-str x)))]
+   :read-str  [[:v] read-string rd/read-string]
+   :nest      [[:v :v :v] (fn [a b cc] (list [a (assoc {} b cc)] #{a})) (fn [a b cc] (sq/list (c/conj (c/conj (pv/empty-vec) a) (c/assoc (m/empty-map) b cc)) (c/conj (hs/empty-set) a)))]
+   :type      [[:v] type c/type-of]
+   :ex-info   [[:v :v] (fn [msg d] (ex-message (ex-info msg d))) (fn [msg d] (c/ex-message (c/ex-info msg d)))]
+   :gensym-like [[:v] (fn [x] (realized? x)) sq/realized?]
+   :some      [[:f :v] some sq/some]
+   :vreset    [[:v :v] vreset! c/vreset!]})
+
+(def op-names (vec (sort (keys ops))))
+
+;; builder steps produce collections by repeated conj/assoc in both worlds
+(defn build [step]
+  (let [[kind a b sd] step]
+    (case kind
+      :leaf (let [v (nth leaves (mod a (count leaves)))] [v (->w v)])
+      :vec-n (let [n a]
+               (loop [i 0 nv [] wv (pv/empty-vec)]
+                 (if (< i n)
+                   (let [e (if (= 3 (mod i 7)) (keyword (str "e" i)) i)]
+                     (recur (inc i) (conj nv e) (c/conj wv (->w e))))
+                   [nv wv])))
+      :list-n (loop [i 0 nl '() wl (sq/list)]
+                (if (< i a) (recur (inc i) (conj nl i) (c/conj wl (B i))) [nl wl]))
+      :map-n (let [order (shuffle-idx a sd)]
+               (loop [os order nm {} wm (m/empty-map)]
+                 (if (seq os)
+                   (let [k (key-of b (first os))] (recur (rest os) (assoc nm k (first os)) (c/assoc wm (->w k) (B (first os)))))
+                   [nm wm])))
+      :set-n (let [order (shuffle-idx a sd)]
+               (loop [os order ns #{} ws (hs/empty-set)]
+                 (if (seq os)
+                   (let [k (key-of b (first os))] (recur (rest os) (conj ns k) (c/conj ws (->w k))))
+                   [ns ws])))
+      :tmap-n (let [order (shuffle-idx a sd)]   ; a transient map built by assoc! then (b) dissoc!s
+               (let [nt (transient {}) wt (c/transient (m/empty-map))]
+                 (doseq [i order] (assoc! nt (key-of 5 i) i) (c/assoc! wt (->w (key-of 5 i)) (B i)))
+                 (doseq [i (take b order)] (dissoc! nt (key-of 5 i)) (c/dissoc! wt (->w (key-of 5 i))))
+                 [nt wt])))))
+
+(def interesting-ints [-1 0 1 2 3 5 8 9 16 31 32 33 64 1055 1056 1057 -2 100 1073741824])
+
+(defn gen-arg [kind]
+  (case kind :v (rnd 1000) :i (if (< (rnd 10) 7) (pick interesting-ints) (- (rnd 200) 20)) :f (rnd (count fns))))
+
+(defn gen-step []
+  (let [r (rnd 100)]
+    (cond (< r 22) [:leaf (rnd (count leaves))]
+          (< r 25) [:vec-n (pick [0 1 2 31 32 33 64 65 1055 1056 1057 1100 (rnd 70)])]
+          (< r 27) [:list-n (rnd 12)]
+          (< r 32) [:map-n (pick [0 1 2 7 8 9 10 16 17 33 (rnd 40)]) (rnd 6) (rnd 100000)]
+          (< r 35) [:set-n (pick [0 1 2 7 8 9 10 16 33 (rnd 40)]) (rnd 6) (rnd 100000)]
+          (< r 37) [:tmap-n (pick [1 2 8 9 12 20]) (rnd 21) (rnd 100000)]
+          :else (let [op (pick op-names)] (into [op] (map gen-arg (first (ops op))))))))
+
+(defn gen-prog [seed maxlen]
+  (reset! rs (inc (* seed 7919)))
+  (let [n (+ 5 (rnd (- maxlen 4)))] (vec (repeatedly n gen-step))))
+
+;; ---------------------------------------------------------------------------
+;; Execution and comparison
+
+(defn opaque-name? [tn] (boolean (re-find #"Transient|Atom|Volatile|Fn|Func|Native|Closure|Exception|Error" tn)))
+
+(defn shorten [x] (let [t (str x)] (if (> (count t) 240) (str (subs t 0 240) "…") t)))
+
+(def soft (atom {}))   ; known/declared differences: tallied, the program continues
+
+(defn tally! [tag] (swap! soft update tag (fnil inc 0)) true)
+
+(defn same? [a b]
+  (= (update a 1 #(if (float? %) (denan %) %)) (update b 1 #(if (float? %) (denan %) %))))
+
+(declare known*)
+(defn known
+  "nil when the difference is a hard failure, else a tag for the tally.
+   field is a check field or :result; a b are [:ok|:err|:trap x]."
+  [field a b nv wv]
+  (let [kn (try (known* field a b nv wv) (catch Throwable e nil))]
+    ;; FUZZ_NOFOUND=1 turns the filters for already-reported bugs off, to re-find them
+    (if (and kn (seq (os/getenv "FUZZ_NOFOUND")) (= "found" (namespace (first kn)))) nil kn)))
+
+(defn known* [field a b nv wv]
+  (let [[ca xa] a [cb xb] b
+        pnv (try (pr-str nv) (catch Throwable e "<throws>"))]
+    (cond
+      (and (= cb :trap) (string? xb) (string/starts-with? xb "lower-wasm:"))
+      [:named-limit (if (= ca :ok) :native-ok :native-err) (subs xb 0 (min 70 (count xb)))]
+      (and (not= ca :ok) (= cb :trap)) [:trap-for-catchable (if (= xa xb) :same-msg :static-msg)]
+      (and (= field :meta) (seq? nv) (empty? nv) (= ca :ok) (re-find #":line" (str xa))) [:R8-empty-list-meta]
+      (and (= field :type) (= xa "let-go.lang.PersistentVector") (= xb "let-go.lang.ArrayVector")) [:D69-vector-type]
+      (and (= field :hash) (seq? nv) (= ca :ok) (= cb :ok) (= xb (hash (apply list nv))))
+      [:R5-printed-form-seq-hash (str (type nv))]
+      (and (= ca :err) (= cb :err) (string? xa) (not= xa xb) (= (string/replace xa "PersistentVector" "ArrayVector") xb))
+      [:D69-vector-type-in-message]
+      ;; filters for bugs already reported in README.md, so later seeds find new ones
+      (and (= field :hash) (vector? nv) (empty? nv) (= xa 1364076727) (= xb 1257683291))
+      [:found/bug-empty-vector-hash]
+      (and (#{:pr :str :print :hash :result :bridge} field) (string/includes? pnv "[]")
+           (not (string/includes? pnv "\"")))
+      [:found/bug-empty-vector-hash-nested]
+      (and (#{:pr :str :print :result} field) (string? xa) (string/starts-with? xa "(seq [")) [:found/bug-pvecseq-print]
+      (and (= field :type) (= xa "let-go.lang.Sequence") (= xb "let-go.lang.PersistentList")) [:found/bug-pvecseq-type]
+      (and (= xa "seq expected Seqable") (= xb "apply expected Seq")) [:found/bug-apply-msg]
+      (and (= field :bridge) (string/includes? pnv "<transient")) [:harness/bridge-holds-transient]
+      (and (= cb :trap) (= xb "wasm/get: cast failure, expected struct Fn, got null")) [:found/bug-nested-lazy-rethrow-traps]
+      (and (map? nv) (= #{:line :column} (set (keys nv))) (= :ok cb) (contains? #{nil 0 "nil" ""} xb)) [:R8-empty-list-meta]
+      (and (= ca :ok) (string? xa) (re-find #"^\{:line \d+,? :column \d+\}$" xa)) [:R8-empty-list-meta]
+      (and (#{:pr :result} field) (string? xa) (string? xb) (not= xa xb) (= xa (string/replace xb ", " " "))) [:found/bug-pvec-nested-map-commas]
+      (and (= field :print) (#{"let-go.lang.PersistentVector" "let-go.lang.Repeat"} (try (str (type nv)) (catch Throwable e nil)))) [:found/bug-pvec-repeat-print-mode]
+      (and (string? xa) (string/includes? xa "@0x")) [:harness/heap-address-in-print]
+      (and (= cb :trap) (= xb "disj on non-set")) [:harness/disj-not-a-twin]
+      (and (= field :bridge) (map? nv) (= #{:line :column} (set (keys nv)))) [:R8-empty-list-meta]
+      (and (= field :hash) (= ca :ok) (= cb :ok) (= 10 (c/ckind wv))) [:found/bug-vector-seq-hash]
+      (string/includes? pnv "@0x") [:harness/heap-address-in-print]
+      (and (string/includes? pnv "<transient") (#{"apply expected Seq" "cons expected Seq"} xb)) [:found/bug-transient-map-not-seqable]
+      (and (= cb :trap) (= xb "wasm.seq: hash of this kind is not implemented")) [:found/bug-hash-atom-volatile-fn-traps]
+      (and (= ca :err) (= xa "flaky") (= cb :ok)) [:found/bug-lazy-error-not-cached]
+      (and (= cb :err) (= xb "don't know how to create ISeq from let-go.lang.TransientMap")) [:found/bug-transient-map-not-seqable]
+      (and (= ca :ok) (= cb :trap) (= xb "wasm.core: printing this value is not implemented")) [:found/bug-print-transient-traps]
+      (and (= ca :ok) (= cb :trap) (= xb "wasm.core: hash of a transient or type is not implemented")) [:found/bug-hash-type-or-metanamed-traps]
+      (and (= ca :err) (= cb :err) (string? xa) (re-find #"let-go\.lang\.|\*vm\." xa)) [:D47-static-type-in-message]
+      :else nil)))
+
+(defn check [nv wv]
+  (let [tn (try (str (type nv)) (catch Throwable e ""))]
+    (if (opaque-name? tn)
+      []
+      ;; one let binding per res: a try inside a vector literal did not catch here (lg 4e769212)
+      (let [pr-n (res (pr-str nv)) pr-w (res (rs* (s/pr-str wv)))
+            st-n (res (str nv)) st-w (res (rs* (s/str wv)))
+            ps-n (res (print-str nv)) ps-w (res (rs* (s/print-str wv)))
+            h-n (res (hash nv)) h-w (res (sq/unbox-int (sq/hash wv)))
+            c-n (res (count nv)) c-w (res (sq/unbox-int (sq/count wv)))
+            t-n (res (str (type nv))) t-w (res (if (wasm/null? (c/type-of wv)) "" (rs* (s/str (c/type-of wv)))))
+            m-n (res (pr-str (meta nv))) m-w (res (rs* (s/pr-str (c/meta wv))))
+            b-w (if (and (= :ok (first pr-n)) (not= 35 (c/ckind wv))) (res (= (denan nv) (denan (<-w wv)))) [:ok true])
+            fields [[:pr pr-n pr-w] [:str st-n st-w] [:print ps-n ps-w] [:hash h-n h-w] [:count c-n c-w]
+                    [:type t-n t-w] [:meta m-n m-w] [:bridge [:ok true] b-w]]]
+        (vec (for [[f a b] fields
+                   :when (not (same? a b))
+                   :when (let [kn (known f a b nv wv)] (if kn (do (tally! kn) false) true))]
+               [f a b]))))))
+
+(defn resolve-arg [pool kind x]
+  (case kind
+    :v (let [p (nth pool (mod x (count pool)))] p)
+    :i [x (B x)]
+    :f [(second (nth fns x)) (nth wfns x)]))
+
+(def eq-like #{:eq :hasheq :not-eq :compare :sort :sort-f :into :get :contains :conj :conj3 :assoc :disj :dissoc
+                :dissoc2 :get-nf :with-meta :nest :max :min :lt :ge :num-eq :reduce-init :reduce-f :reduce-red :apply})
+
+(defn run-step [pool step]
+  (let [[op & args] step]
+    (if (#{:leaf :vec-n :list-n :map-n :set-n :tmap-n} op)
+      {:ok (build step)}
+      (let [[kinds nf wf] (ops op)]
+        (if (and (empty? pool) (some #{:v} kinds))
+          {:skip true}
+          (let [rargs (mapv resolve-arg (repeat pool) kinds args)
+                ;; native = realizing a throwing lazy seq escapes try/catch (lg 4e769212), so
+                ;; the comparing ops never see a native arg whose printing throws
+                poisoned? (some (fn [[x _]] (and (seq? x) (= :err (first (res (pr-str x)))))) rargs)]
+            ;; reduce through a boundary closure converts the whole accumulator every step:
+            ;; quadratic in the glue, minutes on a 1057-vector, so long inputs skip it
+            (if (or (and poisoned? (eq-like op))
+                    (and (#{:reduce-f :reduce-init} op)
+                         (some (fn [[x _]] (try (> (bounded-count 101 x) 100) (catch Throwable e false))) rargs)))
+              {:skip true}
+              {:a (res (apply nf (map first rargs))) :b (res (apply wf (map second rargs)))})))))))
+
+(defn sig-of [op f a b]
+  [op f (first a) (first b)])
+
+(defn big?
+  "Results that print past 20k chars stay out of the pool: n copies of a
+   1057-vector otherwise make every later step print for minutes."
+  [nv]
+  (let [p (try (pr-str nv) (catch Throwable e ""))] (> (count p) 20000)))
+
+(def ^:dynamic *deadline* nil)
+
+(defn step-fails
+  "Runs one step; returns [pool' failures]."
+  [pool step k]
+  (let [op (first step)
+        _ (when (= "2" (os/getenv "FUZZ_TRACE")) (println "  step" k (pr-str step) (System/currentTimeMillis)))
+        r (run-step pool step)
+        fail (fn [f a b] {:step k :sig (sig-of op f a b) :detail [f (shorten a) (shorten b)]})]
+    (cond
+      (:skip r) [pool []]
+      (:ok r) (let [[nv wv] (:ok r) bad (check nv wv)]
+                (if (seq bad) [pool (mapv (fn [[f a b]] (fail f a b)) bad)] [(conj pool [nv wv]) []]))
+      :else
+      (let [{:keys [a b]} r]
+        (cond
+          (and (= :ok (first a)) (= :ok (first b)))
+          (let [bad (check (second a) (second b))]
+            (if (seq bad) [pool (mapv (fn [[f x y]] (fail f x y)) bad)]
+                [(if (big? (second a)) pool (conj pool [(second a) (second b)])) []]))
+          (same? a b) [pool []]
+          (known :result a b nil nil) (do (tally! (known :result a b nil nil)) [pool []])
+          (= :ok (first a)) [pool [(fail :result (res (pr-str (second a))) b)]]
+          (= :ok (first b)) [pool [(fail :result a (res (rs* (s/pr-str (second b)))))]]
+          :else [pool [(fail :errmsg a b)]])))))
+
+(defn run-prog
+  "Runs prog; returns every failure (one per signature), or stops at the
+   first failure whose signature is `want`."
+  ([prog] (run-prog prog nil))
+  ([prog want]
+   (loop [pool [] k 0 out [] sigs #{}]
+     (if (or (>= k (count prog)) (and *deadline* (> (System/currentTimeMillis) *deadline*)))
+       (do (when (and *deadline* (< k (count prog)) (> (System/currentTimeMillis) *deadline*)) (tally! [:harness/seed-time-budget]))
+           (if want [] out))
+       (let [[pool' fs] (try (step-fails pool (nth prog k) k)
+                             (catch Throwable e (when (seq (os/getenv "FUZZ_TRACE")) (println e)) [pool [{:step k :sig [(first (nth prog k)) :harness-crash] :detail [(shorten (ex-message e))]}]]))
+             fs (remove #(sigs (:sig %)) fs)
+             hit (some #(when (= want (:sig %)) %) fs)]
+         (cond hit [hit]
+               want (recur pool' (inc k) out sigs)
+               :else (recur pool' (inc k) (into out fs) (into sigs (map :sig fs)))))))))
+
+(defn fails-same? [prog sig] (boolean (seq (run-prog prog sig))))
+
+(defn vkinds [step] (let [op (first step)] (if (ops op) (first (ops op)) [])))
+
+(defn canonical
+  "prog with every pool ref rewritten to the absolute pool index it resolved
+   to, plus the pool index each step pushed (or nil)."
+  [prog]
+  (loop [pool [] k 0 out [] pushed []]
+    (if (>= k (count prog))
+      [out pushed]
+      (let [step (nth prog k)
+            kinds (vkinds step)
+            step' (if (empty? pool) step
+                      (into [(first step)] (map (fn [kd x] (if (= kd :v) (mod x (count pool)) x)) (concat kinds (repeat nil)) (rest step))))
+            [pool' _] (try (step-fails pool step k) (catch Throwable e [pool []]))]
+        (recur pool' (inc k) (conj out step') (conj pushed (when (> (count pool') (count pool)) (count pool))))))))
+
+(defn drop-step
+  "Deletes step i, renumbering later pool refs past the slot it pushed."
+  [prog pushed i]
+  (let [j (nth pushed i)]
+    (vec (concat (subvec prog 0 i)
+                 (for [st (subvec prog (inc i))]
+                   (if (nil? j) st
+                       (into [(first st)] (map (fn [kd x] (if (and (= kd :v) (> x j)) (dec x) x)) (concat (vkinds st) (repeat nil)) (rest st)))))))))
+
+(defn shrink [prog sig]
+  (loop [p (first (canonical prog)) i (dec (count prog))]
+    (if (< i 0)
+      p
+      (let [[cp pushed] (canonical p)
+            q (drop-step cp pushed i)]
+        (if (fails-same? q sig) (recur q (min (dec i) (dec (count q)))) (recur cp (dec i)))))))
+
+(defn run-seed [seed maxlen seen]
+  (when (= 0 (mod seed 25)) (println (str "PROGRESS seed=" seed " t=" (System/currentTimeMillis))))
+  (when (seq (os/getenv "FUZZ_TRACE")) (println (str "seed " seed " t=" (System/currentTimeMillis))))
+  (let [prog (gen-prog seed maxlen)]
+    (doseq [f (binding [*deadline* (+ (System/currentTimeMillis) 60000)] (run-prog prog))]
+      (let [cut (subvec prog 0 (inc (:step f)))
+            new? (not (contains? @seen (:sig f)))
+            mn (if (and new? (empty? (os/getenv "FUZZ_NOSHRINK"))) (shrink cut (:sig f)) cut)
+            f2 (or (first (run-prog mn (:sig f))) f)]
+        (swap! seen conj (:sig f))
+        (println (str "FAIL seed=" seed " sig=" (pr-str (:sig f)) " detail=" (pr-str (:detail f2))))
+        (when new? (println (str "  MIN " (pr-str mn))))))))
+
+(let [args *command-line-args*]
+  (cond
+    (= "--eval" (first args)) (doseq [f (read-string (str "[" (slurp (second args)) "]"))] (eval f))
+    (= "--shrink" (first args))
+    (let [prog (read-string (nth args 1)) sig (read-string (nth args 2)) mn (shrink prog sig)]
+      (println (str "MIN " (pr-str mn)))
+      (println (str "DETAIL " (pr-str (:detail (first (run-prog mn sig)))))))
+    (= "--replay" (first args))
+    (let [prog (read-string (second args))]
+      (println (pr-str (run-prog prog))))
+    :else
+    (let [from (parse-long (nth args 0)) to (parse-long (nth args 1))
+          maxlen (if (> (count args) 2) (parse-long (nth args 2)) 40)
+          seen (atom #{}) t0 (System/currentTimeMillis)]
+      (doseq [sd (range from to)] (run-seed sd maxlen seen))
+      (println (str "DONE seeds=" (- to from) " [" from "," to ") ms=" (- (System/currentTimeMillis) t0) " sigs=" (count @seen)))
+      (println (str "SOFT " (pr-str (into (sorted-map) @soft)))))))

@@ -1,0 +1,26 @@
+;; bug-09: a PersistentVector (natively: a vector with metadata, or one conj'd past 32) and a Repeat
+;; print their elements through Value.String() whatever the mode; the runtime honours the mode.
+;; Two visible symptoms of one cause:
+;;   pr-str:    nested maps lose their commas natively
+;;   print-str: strings and chars stay quoted natively
+;; Run: lg -source-paths rt corpus/review2/bug-09-pvec-repeat-print-mode.lg
+;; native : (pr-str (with-meta [{:a 1 :b 2}] {:m 1}))     "[{:a 1 :b 2}]"     (plain [...] has commas)
+;;          (print-str (with-meta ["s" \a] {:m 1}))        "[\"s\" \\a]"
+;;          (print-str (repeat 2 "s"))                     "(\"s\" \"s\")"
+;;          (pr-str (repeat 1 {:a 1 :b 2}))                "({:a 1 :b 2})"
+;; runtime: "[{:a 1, :b 2}]"  "[s a]"  "(s s)"  "({:a 1, :b 2})"
+;; Implicated: wasm.str's printer for kind 11 (vector, with meta) and kind 9 (Repeat): elements should
+;; go through mode 0 (value-string) there. The >32-element case also needs the ArrayVector /
+;; PersistentVector split (bug-03, bug-08); the meta'd and Repeat cases do not.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(c/install!)
+(defn R [w] (wasm/string-of-bytes (s/str-bytes w)))
+(defn kw [x] (s/kw-of-bytes (wasm/bytes-of-string x)))
+(defn st [x] (s/mk-str (wasm/bytes-of-string x)))
+(def wmap (c/assoc (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)) (kw "b") (sq/box-int 2)))
+(def wmeta (c/assoc (m/empty-map) (kw "m") (sq/box-int 1)))
+(println "native " (pr-str (with-meta [{:a 1 :b 2}] {:m 1})) "|" (print-str (with-meta ["s" \a] {:m 1})) "|" (print-str (repeat 2 "s")) "|" (pr-str (repeat 1 {:a 1 :b 2})))
+(println "runtime" (R (s/pr-str (c/with-meta (c/conj (pv/empty-vec) wmap) wmeta)))
+         "|" (R (s/print-str (c/with-meta (c/conj (c/conj (pv/empty-vec) (st "s")) (s/mk-char 97)) wmeta)))
+         "|" (R (s/print-str (sq/repeat (sq/box-int 2) (st "s"))))
+         "|" (R (s/pr-str (sq/repeat (sq/box-int 1) wmap))))

@@ -1,0 +1,17 @@
+;; bug-03: the seq of a vector that grew past 32 by conj prints as a list and reports type PersistentList.
+;; Run: lg -source-paths rt corpus/review2/bug-03-pvecseq-print-type.lg
+;; native : (pr-str (seq v33)) "(seq [0 1 ... 32])"   (type (seq v33)) let-go.lang.Sequence
+;;          (pr-str (rest (seq v33))) prints the WHOLE vector again: "(seq [0 1 ... 32])"
+;; runtime: "(0 1 ... 32)"  PersistentList ; rest prints "(1 ... 32)"
+;; Implicated: wasm.str printer has no PVecSeq (kind 10) case, while wasm.seq/hash* kind 10 already
+;; hashes the "(seq [...])" form (so pr-str and hash disagree with each other); wasm.core/type-id maps
+;; kind 10 to 2 (PersistentList). Same on str/print-str.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
+(def v33 (reduce conj [] (range 33)))
+(def w33 (reduce (fn [v i] (c/conj v (sq/box-int i))) (pv/empty-vec) (range 33)))
+(println "native  pr" (pr-str (seq v33)) "type" (type (seq v33)))
+(println "runtime pr" (P (sq/seq w33)) "type" (P (c/type-of (sq/seq w33))))
+(println "native  rest" (pr-str (rest (seq v33))))
+(println "runtime rest" (P (sq/rest (sq/seq w33))))

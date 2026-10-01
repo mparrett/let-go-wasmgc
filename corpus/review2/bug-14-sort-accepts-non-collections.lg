@@ -1,0 +1,14 @@
+;; bug-14: sort returns a sorted list for a Repeat or a ChunkedCons, where native throws
+;; "sort expected a Collection" (neither is a vm.Collection natively).
+;; Run: lg -source-paths rt corpus/review2/bug-14-sort-accepts-non-collections.lg
+;; native : (sort (repeat 3 2)) throws; (sort (seq (map inc (range 3)))) throws; (sort (range 3)) (0 1 2)
+;; runtime: (2 2 2) and (1 2 3); range matches
+;; Implicated: wasm.core sortable? (core.lg ~975) accepts every seq kind 2..11; native's
+;; vm.Collection excludes Repeat (9) and ChunkedCons (6). A silent value where native raises.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(defn r [f] (try (let [v (f)] (if (= (type v) (type (object-array 0))) (wasm/string-of-bytes (s/str-bytes (s/pr-str v))) (pr-str v)))
+                 (catch Throwable e (str "THROWS " (if (= (type e) (type (object-array 0))) (wasm/string-of-bytes (wasm/get sq/Err 2 e)) (ex-message e))))))
+(def inc-fn (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] (sq/box-int (inc (sq/unbox-int x)))))))
+(println "native  repeat" (r #(sort (repeat 3 2))) "| chunked" (r #(sort (seq (map inc (range 3))))) "| range" (r #(sort (range 3))))
+(println "runtime repeat" (r #(c/sort (sq/repeat (sq/box-int 3) (sq/box-int 2)))) "| chunked" (r #(c/sort (sq/seq (sq/map* inc-fn (sq/range (sq/box-int 3)))))) "| range" (r #(c/sort (sq/range (sq/box-int 3)))))

@@ -1,0 +1,21 @@
+;; bug-06: hash of a keyword/symbol carrying metadata (and of a type value) traps; a 9+-key map
+;; keyed by a meta'd symbol therefore traps on assoc, where native works.
+;; Run: lg -source-paths rt corpus/review2/bug-06-hash-meta-named-traps.lg
+;; native : (hash (with-meta 'a {:x 1})) 3826002220  (hash (with-meta :a {:x 1})) 1292221156
+;;          (hash (type 1)) a number; (assoc m9 (with-meta 'a {:x 1}) 1) works (10 keys)
+;; runtime: wasm trap "wasm.core: hash of a transient or type is not implemented" for all four
+;;          (≤8-key maps survive because the array-map never hashes)
+;; Implicated: wasm.core foreign-hash (slot-2 hash hook) covers MetaNamed (ckind 36) and TypeVal (35).
+;; Native's meta'd-named hash differs from the bare name's hash (3826002220 vs (hash 'a)), so the fix
+;; has to reproduce native's MetaNamed hash, not delegate to the inner symbol.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(c/install!)
+(defn r [f] (try (f) (catch Throwable e (str "THROWS " (ex-message e)))))
+(defn sym [x] (s/sym-of-bytes (wasm/bytes-of-string x)))
+(def wmeta (c/assoc (m/empty-map) (s/kw-of-bytes (wasm/bytes-of-string "x")) (sq/box-int 1)))
+(def m9 (zipmap (range 9) (range 9)))
+(def w9 (reduce (fn [w i] (c/assoc w (sq/box-int i) (sq/box-int i))) (m/empty-map) (range 9)))
+(println "native  " (hash (with-meta 'a {:x 1})) (hash 'a) (hash (type 1)) (count (assoc m9 (with-meta 'a {:x 1}) 1)))
+(println "runtime " (r #(sq/unbox-int (sq/hash (c/with-meta (sym "a") wmeta)))) "|" (sq/unbox-int (sq/hash (sym "a")))
+         "|" (r #(sq/unbox-int (sq/hash (c/type-of (sq/box-int 1)))))
+         "|" (r #(sq/unbox-int (sq/count (c/assoc w9 (c/with-meta (sym "a") wmeta) (sq/box-int 1))))))

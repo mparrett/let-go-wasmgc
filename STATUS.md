@@ -21,3 +21,5 @@
 | P3.0-reader | done 2026-10-01 | opus | 951 inputs 0 mismatch; Go-exact float parse; 7 tests |
 | P2.1-backend | running | opus | (unchanged) |
 | review-1 | done 2026-10-01 | opus | 148 probes: 78 match, 11 bugs (5 silent), 2 gaps → P1.7 |
+| review-2 | done 2026-10-01 | opus | 2300 seeds; 16 runtime bugs (8 silent) → P2.10 |
+| P2.10 | running | opus | runtime review fixes (API-stable) |

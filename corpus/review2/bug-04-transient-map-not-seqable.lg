@@ -1,0 +1,16 @@
+;; bug-04: a transient map is seqable natively; the runtime raises on seq/first/nth/vec/reduce/into.
+;; Run: lg -source-paths rt corpus/review2/bug-04-transient-map-not-seqable.lg
+;; native : (seq (transient {:a 1})) ([:a 1]) ; (reduce conj [] t) [[:a 1]] ; (nth t 0 :nf) [:a 1]
+;; runtime: raises "don't know how to create ISeq from let-go.lang.TransientMap" for each
+;;          (count works; transient sets are NOT seqable natively, and the runtime matches that)
+;; Implicated: wasm.core foreign-seq (slot-2 seq hook) returns nothing for HTransient (ckind 32);
+;; sq/seq, reduce-coll and sq/nth all go through it.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(c/install!)
+(defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
+(defn r [f] (try (f) (catch Throwable e (str "THROWS " (if (instance? clojure.lang.ExceptionInfo e) (ex-message e) (wasm/string-of-bytes (wasm/get sq/Err 2 e)))))))
+(def nt (transient {:a 1}))
+(def wt (c/transient (c/assoc (m/empty-map) (s/kw-of-bytes (wasm/bytes-of-string "a")) (sq/box-int 1))))
+(println "native  seq" (r #(pr-str (seq nt))) " count" (count nt) " reduce" (r #(pr-str (reduce conj [] nt))))
+(println "runtime seq" (r #(P (sq/seq wt))) " count" (P (sq/count wt))
+         " reduce" (r #(P (sq/reduce (sq/mk-fn2 (wasm/funcref sq/Code2 (fn [_ a b] (c/conj a b)))) (pv/empty-vec) wt))))

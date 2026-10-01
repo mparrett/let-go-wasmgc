@@ -1,0 +1,27 @@
+;; bug-02: a lazy seq whose realization throws is re-run on the next access (FINDINGS S2 seam open).
+;; Run: lg -source-paths rt corpus/review2/bug-02-lazy-error-not-cached.lg
+;; native : first access throws "boom"; second access throws "boom" again (error cached, thunk ran once)
+;;          same through (map f coll): the chunk's error is cached
+;; runtime: second access re-runs the thunk and returns (1 2); for map* the seq realizes to its values
+;; Also: (realized? s) after a throwing realization is true natively (the error is the cached
+;; result) and false in the runtime; fuzz sig [:gensym-like :pr :ok :ok] = (realized? (take 9 false)).
+;; Implicated: wasm.seq resolve-lazy / lazy-step (LazySeq field 2 is set only on success), and the
+;; map* chunk thunk. Fuzz signature: [:flaky :str :err :ok] and :print/:hash/:count.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
+(defn msg [e] (ex-message e))
+
+(let [n (atom 0)
+      ls (lazy-seq (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) (list 1 2)))]
+  (println "native  1st" (try (pr-str ls) (catch Throwable e (msg e))) " 2nd" (try (pr-str ls) (catch Throwable e (msg e))) " thunk runs" @n))
+
+(let [n (atom 0)
+      thunk (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) (sq/list (sq/box-int 1) (sq/box-int 2)))))
+                      (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null))
+      ls (sq/lazy-seq* thunk)]
+  (println "runtime 1st" (try (P ls) (catch Throwable e (msg e))) " 2nd" (try (P ls) (catch Throwable e (msg e))) " thunk runs" @n))
+(let [ns* (take 9 false) ws (sq/lazy-seq* (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (sq/seq (sq/bool false)))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))]
+  (try (pr-str ns*) (catch Throwable e nil)) (try (P ws) (catch Throwable e nil))
+  (println "native  realized? after a throwing realization" (realized? ns*))
+  (println "runtime realized? after a throwing realization" (P (sq/realized? ws))))

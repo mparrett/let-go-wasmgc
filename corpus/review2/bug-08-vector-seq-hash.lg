@@ -1,0 +1,21 @@
+;; bug-08: (hash (seq v)) / (hash (rest v)) is wrong for every ordinary vector. Both sides hash a
+;; vector seq by FNV-1a of its printed form (S1), but natively the seq of an ArrayVector (literal,
+;; vec, mapv, into, anything <= 32 or built without conj) prints "(1 2)" while the runtime always
+;; hashes the PersistentVectorSeq form "(seq [1 2])".
+;; Run: lg -source-paths rt corpus/review2/bug-08-vector-seq-hash.lg
+;; native : (hash (seq [1 2])) 1478910143 = FNV("(1 2)")   (hash (rest [1 2 3])) 21144969
+;;          (hash (seq v33)) 1571693980 for a vector conj'd past 32 (a PersistentVector)
+;; runtime: (hash (seq [1 2])) 3288662298 = FNV("(seq [1 2])")  (hash (rest [1 2 3])) 510422047
+;;          (hash (seq v33)) 1571693980 (matches)
+;; A silent wrong hash: sets and 9+-key maps keyed by (seq v)/(rest v)/(next v) order differently.
+;; Implicated: wasm.seq/vec-seq builds PVecSeq for every vector and wasm.seq/hash* kind 10 hashes it
+;; with the "(seq [" prefix (and the WHOLE vector). The runtime does not record ArrayVector vs
+;; PersistentVector (D69 picks ArrayVector for `type`, this path picks PersistentVector); bug-03 is
+;; the same split seen from the printer.
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(c/install!)
+(defn wv [xs] (reduce (fn [v i] (c/conj v (sq/box-int i))) (pv/empty-vec) xs))
+(defn H [w] (sq/unbox-int (sq/hash w)))
+(println "native  seq[1 2]" (hash (seq [1 2])) " list(1 2)" (hash '(1 2)) " rest[1 2 3]" (hash (rest [1 2 3])) " seq v33" (hash (seq (reduce conj [] (range 33)))))
+(println "runtime seq[1 2]" (H (sq/seq (wv [1 2]))) " list(1 2)" (H (sq/list (sq/box-int 1) (sq/box-int 2))) " rest[1 2 3]" (H (sq/rest (wv [1 2 3]))) " seq v33" (H (sq/seq (wv (range 33)))))
+(println "runtime (= (seq [1 2]) '(1 2))" (wasm/string-of-bytes (s/str-bytes (s/pr-str (sq/equals (sq/seq (wv [1 2])) (sq/list (sq/box-int 1) (sq/box-int 2)))))))
