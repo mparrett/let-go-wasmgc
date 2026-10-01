@@ -1,0 +1,193 @@
+;; lw-rt: the wasm runtime (rt/wasm/*.lg) as the backend sees it (P2.1).
+;;
+;; Loading this namespace loads the runtime namespaces under native lg, in
+;; rt/wasm/README.md's order, so their vars exist for ir.build to resolve and
+;; their macros expand. It then indexes, from the source forms:
+;;   - every type declaration (wasm/defstruct, defarray, deffunc, and
+;;     wasm.intrinsics/Bytes), in source order: the module's ONE rec group (D25)
+;;   - every runtime defn/defn- with its arities (what the backend lowers)
+;;   - every runtime top-level def (a runtime global, D39)
+;;   - the twin table (D58): native var -> runtime var
+;; wasm.intrinsics' own defns are the reference implementation and are never
+;; lowered; only its declarations (Bytes) are read.
+(ns lw-rt
+  (:require [clojure.string :as str]))
+
+(def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
+(def rt-dir (str src-dir "/../rt/wasm"))
+
+(defn readme-order
+  "Files from README.md's load-order table (`| n | `file.lg` | ...`)."
+  []
+  (vec (for [l (str/split-lines (slurp (str rt-dir "/README.md")))
+             :let [m (re-find #"^\| [0-9]+ \| `([a-z_]+\.lg)` \|" l)]
+             :when m]
+         (second m))))
+
+(def files (readme-order))
+
+(defn read-forms [path] (read-string (str "[" (slurp path) "\n]")))
+
+(def file-forms
+  ;; [[path ns-sym [form ...]] ...] in load order; each file is also loaded
+  (do
+    (vec (for [f files]
+           (let [path (str rt-dir "/" f)
+                 text (slurp path)]
+             (load-string text)
+             (let [forms (read-string (str "[" text "\n]"))
+                   ns-sym (some #(when (and (seq? %) (= 'ns (first %))) (second %)) forms)]
+               [path ns-sym forms]))))))
+
+;; load-string's ns forms leave the compiler in the last runtime ns
+(in-ns 'lw-rt)
+
+(def intrinsics-ns 'wasm.intrinsics)
+
+(defn ns-var
+  "The var nm names in ns, private ones included (ns-resolve skips those)."
+  [ns-sym nm] (get (ns-interns ns-sym) nm))
+
+(defn decl? [v] (and (map? v) (contains? #{:struct :array :func} (:wasm.intrinsics/kind v))))
+
+(defn strip-meta-name
+  "A defn/def name as read: a symbol, or the reader's (with-meta sym m)."
+  [nm]
+  (if (and (seq? nm) (= 'with-meta (first nm))) [(second nm) (nth nm 2)] [nm nil]))
+
+(defn head-var [ns-sym form]
+  (when (and (seq? form) (symbol? (first form)) (not (#{'def 'defn 'defn- 'declare 'defmacro 'ns} (first form))))
+    (binding [*ns* (the-ns ns-sym)] (resolve (first form)))))
+
+(def decl-heads #{#'wasm.intrinsics/defstruct #'wasm.intrinsics/defarray #'wasm.intrinsics/deffunc})
+
+(def decls
+  ;; [{:var v :decl map :ns sym}] in source order
+  (vec (for [[_ ns-sym forms] file-forms
+             form forms
+             :let [hv (head-var ns-sym form)
+                   nm (cond (decl-heads hv) (second form)
+                            (and (= 'def (first form)) (= ns-sym intrinsics-ns)) (first (strip-meta-name (second form)))
+                            :else nil)
+                   v (when nm (ns-var ns-sym nm))]
+             :when (and v (decl? @v))]
+         {:var v :decl @v :ns ns-sym})))
+
+;; A decl's wasm type name: $Name, or $<last ns segment>.Name when two
+;; namespaces declare the same Name (str and core both have a Globals).
+(def type-names
+  (let [by-name (group-by #(str (:name (:decl %))) decls)]
+    (into {} (for [d decls
+                   :let [nm (str (:name (:decl d)))
+                         clash? (> (count (by-name nm)) 1)
+                         seg (last (str/split (str (:ns d)) #"\."))]]
+               [(:var d) (str "$" (if clash? (str seg "." nm) nm))]))))
+
+(defn type-name
+  "Wasm type name of a declaration var, or nil."
+  [v] (get type-names v))
+
+(def decl-by-name (into {} (for [d decls] [(type-name (:var d)) (:decl d)])))
+
+(defn arities
+  "The arity bodies of a defn tail (after the name): [[params body...] ...]."
+  [more]
+  (let [more (if (string? (first more)) (rest more) more)
+        more (if (map? (first more)) (rest more) more)]
+    (if (vector? (first more))
+      [(vec more)]
+      (mapv vec more))))
+
+(def defns
+  ;; [{:var v :ns sym :arities [[params & body] ...]}] in source order
+  (vec (for [[_ ns-sym forms] file-forms
+             :when (not= ns-sym intrinsics-ns)
+             form forms
+             :when (and (seq? form) (#{'defn 'defn-} (first form)))
+             :let [[nm _] (strip-meta-name (second form))]]
+         {:var (ns-var ns-sym nm) :ns ns-sym :name nm
+          :arities (arities (drop 2 form))})))
+
+(def defn-by-var (into {} (for [d defns] [(:var d) d])))
+
+(def globals
+  ;; runtime top-level defs that are not declarations: [{:var :ns :init form}]
+  (vec (for [[_ ns-sym forms] file-forms
+             :when (not= ns-sym intrinsics-ns)
+             form forms
+             :when (and (seq? form) (= 'def (first form)))
+             :let [[nm _] (strip-meta-name (second form))
+                   v (ns-var ns-sym nm)]
+             :when (not (decl? @v))]
+         {:var v :ns ns-sym :init (nth form 2)})))
+
+(def global-by-var (into {} (for [g globals] [(:var g) g])))
+
+(defn runtime-var? [v] (or (contains? defn-by-var v) (contains? global-by-var v)))
+
+(defn intrinsic? [v]
+  (and (var? v) (:intrinsic (meta v)) (= intrinsics-ns (ns-name (:ns (meta v))))))
+
+;; D58: a runtime defn claims the native(s) it implements with :twin; the
+;; native's var is what a program's call resolves to.
+(def twins
+  (into {} (for [d defns
+                 :let [t (:twin (meta (:var d)))]
+                 :when t
+                 tw (if (string? t) [t] t)
+                 :let [nv (resolve (symbol tw))]
+                 :when nv]
+             [nv (:var d)])))
+
+;; Natives the runtime implements without a :twin marker (wasm.core keeps
+;; these unmarked because P2.7 gave them names that shadow core's, D68).
+(def extra-twins
+  (into {} (for [[n r] [['core/ex-message 'wasm.core/ex-message] ['core/ex-data 'wasm.core/ex-data]
+                        ['core/ex-cause 'wasm.core/ex-cause]]
+                 :let [nv (resolve n) rv (resolve r)]
+                 :when (and nv rv)]
+             [nv rv])))
+
+;; D58: a twin covers every var bound to the same NativeFn (string/trim is
+;; core/trim's NativeFn), so a native var is also looked up by its value.
+(def twins-by-value
+  (into {} (for [[nv rv] twins] [@nv rv])))
+
+(defn twin-of [v]
+  (or (get twins v) (get extra-twins v)
+      (when (var? v) (let [x (try @v (catch e nil))] (when (some? x) (get twins-by-value x))))))
+
+;; ---------------------------------------------------------------------------
+;; let-go's core fns written in lg (mapv, into, filter, ...): no runtime twin
+;; can claim them (they are not natives), so their own source compiles
+;; through the backend like a runtime defn, read from core.lg at the commit
+;; the pinned lg was built from (the checkout itself may have moved on).
+;; Variadic arities are left out (D52); a defn whose every arity is variadic
+;; is not offered.
+
+(def letgo-commit "4e769212")
+(def letgo-dir (str (os/getenv "HOME") "/projects-new/3p/let-go"))
+
+(def core-forms
+  (let [r (try (os/sh "git" "-C" letgo-dir "show" (str letgo-commit ":pkg/rt/core/core.lg")) (catch e nil))]
+    (if (and r (= 0 (:exit r)))
+      (binding [*ns* (the-ns 'core)] (read-string (str "[" (:out r) "\n]")))
+      [])))
+
+(defn lg-defined? [v]
+  (let [m (meta v)] (and (= "<embedded:core>" (:file m)) (:line m))))
+
+(def core-defns
+  ;; var -> {:var :ns 'core :name :arities [...fixed...]}
+  (into {} (for [form core-forms
+                 :when (and (seq? form) (#{'defn 'defn-} (first form)))
+                 :let [[nm _] (strip-meta-name (second form))
+                       v (ns-var 'core nm)
+                       ars (filterv #(not (some #{'&} (first %))) (arities (drop 2 form)))]
+                 :when (and v (lg-defined? v) (seq ars))]
+             [v {:var v :ns 'core :name nm :arities ars :core-lg true}])))
+
+(defn source-defn
+  "The source defn the backend compiles for v: a runtime defn, or an
+   lg-defined core fn."
+  [v] (or (get defn-by-var v) (get core-defns v)))

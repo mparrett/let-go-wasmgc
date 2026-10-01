@@ -19,7 +19,9 @@
 | P2.7 | done 2026-10-01 | opus | core.lg 1072 lines, 56 twins; shared MISSING 0/91; 80 tests/24.6k asserts; verified |
 | P2.1-backend | running | opus | emit intrinsics, compile rt/wasm through the backend, --both |
 | P3.0-reader | done 2026-10-01 | opus | 951 inputs 0 mismatch; Go-exact float parse; 7 tests |
-| P2.1-backend | running | opus | (unchanged) |
+| P2.1-backend | done 2026-10-01 | opus | runtime compiles through the backend; rt_wasm.lg MATCH; fib 1.33×; P2.1 bar redefined (D75) |
 | review-1 | done 2026-10-01 | opus | 148 probes: 78 match, 11 bugs (5 silent), 2 gaps → P1.7 |
 | review-2 | done 2026-10-01 | opus | 2300 seeds; 16 runtime bugs (8 silent) → P2.10 |
 | P2.10 | running | opus | runtime review fixes (API-stable) |
+| P1.7 | running | opus | Phase 1 review fixes |
+| P2.1-corpus | running | opus | corpus/wasm oracle programs |

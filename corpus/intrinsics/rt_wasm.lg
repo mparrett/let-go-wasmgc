@@ -1,0 +1,80 @@
+;; P2.1: the runtime (rt/wasm/*.lg) compiled through the backend, checked
+;; against native lg by oracle.sh. A plain program: no wasm.* namespace, so
+;; native runs lg's own natives and the backend runs the compiled runtime
+;; (twins, D58; let-go's lg-defined core fns; constants built at init).
+;; Left out on purpose, as runtime gaps rather than backend ones (2026-10-01):
+;; seq.lg's out-of-range nth still wasm/traps instead of throwing (README,
+;; Errors), and string/split|join|index-of|starts-with? and core/assoc! have
+;; no runtime twin yet.
+
+(defn show [label x] (println label (pr-str x)))
+
+;; vectors: literal constants, conj past one trie level, assoc, pop, nth
+(def big (reduce conj [] (range 1100)))
+(show "vec" [1 2 3])
+(show "count" (count big))
+(show "nth" [(nth big 0) (nth big 31) (nth big 32) (nth big 1099)])
+(show "assoc" (assoc [1 2 3] 1 :b))
+(show "pop" (pop (pop [1 2 3])))
+(show "peek" (peek big))
+(show "nested" [[1 [2]] {:k [3]} #{4}])
+
+;; maps: array-map order up to 8 keys, HAMT past 8, dissoc, get with default
+(def m8 (reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 8)))
+(def m20 (reduce (fn [m i] (assoc m i (* i i))) {} (range 20)))
+(show "m8" m8)
+(show "m20" m20)
+(show "get" [(get m20 7) (get m20 99 :none) (:k3 m8) (m8 :k5)])
+(show "dissoc" (dissoc {:a 1 :b 2 :c 3} :b))
+(show "contains" [(contains? m20 19) (contains? m20 20)])
+(show "keys" (sort (keys m20)))
+
+;; sets
+(show "set" (conj #{1 2} 3 2))
+(show "set-has" [(contains? #{:a :b} :a) (#{:a :b} :c)])
+
+;; seqs: lists, cons, lazy map/filter, range, take, reduce, into
+(show "list" '(1 (2 3) "four"))
+(show "cons" (cons 0 [1 2]))
+(show "map" (map inc [1 2 3]))
+(show "filter" (filter (fn [x] (= 1 (bit-and x 1))) (range 10)))
+(show "take" (take 5 (range)))
+(show "reduce" (reduce + (range 101)))
+(show "into" (into [] (map (fn [x] (* 2 x))) (range 5)))
+(show "mapv" (mapv str [1 :a "b"]))
+(show "first" [(first [9 8]) (second [9 8]) (rest [9 8]) (next [9]) (seq [])])
+
+;; scalars as values: strings, keywords, symbols, chars, floats, booleans
+(show "str" (str "a" 1 :k 'sym \c 2.5 nil true))
+(show "kw" [:a :ns/b (keyword "c") (name :ns/b) (namespace :ns/b)])
+(show "sym" ['x 'ns/y (symbol "z")])
+(show "chars" [\a \newline \space (char 65)])
+(show "floats" [1.5 -0.0 1e21 0.1 (/ 1.0 3) 100.0])
+(show "subs" [(subs "hello" 1 3) (count "héllo") (upper-case "abc")])
+(println "print" "s" :k [1 "s"] {:a "s"})
+
+;; equality and hashing across kinds
+(show "eq" [(= [1 2] '(1 2)) (= {:a 1} {:a 1}) (= #{1} #{1}) (= "a" "a") (= :a :a) (= 1 1.0)])
+(show "hash-eq" (= (hash [1 2 3]) (hash '(1 2 3))))
+
+;; atoms and closures over runtime values
+(def counter (atom {:n 0}))
+(swap! counter update :n inc)
+(show "atom" @counter)
+(show "closure" (((fn [v] (fn [i] (nth v i))) [10 20 30]) 1))
+(show "apply" (apply + [1 2 3]))
+
+;; hashes are bit-exact (D19), sort and compare, transients, subvec
+(show "hash" [(hash 1) (hash "abc") (hash :k) (hash [1 2]) (hash {:a 1}) (hash #{}) (hash 1.5) (hash nil)])
+(show "sort" [(sort [3 1 2]) (sort ["b" "a" "c"]) (sort [:b :a]) (compare [1 2] [1 3])])
+(show "transient" (persistent! (reduce conj! (transient []) (range 40))))
+(show "tset" (persistent! (conj! (transient #{}) :x)))
+(show "subvec" (subvec [0 1 2 3 4] 1 3))
+(show "split" (split "a,b,,c" ","))
+(show "index-of" [(index-of "hello" "l") (string/trim "  x  ") (starts-with? "abc" "ab")])
+
+;; runtime errors, caught: ex-message carries native's text
+(defn msg [f] (try (f) (catch Exception e (ex-message e))))
+(show "err-info" (try (throw (ex-info "boom" {:at [1 2]})) (catch Exception e [(ex-message e) (ex-data e)])))
+(show "err-assoc" (msg (fn [] (assoc :x 1 2))))
+(show "ex-message-of-value" (ex-message 5))

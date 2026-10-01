@@ -1,0 +1,12 @@
+# checks/run-tests.sh: deftests left out on BOTH sides of the comparison.
+# <ns> <deftest> <why>. Only tests that cannot mean anything under the
+# backend belong here: they inspect the runtime's own source or vars through
+# the native IR pipeline (expand-all, resolve, ns-interns, var metadata).
+pvec-test dialect expands rt/wasm/pvec.lg through ir.passes.pipeline and resolves its vars (native-only meta-test)
+seq-test dialect expands rt/wasm/seq.lg through ir.passes.pipeline (native-only meta-test)
+str-test dialect expands rt/wasm/str.lg through ir.passes.pipeline (native-only meta-test)
+phm-test dialect expands rt/wasm/phm.lg through ir.passes.pipeline (native-only meta-test)
+phs-test dialect expands rt/wasm/phs.lg through ir.passes.pipeline (native-only meta-test)
+core-test dialect expands rt/wasm/core.lg through ir.passes.pipeline (native-only meta-test)
+reader-test dialect expands rt/wasm/reader.lg through ir.passes.pipeline (native-only meta-test)
+intrinsics-test intrinsic-coverage reads wasm.intrinsics' var metadata and this file's own source (native-only meta-test)

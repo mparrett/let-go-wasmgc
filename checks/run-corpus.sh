@@ -17,19 +17,23 @@
 #
 #   --update-expected  rewrite every .expected from native lg and exit
 #                      (programs that already have one, plus all of opmatrix/).
-#   --both             accepted and ignored for now; P2.1 will use it to also
-#                      run each program under native lg with the reference impl.
+#   --both             P2.1: a *_test.lg file (deftests) MATCHes only when it
+#                      passes (a) under native lg with the reference intrinsics
+#                      (checks/intrinsics-native-runner.lg, deftest-count
+#                      guard) AND (b) through the backend (checks/run-tests.sh:
+#                      same summary and FAIL/ERROR lines as native run-tests).
+#                      Other programs still go through oracle.sh.
 #
 # Env: LG (native lg; default = the plan's pinned main build).
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
 export LG
-update=0
+update=0 both=0
 dirs=()
 for a in "$@"; do
   case $a in
-    --both) ;;
+    --both) both=1 ;;
     --update-expected) update=1 ;;
     -*) echo "unknown flag $a" >&2; exit 2 ;;
     *) dirs+=("$a") ;;
@@ -70,6 +74,22 @@ for f in "${files[@]}"; do
       hard=1; continue
     fi
   fi
+  case $f in
+    *_test.lg) if [ $both -eq 1 ]; then
+      ns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$f" | head -1)
+      n=$(grep -c '^(deftest ' "$f")
+      "$LG" -source-paths "$root/rt:$(dirname "$f")" "$root/checks/intrinsics-native-runner.lg" "$n" "$ns" >"$t/nat.out" 2>&1; nrc=$?
+      "$root/checks/run-tests.sh" "$f" >"$t/bk.out" 2>&1; brc=$?
+      if [ $nrc -eq 0 ] && [ $brc -eq 0 ]; then
+        echo "MATCH $f ($(grep -m1 '^PASS' "$t/bk.out" | sed -E 's/^PASS [^ ]+ //'))"; match=$((match+1))
+      else
+        echo "MISMATCH $f: native $([ $nrc -eq 0 ] && echo ok || grep -m1 'intrinsics-native' "$t/nat.out"), backend $([ $brc -eq 0 ] && echo ok || grep -m1 '^FAIL' "$t/bk.out" | sed -E 's/^FAIL [^ ]+ //')"
+        grep -m1 '^    wasm' "$t/bk.out"
+        hard=1
+      fi
+      continue
+    fi ;;
+  esac
   if [ ! -x "$runner" ]; then
     echo "NOT IMPLEMENTED $f (checks/wasm-run.sh missing)"; ni=1; continue
   fi

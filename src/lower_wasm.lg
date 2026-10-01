@@ -17,16 +17,43 @@
 ;; expansion needs.
 (ns lower-wasm
   (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st] [ir.passes.typeinfer]
-            [clojure.string :as str]))
+            [clojure.string :as str] [lw-rt]))
 
 (def ^:dynamic *f* nil)
+;; per-*f* memo of src-of (an atom, rebound wherever *f* is): src-of walks
+;; block-arg chains and runs for every value many times; unmemoised, a
+;; 2000-inst runtime fn took ~60 s to lower (wasm.str/round-shortest!)
+(def ^:dynamic *memo* nil)
 (def ^:dynamic *fname* nil)
 (def ^:dynamic *ret-type* nil)
 ;; enclosing loops, innermost first: ({:id header-bid :exit exit-bid-or-nil} ...)
 (def ^:dynamic *loop* nil)
 (def ^:dynamic *param-kinds* nil)
-;; var -> {:name str :params [kind ...] :ret kind}, for every program defn.
-(def ^:dynamic *sigs* {})
+;; atom: var -> {:arities {argc {:name str :params [kind ...] :ret kind}} :multi? bool
+;; :name base}, for every program defn and every runtime defn analysed so far.
+(def ^:dynamic *sigs* (atom {}))
+;; P2.1: session atom of the runtime compiled into this module (nil = the
+;; runtime is not compiled: Phase-1 behaviour, unknown vars stay nil slots).
+(def ^:dynamic *rt* nil)
+;; values of the fn being lowered that are wasm funcrefs (kind :func)
+(def ^:dynamic *func-vals* #{})
+;; atom: the program's own type declarations (a test file's wasm/defstruct),
+;; var -> {:name "$prog.Name" :decl map}; they join the one rec group
+(def ^:dynamic *prog-decls* (atom {}))
+
+(defn decl-type-name
+  "Wasm type name of a declaration var (runtime or program), or nil."
+  [v] (or (lw-rt/type-name v) (:name (get @*prog-decls* v))))
+
+(defn add-decl!
+  "Register a program-level wasm/defstruct|defarray|deffunc var."
+  [v]
+  (swap! *prog-decls* assoc v {:name (str "$prog." (:name @v)) :decl @v :order (count @*prog-decls*)}))
+;; checks/run-tests.sh only: wasm/trap throws the reference impl's catchable
+;; ex-info ("wasm trap: <msg>", ex-data {:wasm/trap true}) instead of
+;; executing unreachable, so the test files' trap? assertions run (D25 keeps
+;; traps uncatchable everywhere else).
+(def ^:dynamic *trap-throws* false)
 ;; atom: string literal -> data segment index (module-wide).
 (def ^:dynamic *strings* nil)
 ;; kinds of the closed-over values of the try region being lowered
@@ -79,14 +106,26 @@
 ;; true while lowering program fns (lower-fn), false in runtime helpers
 (def ^:dynamic *box-inline* false)
 
+(declare str-wat bytes-wat const-box-wat kw-wat funcref-wrapper callee-sig rt-target rt-global!
+         const-global! f64-arg intrinsic-call-wat direct-call-wat rt-overrides analyze-deps! rt-analyze!
+         expand-form qual-name var-sym)
+
 (defn fail [msg data]
   (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
 
 (defn ty [nid]
-  (let [t (ir/type-of nid *f*)]
-    (cond (= t :int) :int (= t :bool) :bool :else :box)))
+  (if (contains? *func-vals* nid)
+    :func
+    (let [t (ir/type-of nid *f*)]
+      (cond (= t :int) :int (= t :bool) :bool (= t :float) :float
+            ;; a constant-typed number (typeinfer's [:const :int n]) is unboxed
+            (and (vector? t) (= :const (first t)) (= :int (second t))) :int
+            (and (vector? t) (= :const (first t)) (= :float (second t))) :float
+            :else :box))))
 
-(defn wt [k] (case k :int "i64" :bool "i32" :box "(ref null eq)"))
+;; :func is a wasm funcref (wasm/funcref, a :funcref field); it never boxes.
+;; :float is an unboxed f64 (typeinfer :float); it boxes to the runtime's Float.
+(defn wt [k] (case k :int "i64" :bool "i32" :box "(ref null eq)" :func "funcref" :float "f64"))
 
 (defn coerce [from to]
   (cond (= from to) ""
@@ -105,7 +144,12 @@
                     :hybrid " (call $rt_unbox_int)")
         ;; booleans box to the two singletons (D2)
         (and (= from :bool) (= to :box)) " (call $rt_box_bool)"
-        (and (= from :box) (= to :bool)) " (ref.cast (ref $Bool)) (struct.get $Bool 0)"
+        ;; the runtime's Bool is [:i64] (seq.lg); non-singleton Bools exist (sq/bool)
+        (and (= from :box) (= to :bool)) " (ref.cast (ref $Bool)) (struct.get $Bool 0) (i32.wrap_i64)"
+        (and (= from :float) (= to :box)) " (struct.new $Float)"
+        ;; Int or Float -> f64 (a boxed operand of a float-typed op)
+        (and (= from :box) (= to :float)) " (call $rt_to_f64)"
+        (and (= from :int) (= to :float)) " (f64.convert_i64_s)"
         :else (fail "unsupported coercion" {:from from :to to :fn *fname*})))
 
 (defn lget [nid] (str "(local.get $v" nid ")"))
@@ -123,6 +167,8 @@
         :when (< idx (count args))]
     (nth args idx)))
 
+(declare src-of*)
+
 (defn src-of
   "Legalize threads values that get no local (vars, closures, symbol consts)
    through blocks as block-args; this is the one value a block-arg carries,
@@ -130,22 +176,40 @@
    through loop-carried cycles: a loop header's param fed by the entry value
    and by its own copy on the back-edge still has one source."
   [nid]
-  (let [leaves (loop [todo [nid] seen #{} out []]
-                 (if (empty? todo)
-                   out
-                   (let [n (peek todo) todo (pop todo)]
-                     (cond
-                       (contains? seen n) (recur todo seen out)
-                       (= :block-arg (ir/op n *f*))
-                       (let [b (ir/block-of n *f*)
-                             idx (first (keep-indexed #(when (= %2 n) %1) (ir/block-params b *f*)))]
-                         (recur (into todo (incoming b idx)) (conj seen n) out))
-                       :else (recur todo (conj seen n) (conj out n))))))
-        rep (first leaves)
-        same? (fn [x] (or (= x rep)
-                          (and (empty? (ir/refs x *f*)) (empty? (ir/refs rep *f*))
-                               (= (ir/op x *f*) (ir/op rep *f*)) (= (ir/aux x *f*) (ir/aux rep *f*)))))]
-    (if (and rep (every? same? leaves)) rep nid)))
+  (if-let [m *memo*]
+    (if-let [r (get @m nid)]
+      r
+      (let [r (src-of* nid)] (swap! m assoc nid r) r))
+    (src-of* nid)))
+
+(defn block-arg-leaves
+  "{block-arg #{leaf ...}} for the whole fn, solved once as a fixpoint: a
+   block-arg's leaves are the union over its incoming values (a block-arg's
+   own leaves, any other value itself). Cycles (loop-carried params)
+   converge because the sets only grow."
+  []
+  (let [inc-of (into {} (for [b (ir/blocks *f*)
+                              [idx p] (map-indexed vector (ir/block-params b *f*))]
+                          [p (vec (incoming b idx))]))
+        step (fn [L] (into {} (for [[ba xs] inc-of]
+                                [ba (reduce (fn [acc x] (if (contains? inc-of x) (into acc (get L x)) (conj acc x)))
+                                            (get L ba #{}) xs)])))]
+    (loop [L {}]
+      (let [L2 (step L)] (if (= L2 L) L (recur L2))))))
+
+(defn src-of*
+  [nid]
+  (if (= :block-arg (ir/op nid *f*))
+    (let [L (if *memo*
+              (or (get @*memo* ::leaves) (let [l (block-arg-leaves)] (swap! *memo* assoc ::leaves l) l))
+              (block-arg-leaves))
+          leaves (sort (get L nid))
+          rep (first leaves)
+          same? (fn [x] (or (= x rep)
+                            (and (empty? (ir/refs x *f*)) (empty? (ir/refs rep *f*))
+                                 (= (ir/op x *f*) (ir/op rep *f*)) (= (ir/aux x *f*) (ir/aux rep *f*)))))]
+      (if (and rep (every? same? leaves)) rep nid))
+    nid))
 
 (defn var-of
   "The var a value denotes when it is a :load-var, or a block-arg that only
@@ -154,13 +218,24 @@
   (let [r (src-of nid)]
     (when (= :load-var (ir/op r *f*)) (ir/aux r *f*))))
 
+(defn table-var?
+  "A var read from a mutable global: the program's def/declare vars (the var
+   table, D54) and the runtime's top-level defs (D39)."
+  [v]
+  (or (contains? *var-globals* v) (and *rt* (contains? lw-rt/global-by-var v))))
+
+(declare rt-global!)
+
+(defn var-global [v]
+  (or (get *var-globals* v) (when (and *rt* (contains? lw-rt/global-by-var v)) (rt-global! v))))
+
 (defn var-hidden?
   "A var value that gets no local: everything but the var table's vars. Defn
    and core-op vars are constants, so a value use re-materialises them at
    the use site; table vars are read where the :load-var sits (they can be
    re-def'd between load and use)."
   [nid]
-  (when-let [v (var-of nid)] (not (contains? *var-globals* v))))
+  (when-let [v (var-of nid)] (not (table-var? v))))
 
 (defn dead? [nid] (= :invalid (ir/op nid *f*)))
 
@@ -211,18 +286,46 @@
       (let [a (ir/aux r *f*) v (if (typed-aux? a) (nth a 2) a)]
         (when (int? v) v)))))
 
+(defn string-const?
+  "A string literal: materialised at each use, so an intrinsic that wants the
+   literal itself (bytes-of-string, trap) reads it without a Str being built."
+  [nid]
+  (and (= :const (ir/op (src-of nid) *f*)) (string? (const-val nid))))
+
+(defn call-var
+  "The var a :call inst calls directly, or nil."
+  [nid]
+  (when (= :call (ir/op nid *f*))
+    (when-let [c (first (ir/refs nid *f*))] (var-of c))))
+
+(defn null-call?
+  "(wasm/null): pure, so it takes no local and each use materialises the
+   null of the slot's hierarchy (none for eq, nofunc for a funcref slot)."
+  [nid]
+  (= #'wasm.intrinsics/null (call-var (src-of nid))))
+
+(defn nullish? [nid]
+  (or (null-call? nid)
+      (let [r (src-of nid)] (and (= :const (ir/op r *f*)) (nil? (const-val nid))))))
+
 (defn no-local?
   "Values that never occupy a wasm local: dead params, constant vars,
    closure links and :try regions, symbol consts (consumed by
-   catch-matches?), Var objects and :def results (consumed by nothing)."
+   catch-matches?), Var objects and :def results (consumed by nothing),
+   string literals and (wasm/null) (materialised at each use)."
   [nid]
   (or (dead? nid) (var-hidden? nid) (closure-hidden? nid) (symbol-const? nid)
-      (var-const? nid) (def-val? nid) (some? (int-const-val nid))))
+      (var-const? nid) (def-val? nid) (some? (int-const-val nid))
+      (string-const? nid) (null-call? nid)))
 
 (declare var-value-wat extern-global phase2-const-wat)
 
 (defn arg-as [nid k]
   (cond
+    (and (= k :func) (nullish? nid)) "(ref.null nofunc)"
+    (null-call? nid) (str "(ref.null none)" (coerce :box k))
+    (string-const? nid) (str (str-wat (const-val nid)) (coerce :box k))
+    (and *rt* (symbol-const? nid)) (str (const-box-wat (const-val nid)) (coerce :box k))
     (var-hidden? nid) (str (var-value-wat (var-of nid)) (coerce :box k))
     (closure-hidden? nid) (fail "unsupported closure used as a value (a :try region)" {:nid nid :fn *fname*})
     ;; quoted symbols and #'vars as values are Phase 2's value kinds; the
@@ -236,12 +339,29 @@
 (def int-binops {:add "i64.add" :sub "i64.sub" :mul "i64.mul"})
 (def chk-binops {:add "call $add_chk" :sub "call $sub_chk" :mul "call $mul_chk"})
 (defn binop [op] (if (= *checked* :call) (chk-binops op) (int-binops op)))
-(defn string-idx [s]
+(defn hex32 [x] (format "%08x" (bit-and (hash x) 0xffffffff)))
+
+(defn safe-id [s] (str/replace s #"[^A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]" "_"))
+
+;; Generated names are content-addressed, not counters, so the cached
+;; runtime library (rt-library) and a program compiled against it agree on
+;; every name without renumbering.
+(defn string-name [s]
   (or (get @*strings* s)
-      (let [i (count @*strings*)] (swap! *strings* assoc s i) i)))
+      ;; short strings are named by their bytes (exact: phm_test interns
+      ;; murmur3-colliding keys on purpose); long ones by two hashes, one of
+      ;; the reversed text, so a shared-suffix collision does not carry over
+      (let [bs (map #(bit-and % 255) (.getBytes s))
+            nm (if (<= (count bs) 24)
+                 (str "$s_" (apply str (map #(format "%02x" %) bs)))
+                 (str "$s" (hex32 s) (hex32 (apply str (reverse s))) "_" (count bs)))]
+        (when (some #(= nm %) (vals @*strings*))
+          (fail "string data name collision" {:s s :name nm :other (first (filter #(= nm (get @*strings* %)) (keys @*strings*)))}))
+        (swap! *strings* assoc s nm)
+        nm)))
 
 (defn bytes-wat [s]
-  (str "(array.new_data $Bytes $s" (string-idx s) " (i32.const 0) (i32.const "
+  (str "(array.new_data $Bytes " (string-name s) " (i32.const 0) (i32.const "
        (count (.getBytes s)) "))"))
 
 (defn rt-error-wat
@@ -250,7 +370,11 @@
    a catch has reified it (native wraps some errors, e.g. overflow gets an
    `ExecutionError: ` prefix, D16)."
   [msg cmsg]
-  (str "(struct.new $Err (i32.const 1) " (bytes-wat msg) " " (bytes-wat cmsg) " (ref.null none))"))
+  (str "(struct.new $Err (i32.const 1) " (bytes-wat msg) " " (bytes-wat cmsg) " (ref.null none) (ref.null none))"))
+
+(defn str-wat
+  "A string literal as a value: the runtime's Str box (D38), hash not yet cached."
+  [s] (str "(struct.new $Str " (bytes-wat s) " (i64.const -1))"))
 
 (defn raise-wat []
   (str "(throw $lgex " (rt-error-wat "integer overflow" "ExecutionError: integer overflow") ")"))
@@ -384,6 +508,36 @@
     (note! :phase2 k)
     (str "(throw $lgex " (rt-error-wat m m) ")")))
 
+(declare const-global!)
+
+(defn f64-lit [x]
+  (str "(f64.const " (cond (NaN? x) "nan" (= x ##Inf) "inf" (= x ##-Inf) "-inf" :else (str x)) ")"))
+
+(defn float-wat [x] (str "(struct.new $Float " (f64-lit x) ")"))
+
+(defn named-text [x] (if (namespace x) (str (namespace x) "/" (name x)) (name x)))
+
+(defn kw-wat
+  "A keyword constant: the interned runtime Kw (one global per keyword,
+   interned by wasm.str at init) when the runtime is compiled; otherwise an
+   uninterned Kw of the same layout (the census only validates)."
+  [kw]
+  (if *rt*
+    (str "(global.get " (const-global! kw) ")")
+    (str "(struct.new $Kw " (if (namespace kw) (bytes-wat (namespace kw)) "(ref.null none)") " "
+         (bytes-wat (name kw)) " (i64.const 0))")))
+
+(defn const-box-wat
+  "A boxed constant of a value kind the runtime owns, or nil."
+  [v]
+  (cond (string? v) (str-wat v)
+        (keyword? v) (kw-wat v)
+        (char? v) (str "(struct.new $Char (i32.const " (int v) "))")
+        (float? v) (float-wat v)
+        (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
+        (str "(global.get " (const-global! v) ")")
+        :else nil))
+
 (defn const-wat [nid aux]
   (let [k (ty nid)]
     (cond
@@ -392,10 +546,8 @@
       (int? aux) (str "(i64.const " aux ")" (coerce :int k))
       (nil? aux) (if (= k :box) "(ref.null none)" (fail "nil const in unboxed slot" {:nid nid :fn *fname*}))
       (boolean? aux) (str "(i32.const " (if aux 1 0) ")" (coerce :bool k))
-      (string? aux) (bytes-wat aux)
-      (keyword? aux) (str "(struct.new $Kw " (bytes-wat (subs (str aux) 1)) ")")
-      ;; {} is the only map a Phase-1 program can build (ex-info's data)
-      (and (map? aux) (empty? aux)) "(global.get $map0)"
+      (and (float? aux) (= k :float)) (f64-lit aux)
+      (const-box-wat aux) (str (const-box-wat aux) (coerce :box k))
       :else (phase2-const-wat aux))))
 
 (def core-println #'println)
@@ -416,10 +568,6 @@
                         (fail "unsupported arity" {:var v :argc (count args) :fn *fname*})))]
     (condp = v
       #'throw (do (arity 1) (str "(throw $lgex " (arg-as (first args) :box) ")"))
-      #'ex-info (do (arity 2) (set (str "(call $rt_ex_info " (arg-as (first args) :box) " "
-                                        (arg-as (second args) :box) ")")))
-      #'ex-message (do (arity 1) (set (str "(call $rt_ex_message " (arg-as (first args) :box) ")")))
-      #'ex-data (do (arity 1) (set (str "(call $rt_ex_data " (arg-as (first args) :box) ")")))
       #'catch-matches?
       (do (arity 2)
           (let [c (first args)
@@ -435,7 +583,7 @@
   (case (ty nid)
     :int (str "(call $print_i64 " (arg-as nid :int) ")")
     :bool (str "(call $rt_print_bool " (lget nid) ")")
-    :box (str "(call $rt_print " (arg-as nid :box) ")")))
+    (str "(call $rt_print " (arg-as nid :box) ")")))
 
 (defn atom-call-wat
   "The minimal atom: the `fn` macro expands (fn name [..] ..) to an atom
@@ -459,18 +607,75 @@
   [fname declared got]
   (str "function <fn " (when fname (str fname " ")) "0x0> expected " declared " args, got " got))
 
+(declare callee-sig rt-target)
+
+(declare rt-call-expr)
+
+(defn seq-variant
+  "A variadic native's `<name>-seq` runtime form (core.lg's convention:
+   leading fixed args, then the rest as one seq), or nil."
+  [ent argc]
+  (when-let [v (:var ent)]
+    (let [sv (lw-rt/ns-var (symbol (namespace (var-sym v))) (symbol (str (name (var-sym v)) "-seq")))
+          d (when sv (lw-rt/source-defn sv))
+          k (when d (count (first (first (:arities d)))))]
+      (when (and k (= 1 (count (:arities d))) (<= 1 k) (< (dec k) argc)
+                 (> argc (apply max (keys (:arities ent)))))
+        [sv (dec k)]))))
+
+(defn direct-call-wat
+  "A call of a defn (program or runtime) by its signature entry."
+  [nid ent args]
+  (if-let [sig (get-in ent [:arities (count args)])]
+    (let [call (guard-call (str "(call $" (:name sig) " " (str/join " " (map arg-as args (:params sig))) ")"))]
+      (if (no-local? nid)
+        (str "(drop " call ")")
+        (str "(local.set $v" nid " " call (coerce (:ret sig) (ty nid)) ")")))
+    (if-let [[sv k] (seq-variant ent (count args))]
+      ;; (str a b c d e) -> (str-seq [a b c d e]): past the fixed arities
+      (let [bx (map #(arg-as % :box) args)
+            rest-v (reduce (fn [acc x] (rt-call-expr #'wasm.pvec/vconj [acc x]))
+                           (rt-call-expr #'wasm.pvec/empty-vec []) (drop k bx))]
+        (str "(local.set $v" nid " " (rt-call-expr sv (concat (take k bx) [rest-v])) (coerce :box (ty nid)) ")"))
+    ;; native compiles this and fails when the call runs
+    (let [m (if (:multi? ent)
+              (str "function <mfn " (:base ent) " 0x0> doesn't have a " (count args) "-arity variant")
+              (let [[n s] (first (:arities ent))] (arity-error-msg (:base ent) n (count args))))]
+      (str "(throw $lgex " (rt-error-wat m (str "ExecutionError: " m)) ")")))))
+
+;; Runtime defns the backend lowers as an instruction instead of a call:
+;; float-bits is the stand-in for f64-bits (D28/D45), i64.reinterpret_f64.
+(def rt-overrides
+  {#'wasm.seq/float-bits
+   (fn [nid args]
+     (str "(local.set $v" nid " (i64.reinterpret_f64 " (f64-arg (first args)) ")" (coerce :int (ty nid)) ")"))})
+
+(defn rt-call-expr
+  "A boxed-result call of runtime defn v on boxed operand exprs."
+  [v box-exprs]
+  (let [s (get-in (callee-sig v) [:arities (count box-exprs)])]
+    (when-not s (fail "runtime call arity" {:var v :argc (count box-exprs) :fn *fname*}))
+    (str "(call $" (:name s) (apply str (map (fn [e k] (str " " e (coerce :box k))) box-exprs (:params s))) ")"
+         (coerce (:ret s) :box))))
+
+;; Collection literals with non-constant elements: ir.build calls these core
+;; fns; they build through the runtime's constructors (constant literals are
+;; globals, const-global!).
+(def coll-ctors
+  {#'vector (fn [xs] (reduce (fn [acc x] (rt-call-expr #'wasm.pvec/vconj [acc x]))
+                             (rt-call-expr #'wasm.pvec/empty-vec []) xs))
+   #'hash-set (fn [xs] (reduce (fn [acc x] (rt-call-expr #'wasm.phs/sconj [acc x]))
+                               (rt-call-expr #'wasm.phs/empty-set []) xs))
+   #'array-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr #'wasm.core/assoc [acc k x]))
+                                (rt-call-expr #'wasm.phm/empty-map []) (partition 2 xs)))
+   #'hash-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr #'wasm.core/assoc [acc k x]))
+                               (rt-call-expr #'wasm.phm/empty-map []) (partition 2 xs)))})
+
 (defn call-wat [nid v args]
-  (let [sig (get *sigs* v)]
+  (let [ent (get @*sigs* v)]
     (cond
-      sig
-      (if (not= (count args) (count (:params sig)))
-        ;; native compiles this and fails when the call runs
-        (let [m (arity-error-msg (:name sig) (count (:params sig)) (count args))]
-          (str "(throw $lgex " (rt-error-wat m (str "ExecutionError: " m)) ")"))
-        (str "(local.set $v" nid " "
-             (guard-call (str "(call $" (:name sig) " "
-                              (str/join " " (map arg-as args (:params sig))) ")"))
-             (coerce (:ret sig) (ty nid)) ")"))
+      (and *rt* (rt-overrides v)) ((rt-overrides v) nid args)
+      ent (direct-call-wat nid ent args)
       (exn-call-wat nid v args) (exn-call-wat nid v args)
       (atom-call-wat nid v args) (atom-call-wat nid v args)
       (= v core-println)
@@ -479,6 +684,10 @@
            (if (= (ty nid) :box)
              (str " (local.set $v" nid " (ref.null none))")
              (fail "println result in unboxed slot" {:nid nid :fn *fname*})))
+      (and *rt* (coll-ctors v) (or (not (#{#'array-map #'hash-map} v)) (even? (count args))))
+      (str "(local.set $v" nid " " ((coll-ctors v) (map #(arg-as % :box) args)) (coerce :box (ty nid)) ")")
+      ;; a runtime defn, a native the runtime twins (D58), or an lg core fn
+      (and *rt* (rt-target v) (callee-sig v)) (direct-call-wat nid (callee-sig v) args)
       ;; a var with no wasm definition: call through its (nil) var-table slot
       (<= (count args) max-arity)
       (str "(local.set $v" nid " (call $rt_invoke" (count args) " (global.get " (extern-global v) ")"
@@ -489,16 +698,251 @@
       (str (apply str (map #(str "(drop " (arg-as % :box) ") ") args))
            "(call $rt_not_fn (global.get " (extern-global v) ")) unreachable"))))
 
+;; ---------------------------------------------------------------------------
+;; Intrinsics (P2.1, D24). A :call whose callee is a wasm.intrinsics var is
+;; emitted inline. Operands and results are lg kinds (:int i64, :bool i32,
+;; :box (ref null eq), plus :func for funcrefs); i32/i8 storage is wrapped and
+;; extended inside the expansion. Decl operands are vars resolved statically
+;; through lw-rt's one rec group. Indices are wrapped to i32 with
+;; i32.wrap_i64 and not range-checked in i64 (D26, decided here: wasm's own
+;; bounds check runs on the wrapped index, so an index >= 2^32 can alias;
+;; the reference impl traps on it and the runtime never produces one).
+
+(def funcref-fields
+  ;; D52: $Fn's code slots are typed code refs; every other :funcref slot is funcref
+  {"$Fn" {0 "$Code0" 1 "$Code1" 2 "$Code2" 4 "$Code3" 5 "$Code4"}})
+
+(defn decl-arg
+  "[type-name decl] of an intrinsic's declaration operand."
+  [nid who]
+  (let [v (var-of nid) tn (when v (decl-type-name v))]
+    (when-not tn (fail "intrinsic needs a declaration var" {:intrinsic who :nid nid :fn *fname*}))
+    [tn @v]))
+
+(defn const-int-arg [nid who]
+  (let [r (src-of nid) a (when (= :const (ir/op r *f*)) (const-val nid))]
+    (when-not (int? a) (fail "intrinsic needs a literal int" {:intrinsic who :nid nid :fn *fname*}))
+    a))
+
+(defn field-type [decl idx] (:type (nth (:fields decl) idx)))
+
+(defn f64-arg [nid]
+  (if (#{:box :float} (ty nid))
+    (arg-as nid :float)
+    (fail "f64 operand that is not a float" {:nid nid :kind (ty nid) :fn *fname*})))
+
+(defn store-wat
+  "Operand nid as storage of slot type t (typed: the code-ref type of a typed funcref slot)."
+  [t nid typed]
+  (case t
+    :i64 (arg-as nid :int)
+    (:i32 :i8) (str "(i32.wrap_i64 " (arg-as nid :int) ")")
+    :f64 (f64-arg nid)
+    :ref (arg-as nid :box)
+    :funcref (if typed
+               (if (nullish? nid) (arg-as nid :func) (str "(ref.cast (ref null " typed ") " (arg-as nid :func) ")"))
+               (arg-as nid :func))))
+
+(defn load-wat
+  "[expr raw-kind] for a slot of type t read by expr."
+  [t expr]
+  (case t
+    :i64 [expr :int]
+    :i32 [(str "(i64.extend_i32_s " expr ")") :int]
+    :i8 [(str "(i64.extend_i32_u " expr ")") :int]
+    :f64 [expr :float]
+    :ref [expr :box]
+    :funcref [expr :func]))
+
+(defn wrap-idx [nid] (str "(i32.wrap_i64 " (arg-as nid :int) ")"))
+(defn cast-ref [tn nid] (str "(ref.cast (ref " tn ") " (arg-as nid :box) ")"))
+
+(declare funcref-wrapper)
+
+(defn misuse
+  "An intrinsic applied in a way the reference rejects at run time (a field
+   index out of range, a wrong operand count, set! of an immutable field):
+   the same catchable error when it runs, not a compile failure."
+  [msg] [(str "(throw $lgex " (rt-error-wat msg msg) ")") :bottom])
+
+(defn emit-intrinsic
+  "[expr raw-kind] for intrinsic `nm` applied to arg nids. raw-kind :void
+   means no value, :bottom never returns."
+  [nm args]
+  (let [a (vec args)
+        decl-name (fn [d] (str (:name d)))
+        bin (fn [op k] [(str "(" op " " (arg-as (a 0) :int) " " (arg-as (a 1) :int) ")") k])
+        un (fn [op] [(str "(" op " " (arg-as (a 0) :int) ")") :int])]
+    (case nm
+      "new" (let [[tn d] (decl-arg (a 0) nm) fs (:fields d)]
+              (if-not (= (count fs) (dec (count a)))
+                (misuse (str "wasm/new " (decl-name d) ": " (count fs) " fields, got " (dec (count a))))
+              [(str "(struct.new " tn
+                    (apply str (map-indexed (fn [i f] (str " " (store-wat (:type f) (a (inc i)) (get-in funcref-fields [tn i]))))
+                                            fs)) ")") :box]))
+      "get" (let [[tn d] (decl-arg (a 0) nm) i (const-int-arg (a 1) nm) n (count (:fields d))]
+              (if (< -1 i n)
+                (load-wat (field-type d i) (str "(struct.get " tn " " i " " (cast-ref tn (a 2)) ")"))
+                (misuse (str "wasm/get " (decl-name d) ": field index " i " out of range 0.." (dec n)))))
+      "set!" (let [[tn d] (decl-arg (a 0) nm) i (const-int-arg (a 1) nm) n (count (:fields d))]
+               (cond (not (< -1 i n)) (misuse (str "wasm/set! " (decl-name d) ": field index " i " out of range 0.." (dec n)))
+                     (not (:mut (nth (:fields d) i))) (misuse (str "wasm/set! " (decl-name d) ": field " i " is immutable"))
+                     :else [(str "(struct.set " tn " " i " " (cast-ref tn (a 2)) " "
+                                 (store-wat (field-type d i) (a 3) (get-in funcref-fields [tn i])) ")") :void]))
+      "is?" (let [[tn] (decl-arg (a 0) nm)] [(str "(ref.test (ref " tn ") " (arg-as (a 1) :box) ")") :bool])
+      "as" (let [[tn] (decl-arg (a 0) nm)] [(cast-ref tn (a 1)) :box])
+      "array-new" (let [[tn d] (decl-arg (a 0) nm)]
+                    [(str "(array.new " tn " " (store-wat (:elem d) (a 2) nil) " " (wrap-idx (a 1)) ")") :box])
+      "aget" (let [[tn d] (decl-arg (a 0) nm)]
+               (load-wat (:elem d) (str "(array.get" (when (= :i8 (:elem d)) "_u") " " tn " " (cast-ref tn (a 1)) " "
+                                        (wrap-idx (a 2)) ")")))
+      "aset!" (let [[tn d] (decl-arg (a 0) nm)]
+                [(str "(array.set " tn " " (cast-ref tn (a 1)) " " (wrap-idx (a 2)) " " (store-wat (:elem d) (a 3) nil) ")") :void])
+      "alen" [(str "(i64.extend_i32_u (array.len (ref.cast (ref array) " (arg-as (a 0) :box) ")))") :int]
+      "array-copy" (let [[tn] (decl-arg (a 0) nm)]
+                     [(str "(array.copy " tn " " tn " " (cast-ref tn (a 1)) " " (wrap-idx (a 2)) " "
+                           (cast-ref tn (a 3)) " " (wrap-idx (a 4)) " " (wrap-idx (a 5)) ")") :void])
+      "ref-eq" [(str "(ref.eq " (arg-as (a 0) :box) " " (arg-as (a 1) :box) ")") :bool]
+      "null" ["(ref.null none)" :box]
+      "null?" [(str "(ref.is_null " (arg-as (a 0) (if (= :func (ty (a 0))) :func :box)) ")") :bool]
+      "i31" [(str "(ref.i31 (i32.wrap_i64 " (arg-as (a 0) :int) "))") :box]
+      "i31?" [(str "(ref.test (ref i31) " (arg-as (a 0) :box) ")") :bool]
+      "i31-get" [(str "(i64.extend_i32_s (i31.get_s (ref.cast (ref i31) " (arg-as (a 0) :box) ")))") :int]
+      "i64-add" (bin "i64.add" :int)
+      "i64-sub" (bin "i64.sub" :int)
+      "i64-mul" (bin "i64.mul" :int)
+      "i64-shl" (bin "i64.shl" :int)
+      "i64-shr-s" (bin "i64.shr_s" :int)
+      "i64-shr-u" (bin "i64.shr_u" :int)
+      "i64-lt-u" (bin "i64.lt_u" :bool)
+      "i64-clz" (un "i64.clz")
+      "i64-ctz" (un "i64.ctz")
+      "i64-popcnt" (un "i64.popcnt")
+      "i32-wrap" [(str "(i64.extend_i32_s (i32.wrap_i64 " (arg-as (a 0) :int) "))") :int]
+      "i64-extend-i32-u" [(str "(i64.extend_i32_u (i32.wrap_i64 " (arg-as (a 0) :int) "))") :int]
+      "i64-to-f64" [(str "(f64.convert_i64_s " (arg-as (a 0) :int) ")") :float]
+      "f64-to-i64" [(str "(i64.trunc_f64_s " (f64-arg (a 0)) ")") :int]
+      "f64-bits" [(str "(i64.reinterpret_f64 " (f64-arg (a 0)) ")") :int]
+      "bytes-new" [(str "(array.new_default $Bytes " (wrap-idx (a 0)) ")") :box]
+      "bget" [(str "(i64.extend_i32_u (array.get_u $Bytes " (cast-ref "$Bytes" (a 0)) " " (wrap-idx (a 1)) "))") :int]
+      "bset!" [(str "(array.set $Bytes " (cast-ref "$Bytes" (a 0)) " " (wrap-idx (a 1)) " " (wrap-idx (a 2)) ")") :void]
+      ;; the runtime only passes literals (D27); a program may pass any
+      ;; string, whose Str bytes are copied (the reference returns fresh bytes)
+      "bytes-of-string" (if (string-const? (a 0))
+                          [(bytes-wat (const-val (a 0))) :box]
+                          [(str "(call $rt_bytes_copy (call $rt_bytes_of (struct.get $Str 0 " (cast-ref "$Str" (a 0)) ")))") :box])
+      ;; the boundary helper: in wasm the bytes already are the string (D5);
+      ;; as an lg value a string is the Str box
+      "string-of-bytes" [(str "(struct.new $Str " (arg-as (a 0) :box) " (i64.const -1))") :box]
+      "host-write" [(str "(i64.extend_i32_s (call $rt_host_write (i32.wrap_i64 " (arg-as (a 0) :int) ") "
+                         (cast-ref "$Bytes" (a 1)) "))") :int]
+      "host-sleep" [(str "(call $host_sleep " (arg-as (a 0) :int) ")") :void]
+      "host-nanotime" ["(call $host_nanotime)" :int]
+      ;; the reference's *host-env* is {} (deterministic, D27): every name is unset
+      "host-getenv" [(str "(block (result (ref null eq)) (drop " (arg-as (a 0) :box) ") (ref.null none))") :box]
+      "trap" (if (string-const? (a 0))
+               [(str "(call $rt_trap " (bytes-wat (const-val (a 0))) ")") :bottom]
+               (fail "wasm/trap needs a string literal" {:nid (a 0) :fn *fname*}))
+      ;; a funcref names a defn: an fn* literal has no function of its own
+      ;; to refer to (and a capture would have nowhere to live)
+      "funcref" (let [[tn d] (decl-arg (a 0) nm) fv (var-of (a 1))]
+                  (if fv
+                    [(str "(ref.func $" (funcref-wrapper tn d fv) ")") :func]
+                    (misuse "lower-wasm: wasm/funcref of a fn value, not a defn var")))
+      "call-ref" (let [[tn d] (decl-arg (a 0) nm) ps (:params d)]
+                   (if-not (= (count ps) (- (count a) 2))
+                     (misuse (str "wasm/call-ref " (decl-name d) ": " (count ps) " params, got " (- (count a) 2)))
+                   (load-wat (:result d)
+                             (str "(call_ref " tn
+                                  (apply str (map-indexed (fn [i t] (str " " (store-wat t (a (+ 2 i)) nil))) ps))
+                                  " (ref.cast (ref null " tn ") " (arg-as (a 1) :func) "))"))))
+      (fail "unknown intrinsic" {:intrinsic nm :fn *fname*}))))
+
+(def emitted-intrinsics
+  #{"new" "get" "set!" "is?" "as" "array-new" "aget" "aset!" "alen" "array-copy" "ref-eq" "null" "null?"
+    "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
+    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits"
+    "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
+    "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"})
+
+;; every ^:intrinsic var has an emitter: a new intrinsic fails the backend's
+;; load, not a program's compile (D24: the set is read from the metadata)
+(let [missing (for [[s v] (ns-publics 'wasm.intrinsics)
+                    :when (and (lw-rt/intrinsic? v) (not (contains? emitted-intrinsics (str s))))]
+                s)]
+  (when (seq missing)
+    (throw (ex-info (str "lower-wasm: intrinsics without an emitter: " (vec (sort missing))) {}))))
+
+(defn intrinsic-call-wat [nid v args]
+  (let [[expr raw] (emit-intrinsic (name (symbol v)) args)
+        has-local (not (no-local? nid))]
+    (case raw
+      :void (str expr (when has-local (str " (local.set $v" nid " " (if (= :box (ty nid)) "(ref.null none)"
+                                                                       (fail "void intrinsic in unboxed slot" {:nid nid :fn *fname*})) ")")))
+      :bottom (str expr " unreachable")
+      (if has-local
+        (str "(local.set $v" nid " " expr (coerce raw (ty nid)) ")")
+        (str "(drop " expr ")")))))
+
+(defn slot-lattice [t] (cond (#{:i64 :i32 :i8} t) :int (= :f64 t) :float :else nil))
+
+(defn intrinsic-type
+  "The typeinfer type of an intrinsic call (from its :type metadata), or nil."
+  [v args]
+  (let [r (str/trim (last (str/split (:type (meta v)) #"->")))
+        decl (fn [] (let [x (var-of (first args))] (when (and x (decl-type-name x)) @x)))]
+    (case r
+      ":int" :int
+      ":bool" :bool
+      ":float" :float
+      ":nil" :nil
+      "field type" (let [d (decl) i (const-val (second args))]
+                     (when (and d (int? i) (< -1 i (count (:fields d)))) (slot-lattice (field-type d i))))
+      "T" (when-let [d (decl)] (slot-lattice (:elem d)))
+      "result" (when-let [d (decl)] (slot-lattice (:result d)))
+      nil)))
+
 (defn int-const-of [nid]
   (when (and (= :const (ir/op (src-of nid) *f*)) (int? (const-val nid))) (const-val nid)))
+
+(def float-binops {:add "f64.add" :sub "f64.sub" :mul "f64.mul" :div "f64.div"})
+(def float-cmps {:lt "f64.lt" :lte "f64.le" :gt "f64.gt" :gte "f64.ge"})
+;; the runtime's numeric twins: boxed operands that are not both ints
+(def num-twins {:add #'wasm.core/add :sub #'wasm.core/sub :mul #'wasm.core/mul
+                :lt #'wasm.core/lt :lte #'wasm.core/le :gt #'wasm.core/gt :gte #'wasm.core/ge})
 
 (defn prim-wat
   "Arithmetic/compare op `op` over value ids `refs`, result into local nid;
    nil when op is not one of these."
   [nid op refs]
   (let [set (fn [expr] (str "(local.set $v" nid " " expr ")"))
-        all-int? (every? #(= (ty %) :int) refs)]
+        all-int? (every? #(= (ty %) :int) refs)
+        some-float? (some #(= (ty %) :float) refs)
+        numeric? (every? #(#{:int :float :box} (ty %)) refs)]
     (cond
+      ;; float arithmetic: a float-typed operand makes the op f64 (an int or
+      ;; a boxed number operand converts); Go float semantics, no checks
+      (and some-float? numeric? (float-binops op) (= 2 (count refs)))
+      (set (str "(" (float-binops op) " " (arg-as (first refs) :float) " " (arg-as (second refs) :float) ")"
+                (coerce :float (ty nid))))
+      (and some-float? numeric? (float-cmps op) (= 2 (count refs)))
+      (set (str "(" (float-cmps op) " " (arg-as (first refs) :float) " " (arg-as (second refs) :float) ")"
+                (coerce :bool (ty nid))))
+      (and (= op :eq) (= 2 (count refs)) (every? #(= (ty %) :float) refs))
+      (set (str "(f64.eq " (arg-as (first refs) :float) " " (arg-as (second refs) :float) ")" (coerce :bool (ty nid))))
+      (and (= :float (ty (first refs))) (= 1 (count refs)) (#{:zero? :pos? :neg? :inc :dec} op))
+      (let [x (arg-as (first refs) :float)]
+        (set (case op
+               :zero? (str "(f64.eq " x " (f64.const 0))" (coerce :bool (ty nid)))
+               :pos? (str "(f64.gt " x " (f64.const 0))" (coerce :bool (ty nid)))
+               :neg? (str "(f64.lt " x " (f64.const 0))" (coerce :bool (ty nid)))
+               :inc (str "(f64.add " x " (f64.const 1))" (coerce :float (ty nid)))
+               :dec (str "(f64.sub " x " (f64.const 1))" (coerce :float (ty nid))))))
+      ;; a comparison with a boxed operand: ints compare inline in the helper,
+      ;; anything else goes to the runtime's numeric twin (wasm.core/lt ...)
+      (and *rt* (cmp-ops op) (not= op :eq) (= 2 (count refs)) (some #(= (ty %) :box) refs))
+      (set (str "(call $rt_cmp_" (name op) " " (arg-as (first refs) :box) " " (arg-as (second refs) :box) ")"
+                (coerce :bool (ty nid))))
       (and (int-binops op) (= 2 (count refs)) all-int?)
       ;; an int constant operand goes in as a literal, so the overflow test
       ;; can specialise on it (const-check)
@@ -509,6 +953,12 @@
                 (coerce :box (ty nid))))
       ;; boxed operands go through the checked unbox: a non-int throws a named
       ;; error (the general numeric tower is Phase 2)
+      ;; = on anything but two ints: two bools compare as i32, everything
+      ;; else is the runtime's generic equality (seq.lg equiv?, D38)
+      (and (= op :eq) (= 2 (count refs)) (every? #(= (ty %) :bool) refs))
+      (set (str "(i32.eq " (arg-as (first refs) :bool) " " (arg-as (second refs) :bool) ")" (coerce :bool (ty nid))))
+      (and (= op :eq) (= 2 (count refs)) *rt* (not all-int?))
+      (direct-call-wat nid (callee-sig #'wasm.seq/equiv?) refs)
       (and (cmp-ops op) (= 2 (count refs)))
       (set (str "(" (cmp-ops op) " " (op-int-arg op (first refs)) " " (op-int-arg op (second refs)) ")"
                 (coerce :bool (ty nid))))
@@ -575,7 +1025,7 @@
    core op as a value (only its IR-op arity); arity is the declared one for
    kind 0; name nil = anonymous."
   [kind arity nm]
-  (let [g (str "$info_" (count @*globals*))]
+  (let [g (str "$info_" kind "_" arity "_" (if nm (str (safe-id nm) "_" (hex32 nm)) "anon"))]
     (swap! *globals* conj
            (str "(global " g " (ref $FnInfo) (struct.new $FnInfo (i32.const " kind ") (i32.const " arity ") "
                 (if nm (name-bytes-const nm) "(ref.null none)") "))"))
@@ -602,21 +1052,27 @@
        " (result (ref null eq)) (local $tmp i64)\n  " body ")"))
 
 (defn defn-fn-global
-  "A program defn as a fn value: a wrapper code fn that unboxes per the
-   defn's signature and calls it directly."
+  "A defn (program or runtime, multi-arity included) as a fn value: one
+   wrapper code fn per arity that unboxes per the signature and calls it
+   directly. Arities past 4 have no $Fn slot (D52) and are left out."
   [v]
-  (or (get @*fn-values* v)
-      (let [{:keys [name params ret]} (get *sigs* v) n (count params)]
-        (when (> n max-arity)
-          (fail "unsupported defn with more than 4 params used as a value" {:var v :fn *fname*}))
-        (let [cname (str name "__val") g (str "$dfn_" name)
-              info (info-global 0 n name)]
-          (swap! *fn-values* assoc v g)
-          (swap! *regions* conj
-                 (fn-code-wat cname n (str "(call $" name
-                                           (apply str (map-indexed (fn [i k] (str " (local.get $p" i ")" (coerce :box k))) params))
-                                           ")" (coerce ret :box))))
-          (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat {n cname} "(ref.null none)" info) ")"))
+  (let [ent (callee-sig v)]
+    (or (get @*fn-values* ent)
+        (let [ars (into (sorted-map) (filter #(<= (key %) max-arity) (:arities ent)))
+              _ (when (empty? ars)
+                  (fail "unsupported defn with more than 4 params used as a value" {:var v :fn *fname*}))
+              base (:name (val (first ars)))
+              g (str "$dfn_" base)
+              info (if (:multi? ent) (info-global 1 0 (:base ent)) (info-global 0 (key (first ars)) (:base ent)))
+              codes (into {} (for [[n {:keys [name params ret]}] ars
+                                   :let [cname (str name "__val" n)]]
+                               (do (swap! *regions* conj
+                                          (fn-code-wat cname n (str "(call $" name
+                                                                    (apply str (map-indexed (fn [i k] (str " (local.get $p" i ")" (coerce :box k))) params))
+                                                                    ")" (coerce ret :box))))
+                                   [n cname])))]
+          (swap! *fn-values* assoc ent g)
+          (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat codes "(ref.null none)" info) ")"))
           g))))
 
 ;; Core ops as values, e.g. (swap! a inc), (compose2 inc f): only the arity
@@ -651,16 +1107,18 @@
   [v]
   (note! :externs v)
   (or (get @*externs* v)
-      (let [g (str "$ext_" (str/replace (subs (str v) 2) #"[^A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]" "_")
-                   "_" (count @*externs*))]
+      (let [g (str "$ext_" (safe-id (subs (str v) 2)) "_" (hex32 (str v)))]
         (swap! *externs* assoc v g)
         g)))
 
 (defn var-value-wat
   "A constant var used as a value (not in callee position)."
   [v]
-  (cond (get *sigs* v) (str "(global.get " (defn-fn-global v) ")")
+  ;; a core op as a value: the runtime's twin when it is compiled in (every
+  ;; arity, native's errors), else the backend's IR-op-arity-only fn
+  (cond (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
+        (callee-sig v) (str "(global.get " (defn-fn-global v) ")")
         :else (str "(global.get " (extern-global v) ")")))
 
 (defn closure-of [nid]
@@ -726,10 +1184,12 @@
       (= op :block-arg) nil
       ;; a constant var is materialised at each use (arg-as); a var-table var
       ;; is read here
-      (= op :load-var) (when-let [g (get *var-globals* aux)]
+      (= op :load-var) (when-let [g (var-global aux)]
                          (set (str "(global.get " g ")" (coerce :box (ty nid)))))
       (= op :load-arg) (set (str "(local.get $p" aux ")" (coerce (nth *param-kinds* aux) (ty nid))))
       (closure-hidden? nid) nil            ; a chain link, or consumed by its :try
+      (string-const? nid) nil              ; materialised at each use (arg-as)
+      (null-call? nid) nil                 ; (wasm/null), likewise
       (closure-val? nid) (set (str (closure-wat nid) (coerce :box (ty nid))))
       (symbol-const? nid) nil              ; consumed by catch-matches?
       (var-const? nid) nil                 ; consumed by :def
@@ -747,12 +1207,13 @@
       ;; a stack-VM marker cleanup strips; nothing to emit if one survives
       (= op :pop) nil
       (= op :set-var) (fail "unsupported op :set-var" {:op op :var (const-val (first refs)) :nid nid :fn *fname*})
-      (and (= op :div) (= 2 (count refs))) (div-wat nid refs)
+      (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
       (let [callee (first refs) v (var-of callee)]
-        (if (and v (not (contains? *var-globals* v)))
-          (or (when-let [cop (core-var-ops v)]
+        (if (and v (not (table-var? v)))
+          (or (when (lw-rt/intrinsic? v) (intrinsic-call-wat nid v (rest refs)))
+              (when-let [cop (core-var-ops v)]
                 (or (prim-wat nid cop (rest refs))
                     (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
               (call-wat nid v (rest refs)))
@@ -796,7 +1257,10 @@
   (if (empty? arms)
     (concat (edge-wat last-et) (walk default))
     (let [[kw tt node] (first arms)]
-      (concat [(str "(if (call $rt_kw_is " d " " (bytes-wat (subs (str kw) 1)) ") (then")]
+      (concat [(str "(if " (if *rt*
+                              (str "(ref.eq " d " " (kw-wat kw) ")")
+                              (str "(call $rt_kw_is " d " " (bytes-wat (name kw)) ")"))
+                    " (then")]
               (edge-wat tt) (walk node) [") (else"]
               (switch-chain d (rest arms) last-et default) ["))"]))))
 
@@ -841,7 +1305,7 @@
       (fail "unsupported tree node" {:tag tag :fn *fname*}))))
 
 (defn all-values [f]
-  (binding [*f* f]
+  (binding [*f* f *memo* (atom {})]
     (doall (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
                  :when (not (no-local? i))]
              i))))
@@ -866,6 +1330,76 @@
             :when (contains? insts r)]
       (fail "switch-absorbed inst used outside its switch" {:fn fname :user i :inst r}))))
 
+;; ---------------------------------------------------------------------------
+;; Funcref values (kind :func). wasm/funcref and :funcref slots produce them;
+;; a param is :func when the body stores it in a funcref slot; a block-arg is
+;; :func when every incoming value is one (or a null). Nothing else may hold
+;; one: a funcref is not an eqref, so it never boxes.
+
+(defn func-slot-args
+  "Arg nids of :call nid that sit in a funcref position."
+  [nid]
+  (let [v (call-var nid) args (vec (rest (ir/refs nid *f*)))
+        decl (fn [] (let [x (var-of (first args))] (when (and x (decl-type-name x)) @x)))
+        nm (when (lw-rt/intrinsic? v) (name (symbol v)))]
+    (cond
+      (= nm "new") (when-let [d (decl)]
+                     (keep-indexed (fn [i f] (when (= :funcref (:type f)) (get args (inc i)))) (:fields d)))
+      (= nm "set!") (when-let [d (decl)]
+                      (let [i (const-val (get args 1))]
+                        (when (and (int? i) (= :funcref (field-type d i))) [(get args 3)])))
+      (= nm "array-new") (when-let [d (decl)] (when (= :funcref (:elem d)) [(get args 2)]))
+      (= nm "aset!") (when-let [d (decl)] (when (= :funcref (:elem d)) [(get args 3)]))
+      (= nm "call-ref") (cons (get args 1)
+                              (when-let [d (decl)]
+                                (keep-indexed (fn [i t] (when (= :funcref t) (get args (+ 2 i)))) (:params d))))
+      (= nm "null?") nil
+      v (when-let [s (get-in (get @*sigs* v) [:arities (count args)])]
+          (keep-indexed (fn [i k] (when (= :func k) (get args i))) (:params s)))
+      :else nil)))
+
+(defn all-insts [f] (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))] i))
+
+(defn func-params
+  "Indices of params the body uses in a funcref position."
+  [f]
+  (set (for [i (all-insts f) :when (= :call (ir/op i f))
+             a (func-slot-args i)
+             :let [r (src-of a)]
+             :when (= :load-arg (ir/op r f))]
+         (ir/aux r f))))
+
+(defn func-producer? [nid fs params]
+  (let [op (ir/op nid *f*)]
+    (cond
+      (= op :load-arg) (= :func (get params (ir/aux nid *f*)))
+      (= op :call)
+      (let [v (call-var nid) args (vec (rest (ir/refs nid *f*)))
+            decl (fn [] (let [x (var-of (first args))] (when (and x (decl-type-name x)) @x)))
+            nm (when (lw-rt/intrinsic? v) (name (symbol v)))]
+        (cond (= nm "funcref") true
+              (= nm "get") (when-let [d (decl)] (let [i (const-val (get args 1))] (and (int? i) (= :funcref (field-type d i)))))
+              (= nm "aget") (when-let [d (decl)] (= :funcref (:elem d)))
+              (= nm "call-ref") (when-let [d (decl)] (= :funcref (:result d)))
+              nm false
+              v (= :func (:ret (get-in (get @*sigs* v) [:arities (count args)])))
+              :else false))
+      (= op :block-arg)
+      (let [b (ir/block-of nid *f*)
+            idx (first (keep-indexed #(when (= %2 nid) %1) (ir/block-params b *f*)))
+            inc (incoming b idx)]
+        (and (seq inc)
+             (every? #(or (contains? fs %) (contains? fs (src-of %)) (nullish? %)) inc)
+             (some #(or (contains? fs %) (contains? fs (src-of %))) inc)))
+      :else false)))
+
+(defn compute-func-vals [f params]
+  (binding [*f* f *memo* (atom {})]
+    (let [nids (all-insts f)]
+      (loop [fs #{}]
+        (let [fs2 (into fs (filter #(and (not (contains? fs %)) (func-producer? % fs params)) nids))]
+          (if (= fs2 fs) fs (recur fs2)))))))
+
 (declare analyze-opt)
 
 (defn analyze-ir
@@ -884,17 +1418,27 @@
     (when (has-node? :goto tree)
       (fail "structurize fallback (:goto)" {:fn fname :fallbacks fallbacks :tree tree}))
     (when (ir/fn-variadic? f) (fail "unsupported variadic fn" {:fn fname}))
-    (binding [*f* f]
-      (let [params (vec (for [i (range (ir/fn-arity f))]
-                          (let [nid (ir/fn-load-arg f i)] (if nid (ty nid) :box))))
-            rets (for [b (ir/blocks f)
-                       :let [t (ir/block-term b f)]
-                       ;; a block left without a terminator (bfs-flood-label!) returns nothing
-                       :when (and t (= (ir/op t f) :return))]
-                   (ty (first (ir/refs t f))))
-            ret (if (and (seq rets) (every? #{:int} rets)) :int :box)]
-        {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true
-         :absorbed (or absorbed-insts #{})}))))
+    (let [fparams (binding [*f* f *memo* (atom {}) *func-vals* #{}] (func-params f))
+          params0 (binding [*f* f *memo* (atom {}) *func-vals* #{}]
+                    (vec (for [i (range (ir/fn-arity f))]
+                           (if (contains? fparams i)
+                             :func
+                             (let [nid (ir/fn-load-arg f i)] (if nid (ty nid) :box))))))
+          fvals (compute-func-vals f params0)]
+      (binding [*f* f *memo* (atom {}) *func-vals* fvals]
+        (let [params params0
+              rvals (for [b (ir/blocks f)
+                          :let [t (ir/block-term b f)]
+                          ;; a block left without a terminator (bfs-flood-label!) returns nothing
+                          :when (and t (= (ir/op t f) :return))]
+                      (first (ir/refs t f)))
+              rets (map ty rvals)
+              ret (cond (and (seq rets) (every? #{:int} rets)) :int
+                        (and (seq rets) (every? #{:bool} rets)) :bool
+                        (and (seq rets) (some #{:func} rets) (every? #(or (= :func (ty %)) (nullish? %)) rvals)) :func
+                        :else :box)]
+          {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true
+           :absorbed (or absorbed-insts #{}) :func-vals fvals})))))
 
 (defn self-call?
   "Does f call itself by var (typeinfer's own self-call test)?"
@@ -919,15 +1463,18 @@
    (the base cases return ints without recursing), so the fn returns an
    unboxed i64; otherwise it is rebuilt and analysed normally. fib(32): the
    boxed path is ~2x the probe, the typed one well under it (bench-fib.sh)."
-  [src]
-  (let [nm (str (second src)) f (ir.build/build-fn src)]
-    (if (self-call? f)
-      (or (try (let [info (binding [ir.passes.typeinfer/*declared-return-types* {nm :int}]
-                            (analyze-ir nm f))]
-                 (when (= :int (:ret info)) info))
-               (catch e nil))
-          (analyze-ir nm (ir.build/build-fn src)))
-      (analyze-ir nm f))))
+  ([src] (analyze-fn src (str (second src)) false))
+  ([src wname multi?]
+   (let [nm (str (second src)) f (ir.build/build-fn src)]
+     ;; a multi-arity fn's other arities share its name, so the optimistic
+     ;; self typing would type them too: off for multi-arity
+     (if (and (not multi?) (self-call? f))
+       (or (try (let [info (binding [ir.passes.typeinfer/*declared-return-types* {nm :int}]
+                             (analyze-ir wname f))]
+                  (when (= :int (:ret info)) info))
+                (catch e nil))
+           (analyze-ir wname (ir.build/build-fn src)))
+       (analyze-ir wname f)))))
 
 (defn has-tail? [tree] (has-node? :tail tree))
 
@@ -935,7 +1482,7 @@
   "[linked try-srcs] for f: closure-chain nodes a later link consumes, and
    every node of a chain a :try consumes (see closure-hidden?)."
   [f]
-  (binding [*f* f]
+  (binding [*f* f *memo* (atom {})]
     (let [insts (for [b (ir/blocks f) i (ir/block-insts b f)] i)
           chain (fn chain [n]
                   (let [n (src-of n)]
@@ -951,11 +1498,11 @@
    $Code<code>: the closure arrives as $self, its captures are read from the
    env struct `env` (field kinds `env-kinds`). `caps` are a try region's
    captures, passed as trailing params $c0.."
-  [{:keys [name f tree params ret caps export? code env env-kinds absorbed]}]
-  (let [[linked tries] (closure-sets f)]
-  (binding [*f* f *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
+  [{:keys [name f tree params ret caps export? code env env-kinds absorbed func-vals]}]
+  (let [[linked tries] (binding [*func-vals* (or func-vals #{})] (closure-sets f))]
+  (binding [*f* f *memo* (atom {}) *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
             *box-inline* true *env-type* env *linked* linked *try-srcs* tries
-            *absorbed* (or absorbed #{})]
+            *absorbed* (or absorbed #{}) *func-vals* (or func-vals #{})]
     (let [locals (distinct (all-values f))
           body (walk tree)
           body (if (has-tail? tree)
@@ -1056,7 +1603,7 @@
 ;; {}, double quote); $rt_print_bytes copies array-backed strings to offset 32
 ;; before handing ptr+len to the host.
 (defn print-runtime []
-  (str "(data (i32.const 0) \"niltruefalse :{}\\\"\")
+  (str "(data (i32.const 0) \"niltruefalse :{}\\\"/\")
 (func $rt_print_space (call $print_str (i32.const 12) (i32.const 1)))
 (func $rt_print_bool (param $b i32)
   (if (local.get $b) (then (call $print_str (i32.const 3) (i32.const 4)))
@@ -1072,28 +1619,72 @@
     (local.set $i (i32.add (local.get $i) (i32.const 1)))
     (br $l)))
   (call $print_str (i32.const 32) (local.get $n)))
+;; a fresh copy of a byte array (bytes-of-string of a non-literal)
+(func $rt_bytes_copy (param $b (ref $Bytes)) (result (ref $Bytes)) (local $r (ref $Bytes))
+  (local.set $r (array.new_default $Bytes (array.len (local.get $b))))
+  (array.copy $Bytes $Bytes (local.get $r) (i32.const 0) (local.get $b) (i32.const 0) (array.len (local.get $b)))
+  (local.get $r))
+;; a field holding Bytes as (ref null eq)
+(func $rt_bytes_of (param $v (ref null eq)) (result (ref $Bytes)) (ref.cast (ref $Bytes) (local.get $v)))
+(func $rt_print_kw (param $k (ref $Kw))
+  (call $print_str (i32.const 13) (i32.const 1))
+  (if (i32.eqz (ref.is_null (struct.get $Kw 0 (local.get $k))))
+    (then (call $rt_print_bytes (call $rt_bytes_of (struct.get $Kw 0 (local.get $k))))
+          (call $print_str (i32.const 17) (i32.const 1))))
+  (call $rt_print_bytes (call $rt_bytes_of (struct.get $Kw 1 (local.get $k)))))
 (func $rt_print (param $v (ref null eq))
   (if (ref.is_null (local.get $v)) (then (call $print_str (i32.const 0) (i32.const 3)) (return)))
   (if (ref.test (ref $Bool) (local.get $v))
-    (then (call $rt_print_bool (struct.get $Bool 0 (ref.cast (ref $Bool) (local.get $v)))) (return)))
-  (if (ref.test (ref $Bytes) (local.get $v))
-    (then (call $rt_print_bytes (ref.cast (ref $Bytes) (local.get $v))) (return)))
+    (then (call $rt_print_bool (i32.wrap_i64 (struct.get $Bool 0 (ref.cast (ref $Bool) (local.get $v))))) (return)))
+  (if (ref.test (ref $Str) (local.get $v))
+    (then (call $rt_print_bytes (call $rt_bytes_of (struct.get $Str 0 (ref.cast (ref $Str) (local.get $v))))) (return)))
   (if (ref.test (ref $Kw) (local.get $v))
-    (then (call $print_str (i32.const 13) (i32.const 1))
-          (call $rt_print_bytes (struct.get $Kw 0 (ref.cast (ref $Kw) (local.get $v)))) (return)))
-  (if (ref.test (ref $Map0) (local.get $v)) (then (call $print_str (i32.const 14) (i32.const 2)) (return)))
-  (call $print_i64 (local.get $v)" (coerce :box :int) "))
+    (then (call $rt_print_kw (ref.cast (ref $Kw) (local.get $v))) (return)))
+  (if (i32.or (ref.test (ref i31) (local.get $v)) (ref.test (ref $Int) (local.get $v)))
+    (then (call $print_i64 (call $rt_unbox_int (local.get $v))) (return)))
+  ;; everything else prints as print-str does (the runtime's printer)
+  (call $rt_print_other (local.get $v)))
+(func $rt_print_other (param $v (ref null eq))
+  " (if *rt*
+      "(call $rt_print_bytes (call $rt_bytes_of (struct.get $Str 0 (ref.cast (ref $Str) (call $wasm.str/print-str#1__box (local.get $v)))))))"
+      (str "(throw $lgex " (rt-error-wat "lower-wasm: printing this value needs the runtime" "lower-wasm: printing this value needs the runtime") "))")) "
 ;; The uncaught-exception report (D12): run.mjs prints `error: ` and routes
 ;; this to stderr. An exception value prints its message, anything else
 ;; thrown prints like pr-str (strings quoted; escapes are P2.6).
 (func $rt_report (export \"_report\") (param $v (ref null eq))
   (if (ref.test (ref $Err) (local.get $v))
-    (then (call $rt_print_bytes (struct.get $Err 1 (ref.cast (ref $Err) (local.get $v)))) (return)))
-  (if (ref.test (ref $Bytes) (local.get $v))
+    (then (call $rt_print_bytes (call $rt_bytes_of (struct.get $Err 1 (ref.cast (ref $Err) (local.get $v))))) (return)))
+  (if (ref.test (ref $Str) (local.get $v))
     (then (call $print_str (i32.const 16) (i32.const 1))
-          (call $rt_print_bytes (ref.cast (ref $Bytes) (local.get $v)))
+          (call $rt_print_bytes (call $rt_bytes_of (struct.get $Str 0 (ref.cast (ref $Str) (local.get $v)))))
           (call $print_str (i32.const 16) (i32.const 1)) (return)))
-  (call $rt_print (local.get $v)))"))
+  (call $rt_print (local.get $v)))
+;; wasm/trap: unreachable, with the message kept for the host's error line
+;; (run.mjs calls _trap_report after a trap). The text is the reference
+;; impl's, so a trapping program's error line matches native lg's.
+(global $trap_msg (mut (ref null $Bytes)) (ref.null none))
+(func $rt_trap (param $m (ref $Bytes)) (global.set $trap_msg (local.get $m))
+  " (when (and *rt* *trap-throws*)
+      (str "(throw $lgex (struct.new $Err (i32.const 0) (call $rt_cat " (bytes-wat "wasm trap: ") " (local.get $m))
+          (call $rt_cat " (bytes-wat "wasm trap: ") " (local.get $m)) " (const-box-wat {:wasm/trap true}) " (ref.null none)))")) "
+  unreachable)
+(func $rt_trap_report (export \"_trap_report\") (result i32)
+  (if (ref.is_null (global.get $trap_msg)) (then (return (i32.const 0))))
+  (call $rt_print_bytes " (bytes-wat "wasm trap: ") ")
+  (call $rt_print_bytes (ref.as_non_null (global.get $trap_msg)))
+  (i32.const 1))
+;; host-write: copy to linear memory, hand ptr+len to env.write
+(func $rt_host_write (param $fd i32) (param $b (ref $Bytes)) (result i32) (local $i i32) (local $n i32) (local $need i32)
+  (local.set $n (array.len (local.get $b)))
+  (local.set $need (i32.add (local.get $n) (i32.const 32)))
+  (if (i32.gt_u (local.get $need) (i32.mul (memory.size) (i32.const 65536)))
+    (then (drop (memory.grow (i32.sub (i32.add (i32.shr_u (local.get $need) (i32.const 16)) (i32.const 1)) (memory.size))))))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+    (i32.store8 offset=32 (local.get $i) (array.get_u $Bytes (local.get $b) (local.get $i)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (call $host_write (local.get $fd) (i32.const 32) (local.get $n)))"))
 
 (defn exn-runtime []
   (str
@@ -1104,46 +1695,19 @@
     (then (local.set $e (ref.cast (ref $Err) (local.get $v)))
           (if (i32.eq (struct.get $Err 0 (local.get $e)) (i32.const 1))
             (then (return (struct.new $Err (i32.const 2) (struct.get $Err 2 (local.get $e))
-                                       (struct.get $Err 2 (local.get $e)) (global.get $map0)))))))
+                                       (struct.get $Err 2 (local.get $e))
+                                       " (if *rt* "(call $wasm.phm/empty-map#0__box)" "(ref.null none)") "
+                                       (struct.get $Err 4 (local.get $e))))))))
   (local.get $v))
-;; native ex-message returns a non-exception argument unchanged
-(func $rt_ex_message (param $v (ref null eq)) (result (ref null eq))
-  (if (ref.test (ref $Err) (local.get $v))
-    (then (return (struct.get $Err 1 (ref.cast (ref $Err) (local.get $v))))))
-  (local.get $v))
-(func $rt_ex_data (param $v (ref null eq)) (result (ref null eq))
-  (if (ref.test (ref $Err) (local.get $v))
-    (then (return (struct.get $Err 3 (ref.cast (ref $Err) (local.get $v))))))
-  (ref.null none))
-(func $rt_ex_info (param $m (ref null eq)) (param $d (ref null eq)) (result (ref null eq))
-  (if (i32.eqz (ref.test (ref $Bytes) (local.get $m)))
-    (then (throw $lgex " (rt-error-wat "ex-info expected String message" "ex-info expected String message") ")))
-  (if (i32.eqz (ref.test (ref $Map0) (local.get $d)))
-    (then (throw $lgex " (rt-error-wat "ex-info expected Map data" "ex-info expected Map data") ")))
-  (struct.new $Err (i32.const 0) (ref.cast (ref $Bytes) (local.get $m)) (ref.cast (ref $Bytes) (local.get $m))
-              (local.get $d)))
 ;; codes from lower-wasm/catch-classes: 0 Throwable (anything thrown),
 ;; 1 Exception (any exception value), 2 ExceptionInfo, 3 String
 (func $rt_catch_matches (param $c i32) (param $v (ref null eq)) (result i32)
   (if (i32.eqz (local.get $c)) (then (return (i32.const 1))))
-  (if (i32.eq (local.get $c) (i32.const 3)) (then (return (ref.test (ref $Bytes) (local.get $v)))))
+  (if (i32.eq (local.get $c) (i32.const 3)) (then (return (ref.test (ref $Str) (local.get $v)))))
   (if (i32.eqz (ref.test (ref $Err) (local.get $v))) (then (return (i32.const 0))))
   (if (i32.eq (local.get $c) (i32.const 1)) (then (return (i32.const 1))))
   (i32.eqz (struct.get $Err 0 (ref.cast (ref $Err) (local.get $v)))))
 "))
-
-(defn fn-types []
-  (str
-   ";; D36 closure ABI: code takes the closure first, args and result boxed (D37)\n"
-   (apply str (for [n (range (inc max-arity))]
-                (str "(type $Code" n " (func (param (ref null eq))"
-                     (apply str (repeat n " (param (ref null eq))")) " (result (ref null eq))))\n")))
-   ";; kind (0 fn, 1 mfn, 2 core op as a value), declared arity (kind 0), name or null\n"
-   "(type $FnInfo (struct (field i32) (field i32) (field (ref null $Bytes))))\n"
-   ";; code0 code1 code2 env code3 code4 info: fields 0-3 as rt/wasm/seq.lg's Fn\n"
-   "(type $Fn (struct (field (ref null $Code0)) (field (ref null $Code1)) (field (ref null $Code2))"
-   " (field (ref null eq)) (field (ref null $Code3)) (field (ref null $Code4)) (field (ref $FnInfo))))\n"
-   "(type $Atom (struct (field (mut (ref null eq)))))\n"))
 
 (defn cat-wat
   "Nested $rt_cat over WAT (ref $Bytes) exprs; a string part is a literal."
@@ -1154,7 +1718,7 @@
 (defn wexpr [s] {:wat s})
 
 (defn fn-runtime []
-  (let [throw-msg (fn [m cm] (str "(throw $lgex (struct.new $Err (i32.const 1) " m " " cm " (ref.null none)))"))
+  (let [throw-msg (fn [m cm] (str "(throw $lgex (struct.new $Err (i32.const 1) " m " " cm " (ref.null none) (ref.null none)))"))
         name (wexpr "(ref.as_non_null (local.get $name))")
         n (wexpr "(call $rt_itoa (local.get $n))")]
     (str
@@ -1179,8 +1743,8 @@
 ;; `ExecutionError: ` once caught
 (func $rt_arity_error (param $fn (ref $Fn)) (param $n i32)
   (local $info (ref $FnInfo)) (local $name (ref null $Bytes)) (local $d (ref null $Bytes)) (local $m (ref null $Bytes))
-  (local.set $info (struct.get $Fn 6 (local.get $fn)))
-  (local.set $name (struct.get $FnInfo 2 (local.get $info)))
+  (local.set $info (ref.cast (ref $FnInfo) (struct.get $Fn 6 (local.get $fn))))
+  (local.set $name (ref.cast (ref null $Bytes) (struct.get $FnInfo 2 (local.get $info))))
   (if (i32.eq (struct.get $FnInfo 0 (local.get $info)) (i32.const 2))
     (then (local.set $m " (cat-wat "lower-wasm: core/" name " called through a fn value with " n
                                   " args (only its IR-op arity until Phase 2)") ")
@@ -1198,9 +1762,6 @@
   " (throw-msg "(ref.as_non_null (local.get $m))" (cat-wat "ExecutionError: " (wexpr "(ref.as_non_null (local.get $m))"))) ")
 ;; native: `TypeError: <type> is not a function ` (trailing space), same text caught
 (func $rt_not_fn (param $v (ref null eq)) (local $m (ref $Bytes))
-  (if (i32.or (ref.test (ref $Kw) (local.get $v)) (ref.test (ref $Map0) (local.get $v)))
-    (then " (throw-msg (bytes-wat "lower-wasm: invoking a keyword or map is Phase 2")
-                      (bytes-wat "lower-wasm: invoking a keyword or map is Phase 2")) "))
   (local.set $m " (cat-wat "TypeError: "
                           (wexpr (reduce (fn [acc [test name]]
                                           (str "(if (result (ref $Bytes)) " test " (then " (bytes-wat name) ") (else " acc "))"))
@@ -1208,7 +1769,7 @@
                                         (reverse [["(ref.is_null (local.get $v))" "nil"]
                                                   ["(i32.or (ref.test (ref i31) (local.get $v)) (ref.test (ref $Int) (local.get $v)))" "let-go.lang.Int"]
                                                   ["(ref.test (ref $Bool) (local.get $v))" "let-go.lang.Boolean"]
-                                                  ["(ref.test (ref $Bytes) (local.get $v))" "let-go.lang.String"]
+                                                  ["(ref.test (ref $Str) (local.get $v))" "let-go.lang.String"]
                                                   ["(ref.test (ref $Atom) (local.get $v))" "let-go.lang.Atom"]])))
                           " is not a function ") ")
   " (throw-msg "(local.get $m)" "(local.get $m)") ")
@@ -1220,11 +1781,26 @@
               (str "(func $rt_invoke" n " (param $f (ref null eq))"
                    (apply str (map #(str " (param $a" % " (ref null eq))") (range n)))
                    " (result (ref null eq)) (local $fn (ref null $Fn))
-  (if (i32.eqz (ref.test (ref $Fn) (local.get $f))) (then (call $rt_not_fn (local.get $f))))
+  (if (i32.eqz (ref.test (ref $Fn) (local.get $f)))
+    (then (return (call $rt_invoke_ifn (local.get $f) (i32.const " n ")"
+                   (apply str (map #(str " (local.get $a" % ")") (range n)))
+                   (apply str (repeat (- max-arity n) " (ref.null none)")) "))))
   (local.set $fn (ref.cast (ref $Fn) (local.get $f)))
   (if (ref.is_null (struct.get $Fn " slot " (local.get $fn))) (then (call $rt_arity_error (ref.as_non_null (local.get $fn)) (i32.const " n "))))
   (call_ref $Code" n " (local.get $f)" args " (struct.get $Fn " slot " (local.get $fn))))\n")))
-     "(func $rt_atom_of (param $a (ref null eq)) (result (ref $Atom))
+     ";; a non-Fn callee: keywords, symbols, maps, sets and vectors call
+;; themselves through the runtime (wasm.core/invoke-args); anything else is
+;; native's TypeError
+(func $rt_invoke_ifn (param $f (ref null eq)) (param $n i32) (param $a0 (ref null eq)) (param $a1 (ref null eq))
+  (param $a2 (ref null eq)) (param $a3 (ref null eq)) (result (ref null eq))
+  " (if *rt*
+      "(if (call $rt_truthy (call $wasm.core/callable?#1__box (local.get $f)))
+    (then (return (call $wasm.core/invoke-args#6__box (local.get $f) (ref.i31 (local.get $n))
+                        (local.get $a0) (local.get $a1) (local.get $a2) (local.get $a3)))))
+  "
+      "")
+     "(call $rt_not_fn (local.get $f)) unreachable)
+(func $rt_atom_of (param $a (ref null eq)) (result (ref $Atom))
   (if (i32.eqz (ref.test (ref $Atom) (local.get $a)))
     (then " (throw-msg (bytes-wat "lower-wasm: deref/reset!/swap! of a non-atom (Phase 2)")
                       (bytes-wat "lower-wasm: deref/reset!/swap! of a non-atom (Phase 2)")) "))
@@ -1266,6 +1842,10 @@
                             "        (then (ref.i31 (i32.wrap_i64 (local.get $tmp)))) (else (struct.new $Int (local.get $tmp)))))))\n"
                             "  (call $rt_" (name op) "_slow (local.get $a) (local.get $b)))\n"))
                      "(func $rt_" (name op) (when (= *box* :hybrid) "_slow") " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64) (local $x i64) (local $y i64)\n  "
+                     ;; not two ints: the runtime's numeric tower (wasm.core's twin)
+                     (when *rt*
+                       (str "(if (i32.eqz (i32.and (call $rt_is_int (local.get $a)) (call $rt_is_int (local.get $b))))\n"
+                            "    (then (return (call $" (qual-name (num-twins op)) "#2__box (local.get $a) (local.get $b)))))\n  "))
                      "(local.set $x (call " (unbox-fn op) " (local.get $a))) (local.set $y (call " (unbox-fn op) " (local.get $b)))\n  "
                      (str "(local.set $tmp (" (if (and (= op :mul) *checked*) "call $mul_chk" (binop op)) " " ua " " ub "))"
                                              (when (inline-checked? op) (str " " (inline-check op ua ub "(local.get $tmp)"))))
@@ -1281,24 +1861,17 @@
     (str "(import \"env\" \"print_i64\" (func $print_i64 (param i64)))\n"
          "(import \"env\" \"print_str\" (func $print_str (param i32 i32)))\n"
          "(import \"env\" \"print_nl\" (func $print_nl))\n"
+         ;; the host intrinsics (D6, D11's env.write); shaken like functions,
+         ;; so a module that never writes needs no such import
+         "(import \"env\" \"write\" (func $host_write (param i32 i32 i32) (result i32)))\n"
+         "(import \"env\" \"sleep\" (func $host_sleep (param i64)))\n"
+         "(import \"env\" \"nanotime\" (func $host_nanotime (result i64)))\n"
          "(memory (export \"mem\") 1)\n"
-         "(type $Int (struct (field i64)))\n"
-         ;; mutable, as wasm.intrinsics/Bytes: runtime messages are built by copying
-         "(type $Bytes (array (mut i8)))\n"
-         "(type $Bool (struct (field i32)))\n"
-         ;; Each type is its own rec group, so structurally equal types are
-         ;; the SAME type to ref.test: keep every shape here distinct.
-         "(type $Kw (struct (field (ref $Bytes))))\n"
-         "(type $Map0 (struct))\n"
-         ";; kind (0 ex-info, 1 raw runtime error, 2 caught runtime error), message,\n"
-         ";; message once caught, ex-data\n"
-         "(type $Err (struct (field i32) (field (ref $Bytes)) (field (ref $Bytes)) (field (ref null eq))))\n"
-         (fn-types)
          ";; every lg exception: the payload is the thrown value\n"
          "(tag $lgex (export \"lgex\") (param (ref null eq)))\n"
-         "(global $map0 (ref $Map0) (struct.new $Map0))\n"
-         "(global $true (ref $Bool) (struct.new $Bool (i32.const 1)))\n"
-         "(global $false (ref $Bool) (struct.new $Bool (i32.const 0)))\n"
+         ;; the runtime's Bool is [:i64] (seq.lg)
+         "(global $true (ref $Bool) (struct.new $Bool (i64.const 1)))\n"
+         "(global $false (ref $Bool) (struct.new $Bool (i64.const 0)))\n"
          ;; D2 hybrid boxing. Canonical: an int in i31 range is never a $Int,
          ;; so a later value-equality/hash need not normalise representations.
          (when (= *box* :hybrid)
@@ -1309,13 +1882,26 @@
                 "  (if (result i64) (ref.test (ref i31) (local.get $v))\n"
                 "    (then (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $v)))))\n"
                 "    (else (struct.get $Int 0 (ref.cast (ref $Int) (local.get $v))))))\n"))
+         "(func $rt_is_int (param $v (ref null eq)) (result i32)\n"
+         "  (i32.or (ref.test (ref i31) (local.get $v)) (ref.test (ref $Int) (local.get $v))))\n"
+         ";; a boxed operand of a float op: Int or Float as f64\n"
+         "(func $rt_to_f64 (param $v (ref null eq)) (result f64)\n"
+         "  (if (ref.test (ref $Float) (local.get $v)) (then (return (struct.get $Float 0 (ref.cast (ref $Float) (local.get $v))))))\n"
+         "  (f64.convert_i64_s (call $rt_int_add (local.get $v))))\n"
+         (apply str (for [[op ins] (sort cmp-ops) :when (not= op :eq)]
+                      (str "(func $rt_cmp_" (name op) " (param $a (ref null eq)) (param $b (ref null eq)) (result i32)\n"
+                           "  (if (i32.and (call $rt_is_int (local.get $a)) (call $rt_is_int (local.get $b)))\n"
+                           "    (then (return (" ins " (call $rt_unbox_int (local.get $a)) (call $rt_unbox_int (local.get $b))))))\n"
+                           (if *rt*
+                             (str "  (call $rt_truthy (call $" (qual-name (num-twins op)) "#2__box (local.get $a) (local.get $b))))\n")
+                             (str "  (" ins " (call " (unbox-fn op) " (local.get $a)) (call " (unbox-fn op) " (local.get $b))))\n")))))
          "(func $rt_box_bool (param $b i32) (result (ref null eq))\n"
          "  (if (result (ref null eq)) (local.get $b) (then (global.get $true)) (else (global.get $false))))\n"
-         ";; a :switch arm test: v is the keyword whose text (ns/name) is s\n"
+         ";; a :switch arm test without the runtime (census only): compare the name\n"
          "(func $rt_kw_is (param $v (ref null eq)) (param $s (ref $Bytes)) (result i32)\n"
          "  (local $k (ref null $Bytes)) (local $i i32) (local $n i32)\n"
          "  (if (i32.eqz (ref.test (ref $Kw) (local.get $v))) (then (return (i32.const 0))))\n"
-         "  (local.set $k (struct.get $Kw 0 (ref.cast (ref $Kw) (local.get $v))))\n"
+         "  (local.set $k (ref.cast (ref $Bytes) (struct.get $Kw 1 (ref.cast (ref $Kw) (local.get $v)))))\n"
          "  (local.set $n (array.len (local.get $k)))\n"
          "  (if (i32.ne (local.get $n) (array.len (local.get $s))) (then (return (i32.const 0))))\n"
          "  (block $done (loop $l\n"
@@ -1325,9 +1911,14 @@
          "    (local.set $i (i32.add (local.get $i) (i32.const 1)))\n"
          "    (br $l)))\n"
          "  (i32.const 1))\n"
-         ";; Clojure truthiness: everything but nil and false\n"
+         ";; Clojure truthiness: everything but nil and false. The runtime builds\n"
+         ";; Bools of its own (seq.lg bool), so false is any Bool holding 0.\n"
          "(func $rt_truthy (param $v (ref null eq)) (result i32)\n"
-         "  (i32.and (i32.eqz (ref.is_null (local.get $v))) (i32.eqz (ref.eq (local.get $v) (global.get $false)))))\n"
+         "  (if (ref.is_null (local.get $v)) (then (return (i32.const 0))))\n"
+         "  (if (ref.eq (local.get $v) (global.get $false)) (then (return (i32.const 0))))\n"
+         "  (if (ref.test (ref $Bool) (local.get $v))\n"
+         "    (then (return (i64.ne (struct.get $Bool 0 (ref.cast (ref $Bool) (local.get $v))) (i64.const 0)))))\n"
+         "  (i32.const 1))\n"
          (when *checked* (str (str/replace checked-runtime "(throw $overflow)" (raise)) "\n"))
          "(func $rt_raise_overflow " (raise-wat) ")\n"
          (boxed :add) (boxed :sub) (boxed :mul)
@@ -1355,21 +1946,262 @@
     (set? form) (set (map unary-minus->unchecked form))
     :else form))
 
+(defn fold-literal-ifs
+  "(if <literal> a b) -> a or b. cond's `:else` arm expands to (if :else x
+   (cond)), and typeinfer does not fold a keyword test, so every cond would
+   otherwise join its result with nil and box it (the runtime's kind, every
+   dispatcher)."
+  [form]
+  (cond
+    (and (seq? form) (= 'quote (first form))) form
+    (and (seq? form) (= 'if (first form)) (<= 3 (count form) 4)
+         (let [t (second form)] (or (keyword? t) (string? t) (number? t) (true? t) (false? t) (nil? t))))
+    (let [t (second form)]
+      (if (or (false? t) (nil? t))
+        (fold-literal-ifs (if (= 4 (count form)) (nth form 3) nil))
+        (fold-literal-ifs (nth form 2))))
+    (seq? form) (apply list (map fold-literal-ifs form))
+    (vector? form) (mapv fold-literal-ifs form)
+    (map? form) (into {} (map (fn [[k v]] [(fold-literal-ifs k) (fold-literal-ifs v)]) form))
+    :else form))
+
+(defn seq-loop-bindings
+  "(loop* [a x b (f a)] ..) -> (let* [a x b (f a)] (loop* [a a b b] ..)) when
+   an init reads an earlier binding: loop's bindings are sequential, but
+   ir.build resolves loop* inits in the outer scope (`unresolved symbol`,
+   phm_test's shuffle-lcg). Upstream ir.build finding; worked around here."
+  [form]
+  (cond
+    (and (seq? form) (= 'quote (first form))) form
+    (and (seq? form) (= 'loop* (first form)) (vector? (second form)))
+    (let [bs (second form) pairs (partition 2 bs)
+          names (map first pairs)
+          refs? (some (fn [i] (let [earlier (set (take i names))
+                                    init (second (nth pairs i))]
+                                (some #(contains? earlier %) (filter symbol? (tree-seq coll? seq init)))))
+                      (range 1 (count pairs)))
+          body (map seq-loop-bindings (drop 2 form))
+          bs' (vec (mapcat (fn [[n i]] [n (seq-loop-bindings i)]) pairs))]
+      (if refs?
+        (list 'let* bs' (apply list 'loop* (vec (mapcat (fn [n] [n n]) names)) body))
+        (apply list 'loop* bs' body)))
+    (seq? form) (apply list (map seq-loop-bindings form))
+    (vector? form) (mapv seq-loop-bindings form)
+    (map? form) (into {} (map (fn [[k v]] [(seq-loop-bindings k) (seq-loop-bindings v)]) form))
+    :else form))
+
 (defn expand-form
   "Macroexpand one form as the driver does before ir.build (D23, D35)."
-  [form] (unary-minus->unchecked (p/expand-all form)))
+  [form] (seq-loop-bindings (fold-literal-ifs (unary-minus->unchecked (p/expand-all form)))))
+
+;; ---------------------------------------------------------------------------
+;; The runtime compiled through the backend (P2.1). Runtime defns are
+;; analysed on demand, callees first (a source scan of each body), so
+;; typeinfer sees a callee's return type at the caller (the hook below) and
+;; only what the program can reach is compiled; lowering waits until every
+;; analysis is done (session-module), so mutual recursion still finds sigs.
+
+;; vars the backend lowers itself: a reference to one pulls in no runtime
+;; defn. The IR-op core fns (ir.build makes them ops at their op arity) are
+;; here too: scanning `=` as the twin wasm.seq/equals would analyse equiv?
+;; while kind, which compares with =, is still in progress.
+(def intercepted (into #{#'println #'throw #'catch-matches? #'atom #'deref #'reset! #'swap!
+                         #'vector #'hash-set #'array-map #'hash-map #'wasm.seq/float-bits
+                         #'= #'bit-and #'bit-or #'bit-xor #'bit-and-not #'bit-not #'bit-shift-left
+                         #'bit-shift-right #'unsigned-bit-shift-right #'unchecked-add
+                         #'unchecked-subtract #'unchecked-multiply #'quot #'/}
+                       (concat (keys core-var-ops) (keys core-fn-impls))))
+
+(defn rt-target
+  "The runtime defn var that implements v (v itself, or its twin), or nil."
+  [v]
+  (when (and *rt* (var? v))
+    (cond (contains? lw-rt/defn-by-var v) v
+          (lw-rt/twin-of v) (lw-rt/twin-of v)
+          (contains? lw-rt/core-defns v) v
+          :else nil)))
+
+(defn qual-name [v] (subs (str v) 2))
+(defn rt-fn-name [v argc multi?] (str (qual-name v) (when multi? (str "#" argc))))
+
+(defn form-vars [form]
+  (let [syms (distinct (filter symbol? (tree-seq coll? seq form)))]
+    (keep #(let [r (try (resolve %) (catch e nil))] (when (var? r) r)) syms)))
+
+(declare rt-analyze! rt-global!)
+
+(defn analyze-deps! [form]
+  (when *rt*
+    (when (some #(contains? coll-ctors %) (form-vars form))
+      (doseq [v [#'wasm.pvec/vconj #'wasm.pvec/empty-vec #'wasm.phs/sconj #'wasm.phs/empty-set
+                 #'wasm.core/assoc #'wasm.phm/empty-map]]
+        (rt-analyze! v)))
+    (doseq [v (form-vars form) :when (not (contains? intercepted v))]
+      (when-let [t (rt-target v)] (rt-analyze! t))
+      (when (contains? lw-rt/global-by-var v) (rt-global! v)))))
+
+(declare rt-analyze*!)
+
+(defn rt-analyze!
+  "Analyse every arity of runtime defn v (callees first) and register its
+   sig. An lg-defined core fn that does not compile is marked :failed and
+   left out (its calls go through a nil slot, as before P2.1)."
+  [v]
+  (when (and *rt* (not (get-in @*rt* [:state v])))
+    (if (:core-lg (lw-rt/source-defn v))
+      (try (rt-analyze*! v)
+           (catch e (swap! *rt* assoc-in [:state v] :failed)
+                    (swap! *sigs* dissoc v)
+                    (swap! *rt* update :failures (fnil conj []) [(qual-name v) (ex-message e)])))
+      (rt-analyze*! v))))
+
+(defn rt-analyze*!
+  [v]
+  (when (and *rt* (not (get-in @*rt* [:state v])))
+    (swap! *rt* assoc-in [:state v] :busy)
+    (let [d (lw-rt/source-defn v)
+          multi? (> (count (:arities d)) 1)]
+      (binding [*ns* (the-ns (:ns d))]
+        (let [srcs (doall (for [[params & body] (:arities d)]
+                            (do (when (some #{'&} params)
+                                  (fail "unsupported variadic runtime defn" {:var v}))
+                                (apply list 'defn (:name d) params (map expand-form body)))))]
+          (doseq [s srcs] (analyze-deps! s))
+          (doseq [s srcs]
+            (let [argc (count (nth s 2))
+                  info (assoc (analyze-fn s (rt-fn-name v argc multi?) multi?) :export? false)]
+              (swap! *sigs* update v (fn [e] (-> (or e {:multi? multi? :base (str (:name d)) :var v})
+                                                 (assoc-in [:arities argc] (select-keys info [:name :params :ret])))))
+              (swap! *rt* update :pending conj info))))))
+    (swap! *rt* assoc-in [:state v] :done)))
+
+(defn callee-sig
+  "The sig entry for a call of v: a program defn, or (analysing it now if
+   need be) the runtime defn that implements v."
+  [v]
+  (or (get @*sigs* v)
+      (when-let [t (rt-target v)] (rt-analyze! t) (get @*sigs* t))))
+
+(defn rt-init-fn!
+  "Analyse a 0-arg init fn named wname whose body is form, in ns."
+  [wname ns form]
+  (binding [*ns* (the-ns ns)]
+    (let [src (list 'defn '__init [] (expand-form form))]
+      (analyze-deps! src)
+      (swap! *rt* update :pending conj (assoc (analyze-fn src wname true) :export? false)))))
+
+(defn rt-global!
+  "The wasm global of a runtime top-level def (D39), its init fn analysed."
+  [v]
+  (let [g (str "$" (qual-name v))]
+    (when-not (get-in @*rt* [:globals v])
+      (swap! *rt* assoc-in [:globals v] {:name g :init (str (qual-name v) "__init") :order (count (:globals @*rt*))})
+      (let [{:keys [ns init]} (lw-rt/global-by-var v)]
+        (rt-init-fn! (str (qual-name v) "__init") ns init)))
+    g))
+
+(defn const-form
+  "A form that builds constant v through the runtime's constructors."
+  [v]
+  (cond
+    (vector? v) (reduce (fn [acc x] (list 'wasm.pvec/vconj acc (const-form x))) '(wasm.pvec/empty-vec) v)
+    (map? v) (reduce (fn [acc [k x]] (list 'wasm.core/assoc acc (const-form k) (const-form x))) '(wasm.phm/empty-map) v)
+    (set? v) (reduce (fn [acc x] (list 'wasm.phs/sconj acc (const-form x))) '(wasm.phs/empty-set) v)
+    (seq? v) (let [xs (vec v)]
+               (loop [i (dec (count xs)) acc '(wasm.seq/empty-list)]
+                 (if (< i 0)
+                   acc
+                   (recur (dec i) (list 'wasm.intrinsics/new 'wasm.seq/List (const-form (xs i)) acc
+                                        (- (count xs) i) '(wasm.intrinsics/null))))))
+    (symbol? v) (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (named-text v)))
+    (keyword? v) (list 'wasm.str/kw-of-bytes (list 'wasm.intrinsics/bytes-of-string (named-text v)))
+    :else v))
+
+(defn const-global!
+  "A runtime-built constant (keyword, symbol, vector, map, set, list): one
+   global, built once by _rt_init (D63's placeholders made real)."
+  [v]
+  (let [k [(const-kind v) (pr-str v)]]
+    (or (get-in @*rt* [:consts k])
+        (let [i (hex32 (pr-str k)) g (str "$const_" i)]
+          (swap! *rt* assoc-in [:consts k] g)
+          (rt-init-fn! (str "const_" i "__init") 'wasm.core (const-form v))
+          (swap! *rt* update :const-order conj g)
+          g))))
+
+(defn slot-kind [t] (case t (:i64 :i32 :i8) :int :f64 :float :ref :box :funcref :func))
+(defn slot-wt [t] (case t :i64 "i64" (:i32 :i8) "i32" :f64 "f64" :ref "(ref null eq)" :funcref "funcref"))
+
+(defn funcref-wrapper
+  "A function of declared type tn (a deffunc) that calls defn fv: what
+   (wasm/funcref tn fv) refers to. The defn itself has its own (typed) sig,
+   and a func type outside the rec group would not be tn anyway."
+  [tn d fv]
+  (or (get @*fn-values* [:ref tn fv])
+      (let [argc (count (:params d)) ent (callee-sig fv) s (get-in ent [:arities argc])]
+        (when-not s (fail "wasm/funcref target has no arity for the signature" {:var fv :sig tn :fn *fname*}))
+        (let [w (str (:name s) "__ref" (subs tn 1))]
+          (swap! *fn-values* assoc [:ref tn fv] w)
+          (swap! *elem* conj w)
+          (swap! *regions* conj
+                 (str "(func $" w " (type " tn ")"
+                      (apply str (map-indexed (fn [i t] (str " (param $p" i " " (slot-wt t) ")")) (:params d)))
+                      " (result " (slot-wt (:result d)) ") (local $tmp i64)\n  (call $" (:name s)
+                      (apply str (map-indexed (fn [i t] (str " (local.get $p" i ")" (coerce (slot-kind t) (nth (:params s) i))))
+                                              (:params d)))
+                      ")" (coerce (:ret s) (slot-kind (:result d))) ")"))
+          w))))
+
+(defn box-wrapper
+  "Text of $<name>#<argc>__box: runtime defn v's arity argc with every param
+   and the result boxed, for the backend's hand-written helpers."
+  [v argc]
+  (let [s (get-in (callee-sig v) [:arities argc])]
+    (when-not s (fail "box wrapper: no such arity" {:var v :argc argc}))
+    (str "(func $" (qual-name v) "#" argc "__box"
+         (apply str (map #(str " (param $p" % " (ref null eq))") (range argc)))
+         " (result (ref null eq)) (local $tmp i64)\n  (call $" (:name s)
+         (apply str (map-indexed (fn [i k] (str " (local.get $p" i ")" (coerce :box k))) (:params s)))
+         ")" (coerce (:ret s) :box) ")")))
+
+(defn lw-call-type
+  "typeinfer hook: an intrinsic's declared result type, or the return type
+   of an already-analysed defn (program or runtime) at its arity."
+  [inst f]
+  (binding [*f* f *memo* (atom {})]
+    (let [refs (ir/refs inst f) c (first refs)]
+      (when (and c (= :load-var (ir/op c f)))
+        (let [v (ir/aux c f) args (rest refs)]
+          (cond (lw-rt/intrinsic? v) (intrinsic-type v args)
+                (and *rt* (= v #'wasm.seq/float-bits)) :int
+                :else (let [ent (or (get @*sigs* v) (when-let [t (rt-target v)] (get @*sigs* t)))
+                            r (:ret (get-in ent [:arities (count args)]))]
+                        (case r :int :int :bool :bool nil))))))))
+
+(alter-var-root #'ir.passes.typeinfer/call-declared-type
+                (fn [orig] (fn [inst f] (or (lw-call-type inst f) (orig inst f)))))
 
 (defn new-session
   "The module-wide state lowering accumulates (strings, lifted regions,
-   globals, env types, fn values, extern var slots)."
-  [sigs var-globals]
-  {:sigs sigs :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
-   :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})})
+   globals, env types, fn values, extern var slots). opts :rt true compiles
+   the runtime into the module (the driver's default, P2.1); :shake false
+   compiles every runtime defn and keeps every helper (size measurement)."
+  ([sigs var-globals] (new-session sigs var-globals {}))
+  ([sigs var-globals opts]
+   {:sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+    :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
+    :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
+    :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})}))
+
+(def ^:dynamic *shake* true)
+
 
 (defn with-session* [ss thunk]
   (binding [*sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
-            *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)]
+            *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
+            *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
+            *prog-decls* (or (:prog-decls ss) (atom {}))]
     (thunk)))
 
 (defn top-forms
@@ -1396,29 +2228,175 @@
             :else (recur (inc i) depth start false out)))))))
 
 (def wat-id #"\$[A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]+")
+(defn refs-of [t] (set (re-seq wat-id t)))
 
-(defn shake-runtime
-  "Drop runtime funcs nothing reaches. Roots: every non-func runtime form,
-   exported runtime funcs, and all of `other` (program fns, regions, globals,
-   elem). The runtime is emitted whole, and module size matters beyond bytes:
-   V8 scales a fn's inlining budget down as its module grows (P1.GATE: fib
-   self-inlines one level in the whole-runtime module, two once shaken)."
-  [rt-text other]
-  (let [forms (top-forms rt-text)
-        fname (fn [f] (second (re-find #"^\(func (\$[^\s()]+)" f)))
-        funcs (into {} (keep (fn [f] (when-let [nm (fname f)] [nm f])) forms))
+(defn field-wt [tn i f]
+  (let [t (if-let [c (get-in funcref-fields [tn i])] (str "(ref null " c ")") (slot-wt (:type f)))]
+    (if (:mut f) (str "(mut " t ")") t)))
+
+(defn rec-group
+  "ONE rec group (D25): every runtime declaration (lw-rt, source order),
+   then the backend's closure env structs (D52 note 6: kept distinct)."
+  []
+  (str "(rec\n"
+       (apply str
+              (for [{:keys [tn decl]} (concat (for [d lw-rt/decls] {:tn (lw-rt/type-name (:var d)) :decl (:decl d)})
+                                              (for [[_ d] (sort-by (comp :order val) @*prog-decls*)] {:tn (:name d) :decl (:decl d)}))
+                    :let [k (:wasm.intrinsics/kind decl)]]
+                (str "  (type " tn " "
+                     (case k
+                       :struct (str "(struct" (apply str (map-indexed (fn [i f] (str " (field " (field-wt tn i f) ")")) (:fields decl))) ")")
+                       :array (str "(array (mut " (if (= :i8 (:elem decl)) "i8" (slot-wt (:elem decl))) "))")
+                       :func (str "(func" (apply str (map #(str " (param " (slot-wt %) ")") (:params decl)))
+                                  " (result " (slot-wt (:result decl)) "))"))
+                     ")\n")))
+       (apply str (for [[kinds t] (sort-by val @*env-types*)]
+                    (str "  (type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n")))
+       ")\n"))
+
+(defn form-name
+  "The $name a shakeable top-level form defines (func, import, global,
+   data), or nil."
+  [f]
+  (or (second (re-find #"^\(func (\$[^\s()]+)" f))
+      (second (re-find #"^\(import \"[^\"]*\" \"[^\"]*\" \(func (\$[^\s()]+)" f))
+      (second (re-find #"^\(global (\$[^\s()]+)" f))
+      (second (re-find #"^\(data (\$[^\s()]+)" f))))
+
+(defn live-set
+  "Names reachable from roots over items (name -> text) plus extra deps
+   (name -> [name ...])."
+  [items deps roots]
+  (loop [todo (vec (filter items roots)) live #{}]
+    (if (empty? todo)
+      live
+      (let [nm (peek todo) todo (pop todo)]
+        (if (contains? live nm)
+          (recur todo live)
+          (recur (into todo (filter items (concat (refs-of (items nm)) (get deps nm)))) (conj live nm)))))))
+
+(defn rt-global-items
+  "name -> decl text and name -> deps for the runtime's globals and constants."
+  []
+  (let [st @*rt*
+        gs (concat (for [[v {:keys [name init]}] (:globals st)] [name init (= v #'wasm.seq/hooks)])
+                   (for [g (vals (:consts st))] [g (str (subs g 1) "__init") false]))]
+    [(into {} (for [[g] gs] [g (str "(global " g " (mut (ref null eq)) (ref.null none))")]))
+     (into {} (for [[g init hooks?] gs] [g (cond-> [(str "$" init)] hooks? (conj "$wasm.core/install!"))]))]))
+
+(defn rt-reached?
+  "Does the program (its fns, transitively through lifted regions and
+   fn-value globals) reach any runtime fn, global or constant? If not, the
+   helpers are generated without their runtime paths (printing through
+   print-str, keyword/map calls), so a scalar program's module stays small
+   (D64: module size is a perf input) even though the runtime library is
+   loaded."
+  [items rt-names program]
+  (boolean (some rt-names (live-set items {} (refs-of program)))))
+
+(defn by-name [texts] (into {} (map (fn [t] [(form-name t) t]) texts)))
+
+(defn module-parts
+  "The pieces session-module assembles. Only the program's own fns (and its
+   var table) are roots; every helper, runtime fn, lifted region, fn-value
+   global, constant and data segment is kept only if something live reaches
+   it (D64: module size is a perf input)."
+  [fns]
+  (let [[gitems gdeps] (if *rt* (rt-global-items) [{} {}])
+        externs (into {} (for [g (vals @*externs*)] [g (str "(global " g " (mut (ref null eq)) (ref.null none))")]))
+        vars (for [g (sort (vals *var-globals*))]
+               (str "(global " g " (mut (ref null eq)) (ref.null none))\n"))
+        program (str (apply str vars) (str/join "\n" fns))
+        base-items (merge (when *rt* (:lowered @*rt*)) gitems (by-name @*globals*) (by-name @*regions*) externs)
+        rt? (and *rt* (rt-reached? base-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program))
+        helper-forms (top-forms (binding [*rt* (when rt? *rt*)] (runtime)))
+        ;; after the helpers: generating them registers their strings
+        datas (into {} (for [[s nm] @*strings*] [nm (str "(data " nm " \"" (wat-bytes s) "\")")]))
+        base-items (merge base-items datas)
         exported? (fn [f] (re-find #"^\(func \$[^\s()]+ \(export " f))
-        refs (fn [t] (set (re-seq wat-id t)))
-        roots (into (refs other)
-                    (mapcat (fn [f] (when (or (not (fname f)) (exported? f)) (refs f))) forms))
-        live (loop [todo (vec (filter funcs roots)) live #{}]
-               (if (empty? todo)
-                 live
-                 (let [nm (peek todo) todo (pop todo)]
-                   (if (contains? live nm)
-                     (recur todo live)
-                     (recur (into todo (filter funcs (refs (funcs nm)))) (conj live nm))))))]
-    (str/join "\n" (filter (fn [f] (let [nm (fname f)] (or (nil? nm) (exported? f) (contains? live nm)))) forms))))
+        item-forms (filter #(and (form-name %) (not (exported? %))
+                                 (not (re-find #"^\(global \$(true|false|trap_msg) " %))
+                                 (not (re-find #"^\(data \(" %))) helper-forms)
+        fixed-forms (remove (set item-forms) helper-forms)
+        items (merge (by-name item-forms) base-items)
+        roots (into (refs-of program) (mapcat refs-of fixed-forms))
+        live (if *shake* (live-set items gdeps roots) (set (keys items)))]
+    {:fixed fixed-forms :items items :live live :program program}))
+
+(defn stub-fn
+  "A runtime fn that failed to lower: same signature, throws a named error,
+   so callers already lowered against its sig still validate."
+  [{:keys [name params ret]} msg]
+  (let [m (str "lower-wasm: " name " did not compile (" msg ")")]
+    (str "(func $" name (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
+         " (result " (wt ret) ")\n  (throw $lgex " (rt-error-wat m m) "))")))
+
+(defn lower-pending!
+  "Lower one pending runtime fn into :lowered (a stub if it fails)."
+  [info]
+  (swap! *rt* assoc-in [:lowered (str "$" (:name info))]
+         (try (lower-fn info)
+              (catch e (swap! *rt* update :failures (fnil conj []) [(:name info) (ex-message e)])
+                       (stub-fn info (subs (str (ex-message e)) 0 (min 80 (count (str (ex-message e))))))))))
+
+(def box-ref #"\$([^\s()#]+)#([0-9]+)__box")
+
+(defn rt-fixpoint!
+  "Lower pending runtime fns, then compile what the live helpers and globals
+   ask for (boxed wrappers, install!), until nothing new appears."
+  [fns]
+  (loop [n 0]
+    (when (> n 50) (fail "runtime fixpoint did not converge" {}))
+    (while (seq (:pending @*rt*))
+      (let [info (first (:pending @*rt*))]
+        (swap! *rt* update :pending (comp vec rest))
+        (lower-pending! info)))
+    (let [{:keys [items live]} (module-parts fns)
+          live-text (apply str (map items live))
+          wants (distinct (for [[_ q argc] (re-seq box-ref live-text)
+                                :let [nm (str "$" q "#" argc "__box")]
+                                :when (not (contains? (:lowered @*rt*) nm))]
+                            [nm (resolve (symbol q)) (parse-long argc)]))
+          need-install (and (contains? live "$wasm.seq/hooks") (not (get-in @*rt* [:state #'wasm.core/install!])))]
+      (doseq [[nm v argc] wants]
+        (when-not v (fail "box wrapper for an unknown runtime var" {:name nm}))
+        (swap! *rt* assoc-in [:lowered nm] (box-wrapper v argc)))
+      (when need-install (rt-analyze! #'wasm.core/install!))
+      (when (or (seq wants) need-install (seq (:pending @*rt*)))
+        (recur (inc n))))))
+
+(defn const-init-order
+  "Constant globals in an order where each one's init runs after the
+   constants it reads."
+  [live items]
+  (let [st @*rt*
+        gs (filter live (:const-order st))
+        dep (fn [g] (filter #(and (not= % g) (re-find #"^\$const_[0-9a-f]+$" %))
+                            (refs-of (or (items (str "$" (subs g 1) "__init")) ""))))]
+    (loop [todo gs done [] seen #{}]
+      (if (empty? todo)
+        done
+        (let [g (first todo)]
+          (if (contains? seen g)
+            (recur (rest todo) done seen)
+            (let [pre (remove seen (dep g))]
+              (if (seq pre)
+                (recur (concat pre todo) done seen)
+                (recur (rest todo) (conj done g) (conj seen g))))))))))
+
+(defn rt-init-wat
+  "_rt_init: runtime globals in file order, the link step when the hooks
+   global is live, then the constants. Run by the module's start function."
+  [live items]
+  (when *rt*
+    (let [st @*rt*
+          order (into {} (map-indexed (fn [i g] [(:var g) i]) lw-rt/globals))
+          gs (sort-by #(order (key %)) (filter #(live (:name (val %))) (:globals st)))
+          stmts (concat (for [[_ {:keys [name init]}] gs] (str "(global.set " name " (call $" init "))"))
+                        (when (live "$wasm.seq/hooks") ["(drop (call $wasm.core/install!))"])
+                        (for [g (const-init-order live items)] (str "(global.set " g " (call $" (subs g 1) "__init))")))]
+      (when (seq stmts)
+        (str "(func $_rt_init\n  " (str/join "\n  " stmts) ")\n(start $_rt_init)\n")))))
 
 (defn session-module
   "The module text for session ss around the lowered program fns `fns`
@@ -1426,19 +2404,25 @@
   [ss fns]
   (with-session* ss
     (fn []
-      (let [fns (into (vec fns) @*regions*)
-            rt (runtime)
-            envs (for [[kinds t] (sort-by val @*env-types*)]
-                   (str "(type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n"))
-            vars (for [g (sort (concat (vals *var-globals*) (vals @*externs*)))]
-                   (str "(global " g " (mut (ref null eq)) (ref.null none))\n"))
-            datas (for [[s i] (sort-by val @*strings*)]
-                    (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]
-        (let [rest-text (str (apply str envs) (apply str vars)
-                             (str/join "\n" @*globals*) "\n"
-                             (when (seq @*elem*) (str "(elem declare func" (apply str (map #(str " $" %) (sort @*elem*))) ")\n"))
-                             (apply str datas) (str/join "\n" fns))]
-          (str "(module\n" (shake-runtime rt rest-text) "\n" rest-text ")\n"))))))
+      (when *rt* (rt-fixpoint! fns))
+      (let [{:keys [fixed items live program]} (module-parts fns)
+            ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
+            ;; fn-value globals must come after the globals they read ($info_*)
+            gl (let [gs (ordered "(global")
+                     info? #(str/starts-with? % "(global $info_")]
+                 (concat (filter info? gs) (remove info? gs)))
+            elem (filter #(live (str "$" %)) (sort @*elem*))]
+        (str "(module\n"
+             (str/join "\n" (ordered "(import")) "\n"
+             (rec-group)
+             (str/join "\n" fixed) "\n"
+             (str/join "\n" gl) "\n"
+             (when (seq elem) (str "(elem declare func" (apply str (map #(str " $" %) elem)) ")\n"))
+             (str/join "\n" (ordered "(data")) "\n"
+             (str/join "\n" (ordered "(func")) "\n"
+             program "\n"
+             (rt-init-wat live items)
+             ")\n")))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.
@@ -1461,3 +2445,85 @@
         wat (binding [*unit-notes* notes]
               (with-session* ss #(lower-fn (analyze-opt fname f))))]
     {:wat wat :externs (set (:externs @notes)) :phase2 (vec (:phase2 @notes))}))
+
+;; ---------------------------------------------------------------------------
+;; The runtime library cache (P2.1). Analysing the runtime dominates a
+;; program's compile (most programs reach most of it through the dispatchers
+;; and the printer), so the whole runtime is analysed and lowered once, the
+;; session state that produced it saved under src/.rtlib/ keyed by a hash of
+;; the runtime sources and the backend's, and each compile starts from it.
+;; Names are content-addressed, so a program's additions merge without
+;; renumbering; the shake then keeps what the program reaches.
+
+(def rtlib-dir (str lw-rt/src-dir "/.rtlib"))
+
+(defn rtlib-key []
+  (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
+                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg"])))))
+
+(defn var-sym [v] (symbol (qual-name v)))
+(defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
+
+(defn build-rtlib!
+  "Analyse and lower every runtime defn, global and the link step into the
+   current session. Returns the defns that failed (with the error), which
+   stay out of the library: a call to one compiles through a nil slot."
+  []
+  (let [fails (atom [])]
+    (doseq [d (concat lw-rt/defns (vals lw-rt/core-defns))]
+      (try (rt-analyze! (:var d))
+           (catch e (swap! *rt* update :state dissoc (:var d))
+                    (swap! *sigs* dissoc (:var d))
+                    (swap! fails conj [(qual-name (:var d)) (ex-message e)]))))
+    (doseq [g lw-rt/globals] (rt-global! (:var g)))
+    (loop []
+      (when (seq (:pending @*rt*))
+        (let [info (first (:pending @*rt*))]
+          (swap! *rt* update :pending (comp vec rest))
+          (lower-pending! info))
+        (recur)))
+    @fails))
+
+(defn rtlib-snapshot [fails]
+  (let [st @*rt*]
+    {:sigs (into {} (for [[v e] @*sigs*] [(var-sym v) (dissoc e :var)]))
+     :state (into {} (for [[v s] (:state st) :when (#{:done :failed} s)] [(var-sym v) s]))
+     :lowered (:lowered st)
+     :rt-globals (into {} (for [[v g] (:globals st)] [(var-sym v) g]))
+     :consts (:consts st) :const-order (:const-order st)
+     :strings @*strings* :globals @*globals* :regions @*regions* :elem @*elem* :env-types @*env-types*
+     :externs (into {} (for [[v g] @*externs*] [(var-sym v) g]))
+     :failures (into fails (:failures st))}))
+
+(defn rtlib-restore! [snap]
+  (swap! *sigs* merge (into {} (for [[s e] (:sigs snap)] [(sym-var s) (assoc e :var (sym-var s))])))
+  (swap! *rt* merge {:state (into {} (for [[s st] (:state snap)] [(sym-var s) st]))
+                     :lowered (:lowered snap)
+                     :globals (into {} (for [[s g] (:rt-globals snap)] [(sym-var s) g]))
+                     :consts (:consts snap) :const-order (:const-order snap)
+                     :failures (:failures snap)})
+  (swap! *strings* merge (:strings snap))
+  (swap! *globals* into (:globals snap))
+  (swap! *regions* into (:regions snap))
+  (swap! *elem* into (:elem snap))
+  (swap! *env-types* merge (:env-types snap))
+  ;; sym-var, not resolve: an extern may be private (core/special-symbols)
+  (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g]))))
+
+(defn load-rtlib!
+  "Start the current session from the cached runtime library, building and
+   saving it first if the runtime or the backend changed."
+  []
+  (let [f (str rtlib-dir "/rtlib-" (rtlib-key) ".edn")]
+    (if (some? (try (os/stat f) (catch e nil)))
+      (rtlib-restore! (read-string (slurp f)))
+      (let [fails (build-rtlib!)
+            tmp (str f ".tmp" (rand-int 1000000000))]
+        (os/sh "mkdir" "-p" rtlib-dir)
+        (spit tmp (pr-str (rtlib-snapshot fails)))
+        (os/rename tmp f)
+        ;; a library for older sources is dead weight (~3.5 MB each)
+        (doseq [old (os/ls rtlib-dir)
+                :when (and (str/starts-with? old "rtlib-") (str/ends-with? old ".edn")
+                           (not= (str rtlib-dir "/" old) f))]
+          (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))

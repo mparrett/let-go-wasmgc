@@ -1,0 +1,41 @@
+;; testshim: the minimal `test` namespace a test file needs under the backend
+;; (P2.1, checks/run-tests.sh). pkg/rt/core/test.lg leans on dynamic vars,
+;; multimethods and ns reflection, none of which the backend lowers, so the
+;; driver's --test mode swaps the test file's deftest/is/testing for these
+;; and prints the lines native run-tests prints that the check compares:
+;;
+;;   \nTesting <ns>\n\nRan N tests containing M assertions.\nF failures, E errors.
+;;   \nFAIL in (<test>)      \nERROR in (<test>)
+;;
+;; (native's FAIL/ERROR lines also carry a file:line and the expected/actual
+;; block, which run-tests.sh strips before comparing).
+;;
+;; The forms below are injected into the test program after its ns form.
+;; `is` counts one assertion per evaluation, like native's do-report; an
+;; exception inside `is` is an error, one escaping a deftest body is an error
+;; too ("Uncaught exception, not in assertion") and ends that test.
+
+(def __t-pass (atom 0))
+(def __t-fail (atom 0))
+(def __t-error (atom 0))
+(def __t-tests (atom 0))
+(def __t-name (atom nil))
+
+(defn __t-begin [nm]
+  (swap! __t-tests inc)
+  (reset! __t-name nm))
+
+(defn __t-report [r]
+  (if (= r :__t-error)
+    (do (swap! __t-error inc) (println (str "\nERROR in (" @__t-name ")")))
+    (if r
+      (swap! __t-pass inc)
+      (do (swap! __t-fail inc) (println (str "\nFAIL in (" @__t-name ")"))))))
+
+(defn __t-uncaught [e]
+  (swap! __t-error inc)
+  (println (str "\nERROR in (" @__t-name ")")))
+
+(defn __t-summary []
+  (println (str "\nRan " @__t-tests " tests containing " (+ (+ @__t-pass @__t-fail) @__t-error) " assertions."))
+  (println (str @__t-fail " failures, " @__t-error " errors.")))

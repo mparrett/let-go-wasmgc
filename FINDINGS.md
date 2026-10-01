@@ -45,3 +45,4 @@
 - R8. Native reader stamps `{:line :column}` meta on a process-global empty-list singleton, so `(meta '())` is whatever was read last. Upstream candidate.
 - R9. Native reader quirks reproduced: `0x-5` = -5, `018` = 18, `1_000` = 1000.0, `4/2` = Int 2, `\u-041` = rune -65, radix overflow is `invalid number` never BigInt.
 - R10. Native: an exception thrown while `=` realises a lazy seq escapes try/catch; so does one raised inside a `try` placed in a vector literal. `(lazy-seq (lazy-seq (throw …)))` reads as `()` on the second access. Upstream candidates.
+- I10. ir.build resolves later `loop*` initialisers in the OUTER scope (phm_test's shuffle-lcg shape); typeinfer does not fold `cond`'s `:else`, so every cond result joins with nil and boxes. Both worked around in the backend; upstream IR candidates.

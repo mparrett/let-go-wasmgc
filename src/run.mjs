@@ -29,6 +29,15 @@ if (isMainThread) {
     // copy: the module reuses the scratch region for the next string
     print_str: (ptr, len) => emit(Buffer.from(new Uint8Array(mem.buffer, ptr, len))),
     print_nl: () => emit(Buffer.from('\n')),
+    // the host intrinsics (rt/wasm/INTRINSICS.md): fd 1 is the program's
+    // stdout stream, fd 2 goes straight to stderr
+    write: (fd, ptr, len) => {
+      const b = Buffer.from(new Uint8Array(mem.buffer, ptr, len));
+      if (fd === 1) emit(b); else { flush(); fs.writeSync(2, b); }
+      return len;
+    },
+    sleep: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(ms)); },
+    nanotime: () => process.hrtime.bigint(),
   };
 
   const { instance } = await WebAssembly.instantiate(fs.readFileSync(workerData), { env });
@@ -44,6 +53,8 @@ if (isMainThread) {
     if (e instanceof WebAssembly.Exception && e.is(lgex)) {
       // the module formats its own exception values (message / pr-str)
       instance.exports._report(e.getArg(lgex, 0));
+    } else if (instance.exports._trap_report && instance.exports._trap_report()) {
+      // wasm/trap: the module printed the reference impl's message
     } else {
       emit(Buffer.from(String((e && e.message) || e)));
     }

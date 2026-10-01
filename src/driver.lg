@@ -9,7 +9,7 @@
 ;; calls (P1.0). Top-level `def`/`declare` vars form the var table (P1.3):
 ;; they are only interned here, never eval'd, and the def runs in `_main`.
 (ns driver
-  (:require [lower-wasm :as lw] [ir.passes.pipeline :as p]))
+  (:require [lower-wasm :as lw] [lw-rt] [ir.passes.pipeline :as p] [clojure.string]))
 
 (defn read-program [path]
   (read-string (str "[" (slurp path) "\n]")))
@@ -57,28 +57,126 @@
    defn head and args vector stay intact for build-fn's structural reader.
    A docstring is dropped (it has no runtime effect)."
   [[_ name & more]]
-  (let [more (if (string? (first more)) (rest more) more)]
-    (when-not (vector? (first more))
-      (throw (ex-info (str "lower-wasm: unsupported defn shape (multi-arity, attr-map or return hint) in " name)
-                      {:name name})))
-    (apply list 'defn name (first more) (map expand (rest more)))))
+  (let [name (if (and (seq? name) (= 'with-meta (first name))) (second name) name)
+        more (if (string? (first more)) (rest more) more)
+        more (if (map? (first more)) (rest more) more)]
+    (cond
+      (vector? (first more)) [(apply list 'defn name (first more) (map expand (rest more)))]
+      ;; multi-arity (P2.1): one fn per arity, `name#argc` in wasm
+      (and (seq more) (every? #(and (seq? %) (vector? (first %))) more))
+      (vec (for [[params & body] more] (with-meta (apply list 'defn name params (map expand body)) {::multi true})))
+      :else (throw (ex-info (str "lower-wasm: unsupported defn shape (attr-map or return hint) in " name)
+                            {:name name})))))
 
-(defn -main [in out]
-  (let [forms (read-program in)
+;; Every program defn and the _main body are analysed inside the session,
+;; each after the runtime defns it reaches (P2.1: typeinfer then sees their
+;; return types), and its signature is registered before the next one.
+;; --test only: a defn that does not compile becomes a stub that throws
+;; when called (lower-wasm/stub-fn), so the file's other tests still run and
+;; the failure is reported as that test's ERROR rather than hiding the file.
+(def ^:dynamic *stub-failures* false)
+
+(defn stub-info [src e]
+  (let [nm (str (second src) (when (::multi (meta src)) (str "#" (count (nth src 2)))))]
+    {:stub (lw/stub-fn {:name nm :params (vec (repeat (count (nth src 2)) :box)) :ret :box}
+                       (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))
+     :name nm :params (vec (repeat (count (nth src 2)) :box)) :ret :box}))
+
+(defn analyze-program! [defns main-src]
+  (doall
+   (for [src (conj defns main-src)]
+     (do (lw/analyze-deps! src)
+         (let [multi? (::multi (meta src))
+               argc (count (nth src 2))
+               info (try (if multi?
+                           (lw/analyze-fn src (str (second src) "#" argc) true)
+                           (lw/analyze-fn src))
+                         ;; P1.4's refusals compare the error's first line: rethrow as is
+                         (catch e (if (and *stub-failures* (not= '_main (second src)))
+                                    (stub-info src e)
+                                    (throw e))))
+               v (resolve (second src))]
+           (when (and v (not= '_main (second src)))
+             (swap! lw/*sigs* update v
+                    (fn [e] (assoc-in (or e {:base (str (second src)) :multi? (boolean multi?)})
+                                      [:arities (count (:params info))] (select-keys info [:name :params :ret])))))
+           info)))))
+
+;; --test (checks/run-tests.sh): the test file's deftest/is/testing become
+;; src/testshim.lg's, whose helper defs are injected after the ns form, and
+;; _main ends by running every deftest in file order and printing native
+;; run-tests' summary lines.
+(def test-macros
+  '[(defmacro is
+      ([form]
+       (let [head (when (seq? form) (first form))]
+         (cond
+           ;; native's assert-expr special forms; the class is a catch class
+           (= head 'thrown?)
+           `(__t-report (try (do ~@(drop 2 form) false) (catch ~(second form) e# true) (catch Throwable e# :__t-error)))
+           (= head 'thrown-with-msg?)
+           `(__t-report (try (do ~@(drop 3 form) false)
+                             (catch ~(second form) e# (if (re-find ~(nth form 2) (ex-message e#)) true false))
+                             (catch Throwable e# :__t-error)))
+           :else `(__t-report (try (if ~form true false) (catch Throwable e# :__t-error))))))
+      ([form msg] `(is ~form)))
+    (defmacro testing [s & body] `(do ~@body))])
+
+(defn deftest->defn [[_ nm & body]]
+  (list 'defn nm [] (list '__t-begin (str nm))
+        (list 'try (apply list 'do body) (list 'catch 'Throwable 'e (list '__t-uncaught 'e)))))
+
+(defn decl-form?
+  "A program-level (wasm/defstruct ..), defarray or deffunc: a type for the
+   module's rec group, not a run-time value."
+  [form]
+  (and (seq? form) (symbol? (first form))
+       (contains? lw-rt/decl-heads (try (resolve (first form)) (catch e nil)))))
+
+(defn -main [& argv]
+  (let [skip-arg (second (drop-while #(not= "--skip" %) argv))
+        skip (set (map symbol (when skip-arg (clojure.string/split skip-arg #","))))
+        argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
+        flags (set (filter #(clojure.string/starts-with? % "--") argv))
+        [in out] (remove flags argv)
+        opts {:rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
+        rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
+        test? (flags "--test")
+        opts (assoc opts :trap-throws (boolean test?))
+        forms (read-program in)
+        tests (atom [])
+        forms (if test?
+                (let [[pre post] (split-with #(not (and (seq? %) (= 'ns (first %)))) forms)
+                      shim (read-program (str lw-rt/src-dir "/testshim.lg"))]
+                  (concat pre (take 1 post) [::install-test-macros] shim
+                          ;; --skip names deftests left out on both sides of the
+                          ;; comparison (checks/run-tests.skip says why)
+                          (keep #(cond (not (and (seq? %) (= 'deftest (first %)))) %
+                                       (contains? skip (second %)) nil
+                                       :else (do (swap! tests conj (second %)) (deftest->defn %)))
+                                (rest post))))
+                forms)
         _ (eval '(ns user))
-        defns (atom []) body (atom []) table (atom [])]
+        defns (atom []) body (atom []) table (atom []) decls (atom [])]
     (doseq [form forms]
       (cond
+        (= form ::install-test-macros)
+        (do (doseq [s '[deftest is testing]] (ns-unmap *ns* s))
+            (doseq [m test-macros] (eval m)))
+        (and (seq? form) (= 'defn- (first form))) (do (eval form) (swap! defns into (expand-defn form)))
+        (decl-form? form) (do (eval form) (swap! decls conj (resolve (second form))))
         (and (seq? form) (= 'ns (first form))) (eval form)
         ;; declare only interns forward vars: a later defn binds by name
         ;; (direct calls), anything else lands in the var table.
         (and (seq? form) (= 'declare (first form))) (do (eval form) (swap! table into (rest form)))
-        (defn-form? form) (do (eval form) (swap! defns conj (expand-defn form)))
+        (defn-form? form) (do (eval form) (swap! defns into (expand-defn form)))
         ;; intern only: the value is computed by _main at run time
         (def-form? form) (do (eval (list 'declare (def-sym form)))
                              (swap! table conj (def-sym form))
                              (swap! body conj form))
-        (and (seq? form) (#{'defn- 'defmacro 'defmulti 'deftype 'defprotocol} (first form)))
+;; a macro only matters at expansion time, in this process
+        (and (seq? form) (= 'defmacro (first form))) (eval form)
+        (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
         (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
         :else (swap! body conj form)))
     (let [defn-names (set (map second @defns))
@@ -88,10 +186,28 @@
               (throw (ex-info (str "lower-wasm: unsupported def of defn var " s) {:var s})))
           var-globals (into {} (for [s (distinct @table) :when (not (defn-names s))]
                                  [(resolve s) (str "$var_" s)]))
-          main-src (apply list 'defn '_main [] (concat (map expand-top @body) [nil]))
-          infos (mapv lw/analyze-fn (conj @defns main-src))
-          sigs (into {} (for [i (butlast infos)]
-                          [(resolve (symbol (:name i))) (select-keys i [:name :params :ret])]))]
-      (spit out (lw/module infos sigs var-globals)))))
+          body (if test?
+                 (concat @body [(list 'println (str "\nTesting " (ns-name *ns*)))]
+                         (map list @tests) ['(__t-summary)])
+                 @body)
+          main-src (apply list 'defn '_main [] (concat (map expand-top body) [nil]))
+          ss (lw/new-session {} var-globals opts)]
+      (lw/with-session*
+       ss
+       (fn []
+        (binding [*stub-failures* (boolean test?)]
+         ;; the cached, fully lowered runtime (lower-wasm/load-rtlib!)
+         (when rtlib? (lw/load-rtlib!))
+         (doseq [v @decls] (lw/add-decl! v))
+         (let [infos (analyze-program! @defns main-src)]
+           ;; --no-shake: the whole runtime, for the size comparison
+           (when (and (:rt opts) (not rtlib?) (not (:shake opts)))
+             (doseq [d lw-rt/defns] (lw/rt-analyze! (:var d))))
+           (let [fns (vec (doall (map #(cond (:stub %) (:stub %)
+                                             *stub-failures* (try (lw/lower-fn %)
+                                                                  (catch e (:stub (stub-info (list 'defn (symbol (:name %)) (vec (map (fn [_] '_) (:params %)))) e))))
+                                             :else (lw/lower-fn %))
+                                       infos)))]
+             (spit out (lw/session-module ss fns))))))))))
 
 (apply -main *command-line-args*)

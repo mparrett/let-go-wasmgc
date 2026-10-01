@@ -1,0 +1,10 @@
+;; checks/run-tests.sh's native side: run one test namespace under native lg
+;; with test/run-tests, after taking the :test off every deftest named in
+;; the skip list (the same ones the backend side leaves out), so the summary
+;; lines compare like for like.
+;;   lg -source-paths <paths> checks/native-test-runner.lg <ns> [skip ...]
+(let [[ns-name & skips] (map symbol *command-line-args*)]
+  (require ns-name)
+  (doseq [s skips]
+    (when-let [v (get (ns-interns ns-name) s)] (alter-meta! v dissoc :test)))
+  (test/run-tests ns-name))
