@@ -1,0 +1,45 @@
+file	deftests	oracle	backend_passing_deftests	native_tests	native_assertions	native_failures	native_errors	backend_tests	backend_assertions	backend_failures	backend_errors	wall_s	externs	failing_deftests	first_failure	cause
+chunked_seq_test.lg	11	MATCH*	11	11	15	0	0	11	15	0	0	14				passes only via an ns-named scratch copy (run-tests.sh native side cannot require test.chunked-seq from chunked_seq_test.lg) [harness]
+clojure_math_test.lg	2	MISMATCH	0	2	9	0	0	2	9	0	8	13	clojure.math/PI,clojure.math/ceil,clojure.math/floor-div,clojure.math/floor,clojure.math/pow,clojure.math/round,clojure.math/sqrt,math/round	clojure-math-is-requirable,math-alias-still-works	> ERROR in (clojure-math-is-requirable)	clojure.math twin missing (math/PI ceil floor floor-div pow round sqrt) [rt]
+conditionals_test.lg	11	MATCH	11	11	43	0	0	11	43	0	0	11				
+data_test.lg	15	MISMATCH	0	15	34	0	0	15	22	0	22	15	data/diff	diff-atoms-test,diff-equal-test,diff-maps-equal-test,diff-maps-mixed-test,diff-maps-nested-test,diff-maps-only-a-test,diff-maps-only-b-test,diff-mixed-types-test,diff-nil-test,diff-sets-disjoint-test,diff-sets-equal-test,diff-sets-test,diff-vectors-different-lengths-test,diff-vectors-different-test,diff-vectors-equal-test	< Ran 15 tests containing 34 assertions.	clojure.data/diff twin missing [rt]
+def_meta_test.lg	2	MISMATCH	0	2	7	0	0	2	7	0	7	24	core/find-ns,core/meta,core/ns-name	def-attaches-ns-and-name,group-by-ns-works	> ERROR in (def-attaches-ns-and-name)	(var x) special form unsupported (Phase-2 constant var); meta/find-ns/ns-name unlinked [backend+rt]
+ex_message_test.lg	1	MATCH	1	1	5	0	0	1	5	0	0	23				
+file_var_test.lg	1	MISMATCH	0	1	2	0	0	1	2	1	1	23	core/*file*	file-is-bound-during-load	> FAIL in (file-is-bound-during-load)	*file* is an unbound extern (reads nil) [backend]
+harness_load_only_test.lg	0	MISMATCH	0					0	0	0	0	15			native run printed no summary: error: unable to load namespace 	no ns form: native-test-runner cannot require it, shim not injected (0 deftests) [harness]
+lazy_seq_comprehensive_test.lg	7	MATCH	7	7	14	0	0	7	14	0	0	16				
+lazy_seq_pred_test.lg	3	MISMATCH	2	3	17	0	0	3	17	0	7	15	core/lazy-seq?	lazy-seq?-predicate	> ERROR in (lazy-seq?-predicate)	lazy-seq? twin missing [rt]
+letfn_test.lg	4	MATCH	4	4	11	0	0	4	11	0	0	15				
+map_entry_collections_test.lg	3	MISMATCH	2	3	9	0	0	3	9	0	1	15	core/map-entry?	find-returns-map-entry	> ERROR in (find-returns-map-entry)	map-entry? twin missing [rt]
+map_order_test.lg	9	MISMATCH	8	9	25	0	0	9	25	0	1	16	core/with-out-str*	printing-follows-insertion-order	> ERROR in (printing-follows-insertion-order)	with-out-str* twin missing [rt]
+named_fn_test.lg	3	MATCH	3	3	4	0	0	3	4	0	0	19				
+persistent_set_test.lg	10	MISMATCH	6	10	21	0	0	10	21	0	7	20	core/disj,core/meta,set/difference,set/intersection	set-conj-disj,set-difference,set-intersection,set-with-meta	> ERROR in (set-conj-disj)	disj, meta, clojure.set difference/intersection unlinked [rt]
+persistent_vector_test.lg	1	MATCH	1	1	43	0	0	1	43	0	0	22				
+predicates_test.lg	8	MISMATCH	7	8	72	0	0	8	72	0	2	20	core/sorted-map,core/sorted-set	type-predicates	> ERROR in (type-predicates)	sorted-map, sorted-set twins missing [rt]
+quality_cost_test.lg	24	MISMATCH	0	24	54	0	0					2			compile: error: CompileError: unable to load namespace quality.cost	quality.cost not on the backend -source-paths (scripts/ of let-go); catalog reads ../scripts/quality by cwd [harness]
+quality_terms_test.lg	11	MISMATCH	0	11	42	0	0					2			compile: error: CompileError: unable to load namespace quality.terms	quality.terms not on the backend -source-paths [harness]
+range_test.lg	2	MATCH	2	2	15	0	0	2	15	0	0	17				
+reader_discard_comment_test.lg	3	MATCH	3	3	3	0	0	3	3	0	0	17				
+reduce_empty_lazy_test.lg	6	MATCH	6	6	16	0	0	6	16	0	0	18				
+return_type_hint_test.lg	2	MATCH	2	2	3	0	0	2	3	0	0	17				
+run_bang_reduced_test.lg	2	MATCH	2	2	4	0	0	2	4	0	0	16				
+seq_protocol_test.lg	1	MATCH	1	1	37	0	0	1	37	0	0	21				
+set_ns_test.lg	5	MISMATCH	0	5	14	0	0	5	10	0	10	20	set/difference,set/intersection,set/map-invert,set/rename-keys,set/subset?,set/superset?,set/union	set-difference,set-intersection,set-predicates,set-union,set-utilities	< Ran 5 tests containing 14 assertions.	clojure.set twin missing (union difference intersection subset? superset? map-invert rename-keys) [rt]
+sort_compat_test.lg	6	MATCH	6	6	46	0	0	6	46	0	0	25				
+sort_count_unicode_test.lg	2	MATCH	2	2	10	0	0	2	10	0	0	19				
+string_getbytes_test.lg	10	MISMATCH	2	10	36	0	0	10	11	0	8	20	core/.	getBytes-3-byte-utf8,getBytes-4-byte-utf8,getBytes-ascii-no-args,getBytes-default-eq-utf8,getBytes-empty,getBytes-multibyte,getBytes-returns-byte-array,getBytes-utf8-explicit	< Ran 10 tests containing 36 assertions.	(.getBytes s) interop (core/.) unlinked [backend+rt]
+string_replace_fn_test.lg	6	MISMATCH	0	6	10	0	0	6	10	0	8	19	let-go.core/str-replace-first	replace-first-regex-fn,replace-literal-fn,replace-regex-fn-multigroup-yamlstar-shape,replace-regex-fn-no-groups,replace-regex-fn-with-groups,replace-string-and-regex-string-still-work	> ERROR in (replace-regex-fn-no-groups)	regex literal with escapes = Phase-2 constant let-go.lang.Regex; str-replace-first extern [backend+rt]
+string_split_test.lg	4	MISMATCH	1	4	20	0	0	4	20	0	13	19		split-limit-zero-drops-trailing-empties,split-lines-conformance,split-returns-a-vector	> ERROR in (split-limit-zero-drops-trailing-empties)	regex literal #"\n" = Phase-2 constant let-go.lang.Regex [backend]
+string_unicode_test.lg	2	MATCH	2	2	6	0	0	2	6	0	0	18				
+subs_test.lg	4	MATCH	4	4	15	0	0	4	15	0	0	16				
+symbol_invoke_test.lg	4	MATCH	4	4	10	0	0	4	10	0	0	19				
+tail_call_variadic_test.lg	2	MATCH	2	2	14	0	0	2	14	0	0	19				
+thrown_test.lg	7	MISMATCH	0	7	16	0	0					20	core/alter-meta!,quiet-helper/quiet,test/run-test-var,test/test-var		< Ran 7 tests containing 16 assertions. | error: lower-wasm: Phase-2 constant var	top-level (var x)/set-test/run-test-var abort _main (Phase-2 constant var); test/run-test-var, test/test-var, quiet-helper unlinked [harness+backend]
+top_level_do_test.lg	0	MISMATCH	0									4			compile: error: ir/build: unresolved symbol __t-summary	no ns form: shim not injected, __t-summary unresolved (0 deftests) [harness]
+transducer_test.lg	24	MATCH	24	24	33	0	0	24	33	0	0	23				
+transient_test.lg	12	MISMATCH	9	12	25	0	0	12	22	0	3	21	core/disj!,core/dissoc!,core/to-array	transient-map-dissoc,transient-set-disj,vec-object-array-alias	< Ran 12 tests containing 25 assertions.	disj!, dissoc!, to-array twins missing [rt]
+try_catch_test.lg	9	MATCH	9	9	17	0	0	9	17	0	0	20				
+try_finally_test.lg	6	MISMATCH	0	6	12	0	0					5			compile: error: ir/build: unresolved symbol nested-finally-each-runs-once	user macro reads a program-level atom at expansion: native eval fails, later forms dropped, _main still calls every deftest [backend driver]
+update_keys_vals_test.lg	2	MISMATCH	0	2	8	0	0	2	6	0	6	20	core/meta	update-keys-test,update-vals-test	< Ran 2 tests containing 8 assertions.	core/meta unlinked (wasm.core/meta has no :twin marker) [rt]
+walk_test.lg	6	MISMATCH	0	6	34	0	0	6	33	0	33	21	core/map-entry?,core/sorted-map,walk/keywordize-keys,walk/postwalk-replace,walk/postwalk,walk/prewalk-replace,walk/prewalk,walk/stringify-keys	keywordize-keys-test,map-entry?-predicate,postwalk-replace-on-maps,stringify-keys-test,walk-on-maps,walk-on-non-maps-unchanged	< Ran 6 tests containing 34 assertions.	clojure.walk twin missing; map-entry?, sorted-map missing [rt]
+zip_test.lg	20	MISMATCH	0	20	39	0	0	20	20	0	20	19	zip/append-child,zip/branch?,zip/down,zip/edit,zip/end?,zip/insert-child,zip/insert-left,zip/insert-right,zip/left,zip/leftmost,zip/lefts,zip/next,zip/node,zip/path,zip/remove,zip/replace,zip/right,zip/rightmost,zip/rights,zip/root,zip/seq-zip,zip/up,zip/vector-zip	append-child-test,branch-test,down-test,edit-test,end-test,insert-child-test,insert-left-test,insert-right-test,left-test,leftmost-rightmost-test,lefts-rights-test,next-traversal-test,path-test,remove-test,replace-test,right-test,seq-zip-test,transform-tree-test,up-test,vector-zip-node-test	< Ran 20 tests containing 39 assertions.	clojure.zip twin missing [rt]
