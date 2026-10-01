@@ -1,0 +1,3 @@
+(println (try (* 9223372036854775807 2) (catch ExceptionInfo e :ei) (catch Exception e (ex-message e))))
+(println (try (quot 1 0) (catch String s :s) (catch Throwable t (ex-message t))))
+(println (try (throw (ex-info "z" {})) (catch String s :s) (catch ExceptionInfo e (ex-data e))))

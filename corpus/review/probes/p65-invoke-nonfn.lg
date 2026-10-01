@@ -1,0 +1,7 @@
+(defn call [g] (g 1))
+(println (try (call 5) (catch Exception e (ex-message e))))
+(println (try (call nil) (catch Exception e (ex-message e))))
+(println (try (call "s") (catch Exception e (ex-message e))))
+(println (try (call true) (catch Exception e (ex-message e))))
+(println (try (call (atom 1)) (catch Exception e (ex-message e))))
+(println (try (call 1073741824) (catch Exception e (ex-message e))))

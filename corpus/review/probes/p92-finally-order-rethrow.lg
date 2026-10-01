@@ -1,0 +1,2 @@
+(defn f [] (try (try (try (throw (ex-info "deep" {})) (finally (println "f1"))) (catch ExceptionInfo e (println "c2" (ex-message e)) (throw (ex-info "re" {}))) (finally (println "f2"))) (catch Exception e (println "c3" (ex-message e)) :done) (finally (println "f3"))))
+(println (f))

@@ -1,0 +1,22 @@
+;; bug-11 (p85-def-later-defn-ref): defn referencing later def
+;; compile error text differs
+;; native lg 4e769212:
+;;   error: compiling def value
+;;     --> p85-def-later-defn-ref.lg:1:1
+;;      |
+;;    1 | (defn f [] y)
+;;      | ^^^
+;;   caused by: compiling fn body
+;;   caused by: Can't resolve y in this context
+;; wasm (src @ HEAD 4e203f4):
+;;   error: calling apply
+;;     --> /private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/review1/snap/src/driver.lg:97:1
+;;       |
+;;    97 | (apply -main *command-line-args*)
+;;       | ^^^
+;;   caused by: calling apply*
+;;     --> <embedded:core>:1215:12
+;;   caused by: calling eval
+(defn f [] y)
+(def y 1)
+(println (f))

@@ -1,0 +1,12 @@
+;; bug-01 (q08-param-typed-via-value): typed param via defn-as-value
+;; wrapper unboxes the same way
+;; native lg 4e769212:
+;;   2
+;;   0
+;; wasm (src @ HEAD 4e203f4):
+;;   2
+;;   error: illegal cast
+(defn f [x] (if x (+ x 1) 0))
+(def g f)
+(println (g 1))
+(println (try (g nil) (catch Throwable t :caught)))

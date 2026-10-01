@@ -1,0 +1,5 @@
+(declare g)
+(defn f [n] (if (zero? n) 0 (+ 1 (g (dec n)))))
+(defn g [n] (if (= n 3) nil (f n)))
+(println (f 2))
+(println (try (f 5) (catch Exception e :caught)))

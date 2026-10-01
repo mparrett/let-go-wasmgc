@@ -1,0 +1,6 @@
+(def f (fn [n acc] (if (zero? n) acc (recur (dec n) (+ acc n)))))
+(println (f 100000 0))
+(defn mk [] (loop [i 0] (if (< i 3) (recur (inc i)) (fn [] i))))
+(println ((mk)))
+(defn tc [x] (fn [] (try (/ 10 x) (catch Exception e (ex-message e)))))
+(println ((tc 2)) ((tc 0)))

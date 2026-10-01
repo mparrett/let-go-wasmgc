@@ -1,0 +1,9 @@
+;; bug-09 (q19-name-collide-lgex): defn lgex / _report
+;; Duplicate export name 'lgex'
+;; native lg 4e769212:
+;;   1 2
+;; wasm (src @ HEAD 4e203f4):
+;;   error: WebAssembly.instantiate(): Duplicate export name 'lgex' for tag 0 and function 9 @+273
+(defn lgex [x] x)
+(defn _report [x] x)
+(println (lgex 1) (_report 2))

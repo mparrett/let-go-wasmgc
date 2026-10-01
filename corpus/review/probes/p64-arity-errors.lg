@@ -1,0 +1,5 @@
+(defn f [x] x)
+(println (try (f 1 2) (catch Exception e (ex-message e))))
+(let [g f] (println (try (g) (catch Exception e (ex-message e)))))
+(println (try ((fn [a b] a) 1) (catch Exception e (ex-message e))))
+(f)

@@ -1,0 +1,22 @@
+;; bug-11 (p47-recur-arity): (recur) arity mismatch
+;; compile error text differs
+;; native lg 4e769212:
+;;   error: compiling def value
+;;     --> p47-recur-arity.lg:1:1
+;;      |
+;;    1 | (defn f [n] (if (zero? n) 0 (recur)))
+;;      | ^^^
+;;   caused by: compiling fn body
+;;   caused by: compiling if else branch
+;;   caused by: recur argument count must match function argument count
+;; wasm (src @ HEAD 4e203f4):
+;;   error: calling apply
+;;     --> /private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/review1/snap/src/driver.lg:97:1
+;;       |
+;;    97 | (apply -main *command-line-args*)
+;;       | ^^^
+;;   caused by: calling apply*
+;;     --> <embedded:core>:1215:12
+;;   caused by: calling eval
+(defn f [n] (if (zero? n) 0 (recur)))
+(println (f 3))

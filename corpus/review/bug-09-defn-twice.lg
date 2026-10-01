@@ -1,0 +1,15 @@
+;; bug-09 (p23-defn-twice): two defns same name
+;; wasm-tools `duplicate func identifier`; native prints 1 2
+;; native lg 4e769212:
+;;   1
+;;   2
+;; wasm (src @ HEAD 4e203f4):
+;;   error: duplicate func identifier
+;;        --> m.wat:121:7
+;;         |
+;;     121 | (func $f (export "f") (result i64)
+;;         |       ^
+(defn f [] 1)
+(println (f))
+(defn f [] 2)
+(println (f))

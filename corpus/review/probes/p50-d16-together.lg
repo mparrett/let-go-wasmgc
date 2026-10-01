@@ -1,0 +1,7 @@
+(defn q [a b] (quot a b))
+(defn sh [a b] (bit-shift-left a b))
+(defn m [a] (- a))
+(def MIN -9223372036854775808)
+(println (+ (q MIN -1) (sh 1 64) (m MIN) 0) (try (dec (q MIN -1)) (catch Exception e (ex-message e))))
+(println (try (q 1 0) (catch Exception e (ex-message e))) (try (- (m MIN) 1) (catch Exception e (ex-message e))))
+(println (bit-xor (q MIN -1) (sh -1 63)) (bit-shift-right MIN 64) (unsigned-bit-shift-right MIN 64))

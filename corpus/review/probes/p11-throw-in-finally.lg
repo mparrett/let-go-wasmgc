@@ -1,0 +1,2 @@
+(println (try (try 1 (finally (throw (ex-info "fin" {})))) (catch Exception e (ex-message e))))
+(println (try (try (throw (ex-info "body" {})) (finally (throw (ex-info "fin" {})))) (catch Exception e (ex-message e))))

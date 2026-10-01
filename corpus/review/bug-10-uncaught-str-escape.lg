@@ -1,0 +1,15 @@
+;; bug-10 (p88-uncaught-str-escape): uncaught string with escapes
+;; native `"a\"b\nc"`, wasm raw
+;; native lg 4e769212:
+;;   error: "a\"b\nc"
+;;     --> p88-uncaught-str-escape.lg:1:1
+;;      |
+;;    1 | (throw "a\"b\nc")
+;;      | ^^^
+;;   
+;;   stack trace:
+;;     at throw (p88-uncaught-str-escape.lg:1:1)
+;; wasm (src @ HEAD 4e203f4):
+;;   error: "a"b
+;;   c"
+(throw "a\"b\nc")

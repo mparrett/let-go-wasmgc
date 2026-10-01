@@ -1,0 +1,4 @@
+(defn f [] (let [y (+ 9223372036854775807 1)] 0))
+(println (try (f) (catch Exception e :ovf)))
+(defn g [] (inc 9223372036854775807) :ok)
+(println (try (g) (catch Exception e :ovf)))

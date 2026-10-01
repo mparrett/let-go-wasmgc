@@ -1,0 +1,10 @@
+;; bug-01 (p00b-param-string-caught): caught type error in +
+;; native catches `cannot add`; wasm traps before try can see it
+;; native lg 4e769212:
+;;   :caught
+;;   after
+;; wasm (src @ HEAD 4e203f4):
+;;   error: illegal cast
+(defn f [x] (+ x 1))
+(println (try (f "a") (catch Exception e :caught)))
+(println "after")

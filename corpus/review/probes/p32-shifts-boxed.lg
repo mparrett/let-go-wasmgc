@@ -1,0 +1,8 @@
+(defn sh [a b] (bit-shift-left a b))
+(defn sr [a b] (bit-shift-right a b))
+(defn ur [a b] (unsigned-bit-shift-right a b))
+(def n -1)
+(println (sh 1 n) (sr -8 n) (ur -8 n) (sh 1 64) (sr -1 65) (ur -1 63))
+(println (bit-shift-left 1 -1) (bit-shift-right -5 100))
+(defn bx [a] (if (> a 0) a nil))
+(println (try (bit-and (bx 0) 1) (catch Exception e (ex-message e))))

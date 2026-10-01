@@ -1,0 +1,8 @@
+;; bug-07 (p39b-tail1e7): self tail call 1e7 (not recur)
+;; native :done in 1.7 s; wasm stack overflow
+;; native lg 4e769212:
+;;   :done
+;; wasm (src @ HEAD 4e203f4):
+;;   error: Maximum call stack size exceeded
+(defn f [n] (if (zero? n) :done (f (dec n))))
+(println (f 10000000))

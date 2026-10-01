@@ -1,0 +1,11 @@
+;; bug-04 (p14-shadow-minus-unary): local named - called unary
+;; D35 rewrite ignores lexical shadowing: -5/-7 vs 6/6
+;; native lg 4e769212:
+;;   6
+;;   6
+;; wasm (src @ HEAD 4e203f4):
+;;   -5
+;;   -7
+(defn f [x] (let [- inc] (- x)))
+(println (f 5))
+(println ((fn [-] (- 7)) dec))

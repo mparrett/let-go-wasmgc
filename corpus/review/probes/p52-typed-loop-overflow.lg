@@ -1,0 +1,5 @@
+(defn f [start n] (loop [i 0 x start] (if (< i n) (recur (inc i) (inc x)) x)))
+(println (f 9223372036854775805 2))
+(println (try (f 9223372036854775805 3) (catch Exception e (ex-message e))))
+(defn g [start n] (loop [i 0 x start] (if (< i n) (recur (inc i) (* x 3)) x)))
+(println (try (g 1 40) (catch Exception e (ex-message e))) (g 1 39))

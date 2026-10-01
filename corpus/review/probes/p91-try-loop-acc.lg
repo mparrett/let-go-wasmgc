@@ -1,0 +1,4 @@
+(defn f [] (loop [i 0 acc 0] (if (< i 5) (recur (inc i) (try (if (= i 3) (throw (ex-info "x" {})) (+ acc i)) (catch Exception e (- acc 100)))) acc)))
+(println (f))
+(defn g [n] (loop [i 0 acc 1073741820] (if (< i n) (recur (inc i) (try (+ acc 1) (catch Exception e 0))) acc)))
+(println (g 10))

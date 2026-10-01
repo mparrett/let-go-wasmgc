@@ -1,0 +1,5 @@
+(println (try [1 2] (catch Exception e (ex-message e))))
+(println (try (nth [1 2] 0) (catch Exception e (ex-message e))))
+(println (try (let [v [1 2]] 1) (catch Exception e (ex-message e))))
+(defn g [] (let [[a b] [1 2]] a))
+(println (try (g) (catch Exception e (ex-message e))))

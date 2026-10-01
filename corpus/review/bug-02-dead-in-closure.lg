@@ -1,0 +1,8 @@
+;; bug-02 (q03-dead-in-closure): dead overflow in closure
+;; 
+;; native lg 4e769212:
+;;   :ovf
+;; wasm (src @ HEAD 4e203f4):
+;;   :ok
+(defn mk [x] (fn [] (+ x 1) :ok))
+(println (try ((mk 9223372036854775807)) (catch Exception e :ovf)))

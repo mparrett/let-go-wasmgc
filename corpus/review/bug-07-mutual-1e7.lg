@@ -1,0 +1,10 @@
+;; bug-07 (p38b-mutual-1e7): mutual tail recursion 1e7
+;; native TCOs (true); wasm `Maximum call stack size exceeded`
+;; native lg 4e769212:
+;;   true
+;; wasm (src @ HEAD 4e203f4):
+;;   error: Maximum call stack size exceeded
+(declare od?)
+(defn ev? [n] (if (zero? n) true (od? (dec n))))
+(defn od? [n] (if (zero? n) false (ev? (dec n))))
+(println (ev? 10000000))

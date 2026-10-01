@@ -1,0 +1,7 @@
+(defn f [n] (loop [i 0 x 1073741820] (if (< i n) (recur (inc i) (+ x 1)) x)))
+(println (f 10))
+(defn g [n] (loop [i 0 x -1073741820] (if (< i n) (recur (inc i) (dec x)) x)))
+(println (g 10))
+(defn h [n] (loop [i 0 x 1] (if (< i n) (recur (inc i) (* x 2)) x)))
+(println (h 30) (h 31) (h 32) (h 62))
+(println (try (h 63) (catch Exception e (ex-message e))))

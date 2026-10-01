@@ -1,0 +1,2 @@
+(defn f [n] (loop [i 0] (if (< i n) (do (try (if (= i 2) (throw (ex-info "x" {})) i) (catch Exception e (println "c" i))) (recur (inc i))) :done)))
+(println (f 4))

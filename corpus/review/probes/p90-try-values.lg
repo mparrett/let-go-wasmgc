@@ -1,0 +1,5 @@
+(println (+ 1 (try 2 (catch Exception e 0))) (try 1 (finally 2)) (if (try (< 1 2) (catch Exception e false)) :t :f))
+(defn f [x] (try (if (> x 0) "pos" (throw (ex-info "n" {}))) (catch Exception e (- x))))
+(println (f 1) (f -5))
+(defn g [e] (try (throw (ex-info "m" {})) (catch Exception e (ex-message e))))
+(println (g 42))

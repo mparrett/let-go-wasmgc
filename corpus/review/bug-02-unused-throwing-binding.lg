@@ -1,0 +1,16 @@
+;; bug-02 (p98-unused-throwing-binding): unused (+ x 1) / (* x 2)
+;; DCE drops overflow: wasm 0 / :ok, native :ovf
+;; native lg 4e769212:
+;;   :ovf
+;;   :ovf
+;;   divide by zero
+;; wasm (src @ HEAD 4e203f4):
+;;   0
+;;   :ok
+;;   divide by zero
+(defn f [x] (let [y (+ x 1)] 0))
+(println (try (f 9223372036854775807) (catch Exception e :ovf)))
+(defn g [x] (do (* x 2) :ok))
+(println (try (g 9223372036854775807) (catch Exception e :ovf)))
+(defn h [x] (quot 1 x) :fine)
+(println (try (h 0) (catch Exception e (ex-message e))))

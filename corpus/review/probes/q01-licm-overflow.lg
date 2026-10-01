@@ -1,0 +1,4 @@
+(defn f [x n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (+ x 1))) acc)))
+(println (try (f 9223372036854775807 0) (catch Exception e :ovf)))
+(defn g [x n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (quot 10 x))) acc)))
+(println (try (g 0 0) (catch Exception e :dz)))

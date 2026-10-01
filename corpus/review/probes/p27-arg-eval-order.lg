@@ -1,0 +1,4 @@
+(def c (atom 0))
+(defn tick [k] (println "tick" k) (swap! c inc))
+(defn f [a b c2] (+ (* a 100) (* b 10) c2))
+(println (f (tick 1) (tick 2) (tick 3)))

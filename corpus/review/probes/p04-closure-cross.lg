@@ -1,0 +1,4 @@
+(defn mk [k] (fn [x] (+ x k)))
+(println ((mk 1073741823) 1) ((mk 1) 1073741823) ((mk -1073741824) -1))
+(println (try ((mk 9223372036854775807) 1) (catch Exception e (ex-message e))))
+(let [big (+ 1073741823 1) f (fn [] (- big 1))] (println (f) (= (f) 1073741823)))

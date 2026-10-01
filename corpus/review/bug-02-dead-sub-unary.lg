@@ -1,0 +1,8 @@
+;; bug-02 (q04-dead-sub-unary): dead dec / (- x 1)
+;; 
+;; native lg 4e769212:
+;;   :ovf
+;; wasm (src @ HEAD 4e203f4):
+;;   :ok
+(defn f [x] (dec x) (- x 1) :ok)
+(println (try (f -9223372036854775808) (catch Exception e :ovf)))

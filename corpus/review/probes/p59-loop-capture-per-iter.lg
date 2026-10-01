@@ -1,0 +1,7 @@
+(defn f [] (let [a (atom nil)]
+  (loop [i 0] (when (< i 3) (let [g @a] (reset! a (fn [] (+ i (if g (g) 0))))) (recur (inc i))))
+  (@a)))
+(println (f))
+(def acc (atom (fn [] 0)))
+(dotimes [i 4] (let [g @acc] (reset! acc (fn [] (+ (* 10 (g)) i)))))
+(println (@acc))

@@ -1,0 +1,9 @@
+;; bug-02 (q05-dead-boxed): dead (+ nil 1)
+;; type error dropped too
+;; native lg 4e769212:
+;;   :caught
+;; wasm (src @ HEAD 4e203f4):
+;;   :ok
+(defn bx [x] (if (> x 0) x nil))
+(defn f [x] (let [y (+ (bx x) 1)] :ok))
+(println (try (f 0) (catch Exception e :caught)))

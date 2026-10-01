@@ -1,0 +1,6 @@
+(defn f [x] (let [y (+ x 1)] 0))
+(println (try (f 9223372036854775807) (catch Exception e :ovf)))
+(defn g [x] (do (* x 2) :ok))
+(println (try (g 9223372036854775807) (catch Exception e :ovf)))
+(defn h [x] (quot 1 x) :fine)
+(println (try (h 0) (catch Exception e (ex-message e))))

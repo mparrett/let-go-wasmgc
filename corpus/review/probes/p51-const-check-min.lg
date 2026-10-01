@@ -1,0 +1,8 @@
+(defn a [x] (+ x -9223372036854775808))
+(defn s [x] (- x -9223372036854775808))
+(println (a -0) (a 9223372036854775807) (try (a -1) (catch Exception e :ovf)))
+(println (s -1) (s -9223372036854775808) (try (s 0) (catch Exception e :ovf)))
+(defn m1 [x] (* x -1))
+(println (m1 9223372036854775807) (try (m1 -9223372036854775808) (catch Exception e :ovf)))
+(defn ad [x] (+ 9223372036854775807 x))
+(println (ad -1) (try (ad 1) (catch Exception e :ovf)))

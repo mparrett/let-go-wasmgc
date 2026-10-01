@@ -1,0 +1,7 @@
+;; gap-02 (q07-print-caught-overflow): println of caught runtime error
+;; illegal cast
+;; native lg 4e769212:
+;;   #error {:type java.lang.Exception, :message "ExecutionError: integer overflow", :data {}}
+;; wasm (src @ HEAD 4e203f4):
+;;   error: illegal cast
+(println (try (+ 9223372036854775807 1) (catch Exception e e)))

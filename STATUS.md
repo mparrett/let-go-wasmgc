@@ -20,4 +20,4 @@
 | P2.1-backend | running | opus | emit intrinsics, compile rt/wasm through the backend, --both |
 | P3.0-reader | running | opus | EDN reader in the dialect (read-string for data) |
 | P2.1-backend | running | opus | (unchanged) |
-| review-1 | running | opus | adversarial Phase 1 review |
+| review-1 | done 2026-10-01 | opus | 148 probes: 78 match, 11 bugs (5 silent), 2 gaps → P1.7 |

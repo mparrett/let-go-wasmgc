@@ -1,0 +1,10 @@
+;; gap-02 (p57-print-fn-atom): println of an atom
+;; uncatchable `illegal cast` (P2.7 per D53, but not a named error)
+;; native lg 4e769212:
+;;   x
+;;   <let-go.lang.Atom 1>
+;; wasm (src @ HEAD 4e203f4):
+;;   x
+;;   error: illegal cast
+(println "x")
+(println (atom 1))
