@@ -12,5 +12,6 @@ cmd=$(printf '%s' "$line" | cut -f3)
 echo "== $id: $(printf '%s' "$line" | cut -f4)"
 echo "-- $cmd"
 set -- $cmd
-[ -x "$1" ] || [ "$(type -t "$1" 2>/dev/null)" = file ] || { echo "NOT IMPLEMENTED: $1 missing"; exit 2; }
+# a shell builtin (e.g. the P1.0 row's leading `test -x`) is a real command too
+case "$(type -t "$1" 2>/dev/null)" in file|builtin) ;; *) [ -x "$1" ] || { echo "NOT IMPLEMENTED: $1 missing"; exit 2; } ;; esac
 eval "$cmd"

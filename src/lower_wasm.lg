@@ -55,12 +55,21 @@
 
 (defn lget [nid] (str "(local.get $v" nid ")"))
 
-(defn var-load? [nid] (= (ir/op nid *f*) :load-var))
+(defn var-of
+  "The var a value denotes when it is a :load-var, or a block-arg that only
+   ever carries one var (legalize threads :load-var through blocks), else nil.
+   Var-valued values get no local and no edge copies: they only lower in
+   callee position (a var table for first-class use is P1.3)."
+  [nid]
+  (let [r (ir/resolve-single-source *f* nid)]
+    (when (= :load-var (ir/op r *f*)) (ir/aux r *f*))))
+
+(defn dead? [nid] (= :invalid (ir/op nid *f*)))
 
 (defn arg-as [nid k]
   ;; A :load-var only lowers in callee position (P1.3 adds the var table).
-  (when (var-load? nid)
-    (fail "unsupported op :load-var used as a value" {:var (ir/aux nid *f*) :fn *fname*}))
+  (when-let [v (var-of nid)]
+    (fail "unsupported op :load-var used as a value" {:var v :fn *fname*}))
   (str (lget nid) (coerce (ty nid) k)))
 
 (def int-binops {:add "i64.add" :sub "i64.sub" :mul "i64.mul"})
@@ -104,10 +113,11 @@
 (defn const-wat [nid aux]
   (let [k (ty nid)]
     (cond
+      ;; typeinfer rewrites some consts' aux to [:const <type> <value>]
+      (vector? aux) (const-wat nid (nth aux 2))
       (int? aux) (str "(i64.const " aux ")" (coerce :int k))
       (nil? aux) (if (= k :box) "(ref.null none)" (fail "nil const in unboxed slot" {:nid nid :fn *fname*}))
-      (boolean? aux) (if (= k :bool) (str "(i32.const " (if aux 1 0) ")")
-                         (fail "unsupported boxed boolean const" {:nid nid :fn *fname*}))
+      (boolean? aux) (str "(i32.const " (if aux 1 0) ")" (coerce :bool k))
       (string? aux) (let [i (string-idx aux)]
                       (str "(array.new_data $Bytes $s" i " (i32.const 0) (i32.const "
                            (count (.getBytes aux)) "))"))
@@ -122,9 +132,8 @@
     :bool (str "(call $rt_print_bool " (lget nid) ")")
     :box (str "(call $rt_print " (arg-as nid :box) ")")))
 
-(defn call-wat [nid callee args]
-  (let [v (ir/aux callee *f*)
-        sig (get *sigs* v)]
+(defn call-wat [nid v args]
+  (let [sig (get *sigs* v)]
     (cond
       sig
       (do (when (not= (count args) (count (:params sig)))
@@ -179,13 +188,13 @@
       (= op :const) (set (const-wat nid aux))
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
-      (let [callee (first refs)]
-        (when-not (var-load? callee)
+      (let [v (var-of (first refs))]
+        (when-not v
           (fail "unsupported op :call on a non-var callee" {:nid nid :fn *fname*}))
-        (or (when-let [cop (core-var-ops (ir/aux callee *f*))]
+        (or (when-let [cop (core-var-ops v)]
               (or (prim-wat nid cop (rest refs))
-                  (fail "unsupported core call shape" {:var (ir/aux callee *f*) :argc (count (rest refs)) :fn *fname*})))
-            (call-wat nid callee (rest refs))))
+                  (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
+            (call-wat nid v (rest refs))))
       :else (fail "unsupported op" {:op op :nid nid :fn *fname*}))))
 
 (defn block-wat [bid]
@@ -198,8 +207,10 @@
           (map (fn [d] (str "(local.set " d ")")) (reverse dests))))
 
 (defn edge-wat [{:keys [target args]}]
-  (let [params (ir/block-params target *f*)]
-    (copy-wat args (map ty params) (map #(str "$v" %) params))))
+  ;; dead (:invalid) and var-valued params take no copy
+  (let [pairs (remove (fn [[_ p]] (or (dead? p) (var-of p)))
+                      (map vector args (ir/block-params target *f*)))]
+    (copy-wat (map first pairs) (map (comp ty second) pairs) (map #(str "$v" (second %)) pairs))))
 
 (defn term-ref [bid] (first (ir/refs (ir/block-term bid *f*) *f*)))
 
@@ -237,7 +248,7 @@
 
 (defn all-values [f]
   (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
-        :when (not (#{:load-var} (ir/op i f)))]
+        :when (not (or (dead? i) (var-of i)))]
     i))
 
 (defn analyze-fn
