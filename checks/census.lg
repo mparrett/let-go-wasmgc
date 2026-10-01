@@ -1,0 +1,157 @@
+;; checks/census.lg — P1.5: the 2a structurize census rerun through the backend.
+;;
+;;   LG_SOURCE_PATHS=<corpus-root>:<lower-wasm/src> lg checks/census.lg \
+;;     <corpus-root> <corpus-name> <out.tsv> <wat-dir> <file-relative-to-root>...
+;;
+;; Harvesting and file loading are ../emit-wasm-probe/census/census.lg's
+;; (analyze-ns-forms units, one per arity; nothing is evaluated but ns
+;; requires). Each unit is expanded as the driver expands a defn, built, and
+;; lowered ALONE by lower-wasm/lower-fn-only into a fresh session: no
+;; signatures for the rest of the program, so every call to another var goes
+;; through a var-table slot. The unit's complete module goes to
+;; <wat-dir>/u<idx>.wat for census.sh to validate; nothing is run.
+;;
+;; Nested fn* bodies are not separate rows (census.lg's inner:* rows): the
+;; backend lambda-lifts them while lowering the parent, so a parent's bucket
+;; already covers every closure inside it.
+;;
+;; TSV columns: idx file name arity bucket detail externs program-vars phase2 ms
+;;   bucket: ok | unbound-var | phase2-const | unsupported op <op> |
+;;           unsupported tree node <tag> | goto fallback | build error <head> |
+;;           optimize error | other <first 60 chars>
+;;   ok-like buckets: unbound-var = compiles, calls/reads >=1 var outside the
+;;   corpus that has no wasm definition (Phase 2/3 native twins);
+;;   phase2-const = compiles, no unbound vars, >=1 Phase-2 constant placeholder.
+;;   externs = those out-of-corpus vars; program-vars = how many in-corpus vars
+;;   it reaches through slots (a whole-program compile makes those direct);
+;;   phase2 = the placeholder constant kinds.
+(require 'ir.build)
+(require 'ir.passes.pipeline)
+(require 'lower-wasm)
+
+(def args (vec (rest (drop-while (fn [a] (not (clojure.string/ends-with? a "census.lg"))) os/args))))
+(def corpus-dir (let [d (nth args 0)] (if (clojure.string/ends-with? d "/") d (str d "/"))))
+(def corpus-name (nth args 1))
+(def out-path (nth args 2))
+(def wat-dir (nth args 3))
+(def files (vec (drop 4 args)))
+
+;; ---- file loading, as census.lg (from scripts/ir-stress.lg) -----------------
+
+(defn read-all [path]
+  (try (read-code-string (str "(do " (slurp path) "\n)"))
+       (catch e nil)))
+
+(defn ns-form-of [parsed]
+  (first (filter (fn [f] (and (seq? f) (= (first f) 'ns))) (rest parsed))))
+
+(defn require-deps! [ns-form-]
+  (when ns-form-
+    (doseq [clause (drop 2 ns-form-)]
+      (when (and (seq? clause) (= (first clause) :require))
+        (doseq [spec (rest clause)]
+          (try (when (or (symbol? spec) (vector? spec)) (require spec))
+               (catch e nil)))))))
+
+(defn require-top-level! [parsed]
+  (doseq [f (rest parsed)]
+    (when (and (seq? f) (symbol? (first f))
+               (let [h (str (first f))] (or (= h "require") (= h "use"))))
+      (try (eval f) (catch e nil)))))
+
+(defn arity-units [form]
+  (let [maybe-doc  (nth form 2)
+        has-doc?   (string? maybe-doc)
+        first-form (if has-doc? (nth form 3) maybe-doc)]
+    (if (or (vector? first-form) (ir.build/return-hinted-arity-vector? first-form))
+      [["1" first-form (drop (if has-doc? 4 3) form)]]
+      (vec (map-indexed (fn [i a] [(str "m" i) (first a) (rest a)])
+                        (drop (if has-doc? 3 2) form))))))
+
+;; ---- classification ------------------------------------------------------------
+
+(defn one-line [s] (clojure.string/replace (str s) #"[\t\n\r]+" " "))
+(defn head [s n] (let [s (one-line s)] (subs s 0 (min n (count s)))))
+
+(defn bucket-of
+  "[bucket detail] for a caught exception at `stage`."
+  [stage e]
+  (let [m (one-line (or (ex-message e) (str e)))
+        d (head m 160)]
+    (cond
+      (= stage :build) [(str "build error " (head (clojure.string/replace m #"^ir/build: " "") 40)) d]
+      (= :optimize (:stage (ex-data e))) ["optimize error" d]
+      :else
+      (if-let [[_ op] (re-find #"^lower-wasm: unsupported op (:[a-z-]+)" m)]
+        [(str "unsupported op " op) d]
+        (if-let [[_ tag] (re-find #"^lower-wasm: unsupported tree node \{:tag (:[a-z-]+)" m)]
+          [(str "unsupported tree node " tag) d]
+          (if (re-find #"^lower-wasm: structurize fallback \(:goto\)" m)
+            ["goto fallback" (head m 60)]
+            [(str "other " (head (clojure.string/replace m #"^lower-wasm: " "") 60)) d]))))))
+
+(defn var-ns [v] (namespace (symbol (subs (str v) 2))))
+
+(def corpus-nses (atom #{}))
+(def rows (atom []))
+(def idx (atom 0))
+
+(defn run-unit [rel name arity args-vec body]
+  (let [i (swap! idx inc)
+        t0 (System/nanoTime)
+        fname (str "u" i "_" name)
+        r (try
+            (let [src (apply list 'defn name args-vec (map lower-wasm/expand-form body))
+                  f (try (ir.build/build-fn src)
+                         (catch e (throw (ex-info "build" {::stage :build ::e e}))))
+                  ss (lower-wasm/new-session {} {})
+                  {:keys [wat externs phase2]} (lower-wasm/lower-fn-only ss fname f)
+                  outside (sort (map #(subs (str %) 2) (remove #(contains? @corpus-nses (var-ns %)) externs)))
+                  inside (count (filter #(contains? @corpus-nses (var-ns %)) externs))]
+              (spit (str wat-dir "/u" i ".wat") (lower-wasm/session-module ss [wat]))
+              {:bucket (cond (seq outside) "unbound-var" (seq phase2) "phase2-const" :else "ok")
+               :externs outside :inside inside :phase2 phase2})
+            (catch e
+              (let [d (ex-data e)
+                    [b detail] (if (::stage d) (bucket-of :build (::e d)) (bucket-of :lower e))]
+                {:bucket b :detail detail})))
+        ms (quot (- (System/nanoTime) t0) 1000000)]
+    (swap! rows conj
+           (clojure.string/join "\t"
+             [i rel name arity (:bucket r) (or (:detail r) "")
+              (clojure.string/join "," (:externs r)) (or (:inside r) 0)
+              (clojure.string/join "," (:phase2 r)) ms]))))
+
+(defn census-file [rel]
+  (let [parsed (read-all (str corpus-dir rel))]
+    (if (nil? parsed)
+      (println (str "READ-ERROR " rel))
+      (let [nsf (ns-form-of parsed)
+            ns-sym (when nsf (nth nsf 1))]
+        (when ns-sym (try (eval (list 'in-ns (list 'quote ns-sym))) (catch e nil)))
+        (require-deps! nsf)
+        (require-top-level! parsed)
+        (let [{units :fixtures names :defined-names} (ir.passes.pipeline/analyze-ns-forms (rest parsed))]
+          (when-let [decl (seq (remove (fn [nm] (some? (resolve nm))) names))]
+            (try (eval (cons 'declare decl)) (catch e nil)))
+          (doseq [u units
+                  [arity args-vec body] (arity-units u)]
+            (run-unit rel (nth u 1) arity args-vec body))
+          (println (str rel ": " (count units) " units")))))))
+
+(defn run []
+  (doseq [rel files]
+    (try (let [parsed (read-all (str corpus-dir rel))
+               nsf (ns-form-of parsed)]
+           (when nsf
+             (swap! corpus-nses conj (str (nth nsf 1)))
+             (eval (list 'in-ns (list 'quote (nth nsf 1)))))
+           (require-deps! nsf)
+           (require-top-level! parsed))
+         (catch e nil)))
+  (doseq [rel files] (census-file rel))
+  (spit out-path (str "idx\tfile\tname\tarity\tbucket\tdetail\texterns\tprogram-vars\tphase2\tms\n"
+                      (clojure.string/join "\n" @rows) "\n"))
+  (println "rows:" (count @rows) "->" out-path))
+
+(run)

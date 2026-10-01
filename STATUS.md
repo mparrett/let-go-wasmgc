@@ -15,5 +15,6 @@
 | P1.3 | done 2026-10-01 | opus | 11/11; $Fn layout D52; atom; error parity; verified |
 | P2.8 | tooling done 2026-10-01 | opus | inventory 954; shared MISSING 46/93 (proposed manifest); markers to be applied by P2.9 |
 | P2.9 | done 2026-10-01 | opus | one runtime; 23 kinds; real keys; 59 twin markers; shared MISSING 53/93; verified |
-| P1.4-6 | running | opus | refuse.sh, census through the backend, :switch nodes, 0 goto |
+| P1.4-6 + P1.GATE | done 2026-10-01 | opus | 4/4 refused; census 0 op errors/0 goto; switch; GATE 1.385× verified |
 | P2.7 | running | opus | generic dispatchers + remaining shared natives; print hook; twin scoreboard to 0 |
+| P2.1-backend | running | opus | emit intrinsics, compile rt/wasm through the backend, --both |

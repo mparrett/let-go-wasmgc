@@ -1,0 +1,5 @@
+;; refuse: unsupported variadic fn
+;; P1.4: a variadic `& args` defn. $Fn has no variadic slot yet (D52), so the
+;; backend refuses it by name rather than miscompiling the rest-args seq.
+(defn total [& xs] (count xs))
+(println (total 1 2 3))

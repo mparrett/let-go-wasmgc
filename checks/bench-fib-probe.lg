@@ -1,0 +1,10 @@
+;; Emit the probe's fib-i31 module (../emit-wasm-probe/ext/gen-ext.lg's
+;; `(emit "ext/fib-i31.wat" fib-src :box :i31)`) to the path given, so
+;; bench-fib.sh compares against a fresh build, not a checked-in .wat.
+;;   lg -source-paths ../emit-wasm-probe checks/bench-fib-probe.lg <out.wat>
+(require (quote lower-wasm))
+(declare fib)
+(def fib-src '(defn fib [^long n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))
+(binding [lower-wasm/*checked* nil lower-wasm/*trap* false
+          lower-wasm/*box* :i31 lower-wasm/*guard-calls* false]
+  (spit (first *command-line-args*) (lower-wasm/module fib-src)))

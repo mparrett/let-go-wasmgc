@@ -16,27 +16,7 @@
 
 (defn defn-form? [form] (and (seq? form) (= 'defn (first form))))
 
-(def core-minus #'clojure.core/-)
-
-(defn unary-minus->unchecked
-  "D35: build.lg turns (- x) into (sub 0 x), which throws on MinInt64 where
-   native bytecode negates with a wrap. Rewrite unary core `-` to
-   (unchecked-subtract 0 x) before build so the IR path matches native.
-   Runs on macroexpanded forms; quoted data is left alone. Lexical shadowing
-   of `-` is not tracked (build.lg would treat a shadowed `-` as a call)."
-  [form]
-  (cond
-    (and (seq? form) (= 'quote (first form))) form
-    (and (seq? form) (= 2 (count form)) (symbol? (first form))
-         (= core-minus (resolve (first form))))
-    (list 'unchecked-subtract 0 (unary-minus->unchecked (second form)))
-    (seq? form) (apply list (map unary-minus->unchecked form))
-    (vector? form) (mapv unary-minus->unchecked form)
-    (map? form) (into {} (map (fn [[k v]] [(unary-minus->unchecked k) (unary-minus->unchecked v)]) form))
-    (set? form) (set (map unary-minus->unchecked form))
-    :else form))
-
-(defn expand [form] (unary-minus->unchecked (p/expand-all form)))
+(def expand lw/expand-form)
 
 (defn def-form? [form] (and (seq? form) (= 'def (first form))))
 (defn def-sym [form]

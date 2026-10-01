@@ -1,0 +1,1065 @@
+idx	file	name	arity	bucket	detail	externs	program-vars	phase2	ms
+1	main.lg	init-terminal	1	unbound-var		core/nil?,os/exit,term/alternate-screen,term/clear,term/hide-cursor,term/raw-mode!,term/size	0		397
+2	main.lg	shutdown-terminal	1	unbound-var		term/flush,term/main-screen,term/reset-style,term/restore-mode!,term/show-cursor	0		393
+3	main.lg	letter-to-index	1	unbound-var		string/index-of	1		399
+4	main.lg	get-item-name	1	unbound-var		core/get-in,core/name,core/vector	0		414
+5	main.lg	inv-sel	1	ok			0		419
+6	main.lg	inv-count	1	unbound-var		core/count,core/get-in,core/vector	0	vector	407
+7	main.lg	sel-item-id	1	unbound-var		core/count,core/get-in,core/nth,core/vector	1	vector	410
+8	main.lg	inv-equip	1	unbound-var		core/array-map,core/assoc	2		410
+9	main.lg	inv-unequip	1	unbound-var		core/array-map,core/assoc	2		395
+10	main.lg	inv-drop	1	unbound-var		core/array-map,core/assoc,core/max	3		398
+11	main.lg	inv-use	1	unbound-var		core/array-map,core/assoc,core/dissoc,core/get-in,core/vector	2		416
+12	main.lg	inv-inscribe	1	unbound-var		core/assoc,core/get-in,core/vec,core/vector	2	vector	466
+13	main.lg	inscribe-input	1	unbound-var		core/assoc,core/butlast,core/conj,core/count,core/dissoc,core/max,core/min,core/nth,core/seq,core/vec,term/size	2	vector	2754
+14	main.lg	inventory-input	1	unbound-var		core/assoc,core/count,core/dissoc,core/max,core/min,core/some?	8		1798
+15	main.lg	execute-menu-action	1	unbound-var		core/array-map,core/dissoc,core/get-in,core/nil?,core/not=,core/nth,core/vector	1	vector	1221
+16	main.lg	quick-menu-input	1	unbound-var		core/assoc,core/count,core/dissoc,core/filter,core/first,core/max,core/min,core/nth,core/some?	3		1455
+17	main.lg	message-page-size	1	unbound-var		core/max,core/nth,term/size	1		394
+18	main.lg	clamp-message-scroll	1	unbound-var		core/assoc,core/max,core/min,core/nth,term/size	2		399
+19	main.lg	scroll-messages	1	ok			1		399
+20	main.lg	close-messages-screen	1	unbound-var		core/dissoc	0		388
+21	main.lg	messages-input	1	unbound-var		core/nth,term/size	6		725
+22	main.lg	assemble-world	1	unbound-var		core/array-map,core/assoc,core/reduce	4		393
+23	main.lg	new-game	1	unbound-var		core/array-map,core/get,core/nth	5		396
+24	main.lg	build-game	1	unbound-var		core/array-map,core/nth	4		394
+25	main.lg	read-dismiss-key!	1	optimize error	optimize error: validate after licm: block #0 branch to b1 passes 0 args but b1 has 1 params		0		2
+26	main.lg	play-replay	1	unbound-var		core/get,core/reduce	7		405
+27	main.lg	game-loop	m0	unbound-var		term/size	3		399
+28	main.lg	game-loop	m1	unbound-var		core/*err*,core/*in-wasm*,core/array-map,core/assoc,core/count,core/dissoc,core/flush!,core/max,core/nth,core/reduced,core/str,core/update,core/vector,core/write!,js/emit,js/url-param,os/getenv,os/os-name,term/read-key,term/size	28		3775
+29	main.lg	-main	1	ok			8		397
+30	xsofy/ai.lg	step-toward	1	ok			1		387
+31	xsofy/ai.lg	step-away	1	unbound-var		core/nth,core/vector	1		396
+32	xsofy/ai.lg	can-move?	1	unbound-var		core/contains?,core/get,core/nil?,core/vector	5		590
+33	xsofy/ai.lg	open-door-if-needed	1	unbound-var		core/get,core/get-in,core/name,core/vector	4		441
+34	xsofy/ai.lg	trample-at	1	ok			1		411
+35	xsofy/ai.lg	apply-web-trap	1	unbound-var		core/not	3		412
+36	xsofy/ai.lg	apply-water-extinguish	1	ok			3		413
+37	xsofy/ai.lg	try-move	1	unbound-var		core/assoc-in,core/get-in,core/not=,core/nth,core/vector	8		1071
+38	xsofy/ai.lg	random-step	1	unbound-var		core/filter,core/first,core/get-in,core/nth,core/second,core/vector	5		447
+39	xsofy/ai.lg	in-fov?	1	unbound-var		core/contains?	0	set	391
+40	xsofy/ai.lg	find-target	1	unbound-var		core/comp,core/filter,core/first,core/get-in,core/juxt,core/sort-by,core/str,core/vals,core/vector	4		896
+41	xsofy/ai.lg	update-ai-state	1	unbound-var		core/assoc-in,core/first,core/float,core/get,core/get-in,core/nil?,core/not,core/not=,core/second,core/some?,core/update-in,core/vector	10		28951
+42	xsofy/ai.lg	hunt-melee	1	unbound-var		core/nth	3		422
+43	xsofy/ai.lg	hunt-ranged	1	unbound-var		core/first,core/get-in,core/not,core/nth,core/second,core/vector	9		3157
+44	xsofy/ai.lg	ai-act	1	unbound-var		core/get,core/get-in,core/nil?,core/not=,core/nth,core/vector	11		5232
+45	xsofy/ai.lg	process-creatures	1	unbound-var		core/filter,core/get-in,core/map,core/not=,core/reduce,core/vals,core/vec,core/vector	2		415
+46	xsofy/balance.lg	give-with-enchant	1	unbound-var		core/assoc-in,core/get,core/not=,core/nth,core/seq,core/vec,core/vector	2		594
+47	xsofy/balance.lg	apply-loadout	1	unbound-var		core/array-map,core/first,core/nth,core/reduce	2	vector,vector	443
+48	xsofy/balance.lg	make-loadout-world	m0	ok			1		389
+49	xsofy/balance.lg	make-loadout-world	m1	unbound-var		System/currentTimeMillis,core/mod	2		400
+50	xsofy/balance.lg	player-hp	1	unbound-var		core/get-in,core/vector	0		391
+51	xsofy/balance.lg	player-pos	1	unbound-var		core/get-in,core/vector	0		389
+52	xsofy/balance.lg	visible-enemy-positions	1	unbound-var		core/contains?,core/filter,core/map,core/not=,core/vals	0	set	409
+53	xsofy/balance.lg	nearest-visible-enemy-dir	1	unbound-var		core/filterv,core/first,core/nth,core/number?,core/second,core/seq,core/sort-by,core/vector,core/vector?	2		1184
+54	xsofy/balance.lg	dir-action	1	unbound-var		core/nth,core/vector	0	vector,vector,vector,vector,vector,vector,vector,vector	634
+55	xsofy/balance.lg	random-policy	1	unbound-var		core/nth,core/rand-int	1		408
+56	xsofy/balance.lg	on-stairs-down?	1	unbound-var		core/get,core/nth	2		409
+57	xsofy/balance.lg	has-seen-stairs?	1	unbound-var		core/nth,core/some	0		402
+58	xsofy/balance.lg	greedy-melee-policy	1	ok			4		415
+59	xsofy/balance.lg	greedy-descend-policy	1	ok			2		394
+60	xsofy/balance.lg	passive-rest-policy	1	ok			0		396
+61	xsofy/balance.lg	ensouled-policy	1	unbound-var		core/first,core/get-in,core/nth,core/vector	3		1787
+62	xsofy/balance.lg	index-of-space	1	unbound-var		core/count,core/nth,core/str	0		436
+63	xsofy/balance.lg	creature-from-log-line	1	unbound-var		core/count,core/keyword,core/subs	1		663
+64	xsofy/balance.lg	infer-killer	1	unbound-var		core/map?,core/nil?,core/some,core/string?,core/take-last,core/vec,string/includes?	1	vector	448
+65	xsofy/balance.lg	record-outcome	1	unbound-var		core/array-map,core/get,core/get-in,core/keyword?,core/not,core/vector	3	vector	1168
+66	xsofy/balance.lg	simulate-run	m0	ok			1		388
+67	xsofy/balance.lg	simulate-run	m1	unbound-var		System/currentTimeMillis,core/assoc,core/get,core/get-in,core/mod,core/not,core/vector	14		7200
+68	xsofy/balance.lg	count-by	1	unbound-var		core/assoc,core/get,core/reduce	0		425
+69	xsofy/balance.lg	aggregate	1	unbound-var		core/array-map,core/count,core/filterv,core/float,core/group-by,core/into,core/map,core/mapv,core/nth,core/reduce,core/seq,core/vector	1	float,float	436
+70	xsofy/balance.lg	explore	m0	ok			1		424
+71	xsofy/balance.lg	explore	m1	unbound-var		core/array-map,core/assoc,core/concat-list,core/count,core/first,core/get,core/lazy-seq*,core/list,core/map-indexed,core/max,core/name,core/nth,core/range,core/rest,core/seq,core/str,core/vec,core/vector	7		495
+72	xsofy/balance.lg	index-of-dot	1	unbound-var		core/count,core/nth,core/str	0		430
+73	xsofy/balance.lg	format-float	1	unbound-var		core/count,core/min,core/str,core/subs	1		393
+74	xsofy/balance.lg	format-loadout-row	1	unbound-var		core/get,core/get-in,core/name,core/str,core/vector	1	float	444
+75	xsofy/balance.lg	print-report	1	unbound-var		core/first,core/get,core/keys,core/name,core/next,core/nth,core/seq,core/sort,core/sort-by,core/str	1		1288
+76	xsofy/cheats.lg	cheat-conjure	1	unbound-var		core/get-in,core/nil?,core/vector	2		412
+77	xsofy/cheats.lg	cheat-buff	1	unbound-var		core/assoc-in,core/get-in,core/nil?,core/str,core/update-in,core/vector	2		433
+78	xsofy/cheats.lg	cheat-auto-attack	1	unbound-var		core/assoc,core/not,core/str	1		395
+79	xsofy/cheats.lg	cheat-auto-continue	1	unbound-var		core/assoc,core/not,core/str	1		408
+80	xsofy/cheats.lg	cheat-prefix	1	unbound-var		core/assoc	1		415
+81	xsofy/cheats.lg	cheats-update-world	1	unbound-var		core/dissoc,core/map?	6		963
+82	xsofy/check.lg	rng	1	unbound-var		core/mod,core/vector	2		414
+83	xsofy/check.lg	rng-next	1	unbound-var		core/mod,core/nth,core/vector	2		403
+84	xsofy/check.lg	rng-split	1	unbound-var		core/nth,core/vector	1		392
+85	xsofy/check.lg	pure	1	unbound-var		core/array-map	0	vector	391
+86	xsofy/check.lg	rose-value	1	ok			0		397
+87	xsofy/check.lg	rose-shrinks	1	phase2-const			0	vector	391
+88	xsofy/check.lg	rose-map	1	unbound-var		core/array-map,core/map	2		430
+89	xsofy/check.lg	rose-filter	1	unbound-var		core/array-map,core/filter,core/map,core/some?	2		395
+90	xsofy/check.lg	lazy-map*	1	unbound-var		core/cons,core/first,core/lazy-seq*,core/rest,core/seq	1		404
+91	xsofy/check.lg	lazy-concat	1	unbound-var		core/cons,core/first,core/lazy-seq*,core/rest,core/seq	1		406
+92	xsofy/check.lg	shrink-int-pos	1	unbound-var		core/cons,core/iterate,core/lazy-seq*,core/map,core/take-while	0		399
+93	xsofy/check.lg	shrink-int	1	unbound-var		core/cons	1	vector	415
+94	xsofy/check.lg	int-rose	1	unbound-var		core/array-map,core/map	2		389
+95	xsofy/check.lg	rand-in	1	unbound-var		core/mod,core/nth,core/vector	1		390
+96	xsofy/check.lg	int-shrink-tree	1	unbound-var		core/array-map,core/filter,core/map,core/not=,core/vec	3		409
+97	xsofy/check.lg	return	1	ok			1		388
+98	xsofy/check.lg	gen-int	1	unbound-var		core/nth	2		459
+99	xsofy/check.lg	gen-bool	1	unbound-var		core/array-map,core/mod,core/nth,core/vector	2	vector	411
+100	xsofy/check.lg	gen-elements	1	unbound-var		core/array-map,core/cons,core/count,core/distinct,core/first,core/map,core/nth,core/range,core/vec	2	vector	418
+101	xsofy/check.lg	fmap	1	ok			1		423
+102	xsofy/check.lg	bind	1	unbound-var		core/array-map,core/nth,core/vector	6		402
+103	xsofy/check.lg	vector-rose-shrinks	1	unbound-var		core/assoc,core/count,core/nth,core/range	4		416
+104	xsofy/check.lg	roses->vector-rose	1	unbound-var		core/array-map,core/mapv	2		561
+105	xsofy/check.lg	gen-vector-of-len	1	unbound-var		core/conj,core/nth	3	vector,vector	619
+106	xsofy/check.lg	gen-vector-variable	1	unbound-var		core/array-map,core/distinct,core/filter,core/nth,core/vector	7		512
+107	xsofy/check.lg	gen-vector	m0	unbound-var		core/max	1		404
+108	xsofy/check.lg	gen-vector	m1	ok			1		393
+109	xsofy/check.lg	gen-vector	m2	ok			1		400
+110	xsofy/check.lg	gen-tuple	1	other unsupported variadic fn {:fn "u110_gen-tuple"}	lower-wasm: unsupported variadic fn {:fn "u110_gen-tuple"}		0		3
+111	xsofy/check.lg	gen-frequency	1	unbound-var		core/count,core/first,core/map,core/nth,core/reduce,core/vec	2		571
+112	xsofy/check.lg	prop-fails?	1	unbound-var		core/apply,core/not	0		399
+113	xsofy/check.lg	prop-error	1	unbound-var		core/apply	0		405
+114	xsofy/check.lg	shrink-failure	1	unbound-var		core/array-map,core/some	3		431
+115	xsofy/check.lg	check	m0	ok			1		391
+116	xsofy/check.lg	check	m1	unbound-var		System/currentTimeMillis,core/apply,core/array-map,core/min,core/mod,core/nth	7		621
+117	xsofy/check.lg	byte-array?	1	unbound-var		core/str,core/type	0		395
+118	xsofy/check.lg	redact	1	unbound-var		core/assoc,core/count,core/first,core/map,core/map?,core/mapv,core/reduce,core/second,core/sequential?,core/set,core/set?,core/str,core/vector?	3		419
+119	xsofy/check.lg	format-value	1	unbound-var		core/pr-str	1		390
+120	xsofy/check.lg	sample	m0	ok			1		389
+121	xsofy/check.lg	sample	m1	unbound-var		System/currentTimeMillis,core/conj,core/min,core/mod,core/nth	3	vector	426
+122	xsofy/check_gen.lg	minimal-stone-room	1	unbound-var		core/assoc	3		391
+123	xsofy/check_gen.lg	carve-feature-row	1	unbound-var		core/conj,core/vector	1		418
+124	xsofy/check_gen.lg	build-feature-room	1	unbound-var		core/array-map,core/assoc,core/mod,core/nth	3	vector	424
+125	xsofy/check_gen.lg	gen-fire-ttl-for-cells	1	unbound-var		core/count,core/zipmap	4		392
+126	xsofy/check_gen.lg	occupied-positions	1	unbound-var		core/filter,core/map,core/not=,core/set,core/vals	0		395
+127	xsofy/check_gen.lg	spawn-creatures	1	unbound-var		core/contains?,core/get,core/reduce	2		402
+128	xsofy/check_gen.lg	spawn-items	1	unbound-var		core/get,core/reduce	1		403
+129	xsofy/check_gen.lg	first-free-position	1	unbound-var		core/concat-list,core/contains?,core/first,core/lazy-seq*,core/list,core/not,core/range,core/rest,core/seq,core/vector	1		430
+130	xsofy/check_gen.lg	creature-ids	1	unbound-var		core/filter,core/map,core/not=,core/vals,core/vec	0		395
+131	xsofy/check_gen.lg	in-bounds?	1	unbound-var		core/integer?,core/nth,core/some?	1		434
+132	xsofy/check_gen.lg	entity-shape-ok?	1	unbound-var		core/map?,core/some?	0		404
+133	xsofy/check_gen.lg	player-shape-ok?	1	unbound-var		core/nil?,core/some?	1		404
+134	xsofy/check_gen.lg	entity-ok?	1	unbound-var		core/every?,core/get,core/get-in,core/nil?,core/nth,core/some?,core/vals,core/vector	2	vector	645
+135	xsofy/check_gen.lg	fire-ttl-references-fire?	1	unbound-var		core/every?,core/get,core/integer?,core/nth	2		430
+136	xsofy/check_gen.lg	world-invariants?	1	unbound-var		core/every?,core/get	3		443
+137	xsofy/combat.lg	strength-modifier	1	phase2-const			0	float,float	404
+138	xsofy/combat.lg	enchant-scale	1	unbound-var		core/float,math/pow	0	float	416
+139	xsofy/combat.lg	roll-damage-det	1	unbound-var		core/first,core/int,core/max,core/second,core/vector	2		412
+140	xsofy/combat.lg	hit-chance	1	unbound-var		core/float,core/int,core/max,core/min,math/pow	0	float	392
+141	xsofy/combat.lg	hit-det?	1	unbound-var		core/first,core/second,core/vector	2		439
+142	xsofy/combat.lg	attack-speed	1	unbound-var		core/get-in,core/not,core/vector	1		408
+143	xsofy/combat.lg	sneak-multiplier	1	unbound-var		core/get-in,core/vector	0		394
+144	xsofy/combat.lg	attacker-stats	1	unbound-var		core/array-map,core/get-in,core/max,core/vector	1		784
+145	xsofy/combat.lg	defender-stats	1	unbound-var		core/array-map,core/get-in,core/int,core/vector	2		553
+146	xsofy/combat.lg	resolve-attack-det	1	unbound-var		core/array-map,core/first,core/get-in,core/max,core/second,core/vector	8		1489
+147	xsofy/combat.lg	rotate-cw	1	unbound-var		core/vector	0		457
+148	xsofy/combat.lg	rotate-ccw	1	unbound-var		core/vector	0		468
+149	xsofy/combat.lg	pattern-target-positions	1	unbound-var		core/conj,core/get,core/nth,core/vector	3	vector	772
+150	xsofy/combat.lg	get-attack-pattern	1	unbound-var		core/get-in,core/vector	1		400
+151	xsofy/combat.lg	attack-direction-glyph	1	unbound-var		core/not=	0		410
+152	xsofy/console.lg	help-text	1	unbound-var		core/str	0		395
+153	xsofy/console.lg	run-command	1	unbound-var		core/array-map,core/first,core/get,core/pr-str,core/read-string,core/rest,core/seq?,core/str,core/symbol?	1	map	476
+154	xsofy/console.lg	init-state	1	unbound-var		core/array-map,core/vector	2	vector,map	404
+155	xsofy/console.lg	printable?	1	unbound-var		core/contains?,core/count,core/not,core/string?	1		396
+156	xsofy/console.lg	record	1	unbound-var		core/array-map,core/assoc,core/conj,core/update	0		405
+157	xsofy/console.lg	record-lines	1	unbound-var		core/reduce,core/split,core/str	1		397
+158	xsofy/console.lg	submit	1	unbound-var		core/assoc,core/conj,core/count,core/get,core/str,core/string?,pprint/pprint-str	3		446
+159	xsofy/console.lg	recall	1	unbound-var		core/assoc,core/count,core/max,core/nil?,core/nth	0		556
+160	xsofy/console.lg	edit	1	unbound-var		core/assoc,core/count,core/max,core/min,core/str,core/subs,core/update	12		732
+161	xsofy/console.lg	handle-key	1	unbound-var		core/assoc,core/nth,core/reduced,term/size	4		666
+162	xsofy/console.lg	line-fg	1	ok			4		406
+163	xsofy/console.lg	draw-prompt	1	unbound-var		core/count,core/str,core/subs	4		406
+164	xsofy/console.lg	render-console	1	unbound-var		core/count,core/max,core/min,core/not=,core/nth,core/str,core/subvec,core/vector,term/flush,term/size	10		507
+165	xsofy/container_trigger.lg	ring-trigger	1	unbound-var		core/array-map,core/get-in,core/seq,core/vector	1	vector	466
+166	xsofy/container_trigger.lg	triggers-for	1	phase2-const			1	vector	396
+167	xsofy/container_trigger.lg	fire-event	1	unbound-var		core/reduce	1		394
+168	xsofy/dag.lg	commit-id	1	ok			0		400
+169	xsofy/dag.lg	checkpoint-hash	1	ok			2		387
+170	xsofy/dag.lg	make-game-state	1	unbound-var		core/array-map	2		406
+171	xsofy/dag.lg	head-world	1	ok			0		391
+172	xsofy/dag.lg	parent-id	1	unbound-var		core/get-in,core/vector	0		391
+173	xsofy/dag.lg	actions-from-origin	1	unbound-var		core/cons,core/get-in,core/nil?,core/vec,core/vector	0	list	520
+174	xsofy/dag.lg	materialize	1	unbound-var		core/contains?,core/reduce	2		414
+175	xsofy/dag.lg	peek	1	ok			1		388
+176	xsofy/dag.lg	switch-head	1	unbound-var		core/assoc	1		391
+177	xsofy/dag.lg	walk-parents	1	unbound-var		core/contains?,core/nil?	1		444
+178	xsofy/dag.lg	commit	1	unbound-var		core/array-map,core/assoc,core/assoc-in,core/vector	1		395
+179	xsofy/dag.lg	clone-terrain	1	unbound-var		core/aclone,core/assoc	0		401
+180	xsofy/dag.lg	start-replay-action	1	unbound-var		core/conj,core/update,core/vector	3		391
+181	xsofy/dag.lg	held-item-ids	1	unbound-var		core/concat,core/distinct,core/filter,core/some?,core/vals,core/vec	0	vector	401
+182	xsofy/dag.lg	drop-held-item	1	unbound-var		core/assoc,core/dissoc,core/nth,core/reduce,core/remove,core/seq,core/vec	0	vector	445
+183	xsofy/dag.lg	current-item-entities	1	unbound-var		core/assoc,core/get-in,core/reduce,core/vector	1		406
+184	xsofy/dag.lg	rewind-world	1	unbound-var		core/assoc,core/conj,core/dissoc,core/get-in,core/keys,core/nth,core/reduce,core/set,core/vector	2		403
+185	xsofy/dag.lg	cast-knot	1	unbound-var		core/assoc-in,core/first,core/second,core/vector	3		401
+186	xsofy/dag.lg	use-unwind-cord	1	unbound-var		core/assoc,core/dissoc,core/get-in,core/update,core/vector	4		413
+187	xsofy/dag.lg	dispatch-gs	1	unbound-var		core/assoc,core/get-in,core/vector	6		443
+188	xsofy/dag.lg	replay-gs	1	unbound-var		core/reduce	3		394
+189	xsofy/dag.lg	branch	1	unbound-var		core/assoc	3		398
+190	xsofy/dag.lg	chain-to-origin	1	unbound-var		core/conj,core/contains?,core/nil?,core/not	1	set	552
+191	xsofy/dag.lg	reachable-ids	1	unbound-var		core/cons,core/into,core/reduce,core/vals	1	set	392
+192	xsofy/dag.lg	gc	1	unbound-var		core/select-keys,core/update	1		389
+193	xsofy/dag.lg	undo	1	ok			2		398
+194	xsofy/debug.lg	ensure-log	1	unbound-var		core/nil?,core/open	1		403
+195	xsofy/debug.lg	log	1	other unsupported variadic fn {:fn "u195_log"}	lower-wasm: unsupported variadic fn {:fn "u195_log"}		0		4
+196	xsofy/debug.lg	close-log	1	unbound-var		core/close!	1		392
+197	xsofy/debug.lg	redact-world	1	unbound-var		core/assoc,core/contains?,core/get,core/keys,core/name,core/reduce,core/str	1		400
+198	xsofy/debug.lg	dump-crash!	1	unbound-var		core/*in-wasm*,core/close!,core/flush!,core/open,core/str,core/write!	3		407
+199	xsofy/det.lg	advance	1	unbound-var		core/assoc	1		391
+200	xsofy/det.lg	with-context	1	ok			1		392
+201	xsofy/det.lg	combine	1	ok			1		388
+202	xsofy/det.lg	step	1	unbound-var		core/vector	1		390
+203	xsofy/det.lg	int-in	1	unbound-var		core/assoc,core/into,core/mod,core/reduce,core/vector	2		402
+204	xsofy/det.lg	pick	1	unbound-var		core/count,core/nth,core/vec,core/vector	1		403
+205	xsofy/det.lg	percent?	1	unbound-var		core/nth,core/vector	1		520
+206	xsofy/det.lg	unit	1	unbound-var		core/assoc,core/mod,core/vector	1	float	400
+207	xsofy/det.lg	permute	1	unbound-var		core/assoc,core/count,core/nth,core/vec,core/vector	1		427
+208	xsofy/det.lg	next-id	1	unbound-var		core/assoc,core/keyword,core/name,core/str,core/vector	0		402
+209	xsofy/dispatch.lg	action-type	1	unbound-var		core/map?	0		389
+210	xsofy/dispatch.lg	ignored-action?	1	unbound-var		core/contains?,core/nil?	2		397
+211	xsofy/dispatch.lg	replay-action?	1	unbound-var		core/contains?,core/not	2		391
+212	xsofy/dispatch.lg	dispatch	1	unbound-var		core/aclone,core/assoc,core/conj,core/update,core/vector	5		431
+213	xsofy/dispatch.lg	replay	1	unbound-var		core/not=,core/reduce,core/take-while	3		398
+214	xsofy/effects.lg	add-stain	1	unbound-var		core/array-map,core/assoc,core/get,core/map?,core/min,core/vector	0		438
+215	xsofy/effects.lg	blood-drop-det	1	unbound-var		core/nth,core/vector	3		399
+216	xsofy/effects.lg	blood-puddle-det	1	unbound-var		core/nth,core/reduce,core/vector	4		409
+217	xsofy/effects.lg	stain-tint-fg	m0	ok			1		390
+218	xsofy/effects.lg	stain-tint-fg	m1	unbound-var		core/array-map,core/float,core/get,core/min,core/nth,core/rem,core/vector	4	float,float	410
+219	xsofy/effects.lg	stain-tint-bg	m0	ok			1		395
+220	xsofy/effects.lg	stain-tint-bg	m1	unbound-var		core/array-map,core/float,core/get,core/min,core/nth,core/rem,core/vector	4	float,float	416
+221	xsofy/effects.lg	add-gas	1	unbound-var		core/assoc,core/get,core/update-in,core/vector	0		408
+222	xsofy/effects.lg	gas-passable?	1	ok			2		395
+223	xsofy/effects.lg	step-gases	1	unbound-var		core/assoc,core/count,core/empty?,core/filter,core/first,core/float,core/get,core/next,core/nth,core/reduce,core/seq,core/update,core/vec,core/vector	4		3810
+224	xsofy/effects.lg	gas-tint	1	unbound-var		core/empty?,core/float,core/get,core/min,core/nil?,core/nth,core/reduce,core/vector	2	float,float	400
+225	xsofy/effects.lg	gas-blocks-vision?	1	unbound-var		core/get,core/reduce,core/vals,core/vector	0		407
+226	xsofy/entities.lg	next-id	1	unbound-var		core/first,core/keyword,core/name,core/second,core/str,core/vector	1		395
+227	xsofy/entities.lg	deep-merge	1	unbound-var		core/assoc,core/get,core/map?,core/nth,core/reduce	1		408
+228	xsofy/entities.lg	visual	1	unbound-var		core/array-map	0		396
+229	xsofy/entities.lg	body	1	unbound-var		core/array-map,core/merge	0	map	397
+230	xsofy/entities.lg	ai	m0	ok			1		389
+231	xsofy/entities.lg	ai	m1	unbound-var		core/array-map,core/merge	0		392
+232	xsofy/entities.lg	melee	1	unbound-var		core/array-map	0		391
+233	xsofy/entities.lg	spell	1	unbound-var		core/array-map	0		392
+234	xsofy/entities.lg	drops	1	other unsupported variadic fn {:fn "u234_drops"}	lower-wasm: unsupported variadic fn {:fn "u234_drops"}		0		1
+235	xsofy/entities.lg	immune	1	other unsupported variadic fn {:fn "u235_immune"}	lower-wasm: unsupported variadic fn {:fn "u235_immune"}		0		1
+236	xsofy/entities.lg	trait	1	unbound-var		core/array-map,core/vector	0		436
+237	xsofy/entities.lg	sounds	1	unbound-var		core/array-map	0		473
+238	xsofy/entities.lg	weapon	1	unbound-var		core/array-map,core/merge	0		842
+239	xsofy/entities.lg	armor	1	unbound-var		core/array-map	0		430
+240	xsofy/entities.lg	ring	1	unbound-var		core/array-map	0		399
+241	xsofy/entities.lg	consumable	1	unbound-var		core/array-map,core/contains?	0		409
+242	xsofy/entities.lg	item-name	1	unbound-var		core/array-map	0		392
+243	xsofy/entities.lg	item-desc	1	unbound-var		core/array-map	0		391
+244	xsofy/entities.lg	runes	1	other unsupported variadic fn {:fn "u244_runes"}	lower-wasm: unsupported variadic fn {:fn "u244_runes"}		0		1
+245	xsofy/entities.lg	deftrait*	1	unbound-var		core/assoc	1		389
+246	xsofy/entities.lg	resolve-traits	1	unbound-var		core/dissoc,core/get,core/reduce	2	vector	398
+247	xsofy/entities.lg	register!	1	unbound-var		core/assoc	2		392
+248	xsofy/entities.lg	spawn	1	unbound-var		core/assoc,core/assoc-in,core/first,core/get,core/merge,core/nil?,core/second,core/str,core/update,core/vector	2	map	401
+249	xsofy/entities.lg	spawn-item	1	unbound-var		core/assoc,core/assoc-in,core/first,core/get,core/nil?,core/second,core/str,core/vector	2		425
+250	xsofy/entities.lg	spawn-loot-item	1	unbound-var		core/assoc,core/assoc-in,core/first,core/get,core/name,core/nil?,core/not=,core/second,core/str,core/vector	2		779
+251	xsofy/entities.lg	entity-at	1	unbound-var		core/filter,core/first,core/vals	0		394
+252	xsofy/entities.lg	items-at	1	unbound-var		core/filter,core/vals	0		393
+253	xsofy/entities.lg	creature-at	1	unbound-var		core/filter,core/first,core/not=,core/vals	0		395
+254	xsofy/entities.lg	alive?	1	unbound-var		core/get-in,core/vector	0		393
+255	xsofy/entities.lg	friendly?	1	unbound-var		core/true?	0		395
+256	xsofy/entities.lg	hostile-to-player?	1	unbound-var		core/not,core/not=	0		407
+257	xsofy/entities.lg	update-entity	1	other unsupported variadic fn {:fn "u257_update-entity"}	lower-wasm: unsupported variadic fn {:fn "u257_update-entity"}		0		1
+258	xsofy/entities.lg	remove-entity	1	unbound-var		core/dissoc,core/update	0		389
+259	xsofy/entities.lg	inventory	1	unbound-var		core/get-in,core/vector	0	vector	395
+260	xsofy/entities.lg	inventory-full?	1	unbound-var		core/count	2		394
+261	xsofy/entities.lg	find-stack	1	unbound-var		core/filter,core/first,core/get-in,core/vector	1		395
+262	xsofy/entities.lg	pickup-item	1	unbound-var		core/assoc-in,core/conj,core/dissoc,core/get-in,core/not=,core/update,core/update-in,core/vector	2	vector,vector	775
+263	xsofy/entities.lg	drop-item	1	unbound-var		core/assoc-in,core/get-in,core/remove,core/update-in,core/vec,core/vector	0		396
+264	xsofy/entities.lg	equipped	1	unbound-var		core/get-in,core/vector	0		402
+265	xsofy/entities.lg	equip-item	1	unbound-var		core/assoc-in,core/dissoc,core/get-in,core/not=,core/update-in,core/vector	1		457
+266	xsofy/entities.lg	flying?	1	unbound-var		core/get-in,core/vector	0		405
+267	xsofy/entities.lg	cursed?	1	unbound-var		core/get-in,core/vector	0		389
+268	xsofy/entities.lg	unequip-item	1	unbound-var		core/dissoc,core/get-in,core/update-in,core/vector	1		421
+269	xsofy/entities.lg	get-weapon	1	unbound-var		core/get-in,core/vector	1		405
+270	xsofy/entities.lg	get-armor	1	unbound-var		core/get-in,core/vector	1		391
+271	xsofy/entities.lg	get-weapon-damage	1	unbound-var		core/get-in,core/vector	1		404
+272	xsofy/entities.lg	get-armor-defense	1	unbound-var		core/get-in,core/vector	1		427
+273	xsofy/entities.lg	find-split-pos	1	unbound-var		core/aget,core/contains?,core/filter,core/first,core/nil?,core/nth,core/second,core/vector	4		429
+274	xsofy/entities.lg	try-split	1	unbound-var		core/assoc-in,core/filter,core/first,core/get-in,core/keys,core/last,core/nth,core/second,core/vector	3		624
+275	xsofy/entities.lg	damage-entity	m0	ok			2		388
+276	xsofy/entities.lg	damage-entity	m1	unbound-var		core/assoc,core/assoc-in,core/get-in,core/max,core/reduce,core/vector	4	vector,vector	698
+277	xsofy/fire.lg	water-tile?	1	unbound-var		core/contains?	1		392
+278	xsofy/fire.lg	on-water?	1	unbound-var		core/get-in,core/nth,core/vector	2		408
+279	xsofy/fire.lg	apply-burning	1	ok			2		393
+280	xsofy/fire.lg	ignite	1	unbound-var		core/assoc,core/assoc-in,core/contains?,core/get,core/vector	5		417
+281	xsofy/fire.lg	ignite-forced	1	unbound-var		core/assoc,core/assoc-in,core/contains?,core/get,core/not,core/not=,core/vector	5		613
+282	xsofy/fire.lg	step-fire	1	unbound-var		core/assoc,core/conj,core/contains?,core/filter,core/first,core/get,core/get-in,core/map?,core/merge,core/not=,core/nth,core/pop-binding!,core/push-binding!,core/reduce,core/second,core/seq,core/some?,core/vals,core/vec,core/vector	15	vector,map,var,var	565
+283	xsofy/fire.lg	place-web	1	unbound-var		core/contains?,core/get	3	set	399
+284	xsofy/fire.lg	place-web-cone	1	unbound-var		core/get,core/range,core/reduce	2		409
+285	xsofy/fire.lg	on-web?	1	unbound-var		core/get	2		401
+286	xsofy/fire.lg	trample-web!	1	unbound-var		core/get	4		424
+287	xsofy/fire.lg	web-immune?	1	unbound-var		core/get-in,core/vector	0		401
+288	xsofy/fire.lg	burning-entities-ignite	1	unbound-var		core/contains?,core/filter,core/get-in,core/map?,core/nth,core/reduce,core/some?,core/vals,core/vec,core/vector	3		430
+289	xsofy/fov.lg	blocked?	1	unbound-var		core/not	1		415
+290	xsofy/fov.lg	cast-octant	1	unbound-var		core/conj,core/first,core/next,core/not,core/range,core/seq,core/vector	3	float	8744
+291	xsofy/fov.lg	reveal-line	1	unbound-var		core/conj,core/vector	2		435
+292	xsofy/fov.lg	compute-fov	1	unbound-var		core/first,core/hash-set,core/next,core/nth,core/range,core/seq,core/vector	3	float,float	466
+293	xsofy/hash.lg	u64+	1	ok			0		391
+294	xsofy/hash.lg	u64*	1	ok			0		389
+295	xsofy/hash.lg	u64-shr	1	ok			0		388
+296	xsofy/hash.lg	u64-shl	1	ok			0		401
+297	xsofy/hash.lg	u64-rotl	1	unbound-var		core/mod	2		399
+298	xsofy/hash.lg	xxh3-64	m0	ok			1		407
+299	xsofy/hash.lg	xxh3-64	m1	unbound-var		core/byte-array,core/count,xxh3/HashSeed	0		395
+300	xsofy/hash.lg	conj-int->8-be	1	unbound-var		core/conj	1		428
+301	xsofy/hash.lg	int->8-be	1	phase2-const			1	vector	441
+302	xsofy/hash.lg	valid-codepoint!	1	unbound-var		core/*assert*,core/->AssertionError,core/not,core/str	0	list	407
+303	xsofy/hash.lg	conj-codepoint->utf8	1	unbound-var		core/conj	2		421
+304	xsofy/hash.lg	conj-utf8-char	1	unbound-var		core/int	1		400
+305	xsofy/hash.lg	conj-utf8	1	unbound-var		core/reduce	1		388
+306	xsofy/hash.lg	codepoint->utf8	1	phase2-const			1	vector	397
+307	xsofy/hash.lg	utf8-bytes	1	phase2-const			1	vector	388
+308	xsofy/hash.lg	encode-salt-into	1	unbound-var		core/*assert*,core/->AssertionError,core/array-map,core/assoc,core/conj,core/count,core/integer?,core/keyword?,core/name,core/reduce,core/str,core/string?,core/type,core/vector?	7	list,list,list	478
+309	xsofy/hash.lg	encode-salt	1	phase2-const			1	vector	388
+310	xsofy/hash.lg	combine	1	ok			2		388
+311	xsofy/hash.lg	salt-literal?	1	unbound-var		core/integer?,core/keyword?,core/string?	0		411
+312	xsofy/hash.lg	split-at-first-non-literal	1	unbound-var		core/conj,core/empty?,core/first,core/rest,core/vector	1	vector,vector	422
+313	xsofy/input.lg	dev?	1	unbound-var		core/count,js/url-param,os/getenv	0		398
+314	xsofy/input.lg	key-matches?	1	unbound-var		core/some	0		389
+315	xsofy/input.lg	binding-for-key	1	unbound-var		core/filter,core/first	2		391
+316	xsofy/input.lg	binding-for-action	1	unbound-var		core/filter,core/first	1		408
+317	xsofy/input.lg	binding-key-labels	1	unbound-var		core/apply,core/interpose,core/str	0		399
+318	xsofy/input.lg	action-key-labels	1	ok			2		396
+319	xsofy/input.lg	parse-key	1	ok			1		401
+320	xsofy/items.lg	depth-freq	1	unbound-var		core/float,math/exp	0	float	392
+321	xsofy/items.lg	weighted-pick	1	unbound-var		core/nth,core/reduce,core/seq,core/vector	2	float	399
+322	xsofy/items.lg	roll-enchant	1	unbound-var		core/max,core/min,core/nth,core/vector,math/abs	2		423
+323	xsofy/items.lg	pick-effect	1	unbound-var		core/nth,core/reduce,core/vector	2		409
+324	xsofy/items.lg	generate-runic-program	1	unbound-var		core/array-map,core/filter,core/max,core/min,core/not=,core/nth,core/str,core/vec,core/vector	5		1450
+325	xsofy/items.lg	roll-quality-tier	1	unbound-var		core/nth,core/vector	2		475
+326	xsofy/items.lg	runic-chance	1	phase2-const			0	float,float,float,float	411
+327	xsofy/items.lg	runic-color	1	unbound-var		core/filter,core/first,core/get,core/keyword?,core/vector	1		403
+328	xsofy/items.lg	roll-floor-loot	1	unbound-var		core/array-map,core/assoc,core/conj,core/filter,core/get,core/int,core/mapv,core/nil?,core/nth,core/seq,core/update,core/vec,core/vector	11	float,vector	2758
+329	xsofy/items.lg	random-loot	1	unbound-var		core/nth,core/seq,core/vector	2		415
+330	xsofy/lighting.lg	collect-terrain-lights	1	unbound-var		core/array-map,core/conj,core/get	2	vector	694
+331	xsofy/lighting.lg	light-at	1	unbound-var		core/float,core/get,core/int,core/nth,core/reduce,core/vector,math/sqrt	0	float	434
+332	xsofy/lighting.lg	apply-light	1	unbound-var		core/min,core/nth,core/vector	1		448
+333	xsofy/opcontext.lg	current	1	ok			1		412
+334	xsofy/opcontext.lg	source	1	ok			1		403
+335	xsofy/opcontext.lg	reason	1	ok			1		399
+336	xsofy/percept.lg	entity-fov	1	unbound-var		core/get,core/get-in,core/nil?,core/nth,core/seq,core/vector	2	set	713
+337	xsofy/percept.lg	creature?	1	unbound-var		core/get-in,core/not=,core/vector	0		407
+338	xsofy/percept.lg	estimated-damage	1	unbound-var		core/get-in,core/max,core/vector	0		420
+339	xsofy/percept.lg	can-attack-from	1	unbound-var		core/get-in,core/vector	0		403
+340	xsofy/percept.lg	threat-score	1	unbound-var		core/max	0	float,float,float,float,float,float	442
+341	xsofy/percept.lg	threats	1	unbound-var		core/array-map,core/contains?,core/filterv,core/get-in,core/mapv,core/nth,core/sort-by,core/vals,core/vec,core/vector	9	vector	1871
+342	xsofy/percept.lg	inventory-by-template	1	unbound-var		core/assoc,core/get,core/get-in,core/reduce,core/vector	0	vector	455
+343	xsofy/percept.lg	equipment-summary	1	unbound-var		core/assoc,core/get-in,core/nth,core/reduce,core/vector	0		404
+344	xsofy/percept.lg	active-statuses	1	unbound-var		core/get-in,core/keys,core/set,core/vector	0		406
+345	xsofy/percept.lg	resources	1	unbound-var		core/array-map,core/float,core/get,core/get-in,core/nth,core/vector	5	float,float	967
+346	xsofy/percept.lg	memory-positions-of-tile	1	unbound-var		core/filter,core/first,core/mapv,core/nth	0		532
+347	xsofy/percept.lg	nearest-position	1	unbound-var		core/first,core/seq,core/sort-by	1		525
+348	xsofy/percept.lg	goal-info	1	unbound-var		core/array-map,core/contains?,core/count,core/filterv,core/get,core/get-in,core/mapv,core/nth,core/seq,core/vals,core/vector	3		1322
+349	xsofy/percept.lg	adjacency	1	unbound-var		core/array-map,core/contains?,core/get,core/get-in,core/into,core/mapv,core/nth,core/some?,core/vector	6		850
+350	xsofy/percept.lg	perceive	m0	ok			1		423
+351	xsofy/percept.lg	perceive	m1	unbound-var		core/array-map,core/assoc	5		450
+352	xsofy/percept.lg	top-threat	1	unbound-var		core/first	1		481
+353	xsofy/percept.lg	in-danger?	m0	phase2-const			1	float	432
+354	xsofy/percept.lg	in-danger?	m1	ok			1		490
+355	xsofy/percept.lg	has-melee-target?	1	unbound-var		core/nth,core/some	1		480
+356	xsofy/perf.lg	time-turn	1	unbound-var		System/nanoTime,core/vector	2		458
+357	xsofy/perf.lg	run-trial	1	unbound-var		core/conj!,core/get-in,core/nil?,core/nth,core/persistent!,core/transient,core/vector	2	vector	607
+358	xsofy/perf.lg	percentile	1	unbound-var		core/count,core/int,core/min,core/nth	0		471
+359	xsofy/perf.lg	summarize	1	unbound-var		core/array-map,core/count,core/last,core/reduce,core/sort,core/vec	1	map,float,float	497
+360	xsofy/perf.lg	run-fixture	1	unbound-var		core/array-map,core/assoc,core/get,core/into,core/mapcat,core/mapv,core/merge,core/nth,core/vec	2	vector	513
+361	xsofy/play.lg	auto-key-for	1	unbound-var		core/nth	0		887
+362	xsofy/play.lg	apply-auto-stops	1	unbound-var		core/contains?,core/dissoc,core/get-in,core/nil?,core/not=,core/some,core/vals,core/vector	1	set,set	1637
+363	xsofy/play.lg	play-advance	1	unbound-var		core/assoc,core/dissoc,core/not,core/not=,core/nth,core/reduced,core/seq,term/size	8		828
+364	xsofy/play.lg	play-step	1	unbound-var		core/assoc,core/dissoc,core/not=,core/nth,core/update-in,core/vector,term/size	3		1148
+365	xsofy/play.lg	run-play-loop	1	unbound-var		core/array-map,core/vector	4	map	607
+366	xsofy/render.lg	term-dims	1	unbound-var		core/vector,term/size	2		583
+367	xsofy/render.lg	style-tile	1	unbound-var		core/array-map,core/get,core/vector	1		573
+368	xsofy/render.lg	memory-color	1	unbound-var		core/int,core/nth,core/vector	1	float,float	666
+369	xsofy/render.lg	pen-reset!	1	ok			1		611
+370	xsofy/render.lg	pen-fg!	1	unbound-var		core/assoc,core/not=,core/vector,term/set-fg	1		618
+371	xsofy/render.lg	pen-bg!	1	unbound-var		core/assoc,core/not=,core/vector,term/set-bg	1		628
+372	xsofy/render.lg	deadzone-margin	1	unbound-var		core/min	0		633
+373	xsofy/render.lg	center-camera	1	unbound-var		core/max,core/min,core/vector	0		603
+374	xsofy/render.lg	camera-for	1	unbound-var		core/get-in,core/max,core/min,core/nth,core/vector	5		5622
+375	xsofy/render.lg	with-camera	1	unbound-var		core/assoc,core/nth	1		518
+376	xsofy/render.lg	commit-camera!	1	unbound-var		core/array-map	1		521
+377	xsofy/render.lg	reset-camera!	1	ok			1		499
+378	xsofy/render.lg	map-cell	1	unbound-var		core/vector	0		651
+379	xsofy/render.lg	tile-appearance	1	unbound-var		core/get,core/map?,core/max,core/nth,core/rand-int,core/vector	9		3601
+380	xsofy/render.lg	render-map-tile	1	unbound-var		core/assoc,core/get,core/not=,core/nth,core/vector,term/move-cursor,term/write	5		488
+381	xsofy/render.lg	render-map	1	unbound-var		core/contains?,core/get,core/vector	5	vector	12151
+382	xsofy/render.lg	entity-z-priority	1	ok			0		473
+383	xsofy/render.lg	render-entity	1	unbound-var		core/contains?,core/get,core/get-in,core/map?,core/nth,core/vector,term/move-cursor,term/write	10	vector	3728
+384	xsofy/render.lg	render-map-entities	1	unbound-var		core/filter,core/first,core/get-in,core/next,core/not=,core/seq,core/vals,core/vector	1		528
+385	xsofy/render.lg	render-status-bars	1	unbound-var		core/array-map,core/get,core/reduce,core/str,core/vector	3		451
+386	xsofy/render.lg	render-creature-entry	1	unbound-var		core/get-in,core/name,core/str,core/vector	5		891
+387	xsofy/render.lg	render-sidebar	1	unbound-var		core/apply,core/contains?,core/filter,core/first,core/get-in,core/int,core/map?,core/next,core/not=,core/repeat,core/seq,core/some?,core/sort-by,core/str,core/vals,core/vec,core/vector	9	set	7179
+388	xsofy/render.lg	topbar-badge-text	1	unbound-var		core/count,core/min,core/subs	0		482
+389	xsofy/render.lg	render-topbar	1	unbound-var		core/assoc,core/count,core/first,core/get-in,core/min,core/nth,core/rest,core/seq,core/str,core/vector,term/move-cursor,term/set-bg,term/set-fg,term/write	7		926
+390	xsofy/render.lg	format-log-entry	1	unbound-var		core/map?,core/str	0		480
+391	xsofy/render.lg	message-visible-lines	1	unbound-var		core/max	0		499
+392	xsofy/render.lg	message-log-window	1	unbound-var		core/array-map,core/count,core/max,core/min,core/subvec,core/vec	0	vector	498
+393	xsofy/render.lg	max-message-scroll	1	ok			1		487
+394	xsofy/render.lg	render-log	1	unbound-var		core/count,core/max,core/nth,core/str,core/subvec,core/vec,core/vector	4	vector	649
+395	xsofy/render.lg	vfx-dirty-cells	1	unbound-var		core/count,core/empty?,core/first,core/into,core/nth,core/rest,core/vector	1	set,vector,vector,vector	10476
+396	xsofy/render.lg	dirty-cell-entities	1	unbound-var		core/assoc,core/contains?,core/get,core/nil?,core/nth,core/reduce	1		556
+397	xsofy/render.lg	restore-dirty-cells!	1	unbound-var		core/contains?,core/dissoc,core/first,core/get,core/next,core/nth,core/reduce,core/seq,core/vector	7	vector	4205
+398	xsofy/render.lg	render-vfx-frame	1	unbound-var		core/count,core/first,core/float,core/get,core/get-in,core/next,core/nth,core/seq,core/some,core/vector,term/move-cursor,term/set-bg,term/set-fg,term/write	8	vector,vector,float,float,vector,vector	557499
+399	xsofy/render.lg	tick-vfx	1	unbound-var		core/assoc,core/count,core/filter,core/mapv,core/some?,core/vec	0	vector	475
+400	xsofy/render.lg	vfx-frame-delay	1	unbound-var		core/every?	0		401
+401	xsofy/render.lg	animate-vfx!	1	unbound-var		core/assoc,core/into,core/seq	9	vector,set	456
+402	xsofy/render.lg	item-display-name	1	unbound-var		core/get-in,core/name,core/str,core/vector	0		582
+403	xsofy/render.lg	item-stat-str	1	unbound-var		core/get-in,core/not=,core/str,core/vector	0		645
+404	xsofy/render.lg	render-status	1	unbound-var		core/*in-wasm*,core/str,core/vector	3		413
+405	xsofy/render.lg	menu-title	1	ok			0		414
+406	xsofy/render.lg	menu-filter	1	unbound-var		core/filter,core/get-in,core/map-indexed,core/not,core/not=,core/nth,core/some,core/some?,core/vec,core/vector	0	vector	724
+407	xsofy/render.lg	render-quick-menu	1	unbound-var		core/count,core/empty?,core/get-in,core/nth,core/str,core/vector	11		10247
+408	xsofy/render.lg	render-messages-screen	1	unbound-var		core/count,core/max,core/nth,core/str,core/vector	11		589
+409	xsofy/render.lg	render-help-row	1	unbound-var		core/str,core/vector	4		398
+410	xsofy/render.lg	render-help-column	1	unbound-var		core/count,core/filter,core/first,core/min,core/next,core/nth,core/seq,core/str,core/vec,core/vector	4		855
+411	xsofy/render.lg	render-help-screen	1	unbound-var		core/nth,core/subvec,core/vector	11		407
+412	xsofy/render.lg	is-equipped?	1	unbound-var		core/get-in,core/nth,core/some,core/vector	0		400
+413	xsofy/render.lg	render-item-detail	1	unbound-var		core/get-in,core/not,core/not=,core/seq,core/str,core/vector	8		2765
+414	xsofy/render.lg	render-inventory-screen	1	unbound-var		core/count,core/empty?,core/get-in,core/min,core/nth,core/str,core/vector	12	vector	17083
+415	xsofy/render.lg	death-runes	1	unbound-var		core/vector	1		394
+416	xsofy/render.lg	render-death-screen	1	unbound-var		core/*in-wasm*,core/apply,core/count,core/first,core/int,core/max,core/min,core/next,core/nth,core/rem,core/repeat,core/seq,core/str,core/subs,core/subvec,core/vec,core/vector,term/move-cursor,term/set-bg,term/set-fg,term/write	9	float,float,vector	4459
+417	xsofy/render.lg	render-rune-codex	1	unbound-var		core/count,core/empty?,core/max,core/min,core/nth,core/str,core/vector	10		784
+418	xsofy/render.lg	render-inscribe-screen	1	unbound-var		core/count,core/empty?,core/get-in,core/min,core/name,core/nth,core/rem,core/seq,core/str,core/vector	13	vector	3607
+419	xsofy/render.lg	render-hazard-prompt	1	unbound-var		core/apply,core/nth,core/repeat,core/str,term/flush,term/move-cursor,term/set-bg,term/set-fg,term/write	1		397
+420	xsofy/render.lg	render-full	1	unbound-var		core/apply,core/nth,core/repeat,core/str,term/move-cursor,term/write	15		420
+421	xsofy/render.lg	render-dirty	1	unbound-var		core/concat,core/contains?,core/dissoc,core/first,core/get,core/get-in,core/into,core/keep,core/next,core/not=,core/nth,core/reduce,core/seq,core/vals,core/vector	18	vector,set	1583
+422	xsofy/replay.lg	b64-encode	1	unbound-var		core/apply,core/count,core/into,core/map,core/nth,core/str,core/vector	1	vector	3437
+423	xsofy/replay.lg	b64-decode	1	unbound-var		core/array-map,core/count,core/get,core/int,core/into,core/mapv,core/nth,core/vector	1	vector,vector	6285
+424	xsofy/replay.lg	i64-be	1	unbound-var		core/mapv,core/vector	0		447
+425	xsofy/replay.lg	read-i64-be	1	unbound-var		core/nth,core/range,core/reduce	0		401
+426	xsofy/replay.lg	u32-be	1	unbound-var		core/mapv,core/vector	0		390
+427	xsofy/replay.lg	read-u32-be	1	unbound-var		core/nth,core/range,core/reduce	0		395
+428	xsofy/replay.lg	varint	1	unbound-var		core/conj	0	vector	408
+429	xsofy/replay.lg	read-varint	1	unbound-var		core/nth,core/vector	0		422
+430	xsofy/replay.lg	name-bytes	1	unbound-var		core/array-map,core/every?,core/int,core/mapv,core/name	0		394
+431	xsofy/replay.lg	kw-field	1	unbound-var		core/count,core/into,core/vector	1		389
+432	xsofy/replay.lg	entry-bytes	1	unbound-var		core/array-map,core/get,core/into,core/keyword?,core/vector	1		441
+433	xsofy/replay.lg	read-name	1	unbound-var		core/apply,core/char,core/map,core/nth,core/str,core/subvec,core/vector	0		402
+434	xsofy/replay.lg	read-entry	1	unbound-var		core/array-map,core/keyword,core/nth,core/vector	1		425
+435	xsofy/replay.lg	rle	1	unbound-var		core/conj,core/count,core/drop,core/first,core/nil?,core/seq,core/take-while,core/vector	0	vector	400
+436	xsofy/replay.lg	encode	1	unbound-var		core/array-map,core/assoc,core/conj,core/count,core/distinct,core/into,core/map,core/nth,core/range,core/reduce,core/vec,core/vector	7	vector	410
+437	xsofy/replay.lg	decode	1	unbound-var		core/array-map,core/conj,core/count,core/first,core/into,core/keep-indexed,core/not=,core/nth,core/repeat,core/subvec,core/vector	6	vector,vector	1466
+438	xsofy/replay.lg	encode-run	1	unbound-var		core/first,core/keep-indexed,core/subvec	1	vector	424
+439	xsofy/replay.lg	encode-run-safe	1	ok			1		398
+440	xsofy/runes.lg	generate-rune-table	1	unbound-var		core/array-map,core/assoc,core/count,core/nth,core/range,core/reduce,core/vector	5		403
+441	xsofy/runes.lg	rune-glyph	1	unbound-var		core/get,core/number?,core/str	1		398
+442	xsofy/runes.lg	rune-display	1	unbound-var		core/get,core/name,core/nil?,core/number?,core/str	0		400
+443	xsofy/runes.lg	rune-identified?	1	unbound-var		core/get,core/number?	0		397
+444	xsofy/runes.lg	identify-rune	1	unbound-var		core/assoc-in,core/get,core/vector	0		392
+445	xsofy/runes.lg	identify-random-rune	1	unbound-var		core/count,core/empty?,core/filter,core/first,core/not,core/nth,core/second,core/vec,core/vector	3		404
+446	xsofy/runes.lg	parse-runes	1	other unsupported variadic fn (& args) as a closure {:fn "u446_par	lower-wasm: unsupported variadic fn (& args) as a closure {:fn "u446_parse-runes", :name nil}		0		62
+447	xsofy/runes.lg	format-glyphs	1	unbound-var		core/apply,core/interpose,core/mapv,core/str	1		407
+448	xsofy/runes.lg	dissonant-glyphs	1	unbound-var		core/apply,core/count,core/nth,core/rand-int,core/repeatedly,core/str	1		396
+449	xsofy/runes.lg	format-sexp-step	1	unbound-var		core/apply,core/interpose,core/keyword?,core/map?,core/mapv,core/number?,core/str,core/vector?	3		406
+450	xsofy/runes.lg	format-sexp	1	unbound-var		core/apply,core/count,core/first,core/interpose,core/mapv,core/str	2		397
+451	xsofy/runes.lg	inscribable-runes	1	unbound-var		core/array-map,core/filter,core/into,core/mapv,core/name,core/nth,core/some?,core/str,core/vec	1		409
+452	xsofy/runes.lg	discovered-runes	1	unbound-var		core/array-map,core/filter,core/mapv,core/name,core/nth,core/some?,core/vec	0		399
+453	xsofy/runes.lg	undiscovered-runes	1	unbound-var		core/array-map,core/filter,core/mapv,core/not,core/nth,core/some?,core/vec	0		408
+454	xsofy/screenfx.lg	pause!	1	unbound-var		async/<!!,async/timeout,core/*in-wasm*,core/max	0		393
+455	xsofy/screenfx.lg	scatter-runes	1	unbound-var		core/array-map,core/count,core/filter,core/mapv,core/max,core/min,core/nth,core/rand-int,core/range,core/some?,core/vec,core/vector	1		407
+456	xsofy/screenfx.lg	rune-brightness	1	unbound-var		core/float,core/rem	0	float	424
+457	xsofy/screenfx.lg	sync-begin!	1	unbound-var		term/write	2		428
+458	xsofy/screenfx.lg	flush-frame!	1	unbound-var		term/flush,term/write	2		389
+459	xsofy/screenfx.lg	clear-screen	1	unbound-var		core/apply,core/repeat,core/str,term/move-cursor,term/set-bg,term/set-fg,term/write	2		404
+460	xsofy/seed.lg	boot-param	1	unbound-var		js/url-param,os/getenv	0		391
+461	xsofy/seed.lg	boot-seed	1	unbound-var		core/count,core/integer?,core/rand-int,core/read-string	2		435
+462	xsofy/seed.lg	boot-replay	1	unbound-var		core/count	2		408
+463	xsofy/serialize.lg	u64-shr	1	ok			0		392
+464	xsofy/serialize.lg	u32-be	1	unbound-var		core/vector	1		391
+465	xsofy/serialize.lg	i64-be	1	unbound-var		core/mapv,core/vector	1		393
+466	xsofy/serialize.lg	codepoint->utf8	1	unbound-var		core/*assert*,core/->AssertionError,core/not,core/str,core/vector	1	list	426
+467	xsofy/serialize.lg	utf8-bytes	1	unbound-var		core/int,core/into,core/reduce	1	vector	401
+468	xsofy/serialize.lg	emit-into	1	unbound-var		core/array-map,core/conj,core/count,core/first,core/float?,core/integer?,core/into,core/keyword?,core/map,core/map?,core/name,core/nil?,core/nth,core/reduce,core/seq,core/sequential?,core/set?,core/sort,core/sort-by,core/str,core/string?,core/type,core/vector	16		464
+469	xsofy/serialize.lg	emit	1	phase2-const			1	vector	423
+470	xsofy/serialize.lg	canonical-bytes	1	ok			1		391
+471	xsofy/sound.lg	deliver-sound	1	unbound-var		core/conj,core/contains?,core/get-in,core/update,core/vector	2	set,vector	1019
+472	xsofy/sound.lg	deliver-sounds	1	unbound-var		core/reduce	1		390
+473	xsofy/sound.lg	footstep	1	unbound-var		core/array-map,core/str	0		395
+474	xsofy/sound.lg	door-open	1	unbound-var		core/array-map,core/str	0		399
+475	xsofy/sound.lg	snoring	1	unbound-var		core/array-map,core/str	0		391
+476	xsofy/sound.lg	death-cry	1	unbound-var		core/array-map,core/str	0		410
+477	xsofy/sound.lg	combat-hit	1	unbound-var		core/array-map	0		400
+478	xsofy/sound.lg	creature-death	1	unbound-var		core/array-map,core/str	1		415
+479	xsofy/sound.lg	creature-idle-det	1	unbound-var		core/array-map,core/count,core/nth,core/seq,core/vector	3		485
+480	xsofy/spell.lg	make-context	m0	ok			1		410
+481	xsofy/spell.lg	make-context	m1	unbound-var		core/array-map,core/get-in,core/hash-set,core/vector	0	set,vector	413
+482	xsofy/spell.lg	emit-vfx	1	unbound-var		core/conj,core/update	0	vector	391
+483	xsofy/spell.lg	entities-at-cursors	1	unbound-var		core/contains?,core/filter,core/mapcat,core/not,core/not=,core/vec	1		400
+484	xsofy/spell.lg	r-self	1	unbound-var		core/assoc,core/hash-set	0		389
+485	xsofy/spell.lg	r-target	1	unbound-var		core/assoc,core/hash-set	0		395
+486	xsofy/spell.lg	find-nearest	m0	ok			1		406
+487	xsofy/spell.lg	find-nearest	m1	unbound-var		core/contains?,core/filter,core/first,core/get-in,core/map?,core/not,core/not=,core/seq,core/some?,core/sort-by,core/vals,core/vec,core/vector	1		474
+488	xsofy/spell.lg	r-nearest	1	unbound-var		core/assoc,core/hash-set	1		390
+489	xsofy/spell.lg	r-area	1	unbound-var		core/assoc,core/conj,core/first,core/next,core/nth,core/range,core/seq,core/vector	0	set	1515
+490	xsofy/spell.lg	r-spread	1	unbound-var		core/apply,core/assoc,core/contains?,core/empty?,core/filter,core/map,core/map?,core/min,core/not,core/not=,core/set,core/some?,core/sort-by,core/take,core/vals,core/vec	1		567
+491	xsofy/spell.lg	reduce-cursor-targets	1	unbound-var		core/first,core/reduce	0		450
+492	xsofy/spell.lg	r-damage	1	unbound-var		core/array-map,core/assoc,core/conj,core/get-in,core/max,core/merge,core/nth,core/pop-binding!,core/push-binding!,core/vector	4	var,var	417
+493	xsofy/spell.lg	r-heal	1	unbound-var		core/assoc,core/assoc-in,core/get-in,core/min,core/nth,core/vector	2		424
+494	xsofy/spell.lg	r-fire	m0	ok			1		396
+495	xsofy/spell.lg	r-fire	m1	unbound-var		core/assoc,core/first,core/max,core/nth,core/number?,core/second,core/vector	4		415
+496	xsofy/spell.lg	r-ice	m0	ok			1		391
+497	xsofy/spell.lg	r-ice	m1	unbound-var		core/assoc,core/first,core/max,core/nth,core/number?,core/second,core/vector	4		419
+498	xsofy/spell.lg	r-push	1	unbound-var		core/assoc,core/assoc-in,core/contains?,core/get,core/get-in,core/int,core/max,core/nil?,core/not=,core/nth,core/vector,math/sqrt	7		1179
+499	xsofy/spell.lg	r-arc	1	unbound-var		core/array-map,core/assoc,core/first,core/hash-set,core/not=,core/vector	4		564
+500	xsofy/spell.lg	r-web	1	unbound-var		core/assoc,core/int,core/max,core/nth,core/reduce,math/abs	1		418
+501	xsofy/spell.lg	weighted-pick	1	unbound-var		core/first,core/map,core/nth,core/reduce,core/second,core/vector	2		397
+502	xsofy/spell.lg	adjacent-spawn-cell	1	unbound-var		core/concat-list,core/empty?,core/first,core/get,core/lazy-seq*,core/list,core/nil?,core/not,core/nth,core/rest,core/seq,core/vec,core/vector	3		535
+503	xsofy/spell.lg	r-conjure	1	unbound-var		core/assoc,core/assoc-in,core/contains?,core/filter,core/first,core/get-in,core/keys,core/nil?,core/not,core/nth,core/set,core/vector	4	map	436
+504	xsofy/spell.lg	r-friend	1	unbound-var		core/assoc-in,core/get-in,core/vector	0		401
+505	xsofy/spell.lg	spell-error	1	unbound-var		core/array-map,core/assoc,core/vec	0		401
+506	xsofy/spell.lg	valid-rune-args?	1	unbound-var		core/count,core/empty?,core/first,core/get,core/nil?,core/number?	1		417
+507	xsofy/spell.lg	eval-step	1	unbound-var		core/apply,core/assoc,core/first,core/get,core/keyword?,core/map?,core/nil?,core/not,core/rest,core/vector?	4	vector,vector	455
+508	xsofy/spell.lg	eval-spell*	1	unbound-var		core/array-map,core/reduce	3	vector	407
+509	xsofy/spell.lg	eval-spell	1	ok			1		409
+510	xsofy/status.lg	apply-status	1	unbound-var		core/array-map,core/assoc-in,core/get-in,core/max,core/nil?,core/vector	0		408
+511	xsofy/status.lg	remove-status	1	unbound-var		core/dissoc,core/get-in,core/nil?,core/update-in,core/vector	0		396
+512	xsofy/status.lg	has-status?	1	unbound-var		core/get-in,core/some?,core/vector	0		400
+513	xsofy/status.lg	tick-entity-statuses	1	unbound-var		core/assoc-in,core/empty?,core/get,core/get-in,core/nil?,core/nth,core/reduce,core/vector	3		661
+514	xsofy/status.lg	can-act?	1	unbound-var		core/get,core/get-in,core/not,core/nth,core/some,core/vector	1		425
+515	xsofy/status.lg	entity-status-tint	1	unbound-var		core/first,core/get,core/nth,core/seq,core/sort-by,core/vector	1		433
+516	xsofy/status.lg	entity-active-statuses	1	unbound-var		core/array-map,core/filter,core/get,core/map,core/name,core/nth,core/some?,core/vec,core/vector	1		662
+517	xsofy/terrain.lg	tget	1	unbound-var		core/aget,core/alength	0		413
+518	xsofy/terrain.lg	tset!	1	unbound-var		core/aset	0		399
+519	xsofy/terrain.lg	in-bounds?	1	ok			0		405
+520	xsofy/terrain.lg	in-grid?	1	ok			0		399
+521	xsofy/terrain.lg	walkable?	1	unbound-var		core/contains?	3		412
+522	xsofy/terrain.lg	transparent?	1	unbound-var		core/contains?	3		398
+523	xsofy/terrain.lg	has-clear-line?	1	unbound-var		core/get,core/not,core/nth,core/vector,math/abs	1		5538
+524	xsofy/terrain.lg	trample!	1	ok			2		405
+525	xsofy/terrain.lg	make-terrain	1	unbound-var		core/aset,core/byte-array	0		403
+526	xsofy/terrain.lg	ca-step	1	unbound-var		core/aget,core/aset,core/contains?,core/int-array	2		3958
+527	xsofy/terrain.lg	bfs-flood-label!	1	unbound-var		core/aget,core/aset,core/int-array,core/not=	2		3945
+528	xsofy/terrain.lg	generate-blob	1	unbound-var		core/aget,core/array-map,core/aset,core/first,core/int-array,core/second,core/vector	4		8176
+529	xsofy/terrain.lg	carve-room!	1	unbound-var		core/first,core/next,core/range,core/seq	1		452
+530	xsofy/terrain.lg	carve-h-corridor!	1	unbound-var		core/first,core/max,core/min,core/next,core/range,core/seq	1		400
+531	xsofy/terrain.lg	carve-v-corridor!	1	unbound-var		core/first,core/max,core/min,core/next,core/range,core/seq	1		401
+532	xsofy/terrain.lg	carve-cave-room!	1	unbound-var		core/aget,core/conj,core/count,core/first,core/nth,core/second,core/seq,core/vector	5	set,set,vector	1719
+533	xsofy/terrain.lg	place-lake!	1	unbound-var		core/aget,core/aset,core/first,core/max,core/next,core/not,core/nth,core/range,core/second,core/seq,core/vector	4	set,set	104710
+534	xsofy/terrain.lg	spread-feature!	1	unbound-var		core/aget,core/aset,core/conj,core/contains?,core/empty?,core/first,core/int-array,core/nth,core/rest,core/second,core/vector	5	vector	7124
+535	xsofy/terrain.lg	place-grass-patch!	1	unbound-var		core/first,core/nth,core/second,core/vector	5	set	469
+536	xsofy/terrain.lg	walk-distance	1	unbound-var		core/aget,core/aset,core/contains?,core/int-array	4		2924
+537	xsofy/terrain.lg	try-bridge	1	unbound-var		core/contains?,core/vector	4		2625
+538	xsofy/terrain.lg	build-bridge-span!	1	ok			1		432
+539	xsofy/terrain.lg	try-build-bridge-at!	1	unbound-var		core/nil?,core/nth	3		475
+540	xsofy/terrain.lg	build-bridges!	1	unbound-var		core/contains?,core/first,core/mod,core/nth,core/second,core/vector	5		1134
+541	xsofy/terrain.lg	wall-attachment-at	1	unbound-var		core/aget,core/contains?,core/mod,core/nth,core/vector	2		2638
+542	xsofy/terrain.lg	find-wall-attachment-point	1	unbound-var		core/first,core/mod,core/rem,core/second,core/vector	3		630
+543	xsofy/terrain.lg	attach-room!	1	unbound-var		core/conj,core/first,core/max,core/min,core/next,core/not=,core/nth,core/range,core/second,core/seq,core/vector	6		2520
+544	xsofy/terrain.lg	dsu-make	1	unbound-var		core/aset,core/int-array	0		424
+545	xsofy/terrain.lg	dsu-find	1	unbound-var		core/aget,core/aset	0		417
+546	xsofy/terrain.lg	dsu-union!	1	unbound-var		core/aset	1		401
+547	xsofy/terrain.lg	ensure-connectivity-dsu!	1	unbound-var		core/aget,core/aset,core/contains?,core/int-array,core/not=,core/rem	7		2269
+548	xsofy/terrain.lg	place-room-in-sector!	1	unbound-var		core/conj,core/first,core/int,core/max,core/min,core/second,core/vector	5		501
+549	xsofy/terrain.lg	stair-tile	1	unbound-var		core/count,core/first,core/last,core/nth,core/vec,core/vector	1		818
+550	xsofy/terrain.lg	a-wall?	1	ok			0		392
+551	xsofy/terrain.lg	a-open?	1	unbound-var		core/not	1		395
+552	xsofy/terrain.lg	door-floating?	1	unbound-var		core/not	3		2056
+553	xsofy/terrain.lg	cleanup-floating-doors!	1	unbound-var		core/first,core/next,core/range,core/seq	3		1084
+554	xsofy/terrain.lg	generate-level	m0	phase2-const			1	map	399
+555	xsofy/terrain.lg	generate-level	m1	unbound-var		core/array-map	1		390
+556	xsofy/terrain.lg	generate-level	m2	unbound-var		core/array-map,core/contains?,core/count,core/empty?,core/first,core/min,core/nth,core/range,core/rest,core/second,core/vec,core/vector	18	vector,float,float,float	53405
+557	xsofy/test/check_test.lg	rng-produces-integers	1	unbound-var		test/test-var	0	var	417
+558	xsofy/test/check_test.lg	rng-is-deterministic	1	unbound-var		test/test-var	0	var	441
+559	xsofy/test/check_test.lg	rng-different-seeds-differ	1	unbound-var		test/test-var	0	var	423
+560	xsofy/test/check_test.lg	rng-advances	1	unbound-var		test/test-var	0	var	426
+561	xsofy/test/check_test.lg	rng-split-produces-independent-streams	1	unbound-var		test/test-var	0	var	405
+562	xsofy/test/check_test.lg	pure-makes-leaf	1	unbound-var		test/test-var	0	var	389
+563	xsofy/test/check_test.lg	rose-map-transforms-value-and-shrinks	1	unbound-var		test/test-var	0	var	401
+564	xsofy/test/check_test.lg	rose-filter-keeps-passing-and-prunes-failing	1	unbound-var		test/test-var	0	var	391
+565	xsofy/test/check_test.lg	shrink-int-yields-zero-and-halves	1	unbound-var		test/test-var	0	var	390
+566	xsofy/test/check_test.lg	int-rose-shrinks-toward-zero	1	unbound-var		test/test-var	0	var	389
+567	xsofy/test/check_test.lg	return-yields-constant-value	1	unbound-var		test/test-var	0	var	395
+568	xsofy/test/check_test.lg	return-is-deterministic-across-seeds	1	unbound-var		test/test-var	0	var	403
+569	xsofy/test/check_test.lg	gen-let-binds-and-evaluates-body	1	unbound-var		test/test-var	0	var	395
+570	xsofy/test/check_test.lg	gen-let-supports-using-earlier-bindings	1	unbound-var		test/test-var	0	var	391
+571	xsofy/test/check_test.lg	sample-returns-default-count-of-values	1	unbound-var		test/test-var	0	var	413
+572	xsofy/test/check_test.lg	sample-supports-custom-count	1	unbound-var		test/test-var	0	var	402
+573	xsofy/test/check_test.lg	format-value-shortens-byte-arrays	1	unbound-var		test/test-var	0	var	389
+574	xsofy/test/check_test.lg	format-value-handles-nested-maps	1	unbound-var		test/test-var	0	var	402
+575	xsofy/test/check_test.lg	format-value-passes-small-values-through	1	unbound-var		test/test-var	0	var	393
+576	xsofy/test/check_test.lg	gen-int-bounded-produces-value-in-range	1	unbound-var		test/test-var	0	var	404
+577	xsofy/test/check_test.lg	gen-int-bounded-is-deterministic	1	unbound-var		test/test-var	0	var	388
+578	xsofy/test/check_test.lg	gen-int-shrinks-toward-lo	1	unbound-var		test/test-var	0	var	389
+579	xsofy/test/check_test.lg	gen-bool-produces-bool	1	unbound-var		test/test-var	0	var	416
+580	xsofy/test/check_test.lg	gen-elements-picks-from-coll	1	unbound-var		test/test-var	0	var	391
+581	xsofy/test/check_test.lg	gen-elements-shrinks-toward-first	1	unbound-var		test/test-var	0	var	509
+582	xsofy/test/check_test.lg	fmap-transforms-value	1	unbound-var		test/test-var	0	var	576
+583	xsofy/test/check_test.lg	fmap-preserves-shrinking	1	unbound-var		test/test-var	0	var	516
+584	xsofy/test/check_test.lg	bind-threads-rng	1	unbound-var		test/test-var	0	var	596
+585	xsofy/test/check_test.lg	gen-vector-length-bounded	1	unbound-var		test/test-var	0	var	537
+586	xsofy/test/check_test.lg	gen-vector-shrinks	1	unbound-var		test/test-var	0	var	550
+587	xsofy/test/check_test.lg	gen-tuple-combines-generators	1	unbound-var		test/test-var	0	var	563
+588	xsofy/test/check_test.lg	gen-frequency-respects-weights	1	unbound-var		test/test-var	0	var	543
+589	xsofy/test/check_test.lg	check-passes-tautology	1	unbound-var		test/test-var	0	var	544
+590	xsofy/test/check_test.lg	check-fails-contradiction	1	unbound-var		test/test-var	0	var	553
+591	xsofy/test/check_test.lg	check-includes-seed-in-result	1	unbound-var		test/test-var	0	var	467
+592	xsofy/test/check_test.lg	check-reports-counterexample	1	unbound-var		test/test-var	0	var	419
+593	xsofy/test/check_test.lg	check-shrinks-to-minimum	1	unbound-var		test/test-var	0	var	397
+594	xsofy/test/check_test.lg	check-catches-exceptions	1	unbound-var		test/test-var	0	var	387
+595	xsofy/test/check_test.lg	trivial-int-prop	1	unbound-var		test/test-var	0	var	392
+596	xsofy/test/combat_prop.lg	melee-attack-doesnt-throw	1	unbound-var		test/test-var	0	var	387
+597	xsofy/test/combat_prop.lg	melee-attack-preserves-invariants	1	unbound-var		test/test-var	0	var	391
+598	xsofy/test/combat_prop.lg	ranged-attack-doesnt-throw	1	unbound-var		test/test-var	0	var	387
+599	xsofy/test/combat_prop.lg	ranged-attack-preserves-invariants	1	unbound-var		test/test-var	0	var	394
+600	xsofy/test/combat_prop.lg	push-spell-doesnt-throw	1	unbound-var		test/test-var	0	var	393
+601	xsofy/test/combat_prop.lg	push-spell-preserves-invariants	1	unbound-var		test/test-var	0	var	425
+602	xsofy/test/combat_prop.lg	push-spell-respects-bounds	1	unbound-var		test/test-var	0	var	393
+603	xsofy/test/combat_prop.lg	make-test-item	1	unbound-var		core/array-map	0	map	395
+604	xsofy/test/combat_prop.lg	equip-puts-item-in-equipment-slot	1	unbound-var		test/test-var	0	var	394
+605	xsofy/test/combat_prop.lg	unequip-removes-from-equipment	1	unbound-var		test/test-var	0	var	389
+606	xsofy/test/combat_prop.lg	drop-item-sets-pos-and-removes-from-inventory	1	unbound-var		test/test-var	0	var	394
+607	xsofy/test/combat_prop.lg	extract-then-inject-preserves-player-and-items	1	unbound-var		test/test-var	0	var	395
+608	xsofy/test/combat_prop.lg	save-floor-removes-player	1	unbound-var		test/test-var	0	var	406
+609	xsofy/test/combat_prop.lg	ai-act-doesnt-throw	1	unbound-var		test/test-var	0	var	392
+610	xsofy/test/combat_prop.lg	ai-act-preserves-invariants	1	unbound-var		test/test-var	0	var	387
+611	xsofy/test/combat_prop.lg	process-creatures-doesnt-throw	1	unbound-var		test/test-var	0	var	387
+612	xsofy/test/combat_prop.lg	process-creatures-preserves-invariants	1	unbound-var		test/test-var	0	var	387
+613	xsofy/test/combat_prop.lg	minimal-with-player	1	unbound-var		core/array-map,core/assoc-in,core/vector	1	vector,map	399
+614	xsofy/test/combat_prop.lg	friendly-creature-does-not-attack-player	1	unbound-var		test/test-var	0	var	399
+615	xsofy/test/combat_prop.lg	hostile-targets-friendly-when-closer-than-player	1	unbound-var		test/test-var	0	var	388
+616	xsofy/test/combat_prop.lg	fire-bow-skips-friendlies	1	unbound-var		test/test-var	0	var	398
+617	xsofy/test/combat_prop.lg	friendly-ai-act-doesnt-throw	1	unbound-var		test/test-var	0	var	386
+618	xsofy/test/combat_prop.lg	friendly-ai-act-preserves-invariants	1	unbound-var		test/test-var	0	var	391
+619	xsofy/test/combat_prop.lg	process-creatures-with-friendlies-preserves-invariants	1	unbound-var		test/test-var	0	var	412
+620	xsofy/test/combat_prop.lg	hostile-targets-player-when-no-friendly	1	unbound-var		test/test-var	0	var	388
+621	xsofy/test/combat_prop.lg	find-target-tiebreak-is-deterministic	1	unbound-var		test/test-var	0	var	411
+622	xsofy/test/console_test.lg	read-only-commands-return-values	1	unbound-var		test/test-var	0	var	418
+623	xsofy/test/console_test.lg	bare-symbol-resolves-like-a-call	1	unbound-var		test/test-var	0	var	398
+624	xsofy/test/console_test.lg	unknown-form-is-reported-not-run	1	unbound-var		test/test-var	0	var	397
+625	xsofy/test/console_test.lg	parse-error-is-caught-not-thrown	1	unbound-var		test/test-var	0	var	419
+626	xsofy/test/console_test.lg	typing-inserts-at-cursor	1	unbound-var		test/test-var	0	var	400
+627	xsofy/test/console_test.lg	backspace-deletes-before-cursor	1	unbound-var		test/test-var	0	var	393
+628	xsofy/test/console_test.lg	history-up-recalls-the-last-line	1	unbound-var		test/test-var	0	var	401
+629	xsofy/test/console_test.lg	esc-and-backtick-close-returning-the-world-unchanged	1	unbound-var		test/test-var	0	var	425
+630	xsofy/test/container_trigger_test.lg	equip-test-ring	1	unbound-var		core/array-map,core/assoc-in,core/conj,core/update-in,core/vec,core/vector	0	map,vector	400
+631	xsofy/test/container_trigger_test.lg	first-safe-move	1	unbound-var		core/filter,core/first,core/get-in,core/not=,core/vector	2		403
+632	xsofy/test/container_trigger_test.lg	base-world	1	unbound-var		core/assoc-in,core/vector	1		416
+633	xsofy/test/container_trigger_test.lg	hp-after	1	unbound-var		core/get-in,core/vector	1		404
+634	xsofy/test/container_trigger_test.lg	equipped-ring-fires-on-wait	1	unbound-var		test/test-var	0	var	411
+635	xsofy/test/container_trigger_test.lg	equipped-ring-fires-on-movement	1	unbound-var		test/test-var	0	var	391
+636	xsofy/test/container_trigger_test.lg	ring-does-not-fire-on-ui-actions	1	unbound-var		test/test-var	0	var	388
+637	xsofy/test/container_trigger_test.lg	unequipped-ring-does-not-fire	1	unbound-var		test/test-var	0	var	391
+638	xsofy/test/container_trigger_test.lg	ring-turn-trigger-is-deterministic	1	unbound-var		test/test-var	0	var	388
+639	xsofy/test/dag_test.lg	gs0	1	ok			2		401
+640	xsofy/test/dag_test.lg	item-with-slot	1	unbound-var		core/filter,core/first,core/get-in,core/vector	0		399
+641	xsofy/test/dag_test.lg	cord-ids	1	unbound-var		core/filter,core/get-in,core/vec,core/vector	0		404
+642	xsofy/test/dag_test.lg	commit-id-is-the-seed-hash	1	unbound-var		test/test-var	0	var	389
+643	xsofy/test/dag_test.lg	commit-id-distinguishes-by-action-history	1	unbound-var		test/test-var	0	var	392
+644	xsofy/test/dag_test.lg	checkpoint-hash-catches-non-history-content	1	unbound-var		test/test-var	0	var	392
+645	xsofy/test/dag_test.lg	make-game-state-wraps-initial-world	1	unbound-var		test/test-var	0	var	396
+646	xsofy/test/dag_test.lg	dispatch-gs-logs-replay-action	1	unbound-var		test/test-var	0	var	388
+647	xsofy/test/dag_test.lg	dispatch-gs-ui-action-updates-world-without-logging	1	unbound-var		test/test-var	0	var	405
+648	xsofy/test/dag_test.lg	cast-runes-knot-creates-a-cord-and-pins-head	1	unbound-var		test/test-var	0	var	392
+649	xsofy/test/dag_test.lg	use-knot-cord-restores-world-but-keeps-current-self	1	unbound-var		test/test-var	0	var	392
+650	xsofy/test/dag_test.lg	use-knot-cord-with-dangling-ref-fizzles-cleanly	1	unbound-var		test/test-var	0	var	400
+651	xsofy/test/dag_test.lg	peek-regenerates-past-world-by-replay	1	unbound-var		test/test-var	0	var	390
+652	xsofy/test/dag_test.lg	switch-head-time-travels	1	unbound-var		test/test-var	0	var	401
+653	xsofy/test/dag_test.lg	walk-parents-finds-nth-ancestor	1	unbound-var		test/test-var	0	var	399
+654	xsofy/test/dag_test.lg	branch-keeps-both-timelines	1	unbound-var		test/test-var	0	var	389
+655	xsofy/test/dag_test.lg	gc-prunes-unreachable-branches	1	unbound-var		test/test-var	0	var	398
+656	xsofy/test/dag_test.lg	gc-keeps-ref-pinned-branches	1	unbound-var		test/test-var	0	var	397
+657	xsofy/test/dag_test.lg	replay-gs-reconstructs-identical-head	1	unbound-var		test/test-var	0	var	393
+658	xsofy/test/dag_test.lg	undo-walks-head-back-one-commit	1	unbound-var		test/test-var	0	var	390
+659	xsofy/test/dag_test.lg	undo-at-root-is-noop	1	unbound-var		test/test-var	0	var	418
+660	xsofy/test/det_test.lg	v	1	unbound-var		core/first	0		388
+661	xsofy/test/det_test.lg	w	1	unbound-var		core/second	0		394
+662	xsofy/test/det_test.lg	advance-is-deterministic	1	unbound-var		test/test-var	0	var	391
+663	xsofy/test/det_test.lg	advance-mutates-seed	1	unbound-var		test/test-var	0	var	388
+664	xsofy/test/det_test.lg	advance-context-sensitivity	1	unbound-var		test/test-var	0	var	388
+665	xsofy/test/det_test.lg	advance-seed-sensitivity	1	unbound-var		test/test-var	0	var	389
+666	xsofy/test/det_test.lg	advance-defaults-missing-seed-to-zero	1	unbound-var		test/test-var	0	var	408
+667	xsofy/test/det_test.lg	with-context-equals-advance	1	unbound-var		test/test-var	0	var	397
+668	xsofy/test/det_test.lg	int-in-is-deterministic	1	unbound-var		test/test-var	0	var	393
+669	xsofy/test/det_test.lg	int-in-advances-seed	1	unbound-var		test/test-var	0	var	388
+670	xsofy/test/det_test.lg	int-in-range-correctness	1	unbound-var		test/test-var	0	var	392
+671	xsofy/test/det_test.lg	int-in-degenerate-range	1	unbound-var		test/test-var	0	var	400
+672	xsofy/test/det_test.lg	int-in-consecutive-calls-differ	1	unbound-var		test/test-var	0	var	397
+673	xsofy/test/det_test.lg	pick-is-deterministic	1	unbound-var		test/test-var	0	var	392
+674	xsofy/test/det_test.lg	pick-empty-returns-nil	1	unbound-var		test/test-var	0	var	401
+675	xsofy/test/det_test.lg	pick-result-is-member	1	unbound-var		test/test-var	0	var	392
+676	xsofy/test/det_test.lg	permute-preserves-multiset	1	unbound-var		test/test-var	0	var	403
+677	xsofy/test/det_test.lg	permute-preserves-frequencies	1	unbound-var		test/test-var	0	var	406
+678	xsofy/test/det_test.lg	permute-empty-and-singleton	1	unbound-var		test/test-var	0	var	411
+679	xsofy/test/det_test.lg	permute-produces-distinct-orderings	1	unbound-var		test/test-var	0	var	393
+680	xsofy/test/det_test.lg	percent?-is-deterministic	1	unbound-var		test/test-var	0	var	389
+681	xsofy/test/det_test.lg	percent?-calibration	1	unbound-var		test/test-var	0	var	387
+682	xsofy/test/det_test.lg	percent?-extremes	1	unbound-var		test/test-var	0	var	391
+683	xsofy/test/det_test.lg	unit-is-deterministic	1	unbound-var		test/test-var	0	var	394
+684	xsofy/test/det_test.lg	unit-range-correctness	1	unbound-var		test/test-var	0	var	388
+685	xsofy/test/det_test.lg	next-id-increments	1	unbound-var		test/test-var	0	var	408
+686	xsofy/test/det_test.lg	next-id-prefix-determines-name	1	unbound-var		test/test-var	0	var	398
+687	xsofy/test/det_test.lg	next-id-preserves-other-world-keys	1	unbound-var		test/test-var	0	var	396
+688	xsofy/test/det_test.lg	next-id-does-not-advance-seed	1	unbound-var		test/test-var	0	var	392
+689	xsofy/test/det_test.lg	chained-calls-produce-distinct-values	1	unbound-var		test/test-var	0	var	388
+690	xsofy/test/det_test.lg	mixed-helpers-thread-cleanly	1	unbound-var		test/test-var	0	var	389
+691	xsofy/test/det_test.lg	with-context-changes-downstream-rolls	1	unbound-var		test/test-var	0	var	387
+692	xsofy/test/det_test.lg	int-in-stays-in-range	1	unbound-var		test/test-var	0	var	387
+693	xsofy/test/det_test.lg	unit-stays-in-unit-interval	1	unbound-var		test/test-var	0	var	393
+694	xsofy/test/det_test.lg	permute-preserves-count	1	unbound-var		test/test-var	0	var	399
+695	xsofy/test/dispatch_test.lg	make-world-is-reproducible	1	unbound-var		test/test-var	0	var	392
+696	xsofy/test/dispatch_test.lg	floors-are-path-independent	1	unbound-var		test/test-var	0	var	391
+697	xsofy/test/dispatch_test.lg	replay-action-classification	1	unbound-var		test/test-var	0	var	388
+698	xsofy/test/dispatch_test.lg	ignored-actions-are-noops	1	unbound-var		test/test-var	0	var	394
+699	xsofy/test/dispatch_test.lg	dispatch-folds-and-logs	1	unbound-var		test/test-var	0	var	392
+700	xsofy/test/dispatch_test.lg	replay-reconstructs-identical-world	1	unbound-var		test/test-var	0	var	388
+701	xsofy/test/dispatch_test.lg	replay-is-deterministic-across-seeds	1	unbound-var		test/test-var	0	var	392
+702	xsofy/test/dispatch_test.lg	map-action-payload	1	unbound-var		test/test-var	0	var	396
+703	xsofy/test/dispatch_test.lg	dispatch-does-not-mutate-input-terrain	1	unbound-var		test/test-var	0	var	392
+704	xsofy/test/fire_test.lg	room-world	1	unbound-var		core/array-map	2		424
+705	xsofy/test/fire_test.lg	ignite-flammable-invalidates-lights	1	unbound-var		test/test-var	0	var	396
+706	xsofy/test/fire_test.lg	ignite-forced-invalidates-lights	1	unbound-var		test/test-var	0	var	393
+707	xsofy/test/fire_test.lg	ignite-noop-preserves-lights	1	unbound-var		test/test-var	0	var	391
+708	xsofy/test/fire_test.lg	ignite-forced-skips-water	1	unbound-var		test/test-var	0	var	388
+709	xsofy/test/fire_test.lg	apply-burning-skipped-on-water	1	unbound-var		test/test-var	0	var	401
+710	xsofy/test/fire_test.lg	fire-imp-spell-on-water-does-not-burn	1	unbound-var		test/test-var	0	var	396
+711	xsofy/test/fov_test.lg	room	1	unbound-var		core/first,core/next,core/range,core/seq	4		429
+712	xsofy/test/fov_test.lg	room-with-doorway	1	unbound-var		core/first,core/next,core/not=,core/range,core/seq	4		462
+713	xsofy/test/fov_test.lg	world-with	1	unbound-var		core/assoc	2		391
+714	xsofy/test/fov_test.lg	visible-from	1	ok			3		391
+715	xsofy/test/fov_test.lg	a-wall-is-visible-but-does-not-let-sight-past-it	1	unbound-var		test/test-var	0	var	399
+716	xsofy/test/fov_test.lg	an-open-room-sees-across	1	unbound-var		test/test-var	0	var	399
+717	xsofy/test/fov_test.lg	occlusion-is-symmetric	1	unbound-var		test/test-var	0	var	388
+718	xsofy/test/fov_test.lg	a-doorway-admits-sight-only-along-its-own-line	1	unbound-var		test/test-var	0	var	388
+719	xsofy/test/fov_test.lg	radius-bounds-sight-by-euclidean-distance	1	unbound-var		test/test-var	0	var	436
+720	xsofy/test/fov_test.lg	has-clear-line-stops-at-an-obstruction	1	unbound-var		test/test-var	0	var	396
+721	xsofy/test/fov_test.lg	has-clear-line-is-clear-in-an-open-room	1	unbound-var		test/test-var	0	var	389
+722	xsofy/test/hash_test.lg	u64+-basic	1	unbound-var		test/test-var	0	var	389
+723	xsofy/test/hash_test.lg	u64+-wraps-modulo-2-to-64	1	unbound-var		test/test-var	0	var	396
+724	xsofy/test/hash_test.lg	u64-shr-basic	1	unbound-var		test/test-var	0	var	395
+725	xsofy/test/hash_test.lg	u64-shr-zero-fills	1	unbound-var		test/test-var	0	var	408
+726	xsofy/test/hash_test.lg	u64-shl-basic	1	unbound-var		test/test-var	0	var	391
+727	xsofy/test/hash_test.lg	u64-shl-wraps-at-2-to-64	1	unbound-var		test/test-var	0	var	403
+728	xsofy/test/hash_test.lg	u64-rotl-basic	1	unbound-var		test/test-var	0	var	515
+729	xsofy/test/hash_test.lg	u64-rotl-identity-at-0	1	unbound-var		test/test-var	0	var	454
+730	xsofy/test/hash_test.lg	u64-rotl-identity-at-64	1	unbound-var		test/test-var	0	var	430
+731	xsofy/test/hash_test.lg	u64*-basic	1	unbound-var		test/test-var	0	var	408
+732	xsofy/test/hash_test.lg	u64*-wraps-at-2-to-64	1	unbound-var		test/test-var	0	var	397
+733	xsofy/test/hash_test.lg	u64*-prime-sanity	1	unbound-var		test/test-var	0	var	389
+734	xsofy/test/hash_test.lg	u64-xor-basic	1	unbound-var		test/test-var	0	var	388
+735	xsofy/test/hash_test.lg	u64+-is-commutative	1	unbound-var		test/test-var	0	var	392
+736	xsofy/test/hash_test.lg	u64*-is-commutative	1	unbound-var		test/test-var	0	var	402
+737	xsofy/test/hash_test.lg	u64-shl-then-shr-loses-low-bits	1	unbound-var		test/test-var	0	var	388
+738	xsofy/test/hash_test.lg	u64-rotl-by-n-then-64-minus-n-is-identity	1	unbound-var		test/test-var	0	var	392
+739	xsofy/test/hash_test.lg	encode-salt-keyword	1	unbound-var		test/test-var	0	var	394
+740	xsofy/test/hash_test.lg	encode-salt-int	1	unbound-var		test/test-var	0	var	391
+741	xsofy/test/hash_test.lg	encode-salt-string	1	unbound-var		test/test-var	0	var	442
+742	xsofy/test/hash_test.lg	encode-salt-multibyte-utf8	1	unbound-var		test/test-var	0	var	395
+743	xsofy/test/hash_test.lg	encode-salt-multibyte-keyword	1	unbound-var		test/test-var	0	var	392
+744	xsofy/test/hash_test.lg	encode-salt-vector	1	unbound-var		test/test-var	0	var	398
+745	xsofy/test/hash_test.lg	encode-salt-distinguishes-shape	1	unbound-var		test/test-var	0	var	389
+746	xsofy/test/hash_test.lg	encode-salt-deterministic	1	unbound-var		test/test-var	0	var	403
+747	xsofy/test/hash_test.lg	str->bytes	1	unbound-var		core/int,core/mapv	0		390
+748	xsofy/test/hash_test.lg	combine-is-deterministic	1	unbound-var		test/test-var	0	var	390
+749	xsofy/test/hash_test.lg	combine-differs-on-salt	1	unbound-var		test/test-var	0	var	389
+750	xsofy/test/hash_test.lg	combine-differs-on-seed	1	unbound-var		test/test-var	0	var	388
+751	xsofy/test/hash_test.lg	combine-bit-spread	1	unbound-var		test/test-var	0	var	391
+752	xsofy/test/hash_test.lg	with-folded-salt-equals-combine-fully-literal	1	unbound-var		test/test-var	0	var	395
+753	xsofy/test/hash_test.lg	with-folded-salt-fully-literal-over-32-bytes	1	unbound-var		test/test-var	0	var	389
+754	xsofy/test/hash_test.lg	with-folded-salt-equals-combine-with-variables	1	unbound-var		test/test-var	0	var	403
+755	xsofy/test/hash_test.lg	with-folded-salt-equals-combine-no-literal-prefix	1	unbound-var		test/test-var	0	var	390
+756	xsofy/test/hash_test.lg	with-folded-salt-non-vector-salt-key	1	unbound-var		test/test-var	0	var	388
+757	xsofy/test/hash_test.lg	with-folded-salt-is-equivalent-to-combine	1	unbound-var		test/test-var	0	var	398
+758	xsofy/test/hash_test.lg	native-xxh3-preserves-values	1	unbound-var		test/test-var	0	var	396
+759	xsofy/test/hash_test.lg	parity-bytes	1	unbound-var		core/map,core/mod,core/range,core/vec	0		389
+760	xsofy/test/hash_test.lg	xxh3-64-parity-matrix	1	unbound-var		test/test-var	0	var	390
+761	xsofy/test/hash_test.lg	xxh3-64-canonical-anchor	1	unbound-var		test/test-var	0	var	390
+762	xsofy/test/input_test.lg	quit-binds-esc-and-ctrl-c	1	unbound-var		test/test-var	0	var	415
+763	xsofy/test/input_test.lg	unbound-keys-resolve-to-unknown	1	unbound-var		test/test-var	0	var	388
+764	xsofy/test/invariant_test.lg	empty-room	1	unbound-var		core/array-map	2		392
+765	xsofy/test/invariant_test.lg	valid-player	1	unbound-var		core/array-map	0	vector,map	394
+766	xsofy/test/invariant_test.lg	empty-world-with-player-is-valid	1	unbound-var		test/test-var	0	var	389
+767	xsofy/test/invariant_test.lg	empty-room-with-no-player-is-valid	1	unbound-var		test/test-var	0	var	389
+768	xsofy/test/invariant_test.lg	invariant-fails-when-player-has-only-inventory	1	unbound-var		test/test-var	0	var	394
+769	xsofy/test/invariant_test.lg	invariant-fails-when-player-has-only-statuses	1	unbound-var		test/test-var	0	var	404
+770	xsofy/test/invariant_test.lg	invariant-fails-when-player-pos-is-nil	1	unbound-var		test/test-var	0	var	411
+771	xsofy/test/invariant_test.lg	invariant-fails-on-partial-creature-shell	1	unbound-var		test/test-var	0	var	404
+772	xsofy/test/invariant_test.lg	invariant-fails-on-out-of-bounds-player	1	unbound-var		test/test-var	0	var	415
+773	xsofy/test/invariant_test.lg	invariant-fails-on-negative-position	1	unbound-var		test/test-var	0	var	398
+774	xsofy/test/invariant_test.lg	invariant-fails-on-mismatched-id	1	unbound-var		test/test-var	0	var	388
+775	xsofy/test/invariant_test.lg	invariant-allows-item-and-creature-on-same-tile	1	unbound-var		test/test-var	0	var	392
+776	xsofy/test/invariant_test.lg	invariant-allows-two-creatures-on-same-tile	1	unbound-var		test/test-var	0	var	391
+777	xsofy/test/invariant_test.lg	invariant-fails-on-orphan-inventory-id	1	unbound-var		test/test-var	0	var	419
+778	xsofy/test/invariant_test.lg	invariant-fails-on-negative-hp	1	unbound-var		test/test-var	0	var	395
+779	xsofy/test/invariant_test.lg	invariant-fails-on-fire-ttl-without-fire-tile	1	unbound-var		test/test-var	0	var	395
+780	xsofy/test/invariant_test.lg	invariant-allows-fire-ttl-on-fire-tile	1	unbound-var		test/test-var	0	var	413
+781	xsofy/test/invariant_test.lg	gen-rich-world-only-produces-valid-worlds	1	unbound-var		test/test-var	0	var	392
+782	xsofy/test/invariant_test.lg	gen-rich-world-with-creature-only-produces-valid-worlds	1	unbound-var		test/test-var	0	var	393
+783	xsofy/test/invariant_test.lg	gen-minimal-world-only-produces-valid-worlds	1	unbound-var		test/test-var	0	var	389
+784	xsofy/test/invariant_test.lg	has-creature-collision?	1	unbound-var		core/count,core/filter,core/map,core/not=,core/set,core/vals	0		411
+785	xsofy/test/invariant_test.lg	gen-rich-world-avoids-initial-creature-collisions	1	unbound-var		test/test-var	0	var	398
+786	xsofy/test/mapgen_audit_test.lg	scenario-seeds	1	unbound-var		core/nth,core/range	0		391
+787	xsofy/test/mapgen_audit_test.lg	dungeon-generator-regression	1	unbound-var		test/test-var	0	var	398
+788	xsofy/test/menu_dispatch_test.lg	item-with-slot	1	unbound-var		core/filter,core/first,core/get-in,core/vector	0		417
+789	xsofy/test/menu_dispatch_test.lg	replays-identically?	1	ok			1		404
+790	xsofy/test/menu_dispatch_test.lg	drop-action-dispatches-and-replays	1	unbound-var		test/test-var	0	var	388
+791	xsofy/test/menu_dispatch_test.lg	unequip-action-dispatches-and-replays	1	unbound-var		test/test-var	0	var	389
+792	xsofy/test/menu_dispatch_test.lg	equip-action-dispatches-and-replays	1	unbound-var		test/test-var	0	var	391
+793	xsofy/test/menu_dispatch_test.lg	enchant-action-dispatches-and-is-deterministic	1	unbound-var		test/test-var	0	var	388
+794	xsofy/test/menu_dispatch_test.lg	use-item-action-dispatches-and-replays	1	unbound-var		test/test-var	0	var	394
+795	xsofy/test/percept_test.lg	room-world	1	unbound-var		core/array-map,core/assoc,core/assoc-in,core/vector	3	map	401
+796	xsofy/test/percept_test.lg	rat-at	1	unbound-var		core/array-map	0	map,map	390
+797	xsofy/test/percept_test.lg	divided-room-world	1	unbound-var		core/assoc-in,core/first,core/next,core/range,core/seq,core/vector	3		414
+798	xsofy/test/percept_test.lg	player-fov-is-computed-when-the-world-has-none-yet	1	unbound-var		test/test-var	0	var	395
+799	xsofy/test/percept_test.lg	player-fov-uses-the-precomputed-set-when-there-is-one	1	unbound-var		test/test-var	0	var	392
+800	xsofy/test/percept_test.lg	update-fov-populates-what-entity-fov-then-returns	1	unbound-var		test/test-var	0	var	399
+801	xsofy/test/percept_test.lg	npc-fov-is-always-computed	1	unbound-var		test/test-var	0	var	399
+802	xsofy/test/percept_test.lg	an-obstruction-truncates-the-fov-at-the-wall	1	unbound-var		test/test-var	0	var	387
+803	xsofy/test/percept_test.lg	entities-on-opposite-sides-of-an-obstruction-cannot-see-each-other	1	unbound-var		test/test-var	0	var	389
+804	xsofy/test/percept_test.lg	the-same-room-without-the-obstruction-is-mutually-visible	1	unbound-var		test/test-var	0	var	387
+805	xsofy/test/play_test.lg	state	1	unbound-var		core/array-map,core/vector	0	map	394
+806	xsofy/test/play_test.lg	world-of	1	unbound-var		core/reduced?	0		403
+807	xsofy/test/play_test.lg	play-step-dispatches-explicit-action	1	unbound-var		test/test-var	0	var	393
+808	xsofy/test/play_test.lg	play-step-exits-when-a-screen-opens	1	unbound-var		test/test-var	0	var	391
+809	xsofy/test/play_test.lg	tick-without-auto-mode-never-touches-the-world	1	unbound-var		test/test-var	0	var	387
+810	xsofy/test/play_test.lg	tick-with-auto-mode-advances-one-step	1	unbound-var		test/test-var	0	var	389
+811	xsofy/test/play_test.lg	explicit-key-cancels-in-flight-auto-mode	1	unbound-var		test/test-var	0	var	392
+812	xsofy/test/play_test.lg	play-loop-preserves-replay-determinism	1	unbound-var		test/test-var	0	var	388
+813	xsofy/test/render_test.lg	sync-output-escapes-are-dec-2026	1	unbound-var		test/test-var	0	var	408
+814	xsofy/test/render_test.lg	sync-helpers-emit-the-escapes	1	unbound-var		test/test-var	0	var	389
+815	xsofy/test/render_test.lg	with-frame-wraps-body-in-one-balanced-pair	1	unbound-var		test/test-var	0	var	388
+816	xsofy/test/render_test.lg	with-frame-closes-sync-even-when-body-throws	1	unbound-var		test/test-var	0	var	404
+817	xsofy/test/render_test.lg	message-log-window-shows-newest-entries-by-default	1	unbound-var		test/test-var	0	var	431
+818	xsofy/test/render_test.lg	message-log-window-scrolls-to-older-entries	1	unbound-var		test/test-var	0	var	393
+819	xsofy/test/render_test.lg	message-log-window-handles-empty-log	1	unbound-var		test/test-var	0	var	389
+820	xsofy/test/render_test.lg	reset-camera-prevents-cross-run-leak	1	unbound-var		test/test-var	0	var	391
+821	xsofy/test/render_test.lg	entity-z-priority-ranks-player-over-creature-over-item	1	unbound-var		test/test-var	0	var	395
+822	xsofy/test/render_test.lg	dirty-cell-entities-keeps-monster-when-item-iterates-last	1	unbound-var		test/test-var	0	var	389
+823	xsofy/test/render_test.lg	dirty-cell-entities-keeps-monster-when-item-iterates-first	1	unbound-var		test/test-var	0	var	396
+824	xsofy/test/render_test.lg	dirty-cell-entities-keeps-player-over-monster-and-item	1	unbound-var		test/test-var	0	var	397
+825	xsofy/test/render_test.lg	dirty-cell-entities-skips-entities-outside-dirty-set	1	unbound-var		test/test-var	0	var	399
+826	xsofy/test/render_test.lg	term-dims-falls-back-to-game-size-when-headless	1	unbound-var		test/test-var	0	var	390
+827	xsofy/test/render_test.lg	reset-render-perf-state!	1	ok			2		393
+828	xsofy/test/render_test.lg	render-is-reproducible-under-a-seed	1	unbound-var		test/test-var	0	var	388
+829	xsofy/test/render_test.lg	static-tile-color-is-rand-independent	1	unbound-var		test/test-var	0	var	392
+830	xsofy/test/render_test.lg	appearance-diff-skips-unchanged-cell	1	unbound-var		test/test-var	0	var	402
+831	xsofy/test/render_test.lg	appearance-diff-redraws-changed-cell	1	unbound-var		test/test-var	0	var	415
+832	xsofy/test/render_test.lg	pen-elides-redundant-color	1	unbound-var		test/test-var	0	var	461
+833	xsofy/test/replay_test.lg	base64-round-trips-arbitrary-bytes	1	unbound-var		test/test-var	0	var	415
+834	xsofy/test/replay_test.lg	replay-code-round-trips-seed-and-actions	1	unbound-var		test/test-var	0	var	444
+835	xsofy/test/replay_test.lg	replay-code-reconstructs-the-same-world	1	unbound-var		test/test-var	0	var	399
+836	xsofy/test/replay_test.lg	rle-compresses-long-runs	1	unbound-var		test/test-var	0	var	399
+837	xsofy/test/replay_test.lg	encode-run-uses-seed-input-and-action-log	1	unbound-var		test/test-var	0	var	402
+838	xsofy/test/replay_test.lg	encode-run-safe-encodes-keyword-only-runs	1	unbound-var		test/test-var	0	var	410
+839	xsofy/test/replay_test.lg	encode-decode-round-trips-map-actions	1	unbound-var		test/test-var	0	var	402
+840	xsofy/test/replay_test.lg	encode-run-reproduces-an-item-run	1	unbound-var		test/test-var	0	var	387
+841	xsofy/test/replay_test.lg	encode-run-safe-still-guards	1	unbound-var		test/test-var	0	var	389
+842	xsofy/test/scenariotest_test.lg	creature-patches-target-the-newly-spawned-entity	1	unbound-var		test/test-var	0	var	392
+843	xsofy/test/scenariotest_test.lg	bundled-web-trample-scenario-stages-issue-161	1	unbound-var		test/test-var	0	var	389
+844	xsofy/test/scenariotest_test.lg	bundled-water-burning-scenario-stages-issue-162	1	unbound-var		test/test-var	0	var	388
+845	xsofy/test/seed_test.lg	boot-seed-prefers-dynamic-override	1	unbound-var		test/test-var	0	var	413
+846	xsofy/test/seed_test.lg	boot-seed-defaults-to-an-integer	1	unbound-var		test/test-var	0	var	400
+847	xsofy/test/serialize_test.lg	stable-across-map-key-order	1	unbound-var		test/test-var	0	var	392
+848	xsofy/test/serialize_test.lg	shape-is-injective	1	unbound-var		test/test-var	0	var	397
+849	xsofy/test/serialize_test.lg	deterministic-for-worldish-map	1	unbound-var		test/test-var	0	var	389
+850	xsofy/test/serialize_test.lg	sets-serialize-order-independently	1	unbound-var		test/test-var	0	var	402
+851	xsofy/test/serialize_test.lg	arrays-serialize-deterministically	1	unbound-var		test/test-var	0	var	388
+852	xsofy/test/serialize_test.lg	canonical-bytes-handles-full-world	1	unbound-var		test/test-var	0	var	388
+853	xsofy/test/spell_prop.lg	eval-with	1	ok			1		396
+854	xsofy/test/spell_prop.lg	parse-never-throws	1	unbound-var		test/test-var	0	var	402
+855	xsofy/test/spell_prop.lg	eval-never-throws-on-raw-tokens	1	unbound-var		test/test-var	0	var	387
+856	xsofy/test/spell_prop.lg	eval-never-throws-on-well-formed	1	unbound-var		test/test-var	0	var	388
+857	xsofy/test/spell_prop.lg	eval-returns-well-formed-result	1	unbound-var		test/test-var	0	var	405
+858	xsofy/test/spell_prop.lg	bad-input-becomes-error-not-throw	1	unbound-var		test/test-var	0	var	392
+859	xsofy/test/spell_prop.lg	parse-result-is-seqable	1	unbound-var		test/test-var	0	var	390
+860	xsofy/test/spell_prop.lg	apply-attaches-arg-to-leaf	1	unbound-var		test/test-var	0	var	392
+861	xsofy/test/spell_prop.lg	looks-like-internal-map?	1	unbound-var		string/includes?	0		409
+862	xsofy/test/spell_prop.lg	format-sexp-doesnt-leak-internal-shape	1	unbound-var		test/test-var	0	var	526
+863	xsofy/test/spell_prop.lg	format-glyphs-doesnt-leak-internal-shape	1	unbound-var		test/test-var	0	var	391
+864	xsofy/test/spell_prop.lg	spread-on-world-without-targets-doesnt-throw	1	unbound-var		test/test-var	0	var	409
+865	xsofy/test/spell_prop.lg	bare-spread-on-empty-world-doesnt-throw	1	unbound-var		test/test-var	0	var	396
+866	xsofy/test/spell_prop.lg	add-with-no-args-doesnt-leak-error-map-into-display	1	unbound-var		test/test-var	0	var	393
+867	xsofy/test/spell_prop.lg	player-in-room	1	unbound-var		core/array-map,core/assoc-in,core/vector	1	vector,map	394
+868	xsofy/test/spell_prop.lg	conjure-summons-an-adjacent-creature	1	unbound-var		test/test-var	0	var	388
+869	xsofy/test/spell_prop.lg	conjure-then-friend-marks-summon-friendly	1	unbound-var		test/test-var	0	var	396
+870	xsofy/test/spell_prop.lg	friend-without-prior-conjure-is-a-quiet-noop	1	unbound-var		test/test-var	0	var	401
+871	xsofy/test/spell_prop.lg	generated-runic-programs-pass-spell-validation	1	unbound-var		test/test-var	0	var	390
+872	xsofy/test/spell_prop.lg	conjure-without-room-surfaces-a-fizzle-not-an-error	1	unbound-var		test/test-var	0	var	396
+873	xsofy/test/status_test.lg	generic-tick-leaves-webbed-alone	1	unbound-var		test/test-var	0	var	394
+874	xsofy/test/status_test.lg	webbed-player-break-free-tramples-web	1	unbound-var		test/test-var	0	var	396
+875	xsofy/test/title_test.lg	seeded-title-is-deterministic	1	unbound-var		test/test-var	0	var	411
+876	xsofy/test/title_test.lg	seeded-quest-is-deterministic	1	unbound-var		test/test-var	0	var	392
+877	xsofy/test/ui_test.lg	input-source-empty-when-nothing-pending	1	unbound-var		test/test-var	0	var	411
+878	xsofy/test/ui_test.lg	input-source-parses-queued-keys-to-actions	1	unbound-var		test/test-var	0	var	488
+879	xsofy/test/ui_test.lg	input-source-maps-eof-to-action	1	unbound-var		test/test-var	0	var	496
+880	xsofy/test/ui_test.lg	input-source-caps-at-16-per-frame	1	unbound-var		test/test-var	0	var	432
+881	xsofy/test/ui_test.lg	clock-source-emits-only-after-interval	1	unbound-var		test/test-var	0	var	431
+882	xsofy/test/ui_test.lg	clock-source-frame-counter-is-monotonic	1	unbound-var		test/test-var	0	var	410
+883	xsofy/test/ui_test.lg	replay-source-yields-actions-then-drains	1	unbound-var		test/test-var	0	var	398
+884	xsofy/test/ui_test.lg	poll-source-normalizes-its-return	1	unbound-var		test/test-var	0	var	400
+885	xsofy/test/ui_test.lg	play-step	1	unbound-var		core/assoc-in,core/nth,core/update,core/vector	1		422
+886	xsofy/test/ui_test.lg	interleave-ticks	1	unbound-var		core/conj,core/first,core/rest,core/seq,core/vector	0	vector	406
+887	xsofy/test/ui_test.lg	ticks-never-perturb-the-world	1	unbound-var		test/test-var	0	var	387
+888	xsofy/test/ui_test.lg	apply-events-stops-on-reduced	1	unbound-var		test/test-var	0	var	397
+889	xsofy/test/ui_test.lg	run-loop-animates-then-exits-on-key	1	unbound-var		test/test-var	0	var	412
+890	xsofy/test/ui_test.lg	topbar-keeps-map-floor	1	unbound-var		test/test-var	0	var	396
+891	xsofy/test/world_prop.lg	turn-never-goes-backward	1	unbound-var		test/test-var	0	var	399
+892	xsofy/test/world_prop.lg	rich-world-action-doesnt-throw	1	unbound-var		test/test-var	0	var	393
+893	xsofy/test/world_prop.lg	rich-world-action-sequence-doesnt-throw	1	unbound-var		test/test-var	0	var	395
+894	xsofy/test/world_prop.lg	step-fire-doesnt-throw	1	unbound-var		test/test-var	0	var	396
+895	xsofy/test/world_prop.lg	update-world-preserves-invariants	1	unbound-var		test/test-var	0	var	396
+896	xsofy/test/world_prop.lg	action-sequence-preserves-invariants	1	unbound-var		test/test-var	0	var	389
+897	xsofy/test/world_prop.lg	step-fire-preserves-invariants	1	unbound-var		test/test-var	0	var	388
+898	xsofy/test/world_prop.lg	long-rest-simulation-doesnt-throw	1	unbound-var		test/test-var	0	var	389
+899	xsofy/test/world_prop.lg	long-rest-simulation-preserves-invariants	1	unbound-var		test/test-var	0	var	391
+900	xsofy/test/world_prop.lg	repeated-step-fire-preserves-invariants	1	unbound-var		test/test-var	0	var	395
+901	xsofy/test/world_prop.lg	melee-attack-hits-creature-on-hazard-tile	1	unbound-var		test/test-var	0	var	388
+902	xsofy/test/world_prop.lg	player-bumping-friendly-swaps-positions	1	unbound-var		test/test-var	0	var	387
+903	xsofy/test/world_prop.lg	burning-low-hp-player-with-expiring-status-doesnt-resurrect	1	unbound-var		test/test-var	0	var	388
+904	xsofy/test/world_prop.lg	floor-save-restore-preserves-fire-ttl	1	unbound-var		test/test-var	0	var	388
+905	xsofy/test/world_prop.lg	floor-restore-rebases-creature-ticks	1	unbound-var		test/test-var	0	var	388
+906	xsofy/test/world_seed_test.lg	items-roll-floor-loot-is-deterministic	1	unbound-var		test/test-var	0	var	396
+907	xsofy/test/world_seed_test.lg	items-roll-floor-loot-advances-seed	1	unbound-var		test/test-var	0	var	402
+908	xsofy/test/world_seed_test.lg	items-roll-floor-loot-depth-matters	1	unbound-var		test/test-var	0	var	410
+909	xsofy/test/world_seed_test.lg	items-random-loot-is-deterministic	1	unbound-var		test/test-var	0	var	388
+910	xsofy/test/world_seed_test.lg	items-roll-enchant-is-deterministic	1	unbound-var		test/test-var	0	var	387
+911	xsofy/test/world_seed_test.lg	items-roll-enchant-slot-sensitivity	1	unbound-var		test/test-var	0	var	391
+912	xsofy/test/world_seed_test.lg	items-roll-enchant-range	1	unbound-var		test/test-var	0	var	397
+913	xsofy/test/world_seed_test.lg	terrain-generation-is-deterministic	1	unbound-var		test/test-var	0	var	388
+914	xsofy/test/world_seed_test.lg	terrain-different-seeds-differ	1	unbound-var		test/test-var	0	var	395
+915	xsofy/test/world_seed_test.lg	terrain-advances-seed	1	unbound-var		test/test-var	0	var	402
+916	xsofy/test/world_seed_test.lg	run-actions	1	unbound-var		core/reduce	1		392
+917	xsofy/test/world_seed_test.lg	project	1	unbound-var		core/array-map,core/count,core/get-in,core/vector	0		395
+918	xsofy/test/world_seed_test.lg	replay-movement-only-is-deterministic	1	unbound-var		test/test-var	0	var	387
+919	xsofy/test/world_seed_test.lg	replay-long-sequence-is-deterministic	1	unbound-var		test/test-var	0	var	395
+920	xsofy/test/world_shape_test.lg	missing-keys	1	unbound-var		core/contains?,core/filter,core/not,core/sort,core/vec	1		419
+921	xsofy/test/world_shape_test.lg	run-world	1	unbound-var		core/assoc,core/vector	1		397
+922	xsofy/test/world_shape_test.lg	make-world-carries-the-whole-skeleton	1	unbound-var		test/test-var	0	var	420
+923	xsofy/test/world_shape_test.lg	descending-carries-the-whole-skeleton	1	unbound-var		test/test-var	0	var	389
+924	xsofy/test/world_shape_test.lg	revisiting-carries-the-whole-skeleton	1	unbound-var		test/test-var	0	var	387
+925	xsofy/test/world_shape_test.lg	run-scoped-fields-survive-descending	1	unbound-var		test/test-var	0	var	388
+926	xsofy/test/world_shape_test.lg	run-scoped-fields-survive-revisiting	1	unbound-var		test/test-var	0	var	391
+927	xsofy/test/world_shape_test.lg	gameplay-seed-chain-survives-a-transition	1	unbound-var		test/test-var	0	var	392
+928	xsofy/test/world_shape_test.lg	depth-and-floors-track-the-transition	1	unbound-var		test/test-var	0	var	394
+929	xsofy/title.lg	generate-title	1	unbound-var		core/nth,core/str,core/vector	3		436
+930	xsofy/title.lg	generate-quest	1	unbound-var		core/array-map,core/nth,core/str,core/vector	4		399
+931	xsofy/title.lg	pick-scheme	1	ok			2		401
+932	xsofy/title.lg	draw-frame	1	unbound-var		core/count,core/first,core/float,core/int,core/max,core/min,core/next,core/nth,core/seq,core/str,term/move-cursor,term/set-bg,term/set-fg,term/write	3	float,float,float,float,float,float	7189
+933	xsofy/title.lg	show-title-screen	1	unbound-var		core/array-map,core/assoc,core/char,core/nth,core/reduced,core/str,core/vector,term/size	9		511
+934	xsofy/title.lg	show-descending-screen	1	unbound-var		core/count,core/first,core/float,core/int,core/max,core/min,core/next,core/not=,core/nth,core/rand-int,core/rem,core/seq,core/str,term/move-cursor,term/set-bg,term/set-fg,term/size,term/write	7	float,float,float,float,float	1499
+935	xsofy/ui.lg	pause!	1	unbound-var		async/<!!,async/timeout,core/*in-wasm*,core/max	0		392
+936	xsofy/ui.lg	rect	1	unbound-var		core/array-map	0		392
+937	xsofy/ui.lg	rect-split-h	1	unbound-var		core/vector	1		394
+938	xsofy/ui.lg	rect-split-v	1	unbound-var		core/vector	1		393
+939	xsofy/ui.lg	apply-fg	1	unbound-var		core/nth,term/set-fg	0		407
+940	xsofy/ui.lg	apply-bg	1	unbound-var		core/nth,term/set-bg	0		407
+941	xsofy/ui.lg	clear-rect	1	unbound-var		core/apply,core/repeat,core/str,term/move-cursor,term/write	3		429
+942	xsofy/ui.lg	write-at	1	unbound-var		core/count,core/max,core/str,core/subs,term/move-cursor,term/write	2		413
+943	xsofy/ui.lg	write-line	1	unbound-var		core/apply,core/count,core/repeat,core/str,core/subs,term/move-cursor,term/write	2		428
+944	xsofy/ui.lg	bar	1	unbound-var		core/apply,core/count,core/float,core/int,core/nth,core/repeat,core/str,core/subs,term/move-cursor,term/write	3	float,float,float	1251
+945	xsofy/ui.lg	box	1	unbound-var		core/apply,core/repeat,core/str	3		465
+946	xsofy/ui.lg	layout	1	unbound-var		core/array-map,core/min,core/not,core/nth,core/vector	8		1888
+947	xsofy/ui.lg	millis	1	unbound-var		core/.,let-go.core/now	1	symbol	396
+948	xsofy/ui.lg	default-key->event	1	unbound-var		core/nil?,core/vector	1		412
+949	xsofy/ui.lg	raw-key->event	1	unbound-var		core/nil?,core/vector	0		398
+950	xsofy/ui.lg	input-source	m0	unbound-var		term/key-pending?,term/read-key	2		398
+951	xsofy/ui.lg	input-source	m1	unbound-var		term/key-pending?,term/read-key	1		388
+952	xsofy/ui.lg	input-source	m2	unbound-var		core/conj,core/count	0	vector	417
+953	xsofy/ui.lg	clock-source	m0	ok			2		389
+954	xsofy/ui.lg	clock-source	m1	unbound-var		core/vector	0	vector	407
+955	xsofy/ui.lg	replay-source	1	unbound-var		core/first,core/rest,core/seq,core/vector	0	vector	396
+956	xsofy/ui.lg	poll-source	1	unbound-var		core/first,core/keyword?,core/nil?,core/vector,core/vector?	0	vector	435
+957	xsofy/ui.lg	poll-1	1	unbound-var		core/map?	0		426
+958	xsofy/ui.lg	apply-events	1	unbound-var		core/first,core/next,core/nil?,core/reduced?,core/seq	0		435
+959	xsofy/ui.lg	run-loop	1	unbound-var		core/get,core/mapcat,core/reduced?,core/sequence,core/vec	3		511
+960	xsofy/ui_bridge.lg	emit	1	unbound-var		core/keyword,core/name,core/qualified-keyword?,js/emit	0		406
+961	xsofy/ui_bridge.lg	emit-boot	1	unbound-var		core/array-map	1		399
+962	xsofy/ui_bridge.lg	emit-startup	1	unbound-var		core/array-map	1		406
+963	xsofy/ui_bridge.lg	emit-stats	1	unbound-var		core/array-map,core/get-in,core/vector	1		460
+964	xsofy/ui_bridge.lg	emit-replay-code	1	unbound-var		core/array-map,core/mod	2		453
+965	xsofy/ui_bridge.lg	emit-term-size	1	unbound-var		core/array-map	1		391
+966	xsofy/ui_bridge.lg	emit-perf	1	ok			1		393
+967	xsofy/util.lg	distance	1	unbound-var		core/nth,math/sqrt	0		399
+968	xsofy/util.lg	manhattan	1	unbound-var		core/nth,math/abs	0		440
+969	xsofy/util.lg	chebyshev	1	unbound-var		core/max,core/nth,math/abs	0		399
+970	xsofy/util.lg	sign	1	ok			0		394
+971	xsofy/util.lg	direction	1	unbound-var		core/nth,core/vector	1		398
+972	xsofy/util.lg	adjacent?	1	unbound-var		core/not,core/nth,math/abs	0		478
+973	xsofy/util.lg	line-cells	1	unbound-var		core/conj,core/vector,math/abs	0	vector	1649
+974	xsofy/util.lg	weighted-scan	1	unbound-var		core/first,core/rest,core/seq	0		432
+975	xsofy/util.lg	entity?	1	unbound-var		core/map?,core/some?	0		395
+976	xsofy/util.lg	alive?	1	unbound-var		core/get-in,core/vector	1		400
+977	xsofy/util.lg	creatures	1	unbound-var		core/filter,core/not=,core/vals,core/vec	1		395
+978	xsofy/util.lg	creatures-at	1	unbound-var		core/filter,core/not=,core/vals,core/vec	1		405
+979	xsofy/util.lg	entities-at	1	unbound-var		core/filter,core/vals,core/vec	1		399
+980	xsofy/util.lg	living-entities	1	unbound-var		core/filter,core/vals,core/vec	1		401
+981	xsofy/util.lg	targets-at	1	unbound-var		core/filter,core/get-in,core/not=,core/vals,core/vec,core/vector	1		407
+982	xsofy/util.lg	center-pad	1	unbound-var		core/apply,core/count,core/max,core/repeat,core/str	0		399
+983	xsofy/util.lg	right-pad	1	unbound-var		core/apply,core/count,core/max,core/repeat,core/str	0		399
+984	xsofy/util.lg	left-pad	1	unbound-var		core/apply,core/count,core/max,core/repeat,core/str	0		402
+985	xsofy/util.lg	clamp8	1	unbound-var		core/int,core/max,core/min	0		389
+986	xsofy/util.lg	lerp	1	unbound-var		core/nth,core/vector	1		440
+987	xsofy/util.lg	scale	1	unbound-var		core/nth,core/vector	1		408
+988	xsofy/util.lg	add-color	1	unbound-var		core/nth,core/vector	1		394
+989	xsofy/util.lg	cell-hash	1	ok			0		389
+990	xsofy/util.lg	jitter	1	unbound-var		core/nil?,core/nth,core/rem,core/vector	2		413
+991	xsofy/world.lg	verify-world!	1	unbound-var		core/get-in,core/keys,core/nil?,core/nth,core/str,core/vector	0		462
+992	xsofy/world.lg	depth-freq	1	unbound-var		core/float,math/exp	0	float	404
+993	xsofy/world.lg	pick-creature	1	unbound-var		core/assoc,core/empty?,core/first,core/mapv,core/nth,core/reduce,core/rest,core/vector	4	float	452
+994	xsofy/world.lg	populate-room-creatures	1	unbound-var		core/nil?,core/nth,core/vector	6		1274
+995	xsofy/world.lg	find-spawn-pos	1	unbound-var		core/nth,core/vector	3		1960
+996	xsofy/world.lg	distribute-loot	1	unbound-var		core/count,core/empty?,core/nth,core/reduce,core/rest,core/vec,core/vector	4		428
+997	xsofy/world.lg	update-fov	1	unbound-var		core/assoc,core/get,core/get-in,core/nth,core/reduce,core/vector	4		417
+998	xsofy/world.lg	empty-world	1	unbound-var		core/array-map	0	set,vector	395
+999	xsofy/world.lg	carry-run-state	1	unbound-var		core/merge,core/select-keys	1		416
+1000	xsofy/world.lg	generate-floor	1	unbound-var		core/array-map,core/assoc,core/count,core/first,core/get,core/nth,core/reduce,core/rest,core/second,core/vector	10		414
+1001	xsofy/world.lg	make-player	1	unbound-var		core/assoc,core/assoc-in,core/get,core/get-in,core/vector	1		407
+1002	xsofy/world.lg	give-item	1	unbound-var		core/assoc,core/assoc-in,core/first,core/get,core/second,core/vector	3		475
+1003	xsofy/world.lg	give-starting-items	1	unbound-var		core/nth	2		490
+1004	xsofy/world.lg	make-world	1	unbound-var		core/assoc,core/first,core/second	5		412
+1005	xsofy/world.lg	extract-player-items	1	unbound-var		core/assoc,core/concat,core/distinct,core/filter,core/get-in,core/reduce,core/some?,core/vals,core/vec,core/vector	0	vector	435
+1006	xsofy/world.lg	save-current-floor	1	unbound-var		core/array-map,core/assoc-in,core/concat,core/dissoc,core/filter,core/nth,core/reduce,core/set,core/some?,core/vals,core/vec,core/vector	1	vector	795
+1007	xsofy/world.lg	inject-player	1	unbound-var		core/assoc,core/assoc-in,core/nth,core/reduce,core/vector	0		406
+1008	xsofy/world.lg	rebase-creature-ticks	1	unbound-var		core/assoc,core/nil?,core/nth,core/reduce,core/seq,core/update	0		570
+1009	xsofy/world.lg	restore-floor	1	unbound-var		core/assoc,core/get-in,core/vector	4		437
+1010	xsofy/world.lg	trample-grass	1	unbound-var		core/get	1		394
+1011	xsofy/world.lg	splatter-blood	1	unbound-var		core/first,core/second,core/vector	5		455
+1012	xsofy/world.lg	log-msg	1	unbound-var		core/array-map,core/assoc,core/conj,core/count,core/drop,core/map?,core/peek,core/string?,core/update,core/vec	1	vector	553
+1013	xsofy/world.lg	entity-name	1	unbound-var		core/name	0		395
+1014	xsofy/world.lg	bfs-path	1	optimize error	optimize error: validate after licm: Inst #185 (op=:call, block=3) has cross-block ref 240 (defined in block 0)		0		58
+1015	xsofy/world.lg	route-to-tile	1	unbound-var		core/assoc,core/filter,core/first,core/nth	3		415
+1016	xsofy/world.lg	autoexplore-step	1	unbound-var		core/conj,core/contains?,core/dissoc,core/filter,core/first,core/get,core/map?,core/next,core/nil?,core/nth,core/reduce,core/seq,core/set,core/some?,core/vals,core/vec	4	vector	538
+1017	xsofy/world.lg	find-tile	1	unbound-var		core/vector	1		450
+1018	xsofy/world.lg	extract-friendlies-to-player	1	unbound-var		core/array-map,core/assoc-in,core/dissoc,core/filter,core/get-in,core/into,core/mapv,core/max,core/not=,core/nth,core/reduce,core/update,core/vec,core/vector	1	vector	429
+1019	xsofy/world.lg	find-spawn-near	1	unbound-var		core/concat-list,core/first,core/get,core/lazy-seq*,core/list,core/nil?,core/nth,core/range,core/rest,core/seq,core/vec,core/vector,math/abs	4		588
+1020	xsofy/world.lg	materialize-pending-ally	1	unbound-var		core/assoc,core/assoc-in,core/get-in,core/name,core/nil?,core/nth,core/str,core/vector	2		460
+1021	xsofy/world.lg	tick-pending-allies	1	unbound-var		core/assoc,core/assoc-in,core/conj,core/empty?,core/filter,core/get-in,core/into,core/mapv,core/nil?,core/nth,core/reduce,core/some?,core/update,core/vec,core/vector	1	vector	434
+1022	xsofy/world.lg	change-floor	1	unbound-var		core/assoc,core/assoc-in,core/get,core/get-in,core/nth,core/str,core/vector	12		667
+1023	xsofy/world.lg	descend	1	unbound-var		core/get,core/get-in,core/nth,core/vector	3		408
+1024	xsofy/world.lg	ascend	1	unbound-var		core/get,core/get-in,core/nth,core/vector	4		440
+1025	xsofy/world.lg	apply-water-effects	1	unbound-var		core/get-in,core/vector	2		414
+1026	xsofy/world.lg	apply-hazard-effects	1	unbound-var		core/get,core/get-in,core/merge,core/pop-binding!,core/push-binding!,core/vector	7	var,var,map,var,var	499
+1027	xsofy/world.lg	apply-tile-effects	1	unbound-var		core/get	2		453
+1028	xsofy/world.lg	spell-source-name	1	unbound-var		core/name	1		426
+1029	xsofy/world.lg	spell-error-rune	1	unbound-var		core/keyword?,core/str	1		445
+1030	xsofy/world.lg	apply-spell-result	1	unbound-var		core/concat,core/str,core/update,core/vec	3	vector,vector	514
+1031	xsofy/world.lg	fire-triggered-container-spell	1	unbound-var		core/array-map,core/name	2		428
+1032	xsofy/world.lg	fire-player-on-turn-containers	1	ok			2		406
+1033	xsofy/world.lg	push-entity	1	unbound-var		core/assoc-in,core/contains?,core/get,core/get-in,core/not=,core/nth,core/vector	6		1126
+1034	xsofy/world.lg	melee-attack	1	unbound-var		core/array-map,core/conj,core/first,core/get-in,core/merge,core/nil?,core/pop-binding!,core/push-binding!,core/second,core/str,core/update,core/vector	14	var,var,vector	8562
+1035	xsofy/world.lg	projectile-glyph	1	unbound-var		math/abs	0		653
+1036	xsofy/world.lg	first-entity-on-path	1	unbound-var		core/count,core/filter,core/first,core/get-in,core/map?,core/not=,core/nth,core/some?,core/take,core/vals,core/vec,core/vector	0		449
+1037	xsofy/world.lg	launch-projectile	1	unbound-var		core/array-map,core/first,core/get-in,core/into,core/last,core/merge,core/nil?,core/pop-binding!,core/push-binding!,core/rest,core/second,core/update,core/vec,core/vector	8	vector,var,var	4786
+1038	xsofy/world.lg	ranged-attack	1	unbound-var		core/array-map,core/get-in,core/merge,core/nil?,core/not=,core/seq,core/str,core/vector	5		3371
+1039	xsofy/world.lg	spawn-runestones	1	unbound-var		core/assoc,core/assoc-in,core/count,core/empty?,core/first,core/get,core/nil?,core/nth,core/rest,core/str,core/vec,core/vector	7		1633
+1040	xsofy/world.lg	consume-runestone	1	unbound-var		core/assoc,core/get,core/name,core/str	4		457
+1041	xsofy/world.lg	pickup	1	unbound-var		core/first,core/get-in,core/name,core/seq,core/str,core/vector	3		457
+1042	xsofy/world.lg	consume-item	1	unbound-var		core/get-in,core/remove,core/update-in,core/vec,core/vector	1		416
+1043	xsofy/world.lg	use-item	1	unbound-var		core/assoc,core/assoc-in,core/first,core/get-in,core/min,core/name,core/nth,core/second,core/str,core/update-in,core/vector	4		1087
+1044	xsofy/world.lg	enchant-item	1	unbound-var		core/assoc-in,core/get-in,core/max,core/name,core/str,core/update-in,core/vector	2		840
+1045	xsofy/world.lg	inscribe-runes-on-item	1	unbound-var		core/assoc-in,core/filter,core/first,core/get-in,core/keyword?,core/name,core/str,core/vec,core/vector	1		679
+1046	xsofy/world.lg	add-ticks	1	unbound-var		core/assoc,core/assoc-in,core/get,core/get-in,core/min,core/rem,core/update-in,core/vector	2		810
+1047	xsofy/world.lg	next-actor	1	unbound-var		core/get,core/nil?,core/not,core/not=,core/reduce,core/vals	0		652
+1048	xsofy/world.lg	creature-turn	1	unbound-var		core/get-in,core/name,core/nil?,core/not,core/nth,core/str,core/vector	13		1033
+1049	xsofy/world.lg	run-until-player-turn	1	unbound-var		core/get-in,core/nil?,core/vector	2		694
+1050	xsofy/world.lg	do-pickup	1	unbound-var		core/assoc,core/empty?,core/first,core/name,core/rest,core/str,core/update,core/vec	5		774
+1051	xsofy/world.lg	find-arrows	1	unbound-var		core/filter,core/first,core/get-in,core/vector	0	vector	549
+1052	xsofy/world.lg	find-nearest-enemy	1	unbound-var		core/contains?,core/filter,core/first,core/get-in,core/not,core/not=,core/nth,core/seq,core/sort-by,core/vals,core/vec,core/vector,math/sqrt	0	set	642
+1053	xsofy/world.lg	fire-bow	1	unbound-var		core/array-map,core/first,core/get-in,core/nil?,core/not,core/nth,core/second,core/str,core/update,core/vector	14	map	14967
+1054	xsofy/world.lg	swim-drop-item	1	unbound-var		core/contains?,core/count,core/filter,core/first,core/get-in,core/name,core/not,core/nth,core/second,core/seq,core/set,core/some?,core/str,core/vals,core/vec,core/vector	5	vector	945
+1055	xsofy/world.lg	check-leave-water	1	unbound-var		core/get,core/get-in,core/not=,core/nth,core/vector	4		557
+1056	xsofy/world.lg	drift-water-items	1	unbound-var		core/assoc-in,core/contains?,core/filter,core/first,core/get,core/get-in,core/map?,core/nil?,core/nth,core/reduce,core/second,core/some?,core/vals,core/vec,core/vector	5		1199
+1057	xsofy/world.lg	player-move	1	unbound-var		core/array-map,core/assoc,core/assoc-in,core/concat,core/contains?,core/count,core/filter,core/first,core/get,core/get-in,core/last,core/map,core/mapv,core/max,core/merge,core/name,core/nil?,core/not,core/not=,core/nth,core/pop-binding!,core/push-binding!,core/reduce,core/second,core/seq,core/some?,core/str,core/update,core/vec,core/vector	30	set,map,var,var,vector,vector,set,vector	32263
+1058	xsofy/world.lg	confirm-hazard-step	1	unbound-var		core/assoc-in,core/dissoc,core/get,core/get-in,core/nth,core/str,core/update,core/vector	7		494
+1059	xsofy/world.lg	cancel-hazard-step	1	unbound-var		core/dissoc	0		410
+1060	xsofy/world.lg	item-name*	1	unbound-var		core/get-in,core/name,core/vector	0		419
+1061	xsofy/world.lg	equip-action	1	unbound-var		core/get-in,core/not=,core/str,core/vector	3		420
+1062	xsofy/world.lg	unequip-action	1	unbound-var		core/get-in,core/str,core/vector	4		412
+1063	xsofy/world.lg	drop-action	1	unbound-var		core/get,core/get-in,core/str,core/vector	5		483
+1064	xsofy/world.lg	update-world	1	unbound-var		System/currentTimeMillis,core/array-map,core/assoc,core/dissoc,core/get-in,core/map?,core/nil?,core/not,core/nth,core/peek,core/str,core/string?,core/update,core/vector,string/includes?	26	vector	7053

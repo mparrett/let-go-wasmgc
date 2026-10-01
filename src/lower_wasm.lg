@@ -16,7 +16,7 @@
 ;; the minimal atom (atom/deref/reset!/swap!) that the `fn` macro's named-fn
 ;; expansion needs.
 (ns lower-wasm
-  (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st]
+  (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st] [ir.passes.typeinfer]
             [clojure.string :as str]))
 
 (def ^:dynamic *f* nil)
@@ -47,6 +47,16 @@
 (def ^:dynamic *elem* nil)
 (def ^:dynamic *env-types* nil)
 (def ^:dynamic *fn-values* nil)
+;; module-wide atom: var -> global for every var the program references but
+;; neither defines nor lowers specially (core natives without a wasm twin yet,
+;; or another unit's fns in the census). Each is a var-table slot that stays
+;; nil, so a call fails at RUN time with native's unbound-var message
+;; (`TypeError: nil is not a function `), not at compile time (P1.5).
+(def ^:dynamic *externs* nil)
+;; per-unit atom (census): {:externs #{var} :phase2 [kind ...]}
+(def ^:dynamic *unit-notes* nil)
+;; insts structurize folded into a :switch (they carry no statement)
+(def ^:dynamic *absorbed* #{})
 
 ;; $Fn layout (D36, field order compatible with rt/wasm/seq.lg's Fn, whose
 ;; invoke0/1/2 read fields 0/1/2 and whose env is field 3): code refs for
@@ -155,9 +165,14 @@
 (defn dead? [nid] (= :invalid (ir/op nid *f*)))
 
 
+(defn typed-aux?
+  "typeinfer rewrites some consts' aux to [:const <type> <value>]; any other
+   vector aux is a vector literal."
+  [a]
+  (and (vector? a) (= 3 (count a)) (= :const (first a)) (keyword? (second a))))
+
 (defn const-val [nid]
-  ;; typeinfer rewrites some consts' aux to [:const <type> <value>]
-  (let [a (ir/aux (src-of nid) *f*)] (if (vector? a) (nth a 2) a)))
+  (let [a (ir/aux (src-of nid) *f*)] (if (typed-aux? a) (nth a 2) a)))
 
 (defn template? [nid]
   (and (= :const (ir/op nid *f*))
@@ -186,23 +201,36 @@
 
 (defn def-val? [nid] (= :def (ir/op (src-of nid) *f*)))
 
+(defn int-const-val
+  "The value of an :int-typed int constant (or a block-arg that only carries
+   one). Such values get no local: each use is an i64.const, which keeps
+   fns small (V8 sizes a caller's inlining budget from its wire size)."
+  [nid]
+  (let [r (src-of nid)]
+    (when (and (= :const (ir/op r *f*)) (= :int (ty nid)))
+      (let [a (ir/aux r *f*) v (if (typed-aux? a) (nth a 2) a)]
+        (when (int? v) v)))))
+
 (defn no-local?
   "Values that never occupy a wasm local: dead params, constant vars,
    closure links and :try regions, symbol consts (consumed by
    catch-matches?), Var objects and :def results (consumed by nothing)."
   [nid]
   (or (dead? nid) (var-hidden? nid) (closure-hidden? nid) (symbol-const? nid)
-      (var-const? nid) (def-val? nid)))
+      (var-const? nid) (def-val? nid) (some? (int-const-val nid))))
 
-(declare var-value-wat)
+(declare var-value-wat extern-global phase2-const-wat)
 
 (defn arg-as [nid k]
   (cond
     (var-hidden? nid) (str (var-value-wat (var-of nid)) (coerce :box k))
     (closure-hidden? nid) (fail "unsupported closure used as a value (a :try region)" {:nid nid :fn *fname*})
-    (symbol-const? nid) (fail "unsupported symbol constant used as a value" {:value (const-val nid) :fn *fname*})
-    (var-const? nid) (fail "unsupported Var object used as a value" {:value (const-val nid) :fn *fname*})
+    ;; quoted symbols and #'vars as values are Phase 2's value kinds; the
+    ;; placeholder throw is stack-polymorphic, so it stands in for any kind k
+    (symbol-const? nid) (phase2-const-wat (const-val nid))
+    (var-const? nid) (phase2-const-wat (const-val nid))
     (def-val? nid) (fail "unsupported :def result used as a value" {:nid nid :fn *fname*})
+    (some? (int-const-val nid)) (str "(i64.const " (int-const-val nid) ")" (coerce :int k))
     :else (str (lget nid) (coerce (ty nid) k))))
 
 (def int-binops {:add "i64.add" :sub "i64.sub" :mul "i64.mul"})
@@ -224,14 +252,40 @@
   [msg cmsg]
   (str "(struct.new $Err (i32.const 1) " (bytes-wat msg) " " (bytes-wat cmsg) " (ref.null none))"))
 
-(defn raise []
-  (if *trap* "unreachable"
-      (str "(throw $lgex " (rt-error-wat "integer overflow" "ExecutionError: integer overflow") ")")))
+(defn raise-wat []
+  (str "(throw $lgex " (rt-error-wat "integer overflow" "ExecutionError: integer overflow") ")"))
+(defn raise
+  ;; A call, not the throw itself: building the $Err inline at every check
+  ;; doubled fib's wire size, and V8 sizes its inlining budget from the
+  ;; caller's size (2x in a module this big), so fib stopped inlining its
+  ;; callees (P1.GATE, bench-fib.sh).
+  [] (if *trap* "unreachable" "(call $rt_raise_overflow)"))
+(defn literal-int
+  "The value of an `(i64.const N)` operand expression, else nil."
+  [e]
+  (when-let [[_ n] (re-find #"^\(i64\.const (-?[0-9]+)\)$" e)] (parse-long n)))
+
+(defn const-check
+  "Overflow test of r = a op c for a literal c: one compare of the wrapped
+   result with a, smaller and cheaper than the sign-xor form (fib's (- n 1),
+   inc/dec). Moving by c != 0 overflowed iff r landed on the wrong side of a:
+   a + c (c > 0) and a - c (c < 0) overflow iff r < a, the other two iff
+   r > a (c = MinInt64 included: a - MIN overflows iff a >= 0, iff r < a)."
+  [op a c r]
+  (let [up? (if (= op :add) (pos? c) (neg? c))]
+    (if (zero? c)
+      ""
+      (str "(if (" (if up? "i64.lt_s" "i64.gt_s") " " r " " a ") (then " (raise) "))"))))
+
 (defn inline-check
   "Overflow test on an already-computed result r (same sign-xor tests as $add_chk/$sub_chk)."
   [op a b r]
-  (let [x (if (= op :add) (str "(i64.xor " b " " r ")") (str "(i64.xor " a " " b ")"))]
-    (str "(if (i64.lt_s (i64.and (i64.xor " a " " r ") " x ") (i64.const 0)) (then " (raise) "))")))
+  (if-let [c (literal-int b)]
+    (const-check op a c r)
+    (if-let [c (when (= op :add) (literal-int a))]
+      (const-check op b c r)
+      (let [x (if (= op :add) (str "(i64.xor " b " " r ")") (str "(i64.xor " a " " b ")"))]
+        (str "(if (i64.lt_s (i64.and (i64.xor " a " " r ") " x ") (i64.const 0)) (then " (raise) "))")))))
 (defn inline-checked? [op] (and (= *checked* :inline) (#{:add :sub :inc :dec} op)))
 (defn int-arith
   "Instructions computing a op b (i64 operand exprs) into local nid, checked per
@@ -283,7 +337,7 @@
                :unchecked-mul "unchecked-multiply" :bit-and "bit-and" :bit-or "bit-or"
                :bit-xor "bit-xor" :bit-and-not "bit-and-not" :bit-shift-left "bit-shift-left"
                :bit-shift-right "bit-shift-right" :unsigned-bit-shift-right "unsigned-bit-shift-right"
-               :zero? "zero?" :pos? "pos?" :neg? "neg?"})
+               :zero? "zero?" :pos? "pos?" :neg? "neg?" :div "/"})
 
 (defn bit-op? [op] (or (= op :bit-not) (str/starts-with? (name op) "bit-") (= op :unsigned-bit-shift-right)))
 
@@ -303,7 +357,7 @@
    op's checked unbox (never a bare ref.cast, which would trap uncatchably)."
   [op nid]
   (if (= (ty nid) :box)
-    (do (arg-as nid :box) (str "(call " (unbox-fn op) " " (lget nid) ")"))
+    (str "(call " (unbox-fn op) " " (arg-as nid :box) ")")
     (arg-as nid :int)))
 
 (defn guard-call [call]
@@ -314,11 +368,27 @@
          "(br $done (try_table (result " (wt *ret-type*) ") (catch_all_ref $caught) " call ")))))")
     call))
 
+(defn note! [k v]
+  (when *unit-notes* (swap! *unit-notes* update k (fnil conj []) v)))
+
+(defn const-kind [v]
+  (cond (var? v) "var" (vector? v) "vector" (map? v) "map" (set? v) "set" (char? v) "char"
+        (float? v) "float" (seq? v) "list" (symbol? v) "symbol" :else (str (type v))))
+
+(defn phase2-const-wat
+  "A constant whose value kind is Phase 2's (P1.5): compiles, and throws a
+   named error if it is ever evaluated, so the census measures Phase 1's
+   coverage instead of stopping at the first vector literal."
+  [aux]
+  (let [k (const-kind aux) m (str "lower-wasm: Phase-2 constant " k)]
+    (note! :phase2 k)
+    (str "(throw $lgex " (rt-error-wat m m) ")")))
+
 (defn const-wat [nid aux]
   (let [k (ty nid)]
     (cond
       ;; typeinfer rewrites some consts' aux to [:const <type> <value>]
-      (vector? aux) (const-wat nid (nth aux 2))
+      (typed-aux? aux) (const-wat nid (nth aux 2))
       (int? aux) (str "(i64.const " aux ")" (coerce :int k))
       (nil? aux) (if (= k :box) "(ref.null none)" (fail "nil const in unboxed slot" {:nid nid :fn *fname*}))
       (boolean? aux) (str "(i32.const " (if aux 1 0) ")" (coerce :bool k))
@@ -326,7 +396,7 @@
       (keyword? aux) (str "(struct.new $Kw " (bytes-wat (subs (str aux) 1)) ")")
       ;; {} is the only map a Phase-1 program can build (ex-info's data)
       (and (map? aux) (empty? aux)) "(global.get $map0)"
-      :else (fail "unsupported const" {:value aux :type (type aux) :fn *fname*}))))
+      :else (phase2-const-wat aux))))
 
 (def core-println #'println)
 
@@ -363,7 +433,7 @@
 (defn print-wat [nid]
   ;; one value of println's argument list
   (case (ty nid)
-    :int (str "(call $print_i64 " (lget nid) ")")
+    :int (str "(call $print_i64 " (arg-as nid :int) ")")
     :bool (str "(call $rt_print_bool " (lget nid) ")")
     :box (str "(call $rt_print " (arg-as nid :box) ")")))
 
@@ -409,7 +479,18 @@
            (if (= (ty nid) :box)
              (str " (local.set $v" nid " (ref.null none))")
              (fail "println result in unboxed slot" {:nid nid :fn *fname*})))
-      :else (fail "unsupported call target" {:var v :fn *fname*}))))
+      ;; a var with no wasm definition: call through its (nil) var-table slot
+      (<= (count args) max-arity)
+      (str "(local.set $v" nid " (call $rt_invoke" (count args) " (global.get " (extern-global v) ")"
+           (apply str (map #(str " " (arg-as % :box)) args)) ")" (coerce :box (ty nid)) ")")
+      ;; no $Fn arity slot past 4 (D52); the slot is nil anyway, so evaluate
+      ;; the args and fail exactly as the invoke would
+      :else
+      (str (apply str (map #(str "(drop " (arg-as % :box) ") ") args))
+           "(call $rt_not_fn (global.get " (extern-global v) ")) unreachable"))))
+
+(defn int-const-of [nid]
+  (when (and (= :const (ir/op (src-of nid) *f*)) (int? (const-val nid))) (const-val nid)))
 
 (defn prim-wat
   "Arithmetic/compare op `op` over value ids `refs`, result into local nid;
@@ -419,7 +500,10 @@
         all-int? (every? #(= (ty %) :int) refs)]
     (cond
       (and (int-binops op) (= 2 (count refs)) all-int?)
-      (int-arith nid op (arg-as (first refs) :int) (arg-as (second refs) :int))
+      ;; an int constant operand goes in as a literal, so the overflow test
+      ;; can specialise on it (const-check)
+      (let [opnd (fn [r] (if-let [c (int-const-of r)] (str "(i64.const " c ")") (arg-as r :int)))]
+        (int-arith nid op (opnd (first refs)) (opnd (second refs))))
       (and (int-binops op) (= 2 (count refs)))
       (set (str "(call $rt_" (name op) " " (arg-as (first refs) :box) " " (arg-as (second refs) :box) ")"
                 (coerce :box (ty nid))))
@@ -456,6 +540,20 @@
                    #'zero? :zero? #'pos? :pos? #'neg? :neg?})
 
 (declare try-wat analyze-ir lower-fn)
+
+(defn div-wat
+  "`/` on two ints when the quotient is exact (native returns an Int then);
+   a ratio, the MinInt64/-1 bigint and float operands are Phase 2 (D15) and
+   throw a named error at run time. Divide by zero is native's message."
+  [nid refs]
+  (let [m "lower-wasm: / with a ratio or bigint result (Phase 2)"
+        stage (fn [r l] (str "(local.set " l " " (op-int-arg :div r) ")"))]
+    (str (stage (first refs) "$ta") " " (stage (second refs) "$tb") " "
+         "(if (i64.eqz (local.get $tb)) (then (throw $lgex " (rt-error-wat "divide by zero" "divide by zero") "))) "
+         "(if (i32.or (i32.and (i64.eq (local.get $ta) (i64.const -9223372036854775808)) (i64.eq (local.get $tb) (i64.const -1))) "
+         "(i64.ne (i64.rem_s (local.get $ta) (local.get $tb)) (i64.const 0))) "
+         "(then (throw $lgex " (rt-error-wat m m) "))) "
+         "(local.set $v" nid " (i64.div_s (local.get $ta) (local.get $tb))" (coerce :int (ty nid)) ")")))
 
 ;; ---------------------------------------------------------------------------
 ;; Fn values (D36). A closure is
@@ -547,12 +645,23 @@
         (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat {n cname} "(ref.null none)" info) ")"))
         g)))
 
+(defn extern-global
+  "The var-table slot of a var the program neither defines nor lowers
+   specially. It is never set, so it reads nil, like an unbound var."
+  [v]
+  (note! :externs v)
+  (or (get @*externs* v)
+      (let [g (str "$ext_" (str/replace (subs (str v) 2) #"[^A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]" "_")
+                   "_" (count @*externs*))]
+        (swap! *externs* assoc v g)
+        g)))
+
 (defn var-value-wat
   "A constant var used as a value (not in callee position)."
   [v]
   (cond (get *sigs* v) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
-        :else (fail "unsupported var used as a value" {:var v :fn *fname*})))
+        :else (str "(global.get " (extern-global v) ")")))
 
 (defn closure-of [nid]
   (loop [n (src-of nid) caps ()]
@@ -608,7 +717,7 @@
   (let [[vr val] (ir/refs nid *f*) v (const-val vr) g (get *var-globals* v)]
     (if (and g (= *fname* "_main"))
       (when val (str "(global.set " g " " (arg-as val :box) ")"))
-      (fail "unsupported op" {:op :def :var v :nid nid :fn *fname*}))))
+      (fail "unsupported op :def" {:op :def :var v :nid nid :fn *fname*}))))
 
 (defn inst-wat [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)
@@ -629,11 +738,16 @@
                                       (str "(struct.get " *env-type* " " aux " (local.get $env))")
                                       (str "(local.get $c" aux ")"))
                                     (coerce (nth *cap-kinds* aux) (ty nid))))
+      (some? (int-const-val nid)) nil      ; materialised at each use (arg-as)
       (= op :const) (set (const-wat nid aux))
       (= op :try) (try-wat nid)
       ;; build.lg stopped emitting :tail-call (fn-level recur is :recur-fn ->
       ;; :tail); name it rather than fall into the generic arm.
       (= op :tail-call) (fail "unsupported op :tail-call (not emitted by current ir.build)" {:nid nid :fn *fname*})
+      ;; a stack-VM marker cleanup strips; nothing to emit if one survives
+      (= op :pop) nil
+      (= op :set-var) (fail "unsupported op :set-var" {:op op :var (const-val (first refs)) :nid nid :fn *fname*})
+      (and (= op :div) (= 2 (count refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
       (let [callee (first refs) v (var-of callee)]
@@ -643,12 +757,12 @@
                     (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
               (call-wat nid v (rest refs)))
           (invoke-wat nid callee (rest refs))))
-      :else (fail "unsupported op" {:op op :nid nid :fn *fname*}))))
+      :else (fail (str "unsupported op " op) {:op op :nid nid :fn *fname*}))))
 
 (defn block-wat [bid]
   ;; eager: an unsupported op must fail before the terminator's operands are
   ;; lowered, so the error names the first offending op in program order
-  (vec (remove nil? (map inst-wat (ir/block-insts bid *f*)))))
+  (vec (remove nil? (map inst-wat (remove *absorbed* (ir/block-insts bid *f*))))))
 
 (defn copy-wat
   "Parallel copy: push every value, then pop into the destinations in reverse."
@@ -668,7 +782,23 @@
   (case (ty nid)
     :bool (lget nid)
     :box (str "(call $rt_truthy " (arg-as nid :box) ")")
+    ;; an int is never nil or false
+    :int "(i32.const 1)"
     (fail "unsupported branch condition type" {:type (ty nid) :fn *fname*})))
+
+(declare walk)
+
+(defn switch-chain
+  "structurize's keyword-dispatch fold as an if-chain of keyword tests (P1.6).
+   Correctness first: a br_table needs keyword ids, which wait for Phase 2's
+   interning. A non-keyword discriminant matches no arm, as native `=` would."
+  [d arms last-et default]
+  (if (empty? arms)
+    (concat (edge-wat last-et) (walk default))
+    (let [[kw tt node] (first arms)]
+      (concat [(str "(if (call $rt_kw_is " d " " (bytes-wat (subs (str kw) 1)) ") (then")]
+              (edge-wat tt) (walk node) [") (else"]
+              (switch-chain d (rest arms) last-et default) ["))"]))))
 
 (defn walk [node]
   (let [[tag bid] node]
@@ -701,6 +831,12 @@
       :break (let [fr (first (filter #(= bid (:exit %)) *loop*))]
                (when-not fr (fail "break to a block no enclosing loop exits to" {:bid bid :fn *fname*}))
                (concat (edge-wat (nth node 2)) [(str "(br $exit" (:id fr) ")")]))
+      ;; [:switch b disc [[kw tt node] ...] last-et default cont]: b's
+      ;; terminator and its :eq are absorbed, so b's other insts run first
+      :switch (let [[_ _ disc arms last-et default cont] node]
+                (concat (block-wat bid)
+                        (switch-chain (arg-as disc :box) arms last-et default)
+                        (when cont (walk cont))))
       :fallthrough []
       (fail "unsupported tree node" {:tag tag :fn *fname*}))))
 
@@ -713,11 +849,36 @@
 (defn has-node? [tag tree]
   (boolean (some #(and (vector? %) (= tag (first %))) (tree-seq vector? seq tree))))
 
+(defn check-absorbed
+  "lower-go's contract: insts folded into a :switch carry no statement. Make
+   sure nothing outside the fold reads one, since its local is never set."
+  [fname f blocks insts]
+  (when (seq insts)
+    (doseq [b (ir/blocks f) :when (not (contains? blocks b))
+            i (concat (ir/block-insts b f) [(ir/block-term b f)])
+            :when (and i (not (contains? insts i)))
+            r (concat (ir/refs i f)
+                      (when (= :branch (ir/op i f)) (ir/branch-target-args (ir/aux i f)))
+                      (when (= :branch-if (ir/op i f))
+                        (let [a (ir/aux i f)]
+                          (concat (ir/branch-target-args (ir/cond-target-true a))
+                                  (ir/branch-target-args (ir/cond-target-false a))))))
+            :when (contains? insts r)]
+      (fail "switch-absorbed inst used outside its switch" {:fn fname :user i :inst r}))))
+
+(declare analyze-opt)
+
 (defn analyze-ir
   "Optimize and structurize one IR fn (a defn or a try region's fn* template)."
   [fname f]
-  (let [_ (p/optimize-fn f)
-        {:keys [tree fallbacks]} (st/structurize f)]
+  (p/optimize-fn f)
+  (analyze-opt fname f))
+
+(defn analyze-opt
+  "analyze-ir after optimize-fn has run (the census times the stages apart)."
+  [fname f]
+  (let [{:keys [tree fallbacks absorbed-blocks absorbed-insts]} (st/structurize f)]
+    (check-absorbed fname f (or absorbed-blocks #{}) (or absorbed-insts #{}))
     ;; structurize's :fallbacks also counts :multi-exit loops, whose tree is
     ;; complete (see walk's :loop); only a :goto node is unlowerable.
     (when (has-node? :goto tree)
@@ -728,17 +889,45 @@
                           (let [nid (ir/fn-load-arg f i)] (if nid (ty nid) :box))))
             rets (for [b (ir/blocks f)
                        :let [t (ir/block-term b f)]
-                       :when (= (ir/op t f) :return)]
+                       ;; a block left without a terminator (bfs-flood-label!) returns nothing
+                       :when (and t (= (ir/op t f) :return))]
                    (ty (first (ir/refs t f))))
             ret (if (and (seq rets) (every? #{:int} rets)) :int :box)]
-        {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true}))))
+        {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true
+         :absorbed (or absorbed-insts #{})}))))
+
+(defn self-call?
+  "Does f call itself by var (typeinfer's own self-call test)?"
+  [f]
+  (let [nm (str (ir/fn-name f))]
+    (some (fn [b]
+            (some (fn [i]
+                    (and (= :call (ir/op i f))
+                         (let [c (first (ir/refs i f))]
+                           (and c (= :load-var (ir/op c f)) (= nm (name (symbol (ir/aux c f))))))))
+                  (ir/block-insts b f)))
+          (ir/blocks f))))
 
 (defn analyze-fn
   "Build, optimize and structurize one (already macroexpanded) defn form.
    Resolution of vars happens against *ns*, so the caller must have defined
-   the program's vars first."
+   the program's vars first.
+
+   A self-recursive defn is first tried with its self-calls typed :int
+   (typeinfer's #599 declared-return hook, seeded without a hint). If every
+   return is then :int the assumption holds by induction on recursion depth
+   (the base cases return ints without recursing), so the fn returns an
+   unboxed i64; otherwise it is rebuilt and analysed normally. fib(32): the
+   boxed path is ~2x the probe, the typed one well under it (bench-fib.sh)."
   [src]
-  (analyze-ir (str (second src)) (ir.build/build-fn src)))
+  (let [nm (str (second src)) f (ir.build/build-fn src)]
+    (if (self-call? f)
+      (or (try (let [info (binding [ir.passes.typeinfer/*declared-return-types* {nm :int}]
+                            (analyze-ir nm f))]
+                 (when (= :int (:ret info)) info))
+               (catch e nil))
+          (analyze-ir nm (ir.build/build-fn src)))
+      (analyze-ir nm f))))
 
 (defn has-tail? [tree] (has-node? :tail tree))
 
@@ -762,10 +951,11 @@
    $Code<code>: the closure arrives as $self, its captures are read from the
    env struct `env` (field kinds `env-kinds`). `caps` are a try region's
    captures, passed as trailing params $c0.."
-  [{:keys [name f tree params ret caps export? code env env-kinds]}]
+  [{:keys [name f tree params ret caps export? code env env-kinds absorbed]}]
   (let [[linked tries] (closure-sets f)]
   (binding [*f* f *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
-            *box-inline* true *env-type* env *linked* linked *try-srcs* tries]
+            *box-inline* true *env-type* env *linked* linked *try-srcs* tries
+            *absorbed* (or absorbed #{})]
     (let [locals (distinct (all-values f))
           body (walk tree)
           body (if (has-tail? tree)
@@ -1062,7 +1252,20 @@
   (let [boxed (fn [op]
                 ;; unbox once into $x/$y: the inline overflow test repeats its operands
                 (let [ua "(local.get $x)" ub "(local.get $y)"]
-                (str "(func $rt_" (name op) " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64) (local $x i64) (local $y i64)\n  "
+                (str (when (= *box* :hybrid)
+                       ;; P1.GATE: both operands i31 is the common case, and two
+                       ;; 31-bit values cannot overflow i64 under + - *, so it
+                       ;; needs no check and no helper. Kept small (the checked
+                       ;; path is its own function) so V8 inlines it into callers.
+                       (str "(func $rt_" (name op) " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64)\n"
+                            "  (if (i32.and (ref.test (ref i31) (local.get $a)) (ref.test (ref i31) (local.get $b)))\n"
+                            "    (then (local.set $tmp (" (int-binops op)
+                            " (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $a))))"
+                            " (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $b))))))\n"
+                            "      (return (if (result (ref null eq)) (i64.lt_u (i64.add (local.get $tmp) (i64.const 0x40000000)) (i64.const 0x80000000))\n"
+                            "        (then (ref.i31 (i32.wrap_i64 (local.get $tmp)))) (else (struct.new $Int (local.get $tmp)))))))\n"
+                            "  (call $rt_" (name op) "_slow (local.get $a) (local.get $b)))\n"))
+                     "(func $rt_" (name op) (when (= *box* :hybrid) "_slow") " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64) (local $x i64) (local $y i64)\n  "
                      "(local.set $x (call " (unbox-fn op) " (local.get $a))) (local.set $y (call " (unbox-fn op) " (local.get $b)))\n  "
                      (str "(local.set $tmp (" (if (and (= op :mul) *checked*) "call $mul_chk" (binop op)) " " ua " " ub "))"
                                              (when (inline-checked? op) (str " " (inline-check op ua ub "(local.get $tmp)"))))
@@ -1108,31 +1311,153 @@
                 "    (else (struct.get $Int 0 (ref.cast (ref $Int) (local.get $v))))))\n"))
          "(func $rt_box_bool (param $b i32) (result (ref null eq))\n"
          "  (if (result (ref null eq)) (local.get $b) (then (global.get $true)) (else (global.get $false))))\n"
+         ";; a :switch arm test: v is the keyword whose text (ns/name) is s\n"
+         "(func $rt_kw_is (param $v (ref null eq)) (param $s (ref $Bytes)) (result i32)\n"
+         "  (local $k (ref null $Bytes)) (local $i i32) (local $n i32)\n"
+         "  (if (i32.eqz (ref.test (ref $Kw) (local.get $v))) (then (return (i32.const 0))))\n"
+         "  (local.set $k (struct.get $Kw 0 (ref.cast (ref $Kw) (local.get $v))))\n"
+         "  (local.set $n (array.len (local.get $k)))\n"
+         "  (if (i32.ne (local.get $n) (array.len (local.get $s))) (then (return (i32.const 0))))\n"
+         "  (block $done (loop $l\n"
+         "    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))\n"
+         "    (if (i32.ne (array.get_u $Bytes (local.get $k) (local.get $i)) (array.get_u $Bytes (local.get $s) (local.get $i)))\n"
+         "      (then (return (i32.const 0))))\n"
+         "    (local.set $i (i32.add (local.get $i) (i32.const 1)))\n"
+         "    (br $l)))\n"
+         "  (i32.const 1))\n"
          ";; Clojure truthiness: everything but nil and false\n"
          "(func $rt_truthy (param $v (ref null eq)) (result i32)\n"
          "  (i32.and (i32.eqz (ref.is_null (local.get $v))) (i32.eqz (ref.eq (local.get $v) (global.get $false)))))\n"
          (when *checked* (str (str/replace checked-runtime "(throw $overflow)" (raise)) "\n"))
+         "(func $rt_raise_overflow " (raise-wat) ")\n"
          (boxed :add) (boxed :sub) (boxed :mul)
          (apply str (map unbox (sort (keys op-names))))
          (print-runtime) "\n" (exn-runtime) (fn-runtime))))
+
+;; Shared with the P1.5 census, which must expand units exactly as the driver.
+(def core-minus #'clojure.core/-)
+
+(defn unary-minus->unchecked
+  "D35: build.lg turns (- x) into (sub 0 x), which throws on MinInt64 where
+   native bytecode negates with a wrap. Rewrite unary core `-` to
+   (unchecked-subtract 0 x) before build so the IR path matches native.
+   Runs on macroexpanded forms; quoted data is left alone. Lexical shadowing
+   of `-` is not tracked (build.lg would treat a shadowed `-` as a call)."
+  [form]
+  (cond
+    (and (seq? form) (= 'quote (first form))) form
+    (and (seq? form) (= 2 (count form)) (symbol? (first form))
+         (= core-minus (resolve (first form))))
+    (list 'unchecked-subtract 0 (unary-minus->unchecked (second form)))
+    (seq? form) (apply list (map unary-minus->unchecked form))
+    (vector? form) (mapv unary-minus->unchecked form)
+    (map? form) (into {} (map (fn [[k v]] [(unary-minus->unchecked k) (unary-minus->unchecked v)]) form))
+    (set? form) (set (map unary-minus->unchecked form))
+    :else form))
+
+(defn expand-form
+  "Macroexpand one form as the driver does before ir.build (D23, D35)."
+  [form] (unary-minus->unchecked (p/expand-all form)))
+
+(defn new-session
+  "The module-wide state lowering accumulates (strings, lifted regions,
+   globals, env types, fn values, extern var slots)."
+  [sigs var-globals]
+  {:sigs sigs :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+   :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})})
+
+(defn with-session* [ss thunk]
+  (binding [*sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
+            *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
+            *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)]
+    (thunk)))
+
+(defn top-forms
+  "Split WAT text into its top-level parenthesised forms (strings with
+   escapes and ;; comments are skipped over, so a paren inside either does
+   not count). Text outside any form is dropped."
+  [text]
+  (let [n (count text)]
+    (loop [i 0 depth 0 start 0 in-str false out (transient [])]
+      (if (>= i n)
+        (persistent! out)
+        (let [c (nth text i)]
+          (cond
+            in-str (cond (= c \\) (recur (+ i 2) depth start true out)
+                         (= c \") (recur (inc i) depth start false out)
+                         :else (recur (inc i) depth start true out))
+            (= c \") (recur (inc i) depth start true out)
+            (and (= c \;) (< (inc i) n) (= \; (nth text (inc i))))
+            (let [e (or (str/index-of text "\n" i) n)] (recur e depth start false out))
+            (= c \() (recur (inc i) (inc depth) (if (zero? depth) i start) false out)
+            (= c \)) (if (= depth 1)
+                       (recur (inc i) 0 start false (conj! out (subs text start (inc i))))
+                       (recur (inc i) (dec depth) start false out))
+            :else (recur (inc i) depth start false out)))))))
+
+(def wat-id #"\$[A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]+")
+
+(defn shake-runtime
+  "Drop runtime funcs nothing reaches. Roots: every non-func runtime form,
+   exported runtime funcs, and all of `other` (program fns, regions, globals,
+   elem). The runtime is emitted whole, and module size matters beyond bytes:
+   V8 scales a fn's inlining budget down as its module grows (P1.GATE: fib
+   self-inlines one level in the whole-runtime module, two once shaken)."
+  [rt-text other]
+  (let [forms (top-forms rt-text)
+        fname (fn [f] (second (re-find #"^\(func (\$[^\s()]+)" f)))
+        funcs (into {} (keep (fn [f] (when-let [nm (fname f)] [nm f])) forms))
+        exported? (fn [f] (re-find #"^\(func \$[^\s()]+ \(export " f))
+        refs (fn [t] (set (re-seq wat-id t)))
+        roots (into (refs other)
+                    (mapcat (fn [f] (when (or (not (fname f)) (exported? f)) (refs f))) forms))
+        live (loop [todo (vec (filter funcs roots)) live #{}]
+               (if (empty? todo)
+                 live
+                 (let [nm (peek todo) todo (pop todo)]
+                   (if (contains? live nm)
+                     (recur todo live)
+                     (recur (into todo (filter funcs (refs (funcs nm)))) (conj live nm))))))]
+    (str/join "\n" (filter (fn [f] (let [nm (fname f)] (or (nil? nm) (exported? f) (contains? live nm)))) forms))))
+
+(defn session-module
+  "The module text for session ss around the lowered program fns `fns`
+   (lifted regions are appended from the session)."
+  [ss fns]
+  (with-session* ss
+    (fn []
+      (let [fns (into (vec fns) @*regions*)
+            rt (runtime)
+            envs (for [[kinds t] (sort-by val @*env-types*)]
+                   (str "(type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n"))
+            vars (for [g (sort (concat (vals *var-globals*) (vals @*externs*)))]
+                   (str "(global " g " (mut (ref null eq)) (ref.null none))\n"))
+            datas (for [[s i] (sort-by val @*strings*)]
+                    (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]
+        (let [rest-text (str (apply str envs) (apply str vars)
+                             (str/join "\n" @*globals*) "\n"
+                             (when (seq @*elem*) (str "(elem declare func" (apply str (map #(str " $" %) (sort @*elem*))) ")\n"))
+                             (apply str datas) (str/join "\n" fns))]
+          (str "(module\n" (shake-runtime rt rest-text) "\n" rest-text ")\n"))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.
    var-globals: var -> global name (the var table, top-level def/declare)."
   ([infos sigs] (module infos sigs {}))
   ([infos sigs var-globals]
-   (binding [*sigs* sigs *strings* (atom {}) *regions* (atom []) *var-globals* var-globals
-             *globals* (atom []) *elem* (atom #{}) *env-types* (atom {}) *fn-values* (atom {})]
-     (let [fns (vec (doall (map lower-fn infos)))
-           fns (into fns @*regions*)
-           rt (runtime)
-           envs (for [[kinds t] (sort-by val @*env-types*)]
-                  (str "(type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n"))
-           vars (for [g (sort (vals var-globals))]
-                  (str "(global " g " (mut (ref null eq)) (ref.null none))\n"))
-           datas (for [[s i] (sort-by val @*strings*)]
-                   (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]
-       (str "(module\n" rt (apply str envs) (apply str vars)
-            (str/join "\n" @*globals*) "\n"
-            (when (seq @*elem*) (str "(elem declare func" (apply str (map #(str " $" %) (sort @*elem*))) ")\n"))
-            (apply str datas) (str/join "\n" fns) ")\n")))))
+   (let [ss (new-session sigs var-globals)
+         fns (with-session* ss #(vec (doall (map lower-fn infos))))]
+     (session-module ss fns))))
+
+(defn lower-fn-only
+  "P1.5 census: lower one built (not yet optimized) IR fn alone into session
+   ss, with no signatures for the rest of the program (its calls go through
+   var-table slots). Returns {:wat str :externs #{var} :phase2 [kind]} or
+   throws ex-info whose data carries :stage (:optimize or :lower)."
+  [ss fname f]
+  (try (p/optimize-fn f)
+       (catch e (throw (ex-info (str "optimize error: " (ex-message e)) {:stage :optimize}))))
+  (let [notes (atom {})
+        wat (binding [*unit-notes* notes]
+              (with-session* ss #(lower-fn (analyze-opt fname f))))]
+    {:wat wat :externs (set (:externs @notes)) :phase2 (vec (:phase2 @notes))}))

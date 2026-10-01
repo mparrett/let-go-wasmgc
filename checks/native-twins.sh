@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# checks/native-twins.sh <reach-list> [--manifest FILE]  — the P2.8/P3.1 check.
+# checks/native-twins.sh <reach-list> [--manifest FILE] [--exclude REGEX]  — the P2.8/P3.1 check.
 #
 # For a reach list (one `ns/name` per line, as tools/reach.sh writes), print
 # every native with no wasm twin, grouped by ns, with the inventory's arity,
@@ -10,6 +10,9 @@
 # metadata on rt/wasm defns). Until any marker exists it falls back to
 # corpus/natives/manifest-proposed.tsv under a PROPOSED MANIFEST banner.
 # --manifest FILE overrides both (TSV, twin in column 1; used to falsify).
+# --exclude REGEX drops reach-list entries matching the (awk ERE) regex
+# before scoring, e.g. --exclude 'term/' (D58: term/* is Phase 4); they are
+# counted on an EXCLUDED line, never as reached.
 #
 # A twin covers every var bound to the same NativeFn (the inventory's
 # same-fn-as column): a twin for core/trim covers string/trim.
@@ -25,12 +28,14 @@ cd "$root"
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
 inv=corpus/natives/inventory.tsv
 
-reach=${1:?usage: checks/native-twins.sh <reach-list> [--manifest FILE]}
+reach=${1:?usage: checks/native-twins.sh <reach-list> [--manifest FILE] [--exclude REGEX]}
 shift
 manifest_override=
+exclude=
 while [ $# -gt 0 ]; do
   case $1 in
     --manifest) manifest_override=${2:?--manifest needs a file}; shift 2 ;;
+    --exclude) exclude=${2:?--exclude needs a regex}; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -63,8 +68,9 @@ else
 fi
 echo "inventory: $(head -1 "$inv" | sed 's/^# native inventory: //')"
 echo "reach list: $reach"
+[ -n "$exclude" ] && echo "exclude: $exclude"
 
-awk -F'\t' -v invf="$inv" -v manf="$tmp/manifest" '
+awk -F'\t' -v invf="$inv" -v manf="$tmp/manifest" -v ex="$exclude" '
   BEGIN {
     while ((getline l < invf) > 0) {
       if (l ~ /^#/) continue
@@ -82,6 +88,7 @@ awk -F'\t' -v invf="$inv" -v manf="$tmp/manifest" '
     for (b in bogus) printf "WARN manifest claims %s, which is not a native in the inventory\n", b
   }
   /^[ \t]*$/ { next }
+  ex != "" && $1 ~ ex { excluded++; next }
   {
     q = $1; reached++
     g = (q in grp) ? grp[q] : q
@@ -98,6 +105,7 @@ awk -F'\t' -v invf="$inv" -v manf="$tmp/manifest" '
     for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++)
       if (cnt[keys[j]] > cnt[keys[i]] || (cnt[keys[j]] == cnt[keys[i]] && keys[j] < keys[i])) { t = keys[i]; keys[i] = keys[j]; keys[j] = t }
     for (i = 1; i <= n; i++) { printf "== %s (%d)\n%s", keys[i], cnt[keys[i]], rows[keys[i]] }
+    if (excluded > 0) printf "EXCLUDED %d (%s)\n", excluded, ex
     printf "MISSING %d / REACHED %d\n", missing + 0, reached + 0
     exit (missing > 0) ? 1 : 0
   }

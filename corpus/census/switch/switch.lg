@@ -1,0 +1,46 @@
+;; P1.6: keyword cond chains that ir.structurize folds into a [:switch] node
+;; (>= 3 arms over one discriminant). Covers: keyword vs non-keyword
+;; discriminants (default arm), namespaced keywords sharing a name, the
+;; reversed (= :kw x) spelling, arm values computed from other params, nil
+;; and string arm values, and a switch fn called from a loop. (A chain written
+;; inline in a loop body is not folded: structurize's gate wants param-free
+;; test blocks, and loops thread their locals through every block.)
+(defn kind [k]
+  (cond (= k :a) 1
+        (= k :b) 2
+        (= k :c) 3
+        :else 4))
+
+(defn qual [k]
+  (cond (= k :x/a) 10
+        (= :y/a k) 20
+        (= k :a) 30
+        :else 40))
+
+(defn step [k x]
+  (cond (= k :inc) (+ x 1)
+        (= k :dec) (- x 1)
+        (= k :dbl) (* x 2)
+        (= k :neg) (- 0 x)
+        :else x))
+
+(defn pick [i]
+  (if (< i 2) :inc (if (< i 4) :dbl (if (< i 5) :dec :other))))
+
+(defn run [n]
+  (loop [i 0 acc 1]
+    (if (< i n)
+      (recur (inc i) (step (pick i) acc))
+      acc)))
+
+(defn label [k]
+  (cond (= k :lo) "low"
+        (= k :mid) "middle"
+        (= k :hi) "high"
+        :else nil))
+
+(println (kind :a) (kind :b) (kind :c) (kind :d) (kind 5) (kind "a") (kind nil))
+(println (qual :x/a) (qual :y/a) (qual :a) (qual :z/a) (qual :x))
+(println (step :inc 5) (step :dec 5) (step :dbl 5) (step :neg 5) (step :nop 5) (step 1 5))
+(println (run 8))
+(println (label :lo) (label :mid) (label :hi) (label :none))
