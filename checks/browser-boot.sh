@@ -14,7 +14,21 @@
 # reported either way (JSPI needs no SharedArrayBuffer, so it is expected to
 # pass too; that is the COI finding in host/ABI.md). node and wasmtime rows
 # are informational. Env: LG, KEEP=1.
+#
+# checks/browser-boot.sh --xsofy-shell — P4.1 host half: the same two modules
+# in the REAL xsofy/tools/xsofy-shell.html (host/build-xsofy-serve.sh injects
+# it unchanged with local-scripts/inject-shell.sh, on host/xsofy-shell-adapter.js),
+# served without COI (D91). Asserts: the shell boots (ready mode 'worker',
+# Fairfax HD loaded, xterm attached, #status hidden); hello's stdout and the
+# xterm buffer both equal native lg's output; keys-probe prints the size the
+# shell passed to setSize; five 'j' keydowns in one task reach the host and
+# read back as ONE key (D98); 'q' ends the program. Plus node-host: the same
+# burst is one read with --coalesce and five without (node-host's default is
+# unchanged). Exit 0 iff all hold. Needs network: the shell loads xterm from
+# cdn.jsdelivr.net. Env as above, plus XSOFY (the checkout whose shell is used).
 set -uo pipefail
+mode=default
+case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; "") ;; *) echo "usage: browser-boot.sh [--xsofy-shell]"; exit 2 ;; esac
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
@@ -34,8 +48,46 @@ wasm-tools parse "$here/host/keys-probe.wat" -o "$www/keys.wasm" || exit 1
 "$LG" "$here/corpus/host/hello.lg" >"$t/native.out" 2>"$t/native.err" || { echo "FAIL: native lg exited non-zero"; cat "$t/native.err"; exit 1; }
 keys_expected=$'size 80 24\nready\nkey 97\nkey 98\nkey 113\npending 0\nbye'
 
-# ---- browser, with and without COI -----------------------------------------
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+
+# ---- --xsofy-shell -------------------------------------------------------------
+if [ "$mode" = xsofy-shell ]; then
+  xs=$t/xs
+  "$here/host/build-xsofy-serve.sh" "$xs" "$www/hello.wasm" "$www/keys.wasm" || { echo "FAIL: build-xsofy-serve.sh"; exit 1; }
+  px=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$xs" "$px" >"$t/xs.server.log" 2>&1 & pids+=($!)
+  for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
+  node "$here/checks/browser-boot.mjs" --xsofy-shell "http://127.0.0.1:$px" "$t/native.out" >"$t/xs.json"
+  # the same burst under node-host: one j read with --coalesce, five without
+  node "$here/host/node-host.mjs" "$www/keys.wasm" --keys ajjjjjbq --coalesce >"$t/node-co.out" 2>&1
+  node "$here/host/node-host.mjs" "$www/keys.wasm" --keys ajjjjjbq >"$t/node-raw.out" 2>&1
+  python3 - "$t" <<'EOF'
+import json, sys
+t = sys.argv[1]
+try: r = json.load(open(f'{t}/xs.json'))
+except Exception as e: r = {'failure': f'no result from browser-boot.mjs ({e})'}
+def n106(f): return open(f'{t}/{f}').read().split('\n').count('key 106')
+co, raw = n106('node-co.out'), n106('node-raw.out')
+ok = True
+for k in ('boot', 'hello', 'size', 'held', 'quit'):
+    part = r.get(k) or {'pass': False, 'missing': True}
+    ok &= bool(part.get('pass'))
+    print(f"{k:<6}{'PASS' if part.get('pass') else 'FAIL'}  " + json.dumps({x: y for x, y in part.items() if x != 'pass'})[:300])
+node_ok = co == 1 and raw == 5
+ok &= node_ok
+print(f"{'node':<6}{'PASS' if node_ok else 'FAIL'}  burst ajjjjjbq: {co} j read with --coalesce, {raw} without")
+h = r.get('hello', {})
+def ms(x): return '-' if x is None else f'{x:.0f}'
+print(f"timing (page ms): main start {ms(h.get('mainStartMs'))}, first output to shell {ms(h.get('shellFirstOutputMs'))}, "
+      f"first paint in xterm {ms(h.get('visibleMs'))}, host run total {ms(h.get('totalMs'))}")
+for x in ('failure', 'keysStdout'):
+    if r.get(x): print('   ', x, json.dumps(r[x]))
+open(f'{t}/xs.ok', 'w').write('1' if ok and not r.get('failure') else '0')
+EOF
+  if [ "$(cat "$t/xs.ok")" = 1 ]; then echo "PASS (xsofy-shell: boots, hello MATCHes native in xterm, held key = one read, q quits)"; exit 0; fi
+  echo "FAIL (xsofy-shell)"; exit 1
+fi
+
+# ---- browser, with and without COI -----------------------------------------
 # servers start in this shell (not in a $(...) subshell) so cleanup can kill them
 pc=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
 pp=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$www" "$pp" >"$t/plain.server.log" 2>&1 & pids+=($!)

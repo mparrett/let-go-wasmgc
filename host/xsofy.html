@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- The frame xsofy-shell.html is injected into for the lower-wasm lane
+     (P4.1). Same markup as let-go's `lg -w -w-shell none` frame
+     (pkg/rt/wasm/host.html: #status, #app, then a host script),
+     with window.LetGoHost defined by xsofy-shell-adapter.js instead of
+     lg-host-core.js. Not served as-is: host/build-xsofy-serve.sh copies it and
+     runs local-scripts/inject-shell.sh, which puts the real shell at the end
+     of the body, exactly as the deploy's bundle gets it. (No literal body
+     close tag may appear in this comment: the injector splices at the first
+     one it finds.) -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>xsofy (lower-wasm)</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{height:100%;height:100dvh;background:#0c0c0c;color:#e8e6df;overflow:hidden}
+    body{display:flex;flex-direction:column}
+    #app{flex:1;min-height:0}
+    #status{color:#5a584f;font-family:monospace;font-size:13px;padding:1rem;position:absolute;
+            top:50%;left:50%;transform:translate(-50%,-50%)}
+  </style>
+</head>
+<body>
+  <div id="status">loading...</div>
+  <div id="app"></div>
+  <!-- defines window.LetGoHost (inject-shell.sh checks for it) -->
+  <script src="xsofy-shell-adapter.js"></script>
+</body>
+</html>

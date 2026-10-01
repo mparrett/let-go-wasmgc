@@ -36,7 +36,9 @@ simply block the thread.
 | `env.sleep` | `(ms i64) -> ()` | **yes** | emitted | resumes after `ms` milliseconds (`setTimeout`); `ms <= 0` resumes on the next macrotask. Reached from `(<!! (timeout ms))` via `wasm.host/take!!` (D6, D87) |
 | `env.nanotime` | `() -> i64` | no | emitted | monotonic ns (`performance.now()*1e6` in JS hosts, `CLOCK_MONOTONIC` under WASI); only differences mean anything |
 | `env.getenv` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | defined | copies the value into `[buf, buf+cap)` and returns its byte length; returns `> cap` (nothing copied, retry with a bigger buffer) or `-1` when unset. The backend still lowers `host-getenv` to nil |
-| `term.read_key` | `(buf i32, cap i32) -> i32` | **yes** | defined | waits for the next key and copies its UTF-8 bytes (one `sendInput` call = one key, ≤ 16 bytes, as in let-go's SAB ring) into `[buf, buf+cap)`; returns the byte count, **0 = end of input** (`read-key` → nil). The runtime builds the lg String |
+| `env.emit` | `(name_ptr i32, name_len i32, json_ptr i32, json_len i32) -> ()` | no | defined (P4.1) | `js/emit`: the event name and the data as JSON text, let-go's `_lgEmit(name, dataJson)` shape. The browser host parses the JSON and fires the `window` CustomEvent the shell listens for (`xsofy/startup` sets the title and quest, `xsofy/stats`, `xsofy/replay-dump`, …); node drops it. xsofy calls `js/emit` 10 times |
+| `env.url_param` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | defined (P4.1) | `js/url-param`: getenv's contract over the page's query string; `-1` when absent or off-browser (native returns nil). xsofy reads `?seed=` and friends through it (6 calls) |
+| `term.read_key` | `(buf i32, cap i32) -> i32` | **yes** | defined | waits for the next key and copies its UTF-8 bytes (one `sendInput` call = one key, ≤ 16 bytes, as in let-go's SAB ring) into `[buf, buf+cap)`; returns the byte count, **0 = end of input** (`read-key` → nil). Coalesces (D98, below). The runtime builds the lg String |
 | `term.key_pending` | `() -> i32` | no | defined | 1 if a key is queued, else 0 (`key-pending?`) |
 | `term.size` | `() -> (i32 i32)` | no | defined | `cols rows` as a multi-value result (`term/size` → `[cols rows]`); default 80×24 |
 | `term.write` | `(ptr i32, len i32) -> i32` | no | defined | same stream as `env.write` fd 1. let-go's `term/write` is `(write *out* s)`, so the runtime may use either; this exists so a terminal host can tell term output apart if it ever needs to |
@@ -69,6 +71,29 @@ simply block the thread.
   dropped, and at most 8 keys queue (the rest are dropped). Both match let-go's
   ring; `node-host` lifts the cap for piped input.
 
+## Key coalescing (D98)
+
+`term.read_key` is the consumer half of let-go's `HostKeySource.ReadKey`
+(`pkg/rt/keysource_js_wasm.go:78-127`), and `sendInput` the producer half
+(`lg-host-core.js` `_lgKey`):
+
+- `sendInput` refuses an empty key, a key over 16 UTF-8 bytes, and a key past
+  the 8-slot capacity (returns `false`, as `_lgKey` does).
+- `read_key` takes the head key. If its length is outside 1..16 it is drained
+  alone and the read returns 0 (nil). Otherwise every following queued key
+  with the same bytes is drained with it: a held key that outruns the program
+  is one read, not a backlog. Distinct keys are never merged.
+- `sendInput` always queues and then wakes a parked `read_key`, which resumes
+  in a later microtask and reads the queue itself. Keys sent in one task (an
+  auto-repeat burst) are therefore all queued by the time it looks, which is
+  what makes them coalesce even when the program was already waiting. Handing
+  the first key straight to the waiter, as P4.0 did, would make a burst into
+  two reads.
+
+`node-host` turns coalescing **off** unless given `--coalesce`, so scripted
+and piped input still reaches the program key for key. The wasmtime adapter
+reads stdin and does not coalesce (it has no queue to look ahead in).
+
 ## Errors (identical to src/run.mjs, D12)
 
 If `lw main` rejects, the host switches the current output fd to 2 and prints
@@ -87,12 +112,47 @@ exception" backtrace instead; the adapter does not format it.
 `lg-host-core.js`: `onReady(cb)`, `onOutput(cb)`, `onEmit(cb)`,
 `sendInput(str)`, `setSize(c, r)`. It is a classic script that runs before any
 shell code and buffers output and the ready signal until a shell registers.
-The ready mode is **`'jspi'`**, a new value next to let-go's `'worker'` (input
-over the SAB ring) and `'main'` (output only). **P4.1 must deal with this:**
-`xsofy-shell.html` binds `setSize`/`onData`/`sendInput` only when
-`mode === 'worker'`. Either the shell's gate becomes "not `'main'`", or this
-host reports `'worker'`. The second needs no xsofy change but misnames the
-mechanism.
+`index.html` reports ready mode **`'jspi'`**. `xsofy-shell-adapter.js`, the
+surface the real shell runs on, reports **`'worker'`** (D90). The reason is
+the shell's own gate: `xsofy-shell.html` calls `setSize`, registers
+`term.onResize` and wires `term.onData` → `sendInput` only inside
+`if (mode === 'worker')`. In `'main'` (let-go's output-only mode) and in any
+other value it shows output but never sends a key or a size. `'worker'` names
+let-go's worker + SAB-ring mechanism, which this host does not use; what the
+shell actually needs to know is "input is live", and that is true here.
+Reporting `'worker'` keeps the shell byte-identical to upstream (changing its
+gate would be an xsofy PR). With `'jspi'` the `--xsofy-shell` check fails
+boot, size, held and quit (falsified 2026-10-01).
+
+## xsofy-shell.html on this host (P4.1)
+
+`host/build-xsofy-serve.sh <dir> [modules…]` builds a serve directory:
+`host/xsofy.html` (let-go's `-w-shell none` frame: `#status`, `#app`, then a
+classic `<script src="xsofy-shell-adapter.js">`) with the shell injected by
+the workspace's own `local-scripts/inject-shell.sh` (sentinel-wrapped, before
+the body close tag; the shell is copied byte for byte). The adapter defines
+`window.LetGoHost` synchronously, so it exists when the shell binds at parse
+time, then dynamic-imports `lg-wasm-host.js`.
+
+What the shell expects at boot, and who provides it:
+
+| shell expects | provided by |
+|---|---|
+| `window.LetGoHost` with `onReady/onOutput/sendInput/setSize` before its own script runs | adapter (classic script ahead of the injection point) |
+| `#app` (xterm mount) and optionally `#status` (hidden on ready) | `xsofy.html`, same ids as let-go's `host.html` |
+| `onReady(mode)` with `mode === 'worker'` to wire input and size | adapter reports `'worker'` (above) |
+| output buffered until it registers `onOutput` | adapter buffers; the shell buffers again until xterm opens |
+| xterm 5.5 + addon-fit from cdn.jsdelivr.net | network; nothing local |
+| Fairfax HD (inlined base64 in the shell), loaded before `term.open` | the shell itself; `?font=system` skips it |
+| `build-info.json` next to the page (optional; 404 = ad-hoc bundle) | absent |
+| `xsofy/startup`, `xsofy/stats`, `xsofy/term-size`, `xsofy/perf`, `xsofy/replay-dump` window events (title, quest, stats, replay link) | `env.emit` → `onEmit` default → `CustomEvent` (defined; no module imports it yet) |
+| nothing printed at boot: the title bar shows `—` until `xsofy/startup` arrives; the terminal shows whatever the program writes | — |
+
+The adapter starts `lw main` only after the shell's first `setSize` (or 2 s
+without one). The shell calls `setSize` after awaiting its font and opening
+xterm, roughly 150–180 ms after load in headless Chromium; a module that
+starts sooner reads the 80×24 default instead of the real grid. let-go's lane
+has the same race but hides it behind its slower boot.
 
 ## COI: not needed
 
@@ -109,6 +169,9 @@ service-worker fallback. That fallback is also unreliable under headless
 automation (CLAUDE.md), so dropping it simplifies P4.1–P4.3.
 
 ## Stack depth under JSPI (a P4.1 risk)
+
+Closed by D99: xsofy's deepest stack is 20 lg frames, well inside the
+browser budget measured below.
 
 A promising export runs on a V8 secondary stack sized by
 `--wasm-stack-switching-stack-size`, 984 kB by default. A worker's

@@ -1,0 +1,33 @@
+;; pending (2026-10-01): compiles, but the D97 term intrinsics do not lower
+;; yet. The emitted module imports only env.write/print_*; no term.* import
+;; appears, so term-read-key runs its reference body (*term-input* is nil)
+;; and the first (term/read-key) returns nil: under node-host the program
+;; prints "size 80 24", the banner escapes, "ready", then "eof" whatever keys
+;; are sent, and size ignores LetGoHost.setSize. The output twins (clear,
+;; move-cursor, set-fg, write-at, reset-style) already emit the exact escapes.
+;; Until the backend learns term-read-key/term-key-pending/term-size
+;; (P4.1-backend), checks/browser-boot.sh --xsofy-shell drives host/keys-probe.wat
+;; for input instead. When it lowers, move this file to corpus/host/.
+;; P4.1 host smoke for the term/* twins (D97) under xsofy-shell.html.
+;; Prints the window size, draws a coloured banner with clear/move-cursor/
+;; write-at/set-fg, then echoes every key term/read-key returns, one "key"
+;; line per read, until a lone q. A held key that the host coalesced (D98)
+;; shows up as ONE "key j" line for several presses. Ends with one
+;; term/key-pending? reading and "bye".
+(let [[cols rows] (term/size)]
+  (println "size" cols rows))
+(term/clear)
+(term/move-cursor 1 3)
+(term/set-fg 208)
+(term/write-at 1 3 "term-demo")
+(term/reset-style)
+(term/move-cursor 1 4)
+(println "")
+(println "ready")
+(loop [n 0]
+  (let [k (term/read-key)]
+    (cond (nil? k) (println "eof")
+          (= k "q") (do (println "key" k "reads" (inc n))
+                        (println "pending" (if (term/key-pending?) 1 0))
+                        (println "bye"))
+          :else (do (println "key" k) (recur (inc n))))))

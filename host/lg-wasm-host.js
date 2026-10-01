@@ -5,6 +5,11 @@
 //   const r = await host.run(bytesOrModule);   // { code, error, tFirstOutput, tTotal }
 //   host.sendInput('a'); host.setSize(100, 30); host.closeInput();
 //
+// Keys follow let-go's ring (pkg/rt/wasm/lg-host-core.js producer,
+// pkg/rt/keysource_js_wasm.go consumer): sendInput drops empty, >16-byte and
+// over-capacity keys; read_key coalesces a run of identical queued keys into
+// one read (D98) unless the host is built with coalesceKeys: false.
+//
 // Blocking imports (env.sleep, term.read_key) are WebAssembly.Suspending and
 // `lw main` runs under WebAssembly.promising, so the module blocks while the
 // JS event loop keeps running. That is why input needs no SharedArrayBuffer
@@ -21,16 +26,22 @@ export const MAX_KEY_LEN = 16;
 export const hasJSPI = typeof WebAssembly !== 'undefined'
   && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
+const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 export class LgWasmHost {
-  constructor({ onOutput = () => {}, env = {}, cols = 80, rows = 24, keyCapacity = KEY_CAPACITY } = {}) {
+  constructor({ onOutput = () => {}, env = {}, cols = 80, rows = 24, keyCapacity = KEY_CAPACITY, coalesceKeys = true,
+    onEmit = () => {}, urlParams = null } = {}) {
     this.onOutput = onOutput;
+    this.onEmit = onEmit;          // (name, dataJson) for js/emit
+    this.urlParams = urlParams;    // URLSearchParams for js/url-param; null off-browser
     this.keyCapacity = keyCapacity;
+    this.coalesceKeys = coalesceKeys;
     this.envMap = env;
     this.cols = cols; this.rows = rows;
     this.keys = [];          // queued keys, each a Uint8Array (one sendInput call = one key)
-    this.keyWaiter = null;   // resolve fn of a parked read_key
+    this.keyWaiter = null;   // wakes a parked read_key (it then reads the queue itself)
     this.inputClosed = false;
     this.running = false;
     // one streaming decoder per fd so a UTF-8 sequence split across two
@@ -45,19 +56,47 @@ export class LgWasmHost {
     if (!this.running || this.inputClosed) return false;   // pre-boot keys dropped, as in let-go
     const b = enc.encode(s);
     if (b.length === 0 || b.length > MAX_KEY_LEN) return false;
-    if (this.keyWaiter) { const w = this.keyWaiter; this.keyWaiter = null; w(b); return true; }
     if (this.keys.length >= this.keyCapacity) return false;
+    // Always queue, then wake. The parked read_key resumes in a later
+    // microtask and takes from the queue, so keys sent in the same task (an
+    // auto-repeat burst, a paste split into keys) are all queued by the time
+    // it looks and coalesce, as they would in let-go's ring.
     this.keys.push(b);
+    this.wake();
     return true;
   }
+  wake() { if (this.keyWaiter) { const w = this.keyWaiter; this.keyWaiter = null; w(); } }
   setSize(cols, rows) { this.cols = cols | 0; this.rows = rows | 0; }
   closeInput() {
     this.inputClosed = true;
-    if (this.keyWaiter) { const w = this.keyWaiter; this.keyWaiter = null; w(null); }
+    this.wake();
+  }
+
+  // The consumer half of keysource_js_wasm.go:78-127: a head key outside
+  // 1..16 bytes is drained alone and reads as nil; otherwise every following
+  // key with the same bytes is drained with it (one read for a held key).
+  // sendInput already refuses bad lengths, as let-go's producer does, so the
+  // first branch only fires if something else fills the queue; D98 makes it
+  // part of the read_key contract regardless.
+  takeKey() {
+    const k = this.keys.shift();
+    if (k.length < 1 || k.length > MAX_KEY_LEN) return null;
+    if (this.coalesceKeys) {
+      while (this.keys.length && sameBytes(this.keys[0], k)) this.keys.shift();
+    }
+    return k;
   }
 
   // ---- output ---------------------------------------------------------------
   bytes(ptr, len) { return new Uint8Array(this.mem.buffer, ptr, len); }
+  str(ptr, len) { return new TextDecoder().decode(this.bytes(ptr, len)); }
+  // copy a string into [buf, buf+cap); returns its byte length (> cap means
+  // nothing was copied and the caller retries with a bigger buffer)
+  copyOut(s, buf, cap) {
+    const v = enc.encode(s);
+    if (v.length <= cap) this.bytes(buf, v.length).set(v);
+    return v.length;
+  }
   emitBytes(fd, b) {
     if (this.tFirstOutput === null) this.tFirstOutput = now() - this.tStart;
     const text = this.decoders[fd === 2 ? 2 : 1].decode(b, { stream: true });
@@ -84,11 +123,19 @@ export class LgWasmHost {
       // change. Copies the value into [buf, buf+cap); returns its byte length
       // (> cap means "retry with a bigger buffer") or -1 when unset.
       getenv: (nptr, nlen, buf, cap) => {
-        const name = new TextDecoder().decode(h.bytes(nptr, nlen));
+        const name = h.str(nptr, nlen);
         if (!Object.prototype.hasOwnProperty.call(h.envMap, name)) return -1;
-        const v = enc.encode(String(h.envMap[name]));
-        if (v.length <= cap) h.bytes(buf, v.length).set(v);
-        return v.length;
+        return h.copyOut(String(h.envMap[name]), buf, cap);
+      },
+      // js/emit and js/url-param (xsofy uses both: the shell's title/quest/
+      // stats arrive as xsofy/* events; ?seed= etc. as URL params). Defined,
+      // not yet imported by any module. emit hands the name and the JSON text
+      // the runtime serialised (let-go's _lgEmit(name, dataJson) shape).
+      // url_param has getenv's contract; -1 off-browser, as native's nil.
+      emit: (nptr, nlen, dptr, dlen) => { h.onEmit(h.str(nptr, nlen), h.str(dptr, dlen)); },
+      url_param: (nptr, nlen, buf, cap) => {
+        const v = h.urlParams ? h.urlParams.get(h.str(nptr, nlen)) : null;
+        return v === null ? -1 : h.copyOut(v, buf, cap);
       },
     };
     const term = {
@@ -102,9 +149,12 @@ export class LgWasmHost {
           new Uint8Array(h.mem.buffer, buf, n).set(b.subarray(0, n));
           return n;
         };
-        if (h.keys.length) return put(h.keys.shift());
-        if (h.inputClosed) return 0;
-        return new Promise((r) => { h.keyWaiter = r; }).then(put);
+        const next = () => {
+          if (h.keys.length) return put(h.takeKey());
+          if (h.inputClosed) return 0;
+          return new Promise((r) => { h.keyWaiter = r; }).then(next);
+        };
+        return next();
       }),
       key_pending: () => (h.keys.length ? 1 : 0),
       size: () => [h.cols, h.rows],
