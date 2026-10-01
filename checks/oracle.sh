@@ -13,7 +13,7 @@
 # Prints MATCH or MISMATCH <which> and exits 0/1. Nothing else counts as
 # "matches" anywhere in the plan.
 #
-# Env: LG (native lg; default = the plan's pinned main build),
+# Env: LG (native lg; default = the plan's pinned main build), LG_ARGS (args before the program),
 #      WASM_RUN (command that compiles+runs an .lg through the backend and
 #      behaves like lg on stdout/stderr/exit; unset = NOT IMPLEMENTED, exit 2),
 #      KEEP=1 to leave the scratch dir behind.
@@ -23,7 +23,8 @@ prog=$1; shift
 [ -n "${WASM_RUN:-}" ] || { echo "NOT IMPLEMENTED: WASM_RUN unset (backend runner missing)"; exit 2; }
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] || rm -rf "$t"' EXIT
 norm() { sed -E -e 's/\x1b\[[0-9;]*m//g' -e 's#(/[^ :]+)+/##g' -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/ at [^ ]+:[0-9]+//g' -e 's/:[0-9]+:[0-9]+$//' | grep -m1 -i 'error' ; }
-"$LG" "$prog" "$@" >"$t/n.out" 2>"$t/n.err"; nx=$?
+# LG_ARGS: extra native-lg args before the program (e.g. -source-paths <root>); split on whitespace by design.
+"$LG" ${LG_ARGS:-} "$prog" "$@" >"$t/n.out" 2>"$t/n.err"; nx=$?
 $WASM_RUN "$prog" "$@" >"$t/w.out" 2>"$t/w.err"; wx=$?
 if [ "$((nx==0))" != "$((wx==0))" ]; then echo "MISMATCH exit ($nx vs $wx)"; exit 1; fi
 if [ $nx -eq 0 ]; then
