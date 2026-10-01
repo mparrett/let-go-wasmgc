@@ -32,3 +32,4 @@
 | P4.1-host | done 2026-10-01 | opus | real shell boots emitted modules; coalescing; --xsofy-shell green; emit/url_param defined (D100) |
 | P2.12 | running | opus | variadic ABI (D83) |
 | P2.13 | running | opus | rt seams: MapSeq/SetSeq kind (R5), f64.neg, raise sweep (D74) |
+| perf | investigated 2026-10-01 | fable | corpus/perf-report.md; D106; P0.1 queued for application |

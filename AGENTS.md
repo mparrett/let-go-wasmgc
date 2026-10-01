@@ -26,3 +26,13 @@ Rules (not negotiable):
    the falsification step, anything you could not do, and any decision you
    had to make that is not in DECISIONS.md (propose it; do not edit that
    file). Keep it under a page. No subagents.
+8. **Never poll a long check with `until … sleep` loops.** The harness caps a
+   foreground command at 10 min; a check that can exceed that (gate, census,
+   native tier, corpus runs) is started with `run_in_background` and you act
+   on its completion notification, or you split it (`checks/run.sh <one id>`).
+   Measured 2026-10-01: 6.1 of 13.7 agent-hours were spent in sleep loops.
+   Also: wrap any lg/node-heavy command in `checks/sem.sh` (a machine-wide
+   slot pool, `LW_SLOTS=4`) so three agents' gates queue instead of
+   oversubscribing the 8-core laptop (native tier: 90 s at load 10, 525 s at
+   load 30+). Before running the full gate, `checks/affected.sh` tells you
+   which rows your diff actually touches; run those first, the gate once.
