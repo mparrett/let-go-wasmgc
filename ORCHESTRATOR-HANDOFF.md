@@ -31,6 +31,12 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   (Resume either with SendMessage to that id if it stalls >45 min with no
   file writes under its dir.)
 
+- Perf investigation (read-only, model fable): agent id `af09b08ef400b738d`.
+  Requested by Matt via the coordinator session (`uds:/tmp/cc-socks/47061.sock`,
+  2026-10-01 ~11:10). Deliverable `corpus/perf-report.md`; I adopt only
+  high-benefit/low-risk items (as D-entries/rows), record the rest.
+  Also agreed: Sonnet for mechanical corpus/table items from now on.
+
 ## Next in queue (after P2.12 releases src/)
 1. P3.2: driver resolves xsofy namespaces (`-source-paths`
    /Users/matt/projects-new/3p/xsofy), compiles `corpus/dump-world.lg`,
