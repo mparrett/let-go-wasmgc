@@ -1,0 +1,15 @@
+;; gap-02 (q14-throw-fn-value): uncaught fn value
+;; report falls into rt_print -> illegal cast
+;; native lg 4e769212:
+;;   error: <fn 0x5d5b493a27c0>
+;;     --> q14-throw-fn-value.lg:1:8
+;;      |
+;;    1 | (throw (fn [] 1))
+;;      |        ^^^
+;;   
+;;   stack trace:
+;;     at throw (q14-throw-fn-value.lg:1:8)
+;; wasm (src @ HEAD 4e203f4):
+;;   error: illegal cast
+;; P1.7: FIXED - native print: a caught runtime error prints its #error form, atoms and ex-info go through the runtime printer, an uncaught fn reports <fn 0x0> (oracle normalises the address)
+(throw (fn [] 1))

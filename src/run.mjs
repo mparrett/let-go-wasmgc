@@ -41,10 +41,13 @@ if (isMainThread) {
   };
 
   const { instance } = await WebAssembly.instantiate(fs.readFileSync(workerData), { env });
-  mem = instance.exports.mem;
-  const lgex = instance.exports.lgex;
+  // the backend's own exports have names no lg symbol can spell (a space),
+  // so a program defn exported under its lg name never collides (P1.7 bug-09)
+  const ex = instance.exports;
+  mem = ex['lw mem'];
+  const lgex = ex['lw lgex'];
   try {
-    instance.exports._main();
+    ex['lw main']();
     flush();
   } catch (e) {
     flush();
@@ -52,8 +55,8 @@ if (isMainThread) {
     emit(Buffer.from('error: '));
     if (e instanceof WebAssembly.Exception && e.is(lgex)) {
       // the module formats its own exception values (message / pr-str)
-      instance.exports._report(e.getArg(lgex, 0));
-    } else if (instance.exports._trap_report && instance.exports._trap_report()) {
+      ex['lw report'](e.getArg(lgex, 0));
+    } else if (ex['lw trap'] && ex['lw trap']()) {
       // wasm/trap: the module printed the reference impl's message
     } else {
       emit(Buffer.from(String((e && e.message) || e)));

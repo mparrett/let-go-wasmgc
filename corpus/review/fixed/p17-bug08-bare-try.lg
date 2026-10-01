@@ -1,0 +1,5 @@
+;; P1.7 addition: a shape adjacent to the review bug, checked against native
+(println (try 1 2 3) (try (+ 1 2)))
+(defn f [n] (loop [i 0 acc []] (if (< i n) (try (recur (inc i) (conj acc i))) acc)))
+(println (f 4))
+(println (try (try (throw (ex-info "in" {})) ) (catch Exception e (ex-message e))))

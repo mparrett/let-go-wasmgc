@@ -1,0 +1,13 @@
+;; bug-09 (q20-name-collide-import): defn print_i64
+;; duplicate func identifier
+;; native lg 4e769212:
+;;   40
+;; wasm (src @ HEAD 4e203f4):
+;;   error: duplicate func identifier
+;;        --> m.wat:129:7
+;;         |
+;;     129 | (func $print_i64 (export "print_i64") (param $p0 i64) (result i64)
+;;         |       ^
+;; P1.7: FIXED - program ids are $u_<munged> (reversible), exports keep the lg name, the backend's exports are "lw *"; a name defined twice is a var-table var
+(defn print_i64 [x] (* x 10))
+(println (print_i64 4))

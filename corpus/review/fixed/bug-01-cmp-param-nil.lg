@@ -1,0 +1,12 @@
+;; bug-01 (p83-cmp-param-nil): (< a b) with b nil, caught
+;; trap instead of caught error
+;; native lg 4e769212:
+;;   true
+;;   :caught
+;; wasm (src @ HEAD 4e203f4):
+;;   true
+;;   error: illegal cast
+;; P1.7: FIXED - a param is typed i64 only while every call passes an int and the defn is never used as a value (driver fixpoint over lowering notes); otherwise it stays boxed and the body unboxes through the checked helpers
+(defn lt [a b] (< a b))
+(println (lt 1 2))
+(println (try (lt 1 nil) (catch Exception e :caught)))

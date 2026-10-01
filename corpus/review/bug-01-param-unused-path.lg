@@ -1,8 +1,0 @@
-;; bug-01 (p00c-param-unused-path): param typed by a branch not taken
-;; (sel nil "s") traps although + is never reached
-;; native lg 4e769212:
-;;   2 s :kw
-;; wasm (src @ HEAD 4e203f4):
-;;   error: illegal cast
-(defn sel [k x] (if k (+ x 1) x))
-(println (sel true 1) (sel nil "s") (sel false :kw))

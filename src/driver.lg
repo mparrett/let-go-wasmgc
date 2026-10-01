@@ -76,31 +76,56 @@
 ;; the failure is reported as that test's ERROR rather than hiding the file.
 (def ^:dynamic *stub-failures* false)
 
+(defn wasm-name
+  "The wasm function id of a program defn form (P1.7 bug-09: mangled into
+   its own namespace) and the export string that keeps its lg name."
+  [src]
+  (let [nm (str (second src)) argc (count (nth src 2))]
+    (if (::multi (meta src))
+      [(lw/prog-id nm argc) (str nm "#" argc)]
+      [(lw/prog-id nm) nm])))
+
 (defn stub-info [src e]
-  (let [nm (str (second src) (when (::multi (meta src)) (str "#" (count (nth src 2)))))]
+  (let [nm (first (wasm-name src))]
     {:stub (lw/stub-fn {:name nm :params (vec (repeat (count (nth src 2)) :box)) :ret :box}
                        (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))
      :name nm :params (vec (repeat (count (nth src 2)) :box)) :ret :box}))
 
-(defn analyze-program! [defns main-src]
+(defn analyze-program!
+  "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint)."
+  [defns main-src boxed]
   (doall
    (for [src (conj defns main-src)]
      (do (lw/analyze-deps! src)
-         (let [multi? (::multi (meta src))
+         (let [main? (= main-src src)
+               multi? (::multi (meta src))
                argc (count (nth src 2))
-               info (try (if multi?
-                           (lw/analyze-fn src (str (second src) "#" argc) true)
-                           (lw/analyze-fn src))
+               v (when-not main? (resolve (second src)))
+               [wname ename] (if main? ["_main" "lw main"] (wasm-name src))
+               info (try (binding [lw/*box-params* (contains? boxed [v argc])]
+                           (assoc (lw/analyze-fn src wname (boolean multi?)) :export-name ename))
                          ;; P1.4's refusals compare the error's first line: rethrow as is
-                         (catch e (if (and *stub-failures* (not= '_main (second src)))
+                         (catch e (if (and *stub-failures* (not main?))
                                     (stub-info src e)
-                                    (throw e))))
-               v (resolve (second src))]
-           (when (and v (not= '_main (second src)))
+                                    (throw e))))]
+           (when v
              (swap! lw/*sigs* update v
-                    (fn [e] (assoc-in (or e {:base (str (second src)) :multi? (boolean multi?)})
+                    (fn [e] (assoc-in (or e {:base (str (second src)) :multi? (boolean multi?) :var v})
                                       [:arities (count (:params info))] (select-keys info [:name :params :ret])))))
            info)))))
+
+(defn boxing-needed
+  "[var argc] keys of program defns whose typed params some call cannot
+   honour (it holds a boxed value) or that are used as values (the fn-value
+   wrapper unboxes per the signature), per the notes lowering recorded. Only
+   keys whose signature still has an unboxed param count."
+  [notes prog-vars]
+  (let [typed? (fn [[v argc]] (some #(not= :box %) (get-in @lw/*sigs* [v :arities argc :params])))]
+    (set (filter typed?
+                 (concat (filter #(contains? prog-vars (first %)) (:viol notes))
+                         (for [v (:value notes) :when (contains? prog-vars v)
+                               argc (keys (:arities (get @lw/*sigs* v)))]
+                           [v argc]))))))
 
 ;; --test (checks/run-tests.sh): the test file's deftest/is/testing become
 ;; src/testshim.lg's, whose helper defs are injected after the ns form, and
@@ -133,6 +158,58 @@
   (and (seq? form) (symbol? (first form))
        (contains? lw-rt/decl-heads (try (resolve (first form)) (catch e nil)))))
 
+;; P1.7 (bug-05): native lg keeps compiling a call to one of these as its
+;; opcode after the program defines a var of the same name (the user fn only
+;; runs as a value), and ir.build does not (it builds a call once the name
+;; resolves elsewhere). Reproducing that split is not worth it: refused.
+(def native-opcode-ops
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-not bit-and-not bit-shift-left
+     bit-shift-right unsigned-bit-shift-right unchecked-add unchecked-subtract unchecked-multiply})
+
+(defn refuse-core-op-redef! [sym]
+  (when (and (symbol? sym) (contains? native-opcode-ops sym)
+             (let [r (resolve sym)] (and (var? r) (= r (ns-resolve 'clojure.core sym)))))
+    (throw (ex-info (str "lower-wasm: redefining core op " sym " is not supported") {:var sym}))))
+
+;; P1.7 (bug-06/bug-11): native lg compiles and runs a program one top-level
+;; form at a time, so a compile error (recur not in tail position, recur arity,
+;; a symbol that does not resolve yet) stops it at that form, after the forms
+;; before it ran. The driver compiles every form natively at its position
+;; (defns are eval'd; other forms are compiled inside a (fn* [] ..) and not
+;; run) and, on the first error, ends _main with a throw of native's message.
+(defn native-msg
+  "Native's compile-error chain as its report prints it: the first line is
+   the outermost context, then `caused by: ` lines. strip? drops the
+   `compiling fn body` layer the driver's own (fn* [] ..) wrapper adds."
+  [e strip?]
+  (let [parts (map #(clojure.string/replace % #"^CompileError: " "")
+                   (clojure.string/split (str (ex-message e)) #"\n\tcaused by "))
+        parts (if (and strip? (= "compiling fn body" (first parts)) (next parts)) (rest parts) parts)]
+    (clojure.string/join "\ncaused by: " parts)))
+
+(defn native!
+  "Compile (and for defns, define) natively; a failure becomes ::native."
+  ([form] (native! form false))
+  ([form strip?]
+   (try (eval form)
+        (catch e (throw (ex-info "native compile error" {::native (native-msg e strip?)}))))))
+
+(defn compile-check! [form] (native! (list 'fn* [] form) true))
+
+(defn defining-sym [form]
+  (when (and (seq? form) (#{'defn 'defn- 'def} (first form)))
+    (def-sym form)))
+
+(defn defn->def
+  "(defn f ..) as (def f (fn ..)): a var defined more than once is a
+   var-table var (P1.7 bug-09), so each definition takes effect at its
+   position, as natively, instead of one static function."
+  [[_ nm & more]]
+  (let [nm (if (and (seq? nm) (= 'with-meta (first nm))) (second nm) nm)
+        more (if (string? (first more)) (rest more) more)
+        more (if (map? (first more)) (rest more) more)]
+    (list 'def nm (apply list 'fn more))))
+
 (defn -main [& argv]
   (let [skip-arg (second (drop-while #(not= "--skip" %) argv))
         skip (set (map symbol (when skip-arg (clojure.string/split skip-arg #","))))
@@ -157,35 +234,51 @@
                                 (rest post))))
                 forms)
         _ (eval '(ns user))
-        defns (atom []) body (atom []) table (atom []) decls (atom [])]
-    (doseq [form forms]
-      (cond
-        (= form ::install-test-macros)
-        (do (doseq [s '[deftest is testing]] (ns-unmap *ns* s))
-            (doseq [m test-macros] (eval m)))
-        (and (seq? form) (= 'defn- (first form))) (do (eval form) (swap! defns into (expand-defn form)))
-        (decl-form? form) (do (eval form) (swap! decls conj (resolve (second form))))
-        (and (seq? form) (= 'ns (first form))) (eval form)
-        ;; declare only interns forward vars: a later defn binds by name
-        ;; (direct calls), anything else lands in the var table.
-        (and (seq? form) (= 'declare (first form))) (do (eval form) (swap! table into (rest form)))
-        (defn-form? form) (do (eval form) (swap! defns into (expand-defn form)))
-        ;; intern only: the value is computed by _main at run time
-        (def-form? form) (do (eval (list 'declare (def-sym form)))
-                             (swap! table conj (def-sym form))
-                             (swap! body conj form))
-;; a macro only matters at expansion time, in this process
-        (and (seq? form) (= 'defmacro (first form))) (eval form)
-        (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
-        (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
-        :else (swap! body conj form)))
+        defns (atom []) body (atom []) table (atom []) decls (atom [])
+        ;; names defined by more than one defn/defn-/def form (bug-09)
+        redef (set (for [[s n] (frequencies (keep defining-sym forms)) :when (> n 1)] s))
+        process!
+        (fn [form]
+          (when (and (seq? form) (#{'defn 'defn- 'def 'declare} (first form)))
+            (doseq [s (if (= 'declare (first form)) (rest form) [(def-sym form)])]
+              (refuse-core-op-redef! s)))
+          (let [form (if (and (seq? form) (#{'defn 'defn-} (first form)) (contains? redef (def-sym form)))
+                       (defn->def form)
+                       form)]
+            (cond
+              (= form ::install-test-macros)
+              (do (doseq [s '[deftest is testing]] (ns-unmap *ns* s))
+                  (doseq [m test-macros] (eval m)))
+              (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defns into (expand-defn form)))
+              (decl-form? form) (do (native! form) (swap! decls conj (resolve (second form))))
+              (and (seq? form) (= 'ns (first form))) (native! form)
+              ;; declare only interns forward vars: a later defn binds by name
+              ;; (direct calls), anything else lands in the var table.
+              (and (seq? form) (= 'declare (first form))) (do (native! form) (swap! table into (rest form)))
+              (defn-form? form) (do (native! form) (swap! defns into (expand-defn form)))
+              ;; intern only: the value is computed by _main at run time
+              (def-form? form) (do (compile-check! form)
+                                   (eval (list 'declare (def-sym form)))
+                                   (swap! table conj (def-sym form))
+                                   (swap! body conj form))
+              ;; a macro only matters at expansion time, in this process
+              (and (seq? form) (= 'defmacro (first form))) (native! form)
+              (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
+              (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
+              :else (do (compile-check! form) (swap! body conj form)))))
+        compile-error (reduce (fn [_ form]
+                                (try (process! form) nil
+                                     (catch e (if-let [m (::native (ex-data e))] (reduced m) (throw e)))))
+                              nil forms)]
+    ;; native stops at the failing form: the forms before it run, then the error
+    (when compile-error (swap! body conj (list 'throw (list 'ex-info compile-error {}))))
     (let [defn-names (set (map second @defns))
           deffed (set (keep #(when (def-form? %) (def-sym %)) @body))
           _ (doseq [s deffed :when (defn-names s)]
               ;; defn calls are direct, so a later def could not rebind them
               (throw (ex-info (str "lower-wasm: unsupported def of defn var " s) {:var s})))
           var-globals (into {} (for [s (distinct @table) :when (not (defn-names s))]
-                                 [(resolve s) (str "$var_" s)]))
+                                 [(resolve s) (str "$var_" (lw/munge-id s))]))
           body (if test?
                  (concat @body [(list 'println (str "\nTesting " (ns-name *ns*)))]
                          (map list @tests) ['(__t-summary)])
@@ -199,15 +292,29 @@
          ;; the cached, fully lowered runtime (lower-wasm/load-rtlib!)
          (when rtlib? (lw/load-rtlib!))
          (doseq [v @decls] (lw/add-decl! v))
-         (let [infos (analyze-program! @defns main-src)]
+         ;; bug-01: a param stays typed (i64) only while every call passes
+         ;; an int and the defn is never used as a value; lowering reports
+         ;; the calls that do not, those defns are re-analysed with boxed
+         ;; params, and the program is analysed and lowered again until
+         ;; nothing new needs boxing (monotone, so it terminates). Usually
+         ;; one round: fib's calls all pass ints.
+         (let [prog-vars (set (keep #(resolve (second %)) @defns))
+               ;; a stub keeps the analysed name and signature: callers were
+               ;; lowered against them
+               lower-one #(cond (:stub %) (:stub %)
+                                *stub-failures* (try (lw/lower-fn %)
+                                                     (catch e (lw/stub-fn (select-keys % [:name :params :ret])
+                                                                          (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))))
+                                :else (lw/lower-fn %))
+               fns (loop [boxed #{}]
+                     (let [infos (analyze-program! @defns main-src boxed)
+                           notes (atom {})
+                           fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
+                           more (remove boxed (boxing-needed @notes prog-vars))]
+                       (if (empty? more) fns (recur (into boxed more)))))]
            ;; --no-shake: the whole runtime, for the size comparison
            (when (and (:rt opts) (not rtlib?) (not (:shake opts)))
              (doseq [d lw-rt/defns] (lw/rt-analyze! (:var d))))
-           (let [fns (vec (doall (map #(cond (:stub %) (:stub %)
-                                             *stub-failures* (try (lw/lower-fn %)
-                                                                  (catch e (:stub (stub-info (list 'defn (symbol (:name %)) (vec (map (fn [_] '_) (:params %)))) e))))
-                                             :else (lw/lower-fn %))
-                                       infos)))]
-             (spit out (lw/session-module ss fns))))))))))
+           (spit out (lw/session-module ss fns)))))))))
 
 (apply -main *command-line-args*)

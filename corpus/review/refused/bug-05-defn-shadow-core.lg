@@ -1,0 +1,15 @@
+;; refuse: redefining core op inc is not supported
+;; bug-05 (p16-defn-shadow-core): (defn inc ..) in user ns
+;; native keeps calling core inc (2,3); wasm calls user inc (101,102)
+;; native lg 4e769212:
+;;   2
+;;   3
+;;   WARNING: inc already refers to: #'clojure.core/inc in namespace: user, being replaced by: #'user/inc
+;; wasm (src @ HEAD 4e203f4):
+;;   101
+;;   102
+;; P1.7: REFUSED by name (D71)
+(defn inc [x] (+ x 100))
+(println (inc 1))
+(defn h [y] (inc y))
+(println (h 2))

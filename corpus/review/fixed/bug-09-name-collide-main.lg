@@ -1,0 +1,13 @@
+;; bug-09 (q18-name-collide-main): defn _main
+;; duplicate func identifier
+;; native lg 4e769212:
+;;   hi
+;; wasm (src @ HEAD 4e203f4):
+;;   error: duplicate func identifier
+;;        --> m.wat:122:7
+;;         |
+;;     122 | (func $_main (export "_main") (result (ref null eq))
+;;         |       ^
+;; P1.7: FIXED - program ids are $u_<munged> (reversible), exports keep the lg name, the backend's exports are "lw *"; a name defined twice is a var-table var
+(defn _main [] 7)
+(println "hi")

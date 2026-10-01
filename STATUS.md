@@ -23,7 +23,8 @@
 | review-1 | done 2026-10-01 | opus | 148 probes: 78 match, 11 bugs (5 silent), 2 gaps → P1.7 |
 | review-2 | done 2026-10-01 | opus | 2300 seeds; 16 runtime bugs (8 silent) → P2.10 |
 | P2.10 | done 2026-10-01 | opus | 15/16 fixed, 1 deferred; vkind_test; 89 tests; verified |
-| P1.7 | running | opus | Phase 1 review fixes |
+| P1.7 | done 2026-10-01 | opus | 48/48 fixed + 3 refused; tail calls; purity pins; gate green, bench 1.37×; verified |
 | P2.1-corpus | done 2026-10-01 | opus | 14 programs, 5 MATCH; F1–F9 → P2.11; variadics → P2.12 |
 | P3.1 | done 2026-10-01 | opus | xsofy MISSING 0/135; xxh3 200 vectors; 106 tests; verified |
 | P4.0 | done 2026-10-01 | opus | host glue + ABI; hello MATCH in Chromium/node/wasmtime; no COI needed; JSPI depth risk D89 |
+| P2.11 | running | opus | backend oracle fixes F1–F9 + D87 |

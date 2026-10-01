@@ -1,0 +1,18 @@
+;; bug-01 (p00a-param-nil-guard): nil-guarded param used in +
+;; param typed i64; (f nil) traps `illegal cast`, uncatchable even in try
+;; native lg 4e769212:
+;;   2
+;;   0
+;;   0
+;;   false
+;; wasm (src @ HEAD 4e203f4):
+;;   2
+;;   error: illegal cast
+;; P1.7: FIXED - a param is typed i64 only while every call passes an int and the defn is never used as a value (driver fixpoint over lowering notes); otherwise it stays boxed and the body unboxes through the checked helpers
+(defn f [x] (if x (+ x 1) 0))
+(println (f 1))
+(println (try (f nil) (catch Throwable t :caught)))
+(defn g [x] (if (nil? x) 0 (+ x 1)))
+(println (g nil))
+(defn h [x] (if x (inc x) false))
+(println (h false))

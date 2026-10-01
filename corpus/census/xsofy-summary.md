@@ -2,13 +2,13 @@
 
 Each top-level fn unit (one row per arity) lowered alone by lower-wasm and its module validated with wasm-tools; nothing is run. Regenerate with `checks/census.sh xsofy`; per-unit rows in `xsofy.tsv`.
 
-**1055/1064 units compile** (99.2%): ok 75, unbound-var 969, phase2-const 11. unsupported op: 0; invalid-wat: 0; goto fallback: 0; unsupported tree node: 0.
+**1055/1064 units compile** (99.2%): ok 71, unbound-var 969, phase2-const 15. unsupported op: 0; invalid-wat: 0; goto fallback: 0; unsupported tree node: 0.
 
 | bucket | units |
 |---|---:|
 | `unbound-var` | 969 |
-| `ok` | 75 |
-| `phase2-const` | 11 |
+| `ok` | 71 |
+| `phase2-const` | 15 |
 | `optimize error` | 2 |
 | `other unsupported variadic fn (& args) as a closure {:fn "u446_par` | 1 |
 | `other unsupported variadic fn {:fn "u110_gen-tuple"}` | 1 |
@@ -28,7 +28,7 @@ Each top-level fn unit (one row per arity) lowered alone by lower-wasm and its m
 | 2 | `optimize error` | main.lg read-dismiss-key! (1) | optimize error: validate after licm: block #0 branch to b1 passes 0 args but b1 has 1 params |
 | 1 | `other unsupported variadic fn (& args) as a closure {:fn "uN_par` | xsofy/runes.lg parse-runes (1) | lower-wasm: unsupported variadic fn (& args) as a closure {:fn "u446_parse-runes", :name nil} |
 
-## Phase-2 constant placeholders: 484 units
+## Phase-2 constant placeholders: 507 units
 
 Units (any bucket) holding at least one placeholder, by kind (sites in parentheses):
 
@@ -36,13 +36,12 @@ Units (any bucket) holding at least one placeholder, by kind (sites in parenthes
 |---|---:|---:|
 | var | 339 | 347 |
 | vector | 95 | 118 |
-| float | 30 | 62 |
+| map | 89 | 113 |
 | set | 20 | 24 |
-| map | 20 | 21 |
 | list | 4 | 6 |
 | symbol | 1 | 1 |
 
-## Unbound vars: 156 distinct (top 25 by units)
+## Unbound vars: 157 distinct (top 25 by units)
 
 | var | units |
 |---|---:|

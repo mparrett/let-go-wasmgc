@@ -1,0 +1,13 @@
+;; bug-01 (q08-param-typed-via-value): typed param via defn-as-value
+;; wrapper unboxes the same way
+;; native lg 4e769212:
+;;   2
+;;   0
+;; wasm (src @ HEAD 4e203f4):
+;;   2
+;;   error: illegal cast
+;; P1.7: FIXED - a param is typed i64 only while every call passes an int and the defn is never used as a value (driver fixpoint over lowering notes); otherwise it stays boxed and the body unboxes through the checked helpers
+(defn f [x] (if x (+ x 1) 0))
+(def g f)
+(println (g 1))
+(println (try (g nil) (catch Throwable t :caught)))

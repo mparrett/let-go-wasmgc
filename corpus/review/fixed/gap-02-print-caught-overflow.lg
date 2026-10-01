@@ -1,0 +1,8 @@
+;; gap-02 (q07-print-caught-overflow): println of caught runtime error
+;; illegal cast
+;; native lg 4e769212:
+;;   #error {:type java.lang.Exception, :message "ExecutionError: integer overflow", :data {}}
+;; wasm (src @ HEAD 4e203f4):
+;;   error: illegal cast
+;; P1.7: FIXED - native print: a caught runtime error prints its #error form, atoms and ex-info go through the runtime printer, an uncaught fn reports <fn 0x0> (oracle normalises the address)
+(println (try (+ 9223372036854775807 1) (catch Exception e e)))

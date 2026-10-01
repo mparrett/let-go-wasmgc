@@ -1,0 +1,9 @@
+;; bug-09 (q17-name-collide-export): defn mem
+;; Duplicate export name 'mem'
+;; native lg 4e769212:
+;;   1
+;; wasm (src @ HEAD 4e203f4):
+;;   error: WebAssembly.instantiate(): Duplicate export name 'mem' for memory 0 and function 8 @+275
+;; P1.7: FIXED - program ids are $u_<munged> (reversible), exports keep the lg name, the backend's exports are "lw *"; a name defined twice is a var-table var
+(defn mem [] 1)
+(println (mem))

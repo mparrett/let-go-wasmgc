@@ -1,0 +1,12 @@
+;; refuse-runtime: printing a fn value (native prints its heap address)
+;; gap-02 (p58-print-fn): println of a fn
+;; uncatchable `illegal cast`
+;; native lg 4e769212:
+;;   x
+;;   <fn 0x3ce33240a340>
+;; wasm (src @ HEAD 4e203f4):
+;;   x
+;;   error: illegal cast
+;; P1.7: REFUSED by name (D71)
+(println "x")
+(println (fn [] 1))

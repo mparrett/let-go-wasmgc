@@ -12,6 +12,13 @@ is `lg-4e76921230`.
 - `bug-NN-*.lg` are the MISMATCH programs (native and wasm output in the header).
 - `gap-NN-*.lg` are Phase-2 constructs that fail without a named error.
 
+P1.7 (2026-10-01) moved every bug/gap program, header kept plus one
+`;; P1.7:` disposition line, into `fixed/` (MATCHes; `.expected` from native,
+none where native's report embeds an address, D55) or `refused/` (named
+error, checked by `checks/refuse.sh`; `;; refuse-runtime:` marks the one
+refusal that can only happen at run time). `fixed/p17-*.lg` are shapes next
+to each bug that P1.7 also checks against native. Row: `checks/run.sh P1.7`.
+
 Classes: MATCH; MISMATCH = inside the Phase 1 scope and native != wasm;
 NAMED-LIMIT = refused or thrown with a `lower-wasm: ...` message, or covered by
 a DECISIONS entry (D33 stack bound, D42, D52, D63 unbound-var, D65);
@@ -22,26 +29,26 @@ Counts (148 programs, as of 2026-10-01): 78 MATCH, 33 MISMATCH, 28 NAMED-LIMIT, 
 
 ## Bugs, ranked (wrong value silently > wrong error > crash)
 
-| # | severity | what | programs | one-line direction |
-|---|---|---|---|---|
-| bug-02 | wrong value | IR dead-code elimination drops unused checked arithmetic (`+ - * inc dec`, including `(+ nil 1)`), so overflow and type errors vanish. `quot` is kept | p98 p99 q03 q04 q05 | treat checked ops as effectful in the optimize pipeline the backend uses |
-| bug-03 | wrong value | LICM hoists `+` and `quot` out of a zero-trip loop: wasm throws `:ovf`/`divide by zero` where native returns 0 | q01 | do not hoist trapping ops past the loop guard |
-| bug-04 | wrong value | D35's unary-minus rewrite ignores lexical shadowing: `(let [- inc] (- x))` gives -5 instead of 6 | p14 | skip the rewrite when `-` is locally bound (track locals or rewrite after build) |
-| bug-05 | wrong value | `(defn inc ..)` / `(defn + ..)` in `user`: native keeps compiling calls as the core op (prints 2, 7); wasm calls the user defn (101, 12). A native quirk, but the oracle follows native | p16 p17 | reproduce (a D16-style quirk) or refuse by name; record in DECISIONS |
-| bug-06 | wrong value | var used before its `def`: native fails `Can't resolve y`, wasm prints `nil` and exits 0 (the driver interns every def up front) | p67 (p85 is the defn-body variant) | intern defs in order, or refuse a forward reference |
-| bug-01 | crash | A param that reaches `+ - * < <= > >= inc dec` is typed `i64` in the signature. Call sites (direct and via the defn-as-value wrapper) unbox with `$rt_unbox_int`, a bare `ref.cast`, so passing nil/string/bool traps `illegal cast`. This happens even when the callee guards the value (`(if x (+ x 1) 0)`) or the arithmetic branch is not taken, and `try` cannot catch the trap. Contradicts D42's "no bare ref.cast traps on the boxed path". Hits ordinary nil-guarded optional args and `if-let` | p00a p00b p00c p06 p83 p86 q08 | keep params boxed at the ABI unless every caller provably passes ints, or make the call-site unbox checked and fall back to a boxed entry |
-| bug-07 | crash | native lg eliminates tail calls (self and mutual, not just `recur`): 1e7 tail calls finish in 1.7 s. wasm overflows its 256 MB stack. D33 covers deep non-tail recursion only | p38b p39b (p39) | emit `return_call` for calls in tail position |
-| bug-08 | crash | `(loop [i 0] (if (< i n) (try (recur (inc i))) i))` is legal natively (prints 3); the driver dies in `ir/build` because the lambda-lifted try region has no loop to recur to | p13 | refuse by name (`recur across try`) or keep tail-recur try regions inline |
-| bug-09 | crash | defn names go into wasm ids and exports verbatim: a second `defn f`, a non-ASCII name (`λ`), or a name that collides with the runtime or exports (`mem`, `lgex`, `_main`, `_report`, `print_i64`, `rt_box_int`) fail in wasm-tools or at instantiate | p19 p23 q16-q20 | mangle program ids into their own prefix; last-defn-wins for redefinition |
-| bug-10 | wrong error | uncaught thrown string: native pr-str escapes (`"a\"b\nc"`), wasm prints the raw bytes, which also breaks the error line | p88 | escape in `$rt_report` (comment says P2.6; no DECISIONS entry) |
-| bug-11 | wrong error | native compile errors (recur not in tail position, recur arity, forward reference) surface as `calling apply` from the driver's eval instead of native's `compiling def value ...`; for p25, native prints `start` before failing and wasm prints nothing | p10 p25 p46 p47 p85 | rethrow the eval error's root message |
+| # | severity | what | programs | one-line direction | P1.7 disposition |
+|---|---|---|---|---|---|
+| bug-02 | wrong value | IR dead-code elimination drops unused checked arithmetic (`+ - * inc dec`, including `(+ nil 1)`), so overflow and type errors vanish. `quot` is kept | p98 p99 q03 q04 q05 | treat checked ops as effectful in the optimize pipeline the backend uses | FIXED: DCE keeps any op that may raise (pin on `ir.passes.purity/effect-free-inst?`); upstream finding |
+| bug-03 | wrong value | LICM hoists `+` and `quot` out of a zero-trip loop: wasm throws `:ovf`/`divide by zero` where native returns 0 | q01 | do not hoist trapping ops past the loop guard | FIXED: LICM hoists no op that may raise (pin on `ir.passes.licm/pure-op?`); upstream finding |
+| bug-04 | wrong value | D35's unary-minus rewrite ignores lexical shadowing: `(let [- inc] (- x))` gives -5 instead of 6 | p14 | skip the rewrite when `-` is locally bound (track locals or rewrite after build) | FIXED: the rewrite tracks locals named `-` |
+| bug-05 | wrong value | `(defn inc ..)` / `(defn + ..)` in `user`: native keeps compiling calls as the core op (prints 2, 7); wasm calls the user defn (101, 12). A native quirk, but the oracle follows native | p16 p17 | reproduce (a D16-style quirk) or refuse by name; record in DECISIONS | REFUSED: `lower-wasm: redefining core op <name> is not supported` (native's opcode set) |
+| bug-06 | wrong value | var used before its `def`: native fails `Can't resolve y`, wasm prints `nil` and exits 0 (the driver interns every def up front) | p67 (p85 is the defn-body variant) | intern defs in order, or refuse a forward reference | FIXED: every form is compiled natively at its position; native's message ends `_main` there |
+| bug-01 | crash | A param that reaches `+ - * < <= > >= inc dec` is typed `i64` in the signature. Call sites (direct and via the defn-as-value wrapper) unbox with `$rt_unbox_int`, a bare `ref.cast`, so passing nil/string/bool traps `illegal cast`. This happens even when the callee guards the value (`(if x (+ x 1) 0)`) or the arithmetic branch is not taken, and `try` cannot catch the trap. Contradicts D42's "no bare ref.cast traps on the boxed path". Hits ordinary nil-guarded optional args and `if-let` | p00a p00b p00c p06 p83 p86 q08 | keep params boxed at the ABI unless every caller provably passes ints, or make the call-site unbox checked and fall back to a boxed entry | FIXED: a param is typed only while every call passes an int and the defn is not a value (driver fixpoint); `$rt_unbox_int` is checked |
+| bug-07 | crash | native lg eliminates tail calls (self and mutual, not just `recur`): 1e7 tail calls finish in 1.7 s. wasm overflows its 256 MB stack. D33 covers deep non-tail recursion only | p38b p39b (p39) | emit `return_call` for calls in tail position | FIXED: `return_call` in tail position, `return_call_ref` in `$rt_invokeN` |
+| bug-08 | crash | `(loop [i 0] (if (< i n) (try (recur (inc i))) i))` is legal natively (prints 3); the driver dies in `ir/build` because the lambda-lifted try region has no loop to recur to | p13 | refuse by name (`recur across try`) or keep tail-recur try regions inline | FIXED: a handler-less `try` is a `do`; with a handler native rejects the recur itself, which bug-11's path reproduces |
+| bug-09 | crash | defn names go into wasm ids and exports verbatim: a second `defn f`, a non-ASCII name (`λ`), or a name that collides with the runtime or exports (`mem`, `lgex`, `_main`, `_report`, `print_i64`, `rt_box_int`) fail in wasm-tools or at instantiate | p19 p23 q16-q20 | mangle program ids into their own prefix; last-defn-wins for redefinition | FIXED: ids `$u_<munged>`, exports keep the lg name, the backend's exports are `lw *`; a name defined twice is a var-table var |
+| bug-10 | wrong error | uncaught thrown string: native pr-str escapes (`"a\"b\nc"`), wasm prints the raw bytes, which also breaks the error line | p88 | escape in `$rt_report` (comment says P2.6; no DECISIONS entry) | FIXED: `$rt_print_quoted` in `_report` |
+| bug-11 | wrong error | native compile errors (recur not in tail position, recur arity, forward reference) surface as `calling apply` from the driver's eval instead of native's `compiling def value ...`; for p25, native prints `start` before failing and wasm prints nothing | p10 p25 p46 p47 p85 | rethrow the eval error's root message | FIXED: native's message chain at the failing form, after the forms before it run |
 
 ## Silent gaps (Phase 2 constructs with no named error)
 
-| # | what | programs |
-|---|---|---|
-| gap-01 | A non-empty vector literal (`[1 2]`, `[(inc 1)]`), `(list ..)`, a map literal with non-constant values, and `loop`/`let` destructuring all compile to calls of unbound vars, so they report `TypeError: nil is not a function`, which looks like a native error. D63 promises `lower-wasm: Phase-2 constant vector`, but only `[]` gets it | p00d p48 |
-| gap-02 | `$rt_print` and `$rt_report` fall through to the Int unbox for `$Fn`, `$Atom` and `$Err`. `(println (fn [] 1))`, `(println (atom 1))`, `(println e)` on a caught exception, and an uncaught `(throw (fn ..))` all trap `illegal cast`, which is uncatchable. Printing them is Phase 2 (D53), but they fail without a name | p57 p58 q06 q07 q14 |
+| # | what | programs | P1.7 disposition |
+|---|---|---|---|
+| gap-01 | A non-empty vector literal (`[1 2]`, `[(inc 1)]`), `(list ..)`, a map literal with non-constant values, and `loop`/`let` destructuring all compile to calls of unbound vars, so they report `TypeError: nil is not a function`, which looks like a native error. D63 promises `lower-wasm: Phase-2 constant vector`, but only `[]` gets it | p00d p48 | MATCH as is since the runtime is compiled in (D75-D78) |
+| gap-02 | `$rt_print` and `$rt_report` fall through to the Int unbox for `$Fn`, `$Atom` and `$Err`. `(println (fn [] 1))`, `(println (atom 1))`, `(println e)` on a caught exception, and an uncaught `(throw (fn ..))` all trap `illegal cast`, which is uncatchable. Printing them is Phase 2 (D53), but they fail without a name | p57 p58 q06 q07 q14 | native print for atoms, ex-info and a caught runtime error (`#error {:type ..}`); an uncaught fn reports `<fn 0x0>`; printing a fn is REFUSED at run time (native prints an address) |
 
 ## Named limits worth a DECISIONS note
 

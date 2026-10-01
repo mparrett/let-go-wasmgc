@@ -1,0 +1,11 @@
+;; P1.7 addition: a shape adjacent to the review bug, checked against native
+(println ((fn [x] (if x (+ x 1) 0)) nil))
+(println (try ((fn [x] (+ x 1)) "a") (catch Exception e :caught)))
+(defn f [x] (if x (inc x) :none))
+(println (try (f nil) (catch Exception e :c)) (f 4))
+(defn g [h x] (h x))
+(println (g f nil) (g f 1))
+(defn k [x y] (if (< x 10) (+ x y) y))
+(defn caller [a] (k 1 a))
+(println (caller 5) (try (caller nil) (catch Exception e :c2)))
+(println (try (throw (ex-info "x" {})) (catch Exception e (if (number? e) (+ e 1) :not-num))))

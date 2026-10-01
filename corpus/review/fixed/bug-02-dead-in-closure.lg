@@ -1,0 +1,9 @@
+;; bug-02 (q03-dead-in-closure): dead overflow in closure
+;; 
+;; native lg 4e769212:
+;;   :ovf
+;; wasm (src @ HEAD 4e203f4):
+;;   :ok
+;; P1.7: FIXED - DCE keeps any op that may raise (purity pin on ir.passes.purity/effect-free-inst?, lower_wasm.lg)
+(defn mk [x] (fn [] (+ x 1) :ok))
+(println (try ((mk 9223372036854775807)) (catch Exception e :ovf)))

@@ -1,0 +1,9 @@
+;; bug-01 (p86-param-nil-guard-loop): nil-guarded param in loop
+;; native 10 0; wasm trap
+;; native lg 4e769212:
+;;   10 0
+;; wasm (src @ HEAD 4e203f4):
+;;   error: illegal cast
+;; P1.7: FIXED - a param is typed i64 only while every call passes an int and the defn is never used as a value (driver fixpoint over lowering notes); otherwise it stays boxed and the body unboxes through the checked helpers
+(defn sum-or-zero [x n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (if x (+ acc x) acc)) acc)))
+(println (sum-or-zero 2 5) (sum-or-zero nil 5))

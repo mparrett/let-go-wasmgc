@@ -1,0 +1,8 @@
+;; gap-01 (p48-loop-destructure): loop [[a b] [1 2]]
+;; TypeError nil instead of a Phase-2 name
+;; native lg 4e769212:
+;;   3
+;; wasm (src @ HEAD 4e203f4):
+;;   error: TypeError: nil is not a function 
+;; P1.7: FIXED - MATCH as is: vectors, lists and destructuring exist since the runtime is compiled in (D75-D78)
+(println (loop [[a b] [1 2]] (+ a b)))

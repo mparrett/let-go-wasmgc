@@ -1,0 +1,23 @@
+;; bug-11 (p10-recur-in-catch): recur from catch (illegal natively)
+;; both fail at compile; wasm says `calling apply`, native `compiling def value`
+;; native lg 4e769212:
+;;   error: compiling def value
+;;     --> p10-recur-in-catch.lg:1:1
+;;      |
+;;    1 | (defn f [n] (loop [i 0] (if (< i n) (try (throw (ex-info "x" {})) (catch Exception e (recur (inc i)))) i)))
+;;      | ^^^
+;;   caused by: compiling fn body
+;;   caused by: compiling loop body
+;;   caused by: compiling if then branch
+;; wasm (src @ HEAD 4e203f4):
+;;   error: calling apply
+;;     --> /private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/review1/snap/src/driver.lg:97:1
+;;       |
+;;    97 | (apply -main *command-line-args*)
+;;       | ^^^
+;;   caused by: calling apply*
+;;     --> <embedded:core>:1215:12
+;;   caused by: calling eval
+;; P1.7: FIXED - every top-level form is compiled natively at its position; a compile error ends _main there with native's message chain
+(defn f [n] (loop [i 0] (if (< i n) (try (throw (ex-info "x" {})) (catch Exception e (recur (inc i)))) i)))
+(println (f 3))

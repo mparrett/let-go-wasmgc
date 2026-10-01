@@ -1,8 +1,0 @@
-;; bug-01 (p86-param-nil-guard-loop): nil-guarded param in loop
-;; native 10 0; wasm trap
-;; native lg 4e769212:
-;;   10 0
-;; wasm (src @ HEAD 4e203f4):
-;;   error: illegal cast
-(defn sum-or-zero [x n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (if x (+ acc x) acc)) acc)))
-(println (sum-or-zero 2 5) (sum-or-zero nil 5))

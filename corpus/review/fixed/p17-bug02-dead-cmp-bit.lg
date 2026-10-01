@@ -1,0 +1,9 @@
+;; P1.7 addition: a shape adjacent to the review bug, checked against native
+(defn f [x] (let [y (< x 1)] :ok))
+(println (try (f nil) (catch Exception e :cmp-caught)))
+(defn g [x] (bit-and x 1) :ok)
+(println (try (g "s") (catch Exception e :bit-caught)))
+(defn h [x n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (* x 3))) acc)))
+(println (h 9223372036854775807 0) (h 2 3))
+(defn q [x] (+ x 0))
+(println (try (q nil) (catch Exception e :q-caught)))

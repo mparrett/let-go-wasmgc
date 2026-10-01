@@ -1,0 +1,12 @@
+;; P1.7 / D79: a vector literal or a `vector` call is an ArrayVector at any
+;; size (the backend built them by conj, which promotes past 32)
+(def big [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40])
+(println (type big) (count big))
+(defn mk [x] [x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x])
+(println (type (mk 7)) (count (mk 7)) (nth (mk 7) 39))
+(defn mkv [x] (vector x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x))
+(println (type (mkv 1)) (count (mkv 1)))
+(println (type [1 2]) (type (mk 1)) (type (conj [1 2] 3)))
+(def v32 [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32])
+(println (type v32) (type (conj v32 33)))
+(println (= big (mkv 1)) (= (mk 1) (vec (repeat 40 1))))

@@ -1,0 +1,9 @@
+;; bug-02 (q04-dead-sub-unary): dead dec / (- x 1)
+;; 
+;; native lg 4e769212:
+;;   :ovf
+;; wasm (src @ HEAD 4e203f4):
+;;   :ok
+;; P1.7: FIXED - DCE keeps any op that may raise (purity pin on ir.passes.purity/effect-free-inst?, lower_wasm.lg)
+(defn f [x] (dec x) (- x 1) :ok)
+(println (try (f -9223372036854775808) (catch Exception e :ovf)))

@@ -1,0 +1,25 @@
+;; bug-11 (p25-throw-before-defn): defn calling a later defn
+;; native prints `start` then compile error; wasm prints nothing, `calling apply`
+;; native lg 4e769212:
+;;   start
+;;   error: compiling def value
+;;     --> p25-throw-before-defn.lg:2:1
+;;      |
+;;    2 | (defn g [] (h))
+;;      | ^^^
+;;   caused by: compiling fn body
+;;   caused by: compiling function position
+;; wasm (src @ HEAD 4e203f4):
+;;   error: calling apply
+;;     --> /private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/review1/snap/src/driver.lg:97:1
+;;       |
+;;    97 | (apply -main *command-line-args*)
+;;       | ^^^
+;;   caused by: calling apply*
+;;     --> <embedded:core>:1215:12
+;;   caused by: calling eval
+;; P1.7: FIXED - every top-level form is compiled natively at its position; a compile error ends _main there with native's message chain
+(println "start")
+(defn g [] (h))
+(defn h [] 42)
+(println (g))

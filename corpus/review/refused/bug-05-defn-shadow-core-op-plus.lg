@@ -1,0 +1,11 @@
+;; refuse: redefining core op + is not supported
+;; bug-05 (p17-defn-shadow-core-op-plus): (defn + ..)
+;; native 7, wasm 12
+;; native lg 4e769212:
+;;   7
+;;   WARNING: + already refers to: #'clojure.core/+ in namespace: user, being replaced by: #'user/+
+;; wasm (src @ HEAD 4e203f4):
+;;   12
+;; P1.7: REFUSED by name (D71)
+(defn + [a b] (* a b))
+(println (+ 3 4))

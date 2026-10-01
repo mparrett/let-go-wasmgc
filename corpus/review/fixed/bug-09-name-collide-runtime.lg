@@ -1,0 +1,13 @@
+;; bug-09 (q16-name-collide-runtime): defn rt_box_int
+;; duplicate func identifier
+;; native lg 4e769212:
+;;   1073741824
+;; wasm (src @ HEAD 4e203f4):
+;;   error: duplicate func identifier
+;;        --> m.wat:121:7
+;;         |
+;;     121 | (func $rt_box_int (export "rt_box_int") (param $p0 i64) (result i64)
+;;         |       ^
+;; P1.7: FIXED - program ids are $u_<munged> (reversible), exports keep the lg name, the backend's exports are "lw *"; a name defined twice is a var-table var
+(defn rt_box_int [x] (+ x 1))
+(println (rt_box_int 1073741823))

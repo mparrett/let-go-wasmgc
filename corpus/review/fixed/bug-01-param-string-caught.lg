@@ -1,0 +1,11 @@
+;; bug-01 (p00b-param-string-caught): caught type error in +
+;; native catches `cannot add`; wasm traps before try can see it
+;; native lg 4e769212:
+;;   :caught
+;;   after
+;; wasm (src @ HEAD 4e203f4):
+;;   error: illegal cast
+;; P1.7: FIXED - a param is typed i64 only while every call passes an int and the defn is never used as a value (driver fixpoint over lowering notes); otherwise it stays boxed and the body unboxes through the checked helpers
+(defn f [x] (+ x 1))
+(println (try (f "a") (catch Exception e :caught)))
+(println "after")

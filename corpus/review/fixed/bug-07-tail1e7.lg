@@ -1,0 +1,9 @@
+;; bug-07 (p39b-tail1e7): self tail call 1e7 (not recur)
+;; native :done in 1.7 s; wasm stack overflow
+;; native lg 4e769212:
+;;   :done
+;; wasm (src @ HEAD 4e203f4):
+;;   error: Maximum call stack size exceeded
+;; P1.7: FIXED - a call in tail position (through forwarding join blocks) is return_call; $rt_invokeN ends in return_call_ref
+(defn f [n] (if (zero? n) :done (f (dec n))))
+(println (f 10000000))

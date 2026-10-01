@@ -1,0 +1,11 @@
+;; bug-07 (p38b-mutual-1e7): mutual tail recursion 1e7
+;; native TCOs (true); wasm `Maximum call stack size exceeded`
+;; native lg 4e769212:
+;;   true
+;; wasm (src @ HEAD 4e203f4):
+;;   error: Maximum call stack size exceeded
+;; P1.7: FIXED - a call in tail position (through forwarding join blocks) is return_call; $rt_invokeN ends in return_call_ref
+(declare od?)
+(defn ev? [n] (if (zero? n) true (od? (dec n))))
+(defn od? [n] (if (zero? n) false (ev? (dec n))))
+(println (ev? 10000000))

@@ -1,0 +1,11 @@
+[1;31merror:[0m compiling def value
+  [1;34m-->[0m corpus/review/fixed/bug-11-recur-in-catch.lg:22:1
+    [1;34m|[0m
+ [1;34m22[0m [1;34m|[0m (defn f [n] (loop [i 0] (if (< i n) (try (throw (ex-info "x" {})) (catch Exception e (recur (inc i)))) i)))
+    [1;34m|[0m [1;31m^^^[0m
+caused by: compiling fn body
+caused by: compiling loop body
+caused by: compiling if then branch
+caused by: compiling if then branch
+caused by: compiling let body
+caused by: recur is only allowed in tail position

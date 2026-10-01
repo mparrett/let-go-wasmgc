@@ -1,0 +1,16 @@
+;; bug-08 (p13-try-recur): (try (recur ..)) in loop
+;; native prints 3; driver dies in ir/build (recur arity 1 vs 0 in lifted try fn)
+;; native lg 4e769212:
+;;   3
+;; wasm (src @ HEAD 4e203f4):
+;;   error: ir/build: recur argument count must match function argument count (got 1, need 0)
+;;     --> <embedded:ir.build>:1366:55
+;;         |
+;;    1366 |                               {:fn :build-recur :type (type recur-args) :value recur-args})))
+;;         |                                                       ^^^
+;;   
+;;   stack trace:
+;;     at throw (<embedded:ir.build>:1366:55)
+;; P1.7: FIXED - a try with no catch/finally is a do, as native reads it (native rejects recur under a handler itself)
+(defn f [n] (loop [i 0] (if (< i n) (try (recur (inc i))) i)))
+(println (f 3))
