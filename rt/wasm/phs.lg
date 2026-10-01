@@ -15,6 +15,7 @@
 ;; calls wasm.phm's, so existing callers link both collections in one step.
 (ns wasm.phs
   (:require [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
             [wasm.phm :as m]
             [wasm.seq :as sq]))
 
@@ -104,9 +105,9 @@
 (defn- set-pred [self x] (sq/bool (wasm/is? HSet x)))
 
 (defn set-seq-hook [self x]                                 ; SetSeq over the keys (persistent_set.go:174-186)
-  (let [ks (sseq x)]
-    (loop [j (dec (wasm/alen ks)) acc (wasm/null)]
-      (if (< j 0) acc (recur (dec j) (sq/cons (wasm/aget m/HSlots ks j) acc))))))
+  (let [ks (sseq x) n (wasm/alen ks) a (wasm/array-new pv/Node n (wasm/null))]
+    (loop [j 0] (when (< j n) (wasm/aset! pv/Node a j (wasm/aget m/HSlots ks j)) (recur (inc j))))
+    (sq/arr-seq a 1)))
 
 (defn set-count-hook [self x] (sq/box-int (scount x)))
 

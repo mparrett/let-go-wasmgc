@@ -11,8 +11,8 @@
 ;; as a compiled call site passes them; ints arrive boxed and booleans come
 ;; back as Bool refs. `kind` is the ONLY place that type-tests a value; every
 ;; generic fn branches on its result. Errors let-go raises as catchable
-;; exceptions are wasm/trap here until ex-info exists (P2.7), with let-go's
-;; message text.
+;; exceptions are raised as D68's Err with let-go's exact message (P2.13,
+;; D74); wasm/trap is kept for invariant violations and `lower-wasm:` limits.
 (ns wasm.seq
   (:refer-clojure :exclude [list seq first next rest cons count nth peek pop conj
                             reduce reduced reduced? ensure-reduced unreduced second last
@@ -81,13 +81,45 @@
 ;; equiv hash], each a Fn; pred (null = matches every foreign value) answers
 ;; whether the value is this handler's. Dispatch tries 0, 1, then 2.
 (wasm/defstruct Handler [:ref :ref :ref :ref :ref])
-(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]]) ; slots 0-2, the printer, seqable?, ifn
-(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]]) ; slots 0-2, the printer, seqable?, ifn, type namer
+(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+;; P2.13 (R5, D105): the seq of a map, a set or a transient map is MapSeq or
+;; SetSeq (map.go:110, set.go:131): a cached array of entries (MapEntry) or
+;; keys plus an index. Type() is ListType and = is sequential, but neither has
+;; Hash(), so it hashes by FNV of String() like Range; Conj panics (a recovered
+;; interface-conversion error), so it is its own kind, not a Cons chain.
+;; Declared after Hooks so no earlier struct moves in the rec group.
+(wasm/defstruct ArrSeq [:ref :i64 :i32])          ; arr (pv/Node, never empty), i, flavour (0 MapSeq, 1 SetSeq)
 
 (defn box-int [n]
   (if (if (>= n -1073741824) (<= n 1073741823) false) (wasm/i31 n) (wasm/new Int n)))
 (defn unbox-int [x] (if (wasm/i31? x) (wasm/i31-get x) (wasm/get Int 0 x)))
 (defn bool [b] (wasm/new Bool (if b 1 0)))
+
+;; D68 raises. A message that names a type (Go's Type().Name()) gets it from
+;; the type namer wasm.core installs (slot 6): seq.lg cannot require it.
+(defn- err-b [bs] (wasm/new Err 1 bs bs (wasm/null) (wasm/null)))
+(defn- raise-b [bs] (throw (err-b bs)))
+(defn bytes-cat "a ++ b, fresh Bytes." [a b]
+  (let [na (wasm/alen a) nb (wasm/alen b) out (wasm/bytes-new (+ na nb))]
+    (wasm/array-copy wasm/Bytes out 0 a 0 na)
+    (wasm/array-copy wasm/Bytes out na b 0 nb)
+    out))
+(defn set-type-name-hook!
+  "Install the Fn (f x) -> Str naming x's type as let-go's Type() does
+   (wasm.core's type-name), for messages that embed a type."
+  [f] (wasm/set! Hooks 6 hooks f))
+(declare invoke1)
+(declare kind-type-name kind)
+(defn type-name-bytes
+  "x's let-go type name as bytes: seq.lg names its own kinds; a foreign value
+   (maps, sets, transients, types...) goes through wasm.core's namer, or reads
+   let-go.lang.Unknown before wasm.core/install!."
+  [x]
+  (let [h (wasm/get Hooks 6 hooks)]
+    (if (if (= 18 (kind x)) (wasm/null? h) true) (kind-type-name x) (wasm/get Str 0 (invoke1 h x)))))
+(defn raise-typed "Raise prefix-bytes ++ x's type name (D68)." [prefix x]
+  (raise-b (bytes-cat prefix (type-name-bytes x))))
 
 ;; A non-Fn callable (keyword, symbol, map, set, vector: vm.AsFn) is called
 ;; through the ifn hook wasm.core installs (slot 5: code 1 = callable?, code
@@ -180,6 +212,7 @@
 ;;  7 Range  8 InfiniteRange  9 Repeat  10 PVecSeq  11 PVec  12 ArrayChunk
 ;;  13 ChunkBuffer  14 Reduced  15 Bool  16 Fn  17 Str  18 foreign
 ;;  19 Char  20 Kw  21 Sym  22 Float  23 MapEntry  24 Atom  25 Volatile  26 Err
+;;  27 ArrSeq (MapSeq/SetSeq)
 (defn kind [x]
   (cond (wasm/null? x) 0
         (wasm/i31? x) 1
@@ -198,6 +231,7 @@
         (wasm/is? InfiniteRange x) 8
         (wasm/is? Repeat x) 9
         (wasm/is? PVecSeq x) 10
+        (wasm/is? ArrSeq x) 27
         (wasm/is? pv/PVec x) 11
         (wasm/is? ArrayChunk x) 12
         (wasm/is? ChunkBuffer x) 13
@@ -210,12 +244,52 @@
         (wasm/is? Err x) 26
         :else 18))
 
-(defn- seq-kind? [k] (if (>= k 2) (<= k 10) false))     ; implements vm.Seq
+(defn kind-type-name
+  "Type().Name() for seq.lg's kinds 0-27 (wasm.core/type-name delegates
+   here); a foreign value (18) reads let-go.lang.Unknown."
+  [x]
+  (let [k (kind x)]
+    (cond (= k 0) (wasm/bytes-of-string "nil")
+          (= k 1) (wasm/bytes-of-string "let-go.lang.Int")
+          (= k 22) (wasm/bytes-of-string "let-go.lang.Float")
+          (= k 17) (wasm/bytes-of-string "let-go.lang.String")
+          (= k 20) (wasm/bytes-of-string "let-go.lang.Keyword")
+          (= k 21) (wasm/bytes-of-string "let-go.lang.Symbol")
+          (= k 19) (wasm/bytes-of-string "let-go.lang.Character")
+          (= k 15) (wasm/bytes-of-string "let-go.lang.Boolean")
+          (= k 11) (if (= 0 (pv/vpkind x)) (wasm/bytes-of-string "let-go.lang.ArrayVector")
+                       (wasm/bytes-of-string "let-go.lang.PersistentVector"))
+          (= k 10) (if (= 0 (pv/vpkind (wasm/get PVecSeq 0 x))) (wasm/bytes-of-string "let-go.lang.PersistentList")
+                       (wasm/bytes-of-string "let-go.lang.Sequence"))
+          (= k 23) (wasm/bytes-of-string "let-go.lang.ArrayVector")
+          (if (= k 7) true (= k 8)) (wasm/bytes-of-string "let-go.lang.Range")
+          (= k 9) (wasm/bytes-of-string "let-go.lang.Repeat")
+          (= k 14) (wasm/bytes-of-string "let-go.lang.Reduced")
+          (= k 16) (wasm/bytes-of-string "let-go.lang.Fn")
+          ;; List, Cons, LazySeq, ChunkedCons, PersistentVectorSeq, ArrayChunk,
+          ;; ChunkBuffer, MapSeq/SetSeq: all ListType
+          (if (if (>= k 2) (<= k 13) false) true (= k 27)) (wasm/bytes-of-string "let-go.lang.PersistentList")
+          (= k 24) (wasm/bytes-of-string "let-go.lang.Atom")
+          (= k 25) (wasm/bytes-of-string "let-go.lang.Volatile")
+          (= k 26) (if (= 0 (wasm/get Err 0 x)) (wasm/bytes-of-string "let-go.lang.ExceptionInfo")
+                       (wasm/bytes-of-string "java.lang.Exception"))
+          :else (wasm/bytes-of-string "let-go.lang.Unknown"))))
+
+(defn seq-kind? [k] (if (if (>= k 2) (<= k 10) false) true (= k 27))) ; implements vm.Seq
 (defn- seq-empty? [s] (let [k (kind s)] (if (= k 0) true (= k 2)))) ; SeqIsEmpty (iter.go:14)
 (defn truthy? [x]
   (let [k (kind x)] (cond (= k 0) false (= k 15) (= 1 (wasm/get Bool 0 x)) :else true)))
 
 (defn empty-list [] (wasm/new List (wasm/null) (wasm/null) 0 (wasm/null)))
+(defn arr-seq
+  "A MapSeq (flavour 0) or SetSeq (1) over a pv/Node array, or null when the
+   array is empty (Seq() of an empty map/set is EmptyList, seq'd to nil)."
+  [arr flavour]
+  (if (= 0 (wasm/alen arr)) (wasm/null) (wasm/new ArrSeq arr 0 flavour)))
+(defn arr-seq-flavour "0 MapSeq, 1 SetSeq." [s] (wasm/get ArrSeq 2 s))
+(defn- as-next [s]                                       ; MapSeq/SetSeq.Next
+  (let [a (wasm/get ArrSeq 0 s) i (inc (wasm/get ArrSeq 1 s))]
+    (if (>= i (wasm/alen a)) (wasm/null) (wasm/new ArrSeq a i (wasm/get ArrSeq 2 s)))))
 ;; List.Cons (list.go:130) keeps the list's meta: (conj (with-meta '(1) m) 2) has m.
 (defn- list-cons [l x] (wasm/new List x l (inc (wasm/get List 2 l)) (wasm/get List 3 l)))
 (defn list-with-meta "A List cell like l with meta m (with-meta on a list)." [l m]
@@ -275,7 +349,7 @@
 (defn- string-nth [s i has-nf nf]                        ; Nth/Nth3 through String.ValueAt (string.go:276)
   (let [bs (wasm/get Str 0 s) n (wasm/alen bs)]
     (if (if (< i 0) true (>= i n))
-      (if has-nf nf (wasm/trap "nth index out of bounds"))
+      (if has-nf nf (raise-b (wasm/bytes-of-string "nth index out of bounds")))
       ;; in range by bytes but past the last rune: ValueAt's default, nil, even for nth3
       (loop [b 0 r 0]
         (cond (>= b n) (wasm/null)
@@ -288,12 +362,9 @@
       (loop [i 0] (if (< i n) (if (= (wasm/bget a i) (wasm/bget b i)) (recur (inc i)) false) true))
       false)))
 
-(defn- no-iseq [x]
-  (let [k (kind x)]
-    (cond (= k 1) (wasm/trap "don't know how to create ISeq from let-go.lang.Int")
-          (= k 15) (wasm/trap "don't know how to create ISeq from let-go.lang.Boolean")
-          (= k 14) (wasm/trap "don't know how to create ISeq from let-go.lang.Reduced")
-          :else (wasm/trap "don't know how to create ISeq from let-go.lang.PersistentList"))))
+(defn- no-iseq-err [x]                                  ; seqOf's/LazySeq's error (lang.go:1398, lazy_seq.go:127)
+  (err-b (bytes-cat (wasm/bytes-of-string "don't know how to create ISeq from ") (type-name-bytes x))))
+(defn- no-iseq [x] (throw (no-iseq-err x)))
 
 ;; ---------------------------------------------------------------------------
 ;; Range arithmetic wraps like Go's int (range.go), never throws like lg's +.
@@ -317,7 +388,7 @@
 ;; LazySeq realisation (lazy_seq.go:47-150): the thunk runs once, its result
 ;; goes through Sequable.Seq() and an empty result is cached as null.
 
-(declare seq-view list)
+(declare seq-view list can-seq?)
 
 ;; A thunk that throws stores the error and clears fn: every later access
 ;; rethrows it and realized? is true (sval/seq, lazy_seq.go:47-150). The fn
@@ -345,7 +416,8 @@
           (wasm/set! LazySeq 0 l (wasm/null))
           (lazy-finish l (cond (wasm/null? sv) (wasm/null)
                                (= 18 (kind sv)) (try (seq-view sv) (catch Throwable e (lazy-fail l e)))
-                               :else (seq-view sv))))))
+                               (can-seq? sv) (seq-view sv)
+                               :else (lazy-fail l (no-iseq-err sv)))))))   ; stored (lazy_seq.go:127)
 
 (defn- resolve-lazy [l]                                       ; LazySeq.Resolve (lazy_seq.go:189)
   (loop [s (lazy-step l)]
@@ -370,7 +442,7 @@
           (= k 11) (vec-seq x)
           (= k 17) (string-seq x)
           (= k 18) (invoke1 (hook 1 x) x)
-          (= k 23) (list (wasm/get MapEntry 0 x) (wasm/get MapEntry 1 x)) ; MapEntry.Seq: ArrayVector{k,v}.Seq()
+          (= k 23) (vec-seq (entry-vec x))                 ; MapEntry.Seq: ArrayVector{k,v}.Seq(), an ArrayVectorSeq (FNV-hashed, P2.13)
           :else (no-iseq x))))
 
 (defn- can-seq? [x]
@@ -383,7 +455,6 @@
   (if (= 18 (kind x))
     (let [p (wasm/get Hooks 4 hooks)] (if (wasm/null? p) false (if (truthy? (invoke1 p x)) false true)))
     false))
-(defn- raise-b [bs] (throw (wasm/new Err 1 bs bs (wasm/null) (wasm/null))))
 
 (defn seq-of
   "rt.seqOf (lang.go:1398): nil for nil and empty, a LazySeq unresolved, any
@@ -488,6 +559,7 @@
           (= k 7) (box-int (wasm/get Range 0 s))
           (= k 8) (box-int (wasm/get InfiniteRange 0 s))
           (= k 9) (if (= 0 (wasm/get Repeat 0 s)) (wasm/null) (wasm/get Repeat 1 s))
+          (= k 27) (wasm/aget pv/Node (wasm/get ArrSeq 0 s) (wasm/get ArrSeq 1 s))
           :else (let [v (wasm/get PVecSeq 0 s) i (wasm/get PVecSeq 1 s)]
                   (if (>= i (pv/vcount v)) (wasm/null) (pv/vnth v i))))))
 
@@ -511,6 +583,7 @@
                     (if (if (= i 0) true (= i 1))
                       (wasm/null)
                       (wasm/new Repeat (if (> i 0) (dec i) i) (wasm/get Repeat 1 s))))
+          (= k 27) (as-next s)
           :else (let [v (wasm/get PVecSeq 0 s) i (wasm/get PVecSeq 1 s)]
                   (if (>= (inc i) (pv/vcount v)) (wasm/null) (wasm/new PVecSeq v (inc i) 0))))))
 
@@ -535,18 +608,18 @@
   ([a b] (list-cons (list b) a))
   ([a b c] (list-cons (list b c) a)))
 
-(defn ^{:twin "core/lazy-seq*"} lazy-seq* [f]                                      ; CoreLazySeq (lang.go:7885)
-  (if (= 16 (kind f)) (wasm/new LazySeq f (wasm/null) 0 (wasm/null)) (wasm/trap "lazy-seq* expected a function")))
+(defn ^{:twin "core/lazy-seq*"} lazy-seq* [f]                                      ; CoreLazySeq (lang.go:7885): any IFn, a non-Fn fails when realised
+  (if (callable? f) (wasm/new LazySeq f (wasm/null) 0 (wasm/null)) (raise-b (wasm/bytes-of-string "lazy-seq* expected a function"))))
 
 (defn ^{:twin "core/realized?"} realized? [x]                                      ; CoreIsRealized (lang.go:8030); IsRealized (lazy_seq.go:38)
   (if (= 5 (kind x))
     (bool (if (= 1 (wasm/get LazySeq 2 x)) true (wasm/null? (wasm/get LazySeq 0 x))))
-    (wasm/trap "realized? expected delay, promise, future, or lazy seq")))
+    (raise-b (wasm/bytes-of-string "realized? expected delay, promise, future, or lazy seq"))))
 
 (defn ^{:twin "core/seq"} seq [x]                                            ; seq (lang.go:2247)
   (cond (opaque? x) (raise-b (wasm/bytes-of-string "seq expected Seqable"))
         (can-seq? x) (let [s (seq-of x)] (if (= 5 (kind s)) (resolve-lazy s) s))
-        :else (wasm/trap "seq expected Seqable")))
+        :else (raise-b (wasm/bytes-of-string "seq expected Seqable"))))
 
 (defn ^{:twin "core/first"} first [x]                                          ; first (lang.go:2166)
   (let [k (kind x)]
@@ -554,28 +627,28 @@
           (seq-kind? k) (s-first x)
           (opaque? x) (raise-b (wasm/bytes-of-string "first expected Seq"))
           (can-seq? x) (let [s (seq-view x)] (if (seq-empty? s) (wasm/null) (s-first s)))
-          :else (wasm/trap "first expected Seq"))))
+          :else (raise-b (wasm/bytes-of-string "first expected Seq")))))
 
 (defn ^{:twin "core/next"} next [x]                                           ; next (lang.go:2193)
   (cond (opaque? x) (raise-b (wasm/bytes-of-string "next expected Seq"))
         (can-seq? x) (let [s (seq-of x)] (if (wasm/null? s) (wasm/null) (s-next s)))
-        :else (wasm/trap "next expected Seq")))
+        :else (raise-b (wasm/bytes-of-string "next expected Seq"))))
 
 (defn ^{:twin "core/rest"} rest [x]                                           ; rest (lang.go:2222)
   (cond (opaque? x) (raise-b (wasm/bytes-of-string "rest expected Seq"))
         (can-seq? x) (let [s (seq-of x)] (if (wasm/null? s) (empty-list) (s-more s)))
-        :else (wasm/trap "rest expected Seq")))
+        :else (raise-b (wasm/bytes-of-string "rest expected Seq"))))
 
 (defn ^{:twin "core/cons"} cons [x coll]                                      ; builtins.Cons (builtins.go:56)
   (cond (opaque? coll) (raise-b (wasm/bytes-of-string "cons expected Seq"))
         (can-seq? coll) (wasm/new Cons x (seq-of coll))
-        :else (wasm/trap "cons expected Seq")))
+        :else (raise-b (wasm/bytes-of-string "cons expected Seq"))))
 
 (defn ^{:twin "core/second"} second [x]                                         ; CoreSecond (lang.go:6011)
   (cond (opaque? x) (raise-b (wasm/bytes-of-string "second expected Seq"))
         (can-seq? x) (let [s (seq-of x)]
                        (if (wasm/null? s) (wasm/null) (let [n (s-next s)] (if (wasm/null? n) (wasm/null) (s-first n)))))
-        :else (wasm/trap "second expected Seq")))
+        :else (raise-b (wasm/bytes-of-string "second expected Seq"))))
 
 (defn last [s]                                           ; lg-defined (core.lg:1480), here for completeness
   (loop [s s]
@@ -597,13 +670,14 @@
           (= k 7) (range-count x)
           (= k 9) (wasm/get Repeat 0 x)                  ; -1 for (repeat x): repeat.go:68
           (= k 10) (- (pv/vcount (wasm/get PVecSeq 0 x)) (wasm/get PVecSeq 1 x))
+          (= k 27) (- (wasm/alen (wasm/get ArrSeq 0 x)) (wasm/get ArrSeq 1 x))
           (= k 11) (pv/vcount x)
           (= k 12) (chunk-count* x)
           (= k 13) (wasm/get ChunkBuffer 1 x)
           (= k 17) (rune-count* (wasm/get Str 0 x))   ; runes, not bytes (lang.go:6105)
           (= k 18) (unbox-int (invoke1 (hook 2 x) x))
           (= k 23) 2
-          :else (wasm/trap "count expected Counted"))))  ; incl. ChunkedCons, InfiniteRange
+          :else (raise-b (wasm/bytes-of-string "count expected Counted")))))  ; incl. ChunkedCons, InfiniteRange
 
 (defn ^{:twin "core/count"} count [x] (box-int (count* x)))
 
@@ -625,7 +699,7 @@
         (= k 11) (pv/vnth x i)
         :else (chunk-nth* x i)))
 
-(defn- oob [has-nf nf] (if has-nf nf (wasm/trap "nth index out of bounds")))
+(defn- oob [has-nf nf] (if has-nf nf (raise-b (wasm/bytes-of-string "nth index out of bounds"))))
 
 (defn- nth* [coll i has-nf nf]                           ; Nth/Nth3 (native_prims.go:155-215)
   (let [k (kind coll)]
@@ -649,27 +723,20 @@
           (= k 11) (if (= 0 (pv/vcount x)) (wasm/null) (pv/vnth x (dec (pv/vcount x))))
           (= k 2) (wasm/null)
           (= k 3) (wasm/get List 0 x)
-          (if (>= k 4) (<= k 6) false) (wasm/trap "peek not supported on let-go.lang.PersistentList")
-          (if (= k 7) true (= k 8)) (wasm/trap "peek not supported on let-go.lang.Range")
-          (= k 9) (wasm/trap "peek not supported on let-go.lang.Repeat")
-          (= k 10) (if (pvs-array? x) (wasm/trap "peek not supported on let-go.lang.PersistentList")
-                       (wasm/trap "peek not supported on let-go.lang.Sequence"))
-          (= k 23) (wasm/trap "peek not supported on let-go.lang.ArrayVector")
-          (= k 1) (wasm/trap "peek not supported on let-go.lang.Int")
-          :else (wasm/trap "peek not supported on this type"))))
+          :else (raise-typed (wasm/bytes-of-string "peek not supported on ") x))))
 
 (defn pop [x]                                                              ; CorePop (lang.go:6739)
   (let [k (kind x)]
     (cond (= k 0) (wasm/null)
-          (= k 11) (if (< (pv/vcount x) 1) (wasm/trap "can't pop empty vector") (pv/vpop x))
-          (= k 2) (wasm/trap "can't pop empty seq")
+          (= k 11) (if (< (pv/vcount x) 1) (raise-b (wasm/bytes-of-string "can't pop empty vector")) (pv/vpop x))
+          (= k 2) (raise-b (wasm/bytes-of-string "can't pop empty seq"))
           (= k 23) (list (wasm/get MapEntry 1 x))            ; MapEntry.More
           (seq-kind? k)
           ;; the Counted test walks a Cons/LazySeq to its end, as Go's does
           (if (if (= k 6) false (if (= k 8) false (= 0 (count* x))))
-            (wasm/trap "can't pop empty seq")
+            (raise-b (wasm/bytes-of-string "can't pop empty seq"))
             (s-more x))
-          :else (wasm/trap "pop expected Seq or Vec"))))
+          :else (raise-b (wasm/bytes-of-string "pop expected Seq or Vec")))))
 
 (defn- conj1 [coll x]                                    ; one step of Conj (native_prims.go:293)
   (let [k (kind coll)]
@@ -682,8 +749,11 @@
                        (recur (dec i) (list-cons l (pv/vnth (wasm/get PVecSeq 0 coll) i)))))
           (= k 11) (pv/vconj coll x)
           (= k 23) (pv/vconj (entry-vec coll) x)             ; MapEntry.Conj: as the ArrayVector
+          ;; MapSeq/SetSeq.Conj asserts Cons(val).(*List) and panics; the VM
+          ;; reports the recovered panic as a catchable error (map.go:159)
+          (= k 27) (raise-b (wasm/bytes-of-string "interface conversion: vm.Seq is *vm.Cons, not *vm.List"))
           (seq-kind? k) (wasm/new Cons x coll)
-          (= k 17) (wasm/trap "conj expected Collection")
+          (= k 17) (raise-b (wasm/bytes-of-string "conj expected Collection"))
           :else (wasm/trap "wasm.seq: conj on this kind belongs to its own runtime (phm/phs)"))))
 
 (defn conj                                               ; the core/conj twin is wasm.core/conj (adds maps, sets)
@@ -692,52 +762,74 @@
   ([coll x] (conj1 coll x))
   ([coll x y] (conj1 (conj1 coll x) y)))
 
+(defn- f64-int [f]                                      ; Go's int(f) for a finite f inside int64; else a named limit
+  (if (if (< f 9.223372036854775807e18) (>= f -9.223372036854775808e18) false)
+    (wasm/f64-to-i64 f)
+    (wasm/trap "lower-wasm: a NaN, infinite or out-of-int64 Float converted to Int (Go leaves it platform-defined)")))
+
 (defn ^{:twin "core/repeat"} repeat                                             ; CoreRepeat (lang.go:6792)
   ([x] (wasm/new Repeat -1 x))
-  ([n x] (let [k (kind n)]
-           (cond (= k 1) (let [i (unbox-int n)] (if (<= i 0) (empty-list) (wasm/new Repeat i x)))
-                 :else (wasm/trap "repeat expected an Int")))))
+  ([n x] (let [k (kind n)
+               i (cond (= k 1) (unbox-int n)
+                       (= k 22) (f64-int (wasm/get Float 0 n))   ; vm.ToInt truncates a Float
+                       :else (raise-b (wasm/bytes-of-string "repeat expected an Int")))]
+           (if (<= i 0) (empty-list) (wasm/new Repeat i x)))))
 
-(defn- range-int [x] (if (= 1 (kind x)) (unbox-int x) (wasm/trap "range: bound must be an Int (float bounds need the numeric tower, P2.7)")))
+(defn- range-int [x what]                                ; rangeInt: "range <what> must be an integer, got <T>"
+  (if (= 1 (kind x))
+    (unbox-int x)
+    (raise-typed (bytes-cat (bytes-cat (wasm/bytes-of-string "range ") what) (wasm/bytes-of-string " must be an integer, got ")) x)))
+
+(defn- range-to [start end step]                         ; CoreRangef's end: a Float is ceiled (floored for step <= 0), ±Inf unbounded
+  (if (= 22 (kind end))
+    (let [f (wasm/get Float 0 end)]
+      (cond (> f 1.7976931348623157e308) (if (> step 0) (wasm/new InfiniteRange start step) (empty-list))
+            (< f -1.7976931348623157e308) (if (< step 0) (wasm/new InfiniteRange start step) (empty-list))
+            :else (let [t (f64-int f) tf (wasm/i64-to-f64 t)
+                        e (if (> step 0) (if (> f tf) (inc t) t) (if (< f tf) (dec t) t))]
+                    (new-range start e step))))
+    (new-range start (range-int end (wasm/bytes-of-string "end")) step)))
 
 (defn ^{:twin "core/range"} range                                              ; CoreRangef (lang.go:5772)
   ([] (wasm/new InfiniteRange 0 1))
-  ([end] (new-range 0 (range-int end) 1))
-  ([start end] (new-range (range-int start) (range-int end) 1))
-  ([start end step] (new-range (range-int start) (range-int end) (range-int step))))
+  ([end] (range-to 0 end 1))
+  ([start end] (range-to (range-int start (wasm/bytes-of-string "start")) end 1))
+  ([start end step] (let [s0 (range-int start (wasm/bytes-of-string "start"))]
+                      (range-to s0 end (range-int step (wasm/bytes-of-string "step"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Chunk natives (lang.go:5643-5770)
 
 ;; asChunked (lang.go:5034): null when x is seqable but not chunked; the
-;; callers trap with literal messages (wasm/trap's text is static).
+;; callers raise their own literal messages.
 (defn- chunked-of [x] (as-chunked (seq-of x)))
+(defn- sequable? [x] (if (can-seq? x) (if (opaque? x) false true) false))  ; vm.Sequable, foreign values included
 
 (defn ^{:twin "core/chunk-first"} chunk-first [x]
-  (if (can-seq? x)
-    (let [cs (chunked-of x)] (if (wasm/null? cs) (wasm/trap "chunk-first: not a chunked seq") (cfirst cs)))
-    (wasm/trap "chunk-first: not a sequence")))
+  (if (sequable? x)
+    (let [cs (chunked-of x)] (if (wasm/null? cs) (raise-b (wasm/bytes-of-string "chunk-first: not a chunked seq")) (cfirst cs)))
+    (raise-b (wasm/bytes-of-string "chunk-first: not a sequence"))))
 (defn ^{:twin "core/chunk-rest"} chunk-rest [x]
-  (if (can-seq? x)
-    (let [cs (chunked-of x)] (if (wasm/null? cs) (wasm/trap "chunk-rest: not a chunked seq") (cmore cs)))
-    (wasm/trap "chunk-rest: not a sequence")))
+  (if (sequable? x)
+    (let [cs (chunked-of x)] (if (wasm/null? cs) (raise-b (wasm/bytes-of-string "chunk-rest: not a chunked seq")) (cmore cs)))
+    (raise-b (wasm/bytes-of-string "chunk-rest: not a sequence"))))
 (defn ^{:twin "core/chunk-next"} chunk-next [x]
-  (if (can-seq? x)
-    (let [cs (chunked-of x)] (if (wasm/null? cs) (wasm/trap "chunk-next: not a chunked seq") (cnext cs)))
-    (wasm/trap "chunk-next: not a sequence")))
+  (if (sequable? x)
+    (let [cs (chunked-of x)] (if (wasm/null? cs) (raise-b (wasm/bytes-of-string "chunk-next: not a chunked seq")) (cnext cs)))
+    (raise-b (wasm/bytes-of-string "chunk-next: not a sequence"))))
 
 (defn ^{:twin "core/chunked-seq?"} chunked-seq? [x]
   (bool (if (if (can-seq? x) (if (opaque? x) false true) false) (if (wasm/null? (chunked-of x)) false true) false)))
 
 (defn ^{:twin "core/chunk-cons"} chunk-cons [c rst]
-  (cond (if (= 12 (kind c)) false true) (wasm/trap "chunk-cons: first arg must be a chunk")
-        (if (wasm/null? rst) false (if (can-seq? rst) false true)) (wasm/trap "chunk-cons: second arg must be a seq or nil")
+  (cond (if (= 12 (kind c)) false true) (raise-b (wasm/bytes-of-string "chunk-cons: first arg must be a chunk"))
+        (if (wasm/null? rst) false (if (sequable? rst) false true)) (raise-b (wasm/bytes-of-string "chunk-cons: second arg must be a seq or nil"))
         :else (let [out (cons-chunk c (seq-of rst))] (if (wasm/null? out) (empty-list) out))))
 
 (defn ^{:twin "core/chunk-buffer"} chunk-buffer [n]
   (if (= 1 (kind n))
     (let [cap (unbox-int n)] (wasm/new ChunkBuffer (wasm/array-new pv/Node (if (< cap 0) 0 cap) (wasm/null)) 0))
-    (wasm/trap "chunk-buffer: arg must be Int")))
+    (raise-b (wasm/bytes-of-string "chunk-buffer: arg must be Int"))))
 
 (defn ^{:twin "core/chunk-append"} chunk-append [b x]
   (if (= 13 (kind b))
@@ -749,7 +841,7 @@
       (wasm/aset! pv/Node (wasm/get ChunkBuffer 0 b) n x)
       (wasm/set! ChunkBuffer 1 b (inc n))
       b)
-    (wasm/trap "chunk-append: first arg must be a chunk-buffer")))
+    (raise-b (wasm/bytes-of-string "chunk-append: first arg must be a chunk-buffer"))))
 
 (defn ^{:twin "core/chunk"} chunk [b]                                          ; ChunkBuffer.Chunk hands over the slice and clears the buffer
   (if (= 13 (kind b))
@@ -757,7 +849,7 @@
       (wasm/set! ChunkBuffer 0 b (wasm/array-new pv/Node 0 (wasm/null)))
       (wasm/set! ChunkBuffer 1 b 0)
       c)
-    (wasm/trap "chunk: arg must be a chunk-buffer")))
+    (raise-b (wasm/bytes-of-string "chunk: arg must be a chunk-buffer"))))
 
 ;; ---------------------------------------------------------------------------
 ;; map* with one collection: mapLazy1 (lang.go:1480), chunk-preserving.
@@ -791,9 +883,9 @@
               (wasm/null) 0 (wasm/null))))
 
 (defn ^{:twin "core/map*"} map* [f coll]
-  (cond (if (callable? f) false true) (wasm/trap "map expected Fn")
+  (cond (if (callable? f) false true) (raise-b (wasm/bytes-of-string "map expected Fn"))
         (opaque? coll) (raise-b (wasm/bytes-of-string "map expected Sequable"))
-        (if (can-seq? coll) false true) (wasm/trap "map expected Sequable")
+        (if (can-seq? coll) false true) (raise-b (wasm/bytes-of-string "map expected Sequable"))
         :else (let [s (seq-of coll)] (if (wasm/null? s) (empty-lazy-seq) (map-lazy f s)))))
 
 ;; ---------------------------------------------------------------------------
@@ -833,7 +925,7 @@
               (if (= 14 (kind r)) (wasm/get Reduced 0 r) (recur r (wasm/i64-add i step))))
             acc)))
       (opaque? coll) (raise-b (wasm/bytes-of-string "reduce expected Seq"))
-      (if (can-seq? coll) false true) (wasm/trap "reduce expected Seq")
+      (if (can-seq? coll) false true) (raise-b (wasm/bytes-of-string "reduce expected Seq"))
       :else
       (let [s0 (force-seq (seq-of coll))]
         (if (wasm/null? s0)
@@ -850,16 +942,16 @@
                     (if (= 14 (kind r)) (wasm/get Reduced 0 r) (recur r (cnext cs)))))))))))))
 
 (defn ^{:twin "core/reduce"} reduce
-  ([f coll] (if (callable? f) (reduce-coll f coll false (wasm/null)) (wasm/trap "reduce expected Fn")))
+  ([f coll] (if (callable? f) (reduce-coll f coll false (wasm/null)) (raise-b (wasm/bytes-of-string "reduce expected Fn"))))
   ([f init coll]
    (cond (wasm/null? coll) init
          (callable? f) (reduce-coll f coll true init)
-         :else (wasm/trap "reduce expected Fn"))))
+         :else (raise-b (wasm/bytes-of-string "reduce expected Fn")))))
 
 (defn ^{:twin "core/some"} some [pred coll]                                   ; Some (native_prims.go:612)
-  (cond (if (callable? pred) false true) (wasm/trap "some expected Fn")
+  (cond (if (callable? pred) false true) (raise-b (wasm/bytes-of-string "some expected Fn"))
         (opaque? coll) (raise-b (wasm/bytes-of-string "some expected Seq"))
-        (if (can-seq? coll) false true) (wasm/trap "some expected Seq")
+        (if (can-seq? coll) false true) (raise-b (wasm/bytes-of-string "some expected Seq"))
         :else
         (loop [s (force-seq (seq-of coll))]
           (if (wasm/null? s)
@@ -885,7 +977,7 @@
 ;; Equality (valueEquals, lang.go:1027-1260) restricted to the kinds above.
 
 (defn- type-group [k]                                    ; Go's Type(): same group = same ValueType
-  (cond (if (>= k 2) (<= k 6) false) 2                   ; List/Cons/LazySeq/ChunkedCons: ListType
+  (cond (if (if (>= k 2) (<= k 6) false) true (= k 27)) 2 ; List/Cons/LazySeq/ChunkedCons/MapSeq/SetSeq: ListType
         (= k 8) 7                                        ; InfiniteRange: RangeType
         :else k))
 
@@ -1097,6 +1189,7 @@
           (= k 10) (let [h (fnv-bytes 2166136261 (wasm/bytes-of-string "(seq ["))
                          v (wasm/get PVecSeq 0 x)]       ; prints the WHOLE vector, not from i (persistent_vector.go:748)
                      (fnv-bytes (fnv-walk h (vec-seq v) true) (wasm/bytes-of-string "])")))
+          (= k 27) (fnv-byte (fnv-walk (fnv-byte 2166136261 40) x true) 41) ; MapSeq/SetSeq.String(): "(e_i ...)"
           (= k 18) (unbox-int (invoke1 (hook 4 x) x))
           (= k 23) (hash* (entry-vec x))                     ; MapEntry.Hash is the ArrayVector's
           ;; An exception hashes by FNV of its String(). Atoms, volatiles and fns hash
@@ -1104,7 +1197,8 @@
           ;; address or per-object id slot ($Atom/$Fn layouts are the backend's, D52/
           ;; D53), so each kind hashes to one constant: consistent with identity
           ;; equality and stable, but not distinct between objects (D74, README).
-          (= k 26) (fnv-elem 2166136261 x)
+          ;; Reduced, ArrayChunk, ChunkBuffer and exceptions are not Hashable either
+          (if (= k 26) true (if (= k 14) true (if (= k 12) true (= k 13)))) (fnv-elem 2166136261 x)
           (= k 16) (fnv-bytes 2166136261 (wasm/bytes-of-string "let-go.lang.Fn"))
           (= k 24) (fnv-bytes 2166136261 (wasm/bytes-of-string "let-go.lang.Atom"))
           (= k 25) (fnv-bytes 2166136261 (wasm/bytes-of-string "let-go.lang.Volatile"))

@@ -91,30 +91,7 @@
 (defn type-name [x]
   (let [x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
         k (ckind x)]
-    (cond (= k 0) (wasm/bytes-of-string "nil")
-          (= k 1) (wasm/bytes-of-string "let-go.lang.Int")
-          (= k 22) (wasm/bytes-of-string "let-go.lang.Float")
-          (= k 17) (wasm/bytes-of-string "let-go.lang.String")
-          (= k 20) (wasm/bytes-of-string "let-go.lang.Keyword")
-          (= k 21) (wasm/bytes-of-string "let-go.lang.Symbol")
-          (= k 19) (wasm/bytes-of-string "let-go.lang.Character")
-          (= k 15) (wasm/bytes-of-string "let-go.lang.Boolean")
-          (= k 11) (if (= 0 (pv/vpkind x)) (wasm/bytes-of-string "let-go.lang.ArrayVector")
-                       (wasm/bytes-of-string "let-go.lang.PersistentVector"))
-          (= k 10) (if (= 0 (pv/vpkind (wasm/get sq/PVecSeq 0 x))) (wasm/bytes-of-string "let-go.lang.PersistentList")
-                       (wasm/bytes-of-string "let-go.lang.Sequence"))
-          (= k 23) (wasm/bytes-of-string "let-go.lang.ArrayVector")
-          (if (= k 7) true (= k 8)) (wasm/bytes-of-string "let-go.lang.Range")
-          (= k 9) (wasm/bytes-of-string "let-go.lang.Repeat")
-          (= k 14) (wasm/bytes-of-string "let-go.lang.Reduced")
-          (= k 16) (wasm/bytes-of-string "let-go.lang.Fn")
-          (= k 12) (wasm/bytes-of-string "let-go.lang.ArrayChunk")
-          ;; List, Cons, LazySeq, ChunkedCons, PersistentVectorSeq, ChunkBuffer
-          (if (>= k 2) (<= k 13) false) (wasm/bytes-of-string "let-go.lang.PersistentList")
-          (= k 24) (wasm/bytes-of-string "let-go.lang.Atom")
-          (= k 25) (wasm/bytes-of-string "let-go.lang.Volatile")
-          (= k 26) (if (= 0 (wasm/get sq/Err 0 x)) (wasm/bytes-of-string "let-go.lang.ExceptionInfo")
-                       (wasm/bytes-of-string "java.lang.Exception"))
+    (cond (< k 30) (sq/kind-type-name x)                ; seq.lg's own kinds (and "let-go.lang.Unknown" for 18)
           (= k 30) (wasm/bytes-of-string "let-go.lang.Map")
           (= k 31) (wasm/bytes-of-string "let-go.lang.Set")
           (= k 32) (wasm/bytes-of-string "let-go.lang.TransientMap")
@@ -147,7 +124,9 @@
           (= k 35) (if (repeat-type? x) 9 35)
           (= k 26) (if (= 0 (wasm/get sq/Err 0 x)) 26 38)
           (= k 8) 7
-          (if (>= k 2) (<= k 13) false) (if (= k 7) 7 (if (= k 9) 9 (if (= k 12) 12 (if (= k 11) 11 2))))
+          (= k 27) 2                                     ; MapSeq/SetSeq: ListType
+          ;; ArrayChunk and ChunkBuffer are ListType natively ((type (chunk-first (range 5))))
+          (if (>= k 2) (<= k 13) false) (if (= k 7) 7 (if (= k 9) 9 (if (= k 11) 11 2)))
           :else k)))
 
 (defn ^{:twin "core/type"} type-of [x]
@@ -186,7 +165,8 @@
 
 (defn callable? [x]                                       ; vm.AsFn
   (let [k (ckind x)]
-    (cond (= k 16) true (= k 20) true (= k 21) true (= k 11) true (= k 30) true (= k 31) true :else false)))
+    (cond (= k 16) true (= k 20) true (= k 21) true (= k 11) true (= k 30) true (= k 31) true
+          (if (>= k 32) (<= k 34) false) true :else false)))          ; transients are IFns (transient.go)
 
 (defn- invoke-ifn [f n a b]                               ; Keyword/Symbol/Map/Set/ArrayVector .Invoke
   (let [k (ckind f)]
@@ -200,6 +180,13 @@
                 (if (int-key? a) false true) (raise (wasm/bytes-of-string "vector key must be Int"))
                 (index-in? a (pv/vcount f)) (pv/vnth f (sq/unbox-int a))
                 :else (raise-str (s/str (lit (wasm/bytes-of-string "index out of bounds: ")) a)))
+          (= k 34) (cond (if (= n 1) false true) (raise (wasm/bytes-of-string "transient vector invoke expects 1 arg"))
+                         (if (= 1 (sq/kind a)) false true) (raise (wasm/bytes-of-string "transient vector key must be Int"))
+                         (index-in? a (pv/vcount (wasm/get TVec 0 f))) (pv/vnth (wasm/get TVec 0 f) (sq/unbox-int a))
+                         :else (raise-str (s/str (lit (wasm/bytes-of-string "index out of bounds: ")) a)))
+          (= k 33) (if (= n 1) (get-nf f a (wasm/null)) (raise (wasm/bytes-of-string "transient set invoke expects 1 arg")))
+          (= k 32) (if (if (= n 1) true (= n 2)) (get-nf f a (if (= n 2) b (wasm/null)))
+                       (raise (wasm/bytes-of-string "transient map invoke expects 1 or 2 args")))
           (if (= n 1) false (if (= n 2) false true)) (raise-arity n)
           (if (= k 20) true (= k 21)) (get-nf a f (if (= n 2) b (wasm/null)))
           :else (get-nf f a (if (= n 2) b (wasm/null))))))
@@ -277,7 +264,7 @@
 (defn- neg1 [a]                                           ; NumNeg: wraps, (- MinInt64) = MinInt64 (D16)
   (let [k (sq/kind a)]
     (cond (= k 1) (sq/box-int (wasm/i64-sub 0 (sq/unbox-int a)))
-          (= k 22) (s/box-float (* -1.0 (s/unbox-float a)))
+          (= k 22) (s/box-float (wasm/f64-neg (s/unbox-float a))) ; Go's -x: the NaN sign flips too
           :else (raise-not-supported (lit (wasm/bytes-of-string "cannot negate ")) a))))
 
 (defn- fold [op acc xs]                                   ; op over the rest of an argument seq
@@ -463,7 +450,7 @@
 (defn ^{:twin "core/set?"} set? [x] (sq/bool (= 31 (ckind x))))
 (defn ^{:twin "core/sorted?"} sorted? [x] (F))           ; no sorted collections in the runtime yet
 (defn ^{:twin "core/seq?"} seq? [x]                       ; isSeq (lang.go:2281): implements vm.Seq
-  (let [k (sq/kind x)] (sq/bool (if (if (>= k 2) (<= k 10) false) true (= k 23)))))
+  (let [k (sq/kind x)] (sq/bool (if (sq/seq-kind? k) true (= k 23)))))
 (defn vector? [x] (let [k (sq/kind x)] (sq/bool (if (= k 11) true (= k 23)))))
 (defn nil? [x] (sq/bool (wasm/null? x)))
 (defn string? [x] (sq/bool (= 17 (sq/kind x))))
@@ -473,9 +460,9 @@
 (defn fn? [x] (sq/bool (= 16 (sq/kind x))))
 (defn ^{:twin "core/list?"} list? [x] (let [k (sq/kind x)] (sq/bool (if (= k 2) true (= k 3)))))
 (defn coll? [x]
-  (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 30) true (= k 31) true :else false))))
+  (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true :else false))))
 (defn sequential? [x]
-  (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true :else false))))
+  (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true :else false))))
 
 ;; complement (lang.go:5522): a fn of any arity that negates f's result.
 (defn- env-f [self] (wasm/get FnEnv 0 (wasm/get sq/Fn 3 self)))
@@ -644,7 +631,7 @@
   (let [k (ckind coll)]
     (cond (= k 30) (conj-map coll x)
           (= k 31) (hs/sconj coll x)
-          (if (= k 0) true (if (if (>= k 2) (<= k 11) false) true (= k 23))) (sq/conj coll x)
+          (if (= k 0) true (if (if (>= k 2) (<= k 11) false) true (if (= k 23) true (= k 27)))) (sq/conj coll x)
           :else (raise (wasm/bytes-of-string "conj expected Collection")))))
 
 (defn ^{:twin "core/conj"} conj
@@ -657,7 +644,7 @@
   (loop [c coll s (sq/seq xs)] (if (wasm/null? s) c (recur (conj1 c (sq/first s)) (sq/next s)))))
 
 (defn- seqable-k? [k]                                     ; a TransientMap seqs natively (transient.go:231)
-  (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 32) true (= k 37) true :else false))
+  (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true (= k 32) true (= k 37) true :else false))
 
 (defn ^{:twin "core/nth"} nth                             ; Nth/Nth3 plus TransientVector (Indexed, not seqable)
   ([coll i] (let [k (ckind coll)]
@@ -665,7 +652,7 @@
                     (let [v (wasm/get TVec 0 coll) n (sq/unbox-int i)]
                       (if (if (< n 0) true (>= n (pv/vcount v))) (raise (wasm/bytes-of-string "nth index out of bounds")) (pv/vnth v n)))
                     (seqable-k? k) (sq/nth coll i)
-                    (< (sq/unbox-int i) 0) (wasm/trap "nth index out of bounds")   ; checked before seqOf (native_prims.go:173)
+                    (< (sq/unbox-int i) 0) (raise (wasm/bytes-of-string "nth index out of bounds"))   ; checked before seqOf (native_prims.go:173)
                     :else (raise-not-supported (lit (wasm/bytes-of-string "don't know how to create ISeq from ")) coll))))
   ([coll i nf] (if (= 34 (ckind coll)) (vec-get (wasm/get TVec 0 coll) i nf) (sq/nth coll i nf))))
 
@@ -788,6 +775,7 @@
   ([r] (let [k (sq/kind r)]
          (cond (= k 24) (wasm/get sq/Atom 0 r)
                (= k 25) (wasm/get sq/Volatile 0 r)
+               (= k 14) (wasm/get sq/Reduced 0 r)            ; Reduced is an IDeref natively: @(reduced 2) = 2
                :else (raise (wasm/bytes-of-string "deref expected Reference")))))
   ([r ms v] (raise (wasm/bytes-of-string "deref with timeout expects a blocking ref (promise or future)"))))
 
@@ -943,7 +931,7 @@
         ;; seqOf failing is "apply expected Seq"; core.lg's apply seqs its spread
         ;; argument first, which is where "seq expected Seqable" comes from
         :else (let [k (ckind args)]
-                (if (cond (if (>= k 2) (<= k 10) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 32) true :else false)
+                (if (cond (sq/seq-kind? k) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 32) true :else false)
                   (invoke-vec f (sq/vec args))
                   (raise (wasm/bytes-of-string "apply expected Seq"))))))
 
@@ -998,7 +986,7 @@
 (defn- sortable? [x]                                      ; a vm.Collection (nil included: (sort nil) is ())
   (let [k (ckind x)]                                      ; Repeat, InfiniteRange, ChunkedCons are not one (bug-14)
     (cond (= k 0) true (= k 6) false (= k 8) false (= k 9) false (if (>= k 2) (<= k 11) false) true
-          (= k 17) true (= k 23) true (= k 30) true (= k 31) true :else false)))
+          (= k 27) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true :else false)))
 
 (defn- sort* [f coll]
   (cond
@@ -1085,7 +1073,7 @@
           (= k 33) (sq/box-int (hs/tscount (wasm/get TSet 0 x)))
           (= k 34) (sq/box-int (pv/vcount (wasm/get TVec 0 x)))
           (= k 37) (arr/acount x)
-          :else (wasm/trap "count expected Counted"))))
+          :else (raise (wasm/bytes-of-string "count expected Counted")))))
 (defn- foreign-seq [self x]
   (cond (= 32 (ckind x)) (m/tentry-seq x)
     (= 37 (ckind x)) (arr/aseq x)
@@ -1116,4 +1104,5 @@
                               (wasm/null) (wasm/funcref sq/Code4 ifn-call) (wasm/null)))
   (s/set-print-hook! (sq/mk-fn2 (wasm/funcref sq/Code2 print-foreign)))
   (arr/set-type-name-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 tn-hook)))
+  (sq/set-type-name-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 tn-hook)))
   (sq/set-print-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 pr-hook))))

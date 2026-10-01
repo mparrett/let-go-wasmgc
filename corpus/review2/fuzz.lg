@@ -67,7 +67,11 @@
           (= k 20) (keyword (bytes->str (wasm/get sq/Kw 0 r)) (bytes->str (wasm/get sq/Kw 1 r)))
           (= k 21) (symbol (bytes->str (wasm/get sq/Sym 0 r)) (bytes->str (wasm/get sq/Sym 1 r)))
           (= k 22) (s/unbox-float r)
-          (<= 2 k 10) (wm (loop [q (sq/seq r) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
+          ;; a finite Repeat and a Range cross as the native kinds, so a native fn
+          ;; given one through a boundary closure hashes and prints it as native would (P2.13)
+          (and (= k 9) (>= (wasm/get sq/Repeat 0 r) 0)) (repeat (wasm/get sq/Repeat 0 r) (<-w (wasm/get sq/Repeat 1 r)))
+          (= k 7) (range (wasm/get sq/Range 0 r) (wasm/get sq/Range 1 r) (wasm/get sq/Range 2 r))
+          (or (<= 2 k 10) (= k 27)) (wm (loop [q (sq/seq r) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
           (= k 11) (wm (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r))))
           (= k 23) (clojure.lang.MapEntry/create (<-w (wasm/get sq/MapEntry 0 r)) (<-w (wasm/get sq/MapEntry 1 r)))
           (= k 30) (wm (into {} (map (fn [[kk v]] [(<-w kk) (<-w v)]) (partition 2 (arr->vec (m/entries r))))))
@@ -401,13 +405,15 @@
   (let [[ca xa] a [cb xb] b
         pnv (try (pr-str nv) (catch Throwable e "<throws>"))]
     (cond
+      (and (= cb :trap) (= xb "disj on non-set")) [:harness/disj-not-a-twin]   ; before :found/trap-for-catchable
       (and (= cb :trap) (string? xb) (string/starts-with? xb "lower-wasm:"))
       [:named-limit (if (= ca :ok) :native-ok :native-err) (subs xb 0 (min 70 (count xb)))]
-      (and (not= ca :ok) (= cb :trap)) [:trap-for-catchable (if (= xa xb) :same-msg :static-msg)]
+      ;; :found/ since P2.13's D74 sweep: FUZZ_NOFOUND=1 (the check) reports these as FAILs
+      (and (not= ca :ok) (= cb :trap)) [:found/trap-for-catchable (if (= xa xb) :same-msg :static-msg)]
       (and (= field :meta) (seq? nv) (empty? nv) (= ca :ok) (re-find #":line" (str xa))) [:R8-empty-list-meta]
       (and (= field :type) (= xa "let-go.lang.PersistentVector") (= xb "let-go.lang.ArrayVector")) [:D69-vector-type]
       (and (= field :hash) (seq? nv) (= ca :ok) (= cb :ok) (= xb (hash (apply list nv))))
-      [:R5-printed-form-seq-hash (str (type nv))]
+      [:found/R5-printed-form-seq-hash (str (type nv))]               ; fixed by P2.13 (MapSeq/SetSeq kind 27)
       (and (= ca :err) (= cb :err) (string? xa) (not= xa xb) (= (string/replace xa "PersistentVector" "ArrayVector") xb))
       [:D69-vector-type-in-message]
       ;; filters for bugs already reported in README.md, so later seeds find new ones
@@ -426,7 +432,6 @@
       (and (#{:pr :result} field) (string? xa) (string? xb) (not= xa xb) (= xa (string/replace xb ", " " "))) [:found/bug-pvec-nested-map-commas]
       (and (= field :print) (#{"let-go.lang.PersistentVector" "let-go.lang.Repeat"} (try (str (type nv)) (catch Throwable e nil)))) [:found/bug-pvec-repeat-print-mode]
       (and (string? xa) (string/includes? xa "@0x")) [:harness/heap-address-in-print]
-      (and (= cb :trap) (= xb "disj on non-set")) [:harness/disj-not-a-twin]
       (and (= field :bridge) (map? nv) (= #{:line :column} (set (keys nv)))) [:R8-empty-list-meta]
       (and (= field :hash) (= ca :ok) (= cb :ok) (= 10 (c/ckind wv))) [:found/bug-vector-seq-hash]
       (string/includes? pnv "@0x") [:harness/heap-address-in-print]

@@ -14,6 +14,7 @@
             [wasm.pvec :as pv]
             [wasm.seq :as sq]
             [wasm.str :as s]
+            [wasm.core :as c]
             [ir.passes.pipeline :as pipeline]
             [string]))
 
@@ -59,13 +60,21 @@
           (= k 20) (keyword (<-w (s/namespace r)) (<-w (s/name r)))
           (= k 21) (symbol (<-w (s/namespace r)) (<-w (s/name r)))
           (= k 22) (s/unbox-float r)
-          (<= 2 k 10) (loop [q (sq/seq r) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q))))))
+          (or (<= 2 k 10) (= k 27)) (loop [q (sq/seq r) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q))))))
           (= k 11) (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r)))
           :else r)))
 
-(defn- res [f]
+(defn- res
+  "[:ok v], [:err message] for a native exception or a raised runtime Err
+   (D68), or [:trap message] for a reference trap, so a trap never matches
+   a catchable native error (P2.13, D74)."
+  [f]
   (try [:ok (f)]
-       (catch Exception e [:err (string/replace (ex-message e) "wasm trap: " "")])))
+       (catch Throwable e
+         (cond (and (wref? e) (wasm/is? sq/Err e)) [:err (wasm/string-of-bytes (wasm/get sq/Err 2 e))]
+               (wref? e) [:err (str "thrown ref " e)]
+               (:wasm/trap (ex-data e)) [:trap (string/replace (ex-message e) "wasm trap: " "")]
+               :else [:err (ex-message e)]))))
 
 (defmacro same
   "Native expression and wasm.str expression agree on value, or on the error message."
@@ -279,6 +288,7 @@
 ;; Keywords, symbols, name/namespace, char, int, compare
 
 (deftest named-values
+  (c/install!)                                           ; messages that name a type use wasm.core's namer
   (doseq [x ["a/b" "a" "/" "a/b/c" "" "/b" "a/"]]
     (same (keyword x) (s/keyword (->w x)))
     (same (symbol x) (s/symbol (->w x)))
@@ -378,7 +388,7 @@
   '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
      bit-shift-left bit-shift-right unsigned-bit-shift-right
      unchecked-add unchecked-subtract unchecked-multiply quot})
-(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote throw}) ; throw: D68 raises (P2.13)
 
 (defn- var-refs [form bound]
   (cond

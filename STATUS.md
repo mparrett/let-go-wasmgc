@@ -31,5 +31,6 @@
 | P4.1-runtime | done 2026-10-01 | opus | 24 term twins; xsofy MISSING 0/143; depth max 20 (D89 closed) |
 | P4.1-host | done 2026-10-01 | opus | real shell boots emitted modules; coalescing; --xsofy-shell green; emit/url_param defined (D100) |
 | P2.12 | running | opus | variadic ABI (D83) |
-| P2.13 | running | opus | rt seams: MapSeq/SetSeq kind (R5), f64.neg, raise sweep (D74) |
+| P2.13 | done 2026-10-01 | opus | kind 27; f64-neg; raise sweep (~80 sites); 116 tests/37.8k asserts; corpus/wasm 14/14; verified |
 | perf | investigated 2026-10-01 | fable | corpus/perf-report.md; D106; P0.1 queued for application |
+| P2.1 + P2.11 | GREEN 2026-10-01 | — | checks/run-corpus.sh corpus/wasm = 14/14 |

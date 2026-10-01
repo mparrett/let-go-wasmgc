@@ -388,6 +388,15 @@
     (trap! (str "wasm/f64-to-i64: invalid conversion of " x) {}))
   (long x))
 
+(defn ^{:intrinsic true :wasm "f64.neg" :type "[:float] -> :float"} f64-neg
+  "Flips the sign bit and nothing else, NaN included (Go's -x). lg's own unary
+   - on a float is Go's -x too (measured on 4e769212: (hash (- ##NaN)) is
+   3505668245, (hash ##NaN) 3363640502), so it is the reference. (* -1.0 x)
+   is not: wasm's f64.mul may return any NaN sign for a NaN operand. P2.13."
+  [x]
+  (when-not (float? x) (throw (ex-info (str "wasm/f64-neg: expected f64, got " (pr-str x)) {})))
+  (- x))
+
 ;; ---------------------------------------------------------------------------
 ;; Bytes: the built-in (array (mut i8)) type.
 

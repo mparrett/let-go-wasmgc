@@ -46,7 +46,7 @@
   (cond (and (= (type e) obj-array-type) (wasm/is? sq/Err e)) (wasm/string-of-bytes (wasm/get sq/Err 2 e))
         (= (type e) obj-array-type) (str "thrown ref " (pr-str (ct/<-w e)))
         :else (string/replace (ex-message e) "wasm trap: " "")))
-(defn- res [f] (try [:ok (f)] (catch Throwable e [:err (err-msg e)])))
+(defn- res [f] (try [:ok (f)] (catch Throwable e [(if (:wasm/trap (ex-data e)) :trap :err) (err-msg e)])))
 
 (defn- W [v]
   (cond (native-arr? v) (if (= :byte-array (arr-kind v)) (a/byte-array (ct/->w (vec v))) (a/int-array (ct/->w (vec v))))
@@ -63,7 +63,7 @@
 
 ;; A runtime answer that is a lower-wasm named limit passes when native's
 ;; answer is what it names (a Ratio or BigInt from `/`).
-(defn- limit? [[k v]] (and (= k :err) (string/starts-with? v "lower-wasm:")))
+(defn- limit? [[k v]] (and (#{:err :trap} k) (string/starts-with? v "lower-wasm:")))
 (defmacro same-or-limit [native mine named?]
   `(let [n# (res (fn [] (nat ~native))) r# (res (fn [] (<-r ~mine)))]
      (if (limit? r#)

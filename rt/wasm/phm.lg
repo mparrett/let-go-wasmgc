@@ -20,8 +20,8 @@
 ;;    :410-436); here arrays are exact-length and an insert reallocates. The
 ;;    contents, and so the order, are the same.
 ;;  - Lookup returns a caller-chosen not-found sentinel instead of (v, ok).
-;;  - Errors Go returns (transient used after persistent!) trap until ex-info
-;;    exists (P2.7).
+;;  - Errors Go returns (transient used after persistent!) are raised as D68
+;;    Errs (P2.13).
 ;;
 ;; Natives here take and return refs per D37 only at the seq.lg hook boundary
 ;; (install-hooks! below, slot 0); the map API itself takes :int/:bool where Go's
@@ -29,8 +29,8 @@
 ;;
 ;; seq: `entries` returns a fresh HSlots array [k0 v0 k1 v1 ...] in seq order,
 ;; which is what Go's Seq materialises (persistent_map.go:1002-1023) before
-;; wrapping it in a MapSeq; `entry-seq` turns that into a seq.lg Cons chain of
-;; 2-vectors for the `seq` hook.
+;; wrapping it in a MapSeq; `entry-seq` turns that into seq.lg's MapSeq
+;; (kind 27) over MapEntry values for the `seq` hook (R5, P2.13).
 (ns wasm.phm
   (:require [wasm.intrinsics :as wasm]
             [wasm.pvec :as pv]
@@ -467,16 +467,20 @@
         (do (sset! out j (sget e (+ (* 2 j) off))) (recur (inc j)))
         out))))
 
+(defn- entries->map-seq [e n]                               ; the first n slot pairs of e as a MapSeq
+  (let [a (wasm/array-new pv/Node n (wasm/null))]
+    (loop [j 0]
+      (when (< j n)
+        (wasm/aset! pv/Node a j (wasm/new sq/MapEntry (sget e (* 2 j)) (sget e (inc (* 2 j)))))
+        (recur (inc j))))
+    (sq/arr-seq a 0)))
+
 (defn entry-seq
-  "The seq of m as seq.lg sees it: a Cons chain of MapEntry in seq order,
-   or null when empty (Seq :1002-1008 returns EmptyList; seq.lg's `seq`
-   turns that into nil either way)."
+  "The seq of m as seq.lg sees it: a MapSeq (seq.lg kind 27) of MapEntry in
+   seq order, or null when empty (Seq :1002-1008 returns EmptyList; seq.lg's
+   `seq` turns that into nil either way)."
   [m]
-  (let [e (entries m)]
-    (loop [i (- (wasm/alen e) 2) acc (wasm/null)]
-      (if (< i 0)
-        acc
-        (recur (- i 2) (sq/cons (wasm/new sq/MapEntry (sget e i) (sget e (inc i))) acc))))))
+  (let [e (entries m)] (entries->map-seq e (unsigned-bit-shift-right (wasm/alen e) 1))))
 
 (defn mkeys "(map first (seq m)) (core.lg:1679)." [m] (half m 0))
 (defn mvals "(map second (seq m)) (core.lg:1683)." [m] (half m 1))
@@ -555,7 +559,8 @@
 (defn- t-ensure-editable [t]                                ; :75-80
   (if (= 1 (wasm/get HFlag 0 (t-edit t)))
     nil
-    (wasm/trap "transient used after persistent! call")))
+    (let [bs (wasm/bytes-of-string "transient used after persistent! call")] ; catchable natively (transient.go:77)
+      (throw (wasm/new sq/Err 1 bs bs (wasm/null) (wasm/null))))))
 
 (defn- t-root-assoc! [t key val added]                      ; :103-111 and :49-59
   (let [h (khash key) edit (t-edit t) root (t-root t)]
@@ -628,17 +633,14 @@
       (if (< i 0) nf (sget o (inc i))))))
 
 (defn tentry-seq                                            ; TransientMap.Seq :231-251, as entry-seq
-  "The seq of transient t: a Cons chain of MapEntry in seq order, or null."
+  "The seq of transient t: a MapSeq of MapEntry in seq order, or null."
   [t]
   (let [n (tcount t)
         e (cond (= n 0) (slots 0)
                 (if (t-hamt? t) false true) (t-okvs t)
                 (wasm/null? (t-root t)) (slots 0)
                 :else (let [out (slots (* 2 n))] (node-fill (t-root t) out 0) out))]
-    (loop [i (- (* 2 n) 2) acc (wasm/null)]
-      (if (if (< i 0) true (= 0 (wasm/alen e)))
-        acc
-        (recur (- i 2) (sq/cons (wasm/new sq/MapEntry (sget e i) (sget e (inc i))) acc))))))
+    (entries->map-seq e (if (= 0 (wasm/alen e)) 0 n))))
 
 (defn tpersistent! [t]                                      ; Persistent :193-207
   (t-ensure-editable t)

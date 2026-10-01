@@ -171,6 +171,17 @@
     (is (trap? #(wasm/f64-to-i64 ##NaN)))
     (is (trap? #(wasm/f64-to-i64 9.223372036854775808e18)))
     (is (trap? #(wasm/f64-to-i64 ##-Inf))))
+  (testing "f64-neg flips the sign bit only, NaN included (native hash sees the bits)"
+    (is (= -1.5 (wasm/f64-neg 1.5)))
+    (is (= 2.25 (wasm/f64-neg -2.25)))
+    (is (= "-0.0" (pr-str (wasm/f64-neg 0.0))))
+    (is (= "0.0" (pr-str (wasm/f64-neg -0.0))))
+    (is (= ##-Inf (wasm/f64-neg ##Inf)))
+    (is (= (hash (- ##NaN)) (hash (wasm/f64-neg ##NaN))))
+    (is (not= (hash ##NaN) (hash (wasm/f64-neg ##NaN))) "the NaN's sign bit flips")
+    (is (= (hash ##NaN) (hash (wasm/f64-neg (wasm/f64-neg ##NaN)))))
+    (is (= (hash (- 4.9e-324)) (hash (wasm/f64-neg 4.9e-324))))
+    (is (thrown-with-msg? Exception #"expected f64" (wasm/f64-neg 1))))
   (testing "operands must be ints"
     (is (thrown-with-msg? Exception #"expected i64" (wasm/i64-add 1.0 1)))
     (is (thrown-with-msg? Exception #"expected f64" (wasm/f64-to-i64 1)))))

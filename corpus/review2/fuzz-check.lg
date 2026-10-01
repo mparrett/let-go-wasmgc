@@ -41,7 +41,10 @@
 (defn- pointer-hashed? [x] (boolean (re-find #"Atom|Volatile|Fn|Func|Native|Closure" (str (type x)))))
 (defn- bridge-opaque? [x]
   (or (pointer-hashed? x) (boolean (re-find #"Transient|Exception|Reduced" (str (type x))))
-      (and (or (keyword? x) (symbol? x)) (some? (meta x)))))
+      ;; a keyword/symbol through with-meta, even with nil meta: = only to itself natively
+      (and (or (keyword? x) (symbol? x))
+           ;; (namespace x) rejects a meta'd symbol natively: rebuild from the printed form
+           (or (some? (meta x)) (not= x (if (keyword? x) (keyword (subs (str x) 1)) (symbol (str x))))))))
 
 (def base-known* known*)
 (defn known* [field a b nv wv]

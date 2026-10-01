@@ -9,12 +9,12 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 
 | order | file | ns | requires | owns |
 |---|---|---|---|---|
-| 1 | `intrinsics.lg` | `wasm.intrinsics` | | the 42 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
+| 1 | `intrinsics.lg` | `wasm.intrinsics` | | the 43 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
 | 2 | `pvec.lg` | `wasm.pvec` | 1 | the persistent vector, `Node` arrays |
 | 3 | `seq.lg` | `wasm.seq` | 1 2 | the value model: every box struct, `Fn` (D52), `kind`, `equiv?`, `hash`; seq kinds, chunking, laziness, the seq natives; strings as collections; `float-bits`; the foreign-kind hook slots (SEQ.md) |
 | 4 | `str.lg` | `wasm.str` | 1 2 3 | building the scalar boxes, keyword/symbol interning, `str`/`pr-str`/`print-str`, float formatting, the string natives, `compare` (STR.md) |
 | 5 | `phm.lg` | `wasm.phm` | 1 2 3 | the persistent/transient map (array-map + HAMT), map hooks (slot 0) |
-| 6 | `phs.lg` | `wasm.phs` | 1 3 5 | the persistent/transient set, set hooks (slot 1) |
+| 6 | `phs.lg` | `wasm.phs` | 1 2 3 5 | the persistent/transient set, set hooks (slot 1) |
 | 7 | `arrays.lg` | `wasm.arrays` | 1-4 | let-go's typed arrays (`int-array` `byte-array` `aget` `aset` `alength` `aclone` `bytes`), the `Arr` struct, and the count/seq/print/get view wasm.core routes to it (kind 37) |
 | 8 | `core.lg` | `wasm.core` | 1-7 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
 | 9 | `reader.lg` | `wasm.reader` | 1-8 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
@@ -37,15 +37,16 @@ foreign values (`set-print-hook!`, called with a mode: 0 `Value.String()`,
 1 `pr-str`, 2 `print-str`; a map's String() has no commas, its pr-str does),
 and the printer seq.lg hashes Range/Repeat/PVecSeq elements with
 (`wasm.seq/set-print-hook!`, given `wasm.str/value-string`), and the type
-namer wasm.arrays uses in its messages (`wasm.arrays/set-type-name-hook!`:
-wasm.arrays loads before wasm.core, so it cannot call `type-name`).
+namer wasm.arrays and wasm.seq use in their messages for foreign values
+(`wasm.arrays/set-type-name-hook!`, `wasm.seq/set-type-name-hook!`: both load
+before wasm.core, so they cannot call `type-name`).
 
 File names must match `[a-z_]+\.lg`: `src/lw_rt.lg` reads this table
 with that pattern, and a row it cannot match is silently not loaded by the
 backend (why the XXH3 file is `xxhash.lg`).
 
 Runtime globals (D39), one per namespace that has state: `wasm.seq/hooks`
-(three Handler slots and the hashing printer), `wasm.str/globals` (intern
+(three Handler slots, the hashing printer, the seqable and ifn hooks, the type namer), `wasm.str/globals` (intern
 table, its count, the print hook), `wasm.core/globals` (gensym counter,
 interned types), `wasm.arrays/globals` (the type-name hook),
 `wasm.math/globals` (rand-int's xorshift state), `wasm.xxhash/globals` (the
@@ -83,6 +84,7 @@ stderr handles).
 | 24 | Atom | `Atom` (the backend's `$Atom`: one mutable slot) |
 | 25 | Volatile | `Volatile` (same shape) |
 | 26 | Err | `Err` (the backend's `$Err` plus a cause: kind 0 ex-info / 1 raw / 2 caught, msg, caught msg, data, cause) |
+| 27 | MapSeq/SetSeq | `ArrSeq` (arr, i, flavour 0 MapSeq / 1 SetSeq; P2.13, R5): the seq of a map, a set or a transient map, built by phm/phs's seq hooks. PersistentList type, sequential `=`, counted, not chunked; hashes by FNV of String() (no `Hash()`); `conj` on it is native's recovered panic `interface conversion: vm.Seq is *vm.Cons, not *vm.List` |
 
 wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 (phm's `HTransient`), 33 TransientSet (`TSet`), 34 TransientVector (`TVec`),
@@ -201,13 +203,19 @@ native and trap with a `lower-wasm:` message.
 
 ## Errors
 
-wasm.core raises let-go's catchable errors as the backend's exception value,
-`(throw (wasm/new sq/Err 1 msg cmsg nil nil))`: the backend lowers #'throw to
-`throw $lgex`. A native called as a value reports unprefixed messages (msg =
-cmsg); `inc`/`dec`, being IR-op fns natively, carry the "ExecutionError: "
-prefix once caught. Under native lg the Err is a wasm ref, so only `catch
-Throwable` sees it (core_test's `res` does). The older files still `wasm/trap`
-their catchable errors with static text; converting them is follow-up work.
+Every namespace raises let-go's catchable errors as the backend's exception
+value, `(throw (wasm/new sq/Err 1 msg cmsg nil nil))`, with native's exact
+text: the backend lowers #'throw to `throw $lgex`. A native called as a value
+reports unprefixed messages (msg = cmsg); `inc`/`dec`, being IR-op fns
+natively, carry the "ExecutionError: " prefix once caught. Under native lg the
+Err is a wasm ref, so only `catch Throwable` sees it. `wasm/trap` is kept for
+invariant violations (`wasm.seq:`, `pvec:`, `phm:` prefixes: a hook not linked,
+a count that disagrees with its walk) and `lower-wasm:` named limits (D74
+sweep, P2.13). Messages that name a type use `wasm.seq/kind-type-name` for
+seq.lg's kinds and wasm.core's namer for foreign values (Hooks slot 6,
+installed by `install!`). Every test file's `res` tags a reference trap
+`[:trap msg]`, apart from `[:err msg]`, so a trap never matches a catchable
+native error.
 
 ## read-string and edn.lg (plan D8)
 

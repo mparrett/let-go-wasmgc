@@ -107,6 +107,26 @@
 (def max-arity 4)
 (def fn-slot {0 0 1 1 2 2 3 4 4 5})
 
+;; P2.12 (D83): a fn with a variadic arity is a $FnV, a subtype of $Fn the
+;; backend declares (rt/'s Fn is left as is, so every runtime `wasm/new Fn`
+;; and field read stays valid): field 7 is the variadic code (funcref of type
+;; $Code<k+1>: the closure, the k fixed args, then the rest seq, a
+;; PersistentList as natively, null when no arg is left over), field 8 is k.
+;; k is capped at max-var-fixed (code types $Code1..$Code5). Calls through a
+;; value take up to max-invoke args ($rt_invoke0..N; past 4 only a variadic
+;; arity can accept them).
+(def max-var-fixed 4)
+(def max-invoke 32)
+;; module-wide atom: the most args any call through a value passes; the
+;; helpers emit $rt_invoke5..that many only (their text is O(n) each, and the
+;; helper text is re-parsed on every shake)
+(def ^:dynamic *invoke-max* nil)
+(defn invoke-n!
+  "Record a call through a value with n args; n itself."
+  [n]
+  (when (and *invoke-max* (> n @*invoke-max*)) (reset! *invoke-max* n))
+  n)
+
 ;; Probe knobs (see ../emit-wasm-probe/ext/README.md). *checked* defaults to
 ;; :inline because D3 makes checked + - * the semantics, not an option.
 ;; *checked*     :call | :inline | false
@@ -678,6 +698,37 @@
       #'swap! (when (<= 2 n 4) (set (str "(call $rt_swap" (- n 2) " " (bx) ")")))
       nil)))
 
+(defn rest-list-wat
+  "The rest seq of a variadic call as natively built: a PersistentList of the
+   leftover args (boxed WAT exprs, in order; counts are static), or nil when
+   none is left (`(fn [& r] r)` called with no args gets nil)."
+  [exprs]
+  (if (empty? exprs)
+    "(ref.null none)"
+    (reduce (fn [acc [i e]] (str "(struct.new $List " e " " acc " (i64.const " i ") (ref.null none))"))
+            "(struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none))"
+            (map vector (range 1 (inc (count exprs))) (reverse exprs)))))
+
+(defn variadic-params? [params] (boolean (some #{'&} params)))
+(defn fixed-count
+  "The number of fixed params of an arity vector (all of them when it has no `&`)."
+  [params] (count (take-while #(not= '& %) params)))
+
+(defn split-rest-pattern
+  "[params body] with a destructuring rest param ([a & [b c]], [& {:keys
+   [k]}]) replaced by a gensym bound by a let around the body, as core's fn
+   macro does: ir.build binds a variadic arity's rest only as a symbol
+   (P2.12). Anything else comes back unchanged."
+  [params body]
+  (let [k (fixed-count params) pat (nth params (inc k) nil)]
+    (if (or (not (variadic-params? params)) (nil? pat) (symbol? pat))
+      [params body]
+      (let [r (gensym "rest__")
+            binds (if (map? pat)
+                    (let [m (gensym "map__")] [m (list 'seq-to-map-for-destructuring r) pat m])
+                    [pat r])]
+        [(conj (vec (take k params)) '& r) (list (list* 'let binds body))]))))
+
 (defn arity-error-msg
   "Native's message for a wrong-arity call of a single-arity fn (the uncaught
    form; caught, ex-message adds `ExecutionError: `). The address is a fixed
@@ -689,17 +740,64 @@
 
 (declare rt-call-expr)
 
-(defn seq-variant
-  "A variadic native's `<name>-seq` runtime form (core.lg's convention:
-   leading fixed args, then the rest as one seq), or nil."
-  [ent argc]
+(def seq-variant-table
+  ;; P2.12: natives whose `-seq` form does not take the twin's leading args
+  ;; as its own (max-seq and cmp-seq lead with a mode), or that have none in
+  ;; rt/ (map* over several colls: lw-ext/map-n): twin -> [seq fn, fixed
+  ;; args, boxed WAT exprs passed before them]
+  {#'wasm.core/max [#'wasm.core/max-seq 0 ["(call $rt_box_bool (i32.const 0))"]]
+   #'wasm.core/min [#'wasm.core/max-seq 0 ["(call $rt_box_bool (i32.const 1))"]]
+   #'wasm.core/lt [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 0))"]]
+   #'wasm.core/le [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 1))"]]
+   #'wasm.core/gt [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 2))"]]
+   #'wasm.core/ge [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 3))"]]
+   #'wasm.seq/map* [#'lw-ext/map-n 1 []]
+   #'wasm.seq/list [#'lw-ext/list-n 0 []]})
+
+;; natives the backend builds inline when called (coll-ctors) and that have
+;; no runtime defn to be a value: as values they are lw-ext's variadic fns
+(def value-substs {#'vector #'lw-ext/vector-v #'hash-map #'lw-ext/hash-map-v #'hash-set #'lw-ext/hash-set-v})
+
+(defn seq-adapter
+  "How a variadic native takes args past its fixed arities: [seq fn, k fixed
+   args, pre exprs], from seq-variant-table or the runtime's convention (a
+   public `<name>-seq` taking the leading fixed args, then the rest as one
+   seq), or nil."
+  [ent]
   (when-let [v (:var ent)]
-    (let [sv (lw-rt/ns-var (symbol (namespace (var-sym v))) (symbol (str (name (var-sym v)) "-seq")))
-          d (when sv (lw-rt/source-defn sv))
-          k (when d (count (first (first (:arities d)))))]
-      (when (and k (= 1 (count (:arities d))) (<= 1 k) (< (dec k) argc)
-                 (> argc (apply max (keys (:arities ent)))))
-        [sv (dec k)]))))
+    (or (get seq-variant-table v)
+        (let [sv (lw-rt/ns-var (symbol (namespace (var-sym v))) (symbol (str (name (var-sym v)) "-seq")))
+              d (when (and sv (not (:private (meta sv)))) (lw-rt/source-defn sv))
+              k (when d (count (first (first (:arities d)))))]
+          (when (and k (= 1 (count (:arities d))) (<= 1 k))
+            [sv (dec k) []])))))
+
+(defn seq-variant
+  "seq-adapter's [seq fn, k, pre] when argc is past every fixed arity of ent
+   and covers k, else nil."
+  [ent argc]
+  (when-let [[_ k :as a] (seq-adapter ent)]
+    (when (and (<= k argc) (> argc (apply max -1 (keys (:arities ent)))))
+      a)))
+
+(defn variadic-call
+  "[sig arg-exprs] for a call of ent through its variadic arity (P2.12: no
+   fixed arity takes argc and argc covers the fixed args): the fixed args
+   per the sig, then the leftover args as the rest seq; else nil."
+  [ent args]
+  (when-let [vs (:variadic ent)]
+    (let [k (:fixed vs)]
+      (when (and (>= (count args) k) (not (get-in ent [:arities (count args)])))
+        [vs (concat (map arg-as (take k args) (:params vs))
+                    [(str (rest-list-wat (map #(arg-as % :box) (drop k args))) (coerce :box (nth (:params vs) k)))])]))))
+
+(defn call-arity-error-msg
+  "Native's message for a call of ent that no arity takes."
+  [ent argc]
+  (cond (:multi? ent) (str "function <mfn " (:base ent) " 0x0> doesn't have a " argc "-arity variant")
+        (:variadic ent) (str "function <fn " (when (:base ent) (str (:base ent) " ")) "0x0> expected at least "
+                             (:fixed (:variadic ent)) " args, got " argc)
+        :else (let [[n s] (first (:arities ent))] (arity-error-msg (:base ent) n argc))))
 
 (defn note-call-abi!
   "Record a call that hands a boxed value to an unboxed param (*abi-notes*)."
@@ -719,18 +817,26 @@
       (if (no-local? nid)
         (str "(drop " call ")")
         (str "(local.set $v" nid " " call (coerce (:ret sig) (ty nid)) ")")))
-    (if-let [[sv k] (seq-variant ent (count args))]
+    (if-let [[vs exprs] (variadic-call ent args)]
+      (let [call (guard-call (str "(call $" (:name vs) " " (str/join " " exprs) ")"))]
+        (if (no-local? nid)
+          (str "(drop " call ")")
+          (str "(local.set $v" nid " " call (coerce (:ret vs) (ty nid)) ")")))
+    (if-let [[sv k pre] (seq-variant ent (count args))]
       ;; (str a b c d e) -> (str-seq [a b c d e]): past the fixed arities
       (let [bx (map #(arg-as % :box) args)
-            rest-v (rt-call-expr #'wasm.pvec/varray
-                                 [(reduce (fn [acc x] (rt-call-expr #'wasm.pvec/vconj [acc x]))
-                                          (rt-call-expr #'wasm.pvec/empty-vec []) (drop k bx))])]
-        (str "(local.set $v" nid " " (rt-call-expr sv (concat (take k bx) [rest-v])) (coerce :box (ty nid)) ")"))
+            ;; P2.12: the rest as the variadic ABI's PersistentList (it was an
+            ;; ArrayVector; every -seq form only seqs it, and lw-ext/list-n
+            ;; returns it as is)
+            rest-v (let [r (rest-list-wat (drop k bx))]
+                     (if (= r "(ref.null none)") "(struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none))" r))
+            call (rt-call-expr sv (concat pre (take k bx) [rest-v]))]
+        (if (no-local? nid)
+          (str "(drop " call ")")
+          (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")")))
     ;; native compiles this and fails when the call runs
-    (let [m (if (:multi? ent)
-              (str "function <mfn " (:base ent) " 0x0> doesn't have a " (count args) "-arity variant")
-              (let [[n s] (first (:arities ent))] (arity-error-msg (:base ent) n (count args))))]
-      (str "(throw $lgex " (rt-error-wat m (str "ExecutionError: " m)) ")")))))
+    (let [m (call-arity-error-msg ent (count args))]
+      (str "(throw $lgex " (rt-error-wat m (str "ExecutionError: " m)) ")"))))))
 
 ;; Runtime defns the backend lowers as an instruction instead of a call:
 ;; float-bits is the stand-in for f64-bits (D28/D45), i64.reinterpret_f64.
@@ -755,7 +861,18 @@
    #'wasm.seq/invoke1 (rt-invoke-override 1)
    #'wasm.seq/invoke2 (rt-invoke-override 2)
    #'wasm.core/invoke3 (rt-invoke-override 3)
-   #'wasm.core/invoke4 (rt-invoke-override 4)})
+   #'wasm.core/invoke4 (rt-invoke-override 4)
+   ;; P2.12: the runtime's own dispatch stops at 4 args and knows no
+   ;; variadic slot; these two reach $rt_invokeN's and spread any count
+   #'wasm.core/invoke-args
+   (fn [nid [f n & xs]]
+     (let [call (str "(call $rt_invoke_args " (arg-as f :box) " " (arg-as n :int)
+                     (apply str (map #(str " " (arg-as % :box)) xs)) ")")]
+       (if (no-local? nid) (str "(drop " call ")") (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")"))))
+   #'wasm.core/invoke-vec
+   (fn [nid [f v]]
+     (let [call (str "(call $rt_apply_vec " (arg-as f :box) " " (arg-as v :box) ")")]
+       (if (no-local? nid) (str "(drop " call ")") (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")"))))})
 
 (defn rt-call-expr
   "A boxed-result call of runtime defn v on boxed operand exprs."
@@ -814,8 +931,8 @@
       ;; a runtime defn, a native the runtime twins (D58), or an lg core fn
       (and *rt* (rt-target v) (callee-sig v)) (direct-call-wat nid (callee-sig v) args)
       ;; a var with no wasm definition: call through its (nil) var-table slot
-      (<= (count args) max-arity)
-      (str "(local.set $v" nid " (call $rt_invoke" (count args) " (global.get " (extern-global v) ")"
+      (<= (count args) max-invoke)
+      (str "(local.set $v" nid " (call $rt_invoke" (invoke-n! (count args)) " (global.get " (extern-global v) ")"
            (apply str (map #(str " " (arg-as % :box)) args)) ")" (coerce :box (ty nid)) ")")
       ;; no $Fn arity slot past 4 (D52); the slot is nil anyway, so evaluate
       ;; the args and fail exactly as the invoke would
@@ -947,6 +1064,7 @@
       "i64-extend-i32-u" [(str "(i64.extend_i32_u (i32.wrap_i64 " (arg-as (a 0) :int) "))") :int]
       "i64-to-f64" [(str "(f64.convert_i64_s " (arg-as (a 0) :int) ")") :float]
       "f64-to-i64" [(str "(i64.trunc_f64_s " (f64-arg (a 0)) ")") :int]
+      "f64-neg" [(str "(f64.neg " (f64-arg (a 0)) ")") :float]
       "f64-bits" [(str "(i64.reinterpret_f64 " (f64-arg (a 0)) ")") :int]
       "bytes-new" [(str "(array.new_default $Bytes " (wrap-idx (a 0)) ")") :box]
       "bget" [(str "(i64.extend_i32_u (array.get_u $Bytes " (cast-ref "$Bytes" (a 0)) " " (wrap-idx (a 1)) "))") :int]
@@ -990,7 +1108,7 @@
 (def emitted-intrinsics
   #{"new" "get" "set!" "is?" "as" "array-new" "aget" "aset!" "alen" "array-copy" "ref-eq" "null" "null?"
     "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
-    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits"
+    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
     "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
     "term-read-key" "term-key-pending" "term-size"})
@@ -1153,8 +1271,9 @@
 
 (defn info-global
   "kind 0 = single-arity fn (`<fn ..>`), 1 = multi-arity (`<mfn ..>`), 2 = a
-   core op as a value (only its IR-op arity); arity is the declared one for
-   kind 0; name nil = anonymous."
+   core op as a value (only its IR-op arity), 3 = a fn whose one arity is
+   variadic (`<fn ..>`, `expected at least k args`, P2.12); arity is the
+   declared one for kind 0, the fixed count for kind 3; name nil = anonymous."
   [kind arity nm]
   (let [g (str "$info_" kind "_" arity "_" (if nm (str (safe-id nm) "_" (hex32 nm)) "anon"))]
     (swap! *globals* conj
@@ -1162,11 +1281,16 @@
                 (if nm (name-bytes-const nm) "(ref.null none)") "))"))
     g))
 
-(defn fn-struct-wat [codes env info-g]
-  (swap! *elem* into (vals codes))
-  (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))]
-    (str "(struct.new $Fn " (slot 0) " " (slot 1) " " (slot 2) " " env " " (slot 3) " " (slot 4)
-         " (global.get " info-g "))")))
+(defn fn-struct-wat
+  "codes: arity -> code fn name, plus :v [k name] for a variadic arity with k
+   fixed args (the value is then a $FnV)."
+  [codes env info-g]
+  (let [[k vc] (:v codes) codes (dissoc codes :v)]
+    (swap! *elem* into (cond-> (vals codes) vc (conj vc)))
+    (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))]
+      (str "(struct.new " (if vc "$FnV " "$Fn ") (slot 0) " " (slot 1) " " (slot 2) " " env " " (slot 3) " " (slot 4)
+           " (global.get " info-g ")"
+           (when vc (str " (ref.func $" vc ") (i32.const " k ")")) ")"))))
 
 (defn env-type [kinds]
   (or (get @*env-types* kinds)
@@ -1191,18 +1315,37 @@
     (when *abi-notes* (swap! *abi-notes* update :value (fnil conj #{}) v))
     (or (get @*fn-values* ent)
         (let [ars (into (sorted-map) (filter #(<= (key %) max-arity) (:arities ent)))
-              _ (when (empty? ars)
+              vs (let [vs (:variadic ent)] (when (and vs (<= (:fixed vs) max-var-fixed)) vs))
+              ;; P2.12: a native past its fixed arities, through its -seq form
+              ad (when-not vs (seq-adapter ent))
+              _ (when (and (empty? ars) (not vs) (not ad))
                   (fail "unsupported defn with more than 4 params used as a value" {:var v :fn *fname*}))
-              base (:name (val (first ars)))
+              base (or (when (seq ars) (:name (val (first ars)))) (:name vs) (qual-name v))
               g (str "$dfn_" base)
-              info (if (:multi? ent) (info-global 1 0 (:base ent)) (info-global 0 (key (first ars)) (:base ent)))
+              info (cond (:multi? ent) (info-global 1 0 (:base ent))
+                         (and vs (empty? ars)) (info-global 3 (:fixed vs) (:base ent))
+                         :else (info-global 0 (if (seq ars) (key (first ars)) 0) (:base ent)))
               codes (into {} (for [[n {:keys [name params ret]}] ars
                                    :let [cname (str name "__val" n)]]
                                (do (swap! *regions* conj
                                           (fn-code-wat cname n (str "(call $" name
                                                                     (apply str (map-indexed (fn [i k] (str " (local.get $p" i ")" (coerce :box k))) params))
                                                                     ")" (coerce ret :box))))
-                                   [n cname])))]
+                                   [n cname])))
+              codes (cond
+                      vs (let [{:keys [name params ret fixed]} vs cname (str name "__valv")]
+                           (swap! *regions* conj
+                                  (fn-code-wat cname (inc fixed)
+                                               (str "(call $" name
+                                                    (apply str (map-indexed (fn [i k] (str " (local.get $p" i ")" (coerce :box k))) params))
+                                                    ")" (coerce ret :box))))
+                           (assoc codes :v [fixed cname]))
+                      ad (let [[sv k pre] ad cname (str base "__valseq")]
+                           (swap! *regions* conj
+                                  (fn-code-wat cname (inc k)
+                                               (rt-call-expr sv (concat pre (map #(str "(local.get $p" % ")") (range (inc k)))))))
+                           (assoc codes :v [k cname]))
+                      :else codes)]
           (swap! *fn-values* assoc ent g)
           (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat codes "(ref.null none)" info) ")"))
           g))))
@@ -1248,7 +1391,8 @@
   [v]
   ;; a core op as a value: the runtime's twin when it is compiled in (every
   ;; arity, native's errors), else the backend's IR-op-arity-only fn
-  (cond (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
+  (cond (and *rt* (value-substs v)) (str "(global.get " (defn-fn-global (value-substs v)) ")")
+        (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
         (callee-sig v) (str "(global.get " (defn-fn-global v) ")")
         :else (str "(global.get " (extern-global v) ")")))
@@ -1273,18 +1417,22 @@
         env-t (when (seq caps) (env-type cap-kinds))
         base (str *fname* "__fn" nid)
         fname (let [n (ir/fn-name (:fn (first tpls)))] (when-not (= n "fn*") n))
+        ;; a variadic template's arity counts the rest param (k fixed + 1);
+        ;; its code is the $FnV's variadic slot (P2.12)
         codes (into {} (for [{tfn :fn :keys [arity variadic?]} tpls]
-                         (do (when variadic?
-                               (fail "unsupported variadic fn (& args) as a closure" {:fn *fname* :name fname}))
-                             (when (> arity max-arity)
+                         (do (when (and variadic? (> (dec arity) max-var-fixed))
+                               (fail "unsupported variadic closure with more than 4 fixed params" {:fn *fname* :arity arity}))
+                             (when (and (not variadic?) (> arity max-arity))
                                (fail "unsupported closure arity > 4" {:fn *fname* :arity arity}))
-                             (let [cname (str base "_" arity)
+                             (let [cname (str base "_" (if variadic? "v" arity))
                                    info (assoc (binding [*box-params* true] (analyze-ir cname tfn))
                                                :params (vec (repeat arity :box)) :ret :box :caps []
                                                :export? false :code arity :env env-t :env-kinds cap-kinds)]
                                (swap! *regions* conj (lower-fn info))
-                               [arity cname]))))
-        info-g (info-global (if multi? 1 0) (if multi? 0 (:arity (first tpls))) fname)]
+                               (if variadic? [:v [(dec arity) cname]] [arity cname])))))
+        v1 (when-not multi? (:variadic? (first tpls)))
+        info-g (info-global (cond multi? 1 v1 3 :else 0)
+                            (cond multi? 0 v1 (dec (:arity (first tpls))) :else (:arity (first tpls))) fname)]
     (if env-t
       (fn-struct-wat codes (str "(struct.new " env-t " " (str/join " " (map arg-as caps cap-kinds)) ")") info-g)
       (let [g (str "$clo_" base)]
@@ -1295,9 +1443,9 @@
   "A call whose callee is a value: dispatch on the $Fn's arity slot."
   [nid callee args]
   (let [n (count args)]
-    (when (> n max-arity)
-      (fail "unsupported call through a fn value with more than 4 args" {:argc n :fn *fname*}))
-    (str "(local.set $v" nid " (call $rt_invoke" n " " (arg-as callee :box)
+    (when (> n max-invoke)
+      (fail "unsupported call through a fn value with more than 32 args" {:argc n :fn *fname*}))
+    (str "(local.set $v" nid " (call $rt_invoke" (invoke-n! n) " " (arg-as callee :box)
          (apply str (map #(str " " (arg-as % :box)) args)) ")" (coerce :box (ty nid)) ")")))
 
 (defn def-wat
@@ -1365,13 +1513,16 @@
   (let [refs (ir/refs nid *f*) callee (first refs) args (rest refs) argc (count args)
         v (var-of callee)
         inv (fn [callee-expr]
-              (when (and (<= argc max-arity) (= :box *ret-type*))
-                (str "(return_call $rt_invoke" argc " " callee-expr (apply str (map #(str " " (arg-as % :box)) args)) ")")))
+              (when (and (<= argc max-invoke) (= :box *ret-type*))
+                (str "(return_call $rt_invoke" (invoke-n! argc) " " callee-expr (apply str (map #(str " " (arg-as % :box)) args)) ")")))
         direct (fn [ent]
-                 (when-let [sig (get-in ent [:arities argc])]
+                 (if-let [sig (get-in ent [:arities argc])]
                    (when (and (= (:ret sig) *ret-type*) (not *guard-calls*))
                      (note-call-abi! ent args sig)
-                     (str "(return_call $" (:name sig) " " (str/join " " (map arg-as args (:params sig))) ")"))))]
+                     (str "(return_call $" (:name sig) " " (str/join " " (map arg-as args (:params sig))) ")"))
+                   (when-let [[vs exprs] (variadic-call ent args)]
+                     (when (and (= (:ret vs) *ret-type*) (not *guard-calls*))
+                       (str "(return_call $" (:name vs) " " (str/join " " exprs) ")")))))]
     (cond
       (not (and v (not (table-var? v)))) (inv (arg-as callee :box))
       (lw-rt/intrinsic? v) nil
@@ -1614,7 +1765,6 @@
     ;; complete (see walk's :loop); only a :goto node is unlowerable.
     (when (has-node? :goto tree)
       (fail "structurize fallback (:goto)" {:fn fname :fallbacks fallbacks :tree tree}))
-    (when (ir/fn-variadic? f) (fail "unsupported variadic fn" {:fn fname}))
     (let [fparams (binding [*f* f *memo* (atom {}) *func-vals* #{}] (func-params f))
           params0 (binding [*f* f *memo* (atom {}) *func-vals* #{}]
                     (vec (for [i (range (ir/fn-arity f))]
@@ -1714,8 +1864,12 @@
    boxed path is ~2x the probe, the typed one well under it (bench-fib.sh)."
   ([src] (analyze-fn src (str (second src)) false))
   ([src wname multi?]
-   ;; float-tainted params are boxed and the fn re-analysed until stable
-   (loop [boxed *box-param-idx*]
+   ;; float-tainted params are boxed and the fn re-analysed until stable;
+   ;; a variadic arity's params all stay boxed (P2.12: its callers build the
+   ;; rest seq generically, and typeinfer must not type the rest param)
+   (loop [boxed (if (variadic-params? (nth src 2))
+                  (into *box-param-idx* (range (inc (fixed-count (nth src 2)))))
+                  *box-param-idx*)]
      (let [info (binding [*box-param-idx* boxed] (analyze-fn* src wname multi?))
            more (remove boxed (float-tainted-params info))]
        (if (empty? more) info (recur (into boxed more)))))))
@@ -2080,6 +2234,14 @@
     (then (local.set $m " (cat-wat "lower-wasm: core/" name " called through a fn value with " n
                                   " args (only its IR-op arity until Phase 2)") ")
           " (throw-msg "(ref.as_non_null (local.get $m))" "(ref.as_non_null (local.get $m))") "))
+  ;; kind 3 (P2.12): native's text for a variadic fn given too few args
+  (if (i32.eq (struct.get $FnInfo 0 (local.get $info)) (i32.const 3))
+    (then
+      (local.set $d (if (result (ref $Bytes)) (ref.is_null (local.get $name))
+                      (then " (bytes-wat "<fn 0x0>") ") (else " (cat-wat "<fn " name " 0x0>") ")))
+      (local.set $m " (cat-wat "function " (wexpr "(ref.as_non_null (local.get $d))") " expected at least "
+                               (wexpr "(call $rt_itoa (struct.get $FnInfo 1 (local.get $info)))") " args, got " n) ")
+      " (throw-msg "(ref.as_non_null (local.get $m))" (cat-wat "ExecutionError: " (wexpr "(ref.as_non_null (local.get $m))"))) "))
   (if (i32.eqz (struct.get $FnInfo 0 (local.get $info)))
     (then
       (local.set $d (if (result (ref $Bytes)) (ref.is_null (local.get $name))
@@ -2117,7 +2279,7 @@
   " (throw-msg "(local.get $m)" "(local.get $m)") ")
 "
      (apply str
-            (for [n (range (inc max-arity))
+            (for [n (range (inc (max max-arity (if *invoke-max* @*invoke-max* 0))))
                   :let [slot (fn-slot n)
                         args (apply str (map #(str " (local.get $a" % ")") (range n)))]]
               (str "(func $rt_invoke" n " (param $f (ref null eq))"
@@ -2125,12 +2287,78 @@
                    " (result (ref null eq)) (local $fn (ref null $Fn))
   (if (i32.eqz (ref.test (ref $Fn) (local.get $f)))
     (then (return_call $rt_invoke_ifn (local.get $f) (i32.const " n ")"
-                   (apply str (map #(str " (local.get $a" % ")") (range n)))
-                   (apply str (repeat (- max-arity n) " (ref.null none)")) ")))
-  (local.set $fn (ref.cast (ref $Fn) (local.get $f)))
-  (if (ref.is_null (struct.get $Fn " slot " (local.get $fn))) (then (call $rt_arity_error (ref.as_non_null (local.get $fn)) (i32.const " n "))))
+                   (apply str (map #(str " (local.get $a" % ")") (range (min n max-arity))))
+                   (apply str (repeat (- max-arity (min n max-arity)) " (ref.null none)")) ")))
+  (local.set $fn (ref.cast (ref $Fn) (local.get $f)))\n"
+                   (if slot
+                     (str "  (if (ref.is_null (struct.get $Fn " slot " (local.get $fn)))
+    (then (return_call $rt_invoke_var" n " (ref.as_non_null (local.get $fn))" args ")))
   ;; a tail call: native eliminates tail calls through fn values too (bug-07)
-  (return_call_ref $Code" n " (local.get $f)" args " (struct.get $Fn " slot " (local.get $fn))))\n")))
+  (return_call_ref $Code" n " (local.get $f)" args " (struct.get $Fn " slot " (local.get $fn))))\n")
+                     ;; past 4 args only a variadic arity can take the call
+                     (str "  (return_call $rt_invoke_var" n " (ref.as_non_null (local.get $fn))" args "))\n"))
+                   ;; P2.12: no fixed arity for n args: the variadic one, when
+                   ;; n covers its fixed args; else native's arity error
+                   "(func $rt_invoke_var" n " (param $fn (ref $Fn))"
+                   (apply str (map #(str " (param $a" % " (ref null eq))") (range n)))
+                   " (result (ref null eq)) (local $v (ref null $FnV))
+  (if (ref.test (ref $FnV) (local.get $fn))
+    (then (local.set $v (ref.cast (ref $FnV) (local.get $fn)))\n"
+                   (apply str
+                          (for [k (range (inc (min n max-var-fixed)))]
+                            (str "      (if (i32.eq (struct.get $FnV 8 (local.get $v)) (i32.const " k "))
+        (then (return_call_ref $Code" (inc k) " (local.get $fn)"
+                                 (apply str (map #(str " (local.get $a" % ")") (range k)))
+                                 " " (rest-list-wat (map #(str "(local.get $a" % ")") (range k n)))
+                                 " (ref.cast (ref $Code" (inc k) ") (struct.get $FnV 7 (local.get $v))))))\n")))
+                   "))
+  (call $rt_arity_error (local.get $fn) (i32.const " n ")) unreachable)\n")))
+     ;; wasm.core/invoke-args (n <= 4 args a..d) as the backend's dispatch, so a
+     ;; runtime caller (swap!, complement, apply*) reaches variadic arities;
+     ;; a non-Fn keeps the runtime's own path
+     (when *rt*
+       (str "(func $rt_invoke_args (param $f (ref null eq)) (param $n i64) (param $a0 (ref null eq)) (param $a1 (ref null eq))
+  (param $a2 (ref null eq)) (param $a3 (ref null eq)) (result (ref null eq))
+  (if (i32.eqz (ref.test (ref $Fn) (local.get $f)))
+    (then (return_call $wasm.core/invoke-args#6__box (local.get $f) (call $rt_box_int (local.get $n))
+                       (local.get $a0) (local.get $a1) (local.get $a2) (local.get $a3))))\n"
+            (apply str (for [n (range (inc max-arity))]
+                         (str "  (if (i64.eq (local.get $n) (i64.const " n "))
+    (then (return_call $rt_invoke" n " (local.get $f)" (apply str (map #(str " (local.get $a" % ")") (range n))) ")))\n")))
+            "  (return_call $wasm.core/invoke-args#6__box (local.get $f) (call $rt_box_int (local.get $n))
+                     (local.get $a0) (local.get $a1) (local.get $a2) (local.get $a3)))
+;; wasm.core/invoke-vec: f applied to the elements of pvec $v, any count (apply
+;; spreads through it). Up to 4 args take $rt_invokeN; past that only a
+;; variadic arity can: its k fixed args, then the rest as a PersistentList
+(func $rt_apply_vec (param $f (ref null eq)) (param $v (ref null eq)) (result (ref null eq))
+  (local $n i32) (local $k i32) (local $i i32) (local $rest (ref null eq)) (local $fv (ref null $FnV))
+  (local.set $n (i32.wrap_i64 (call $rt_unbox_int (call $wasm.pvec/vcount#1__box (local.get $v)))))\n"
+            (apply str (for [n (range (inc max-arity))]
+                         (str "  (if (i32.eq (local.get $n) (i32.const " n "))
+    (then (return_call $rt_invoke" n " (local.get $f)"
+                              (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range n))) ")))\n")))
+            "  (if (i32.eqz (ref.test (ref $Fn) (local.get $f)))
+    (then (return_call $rt_invoke_ifn (local.get $f) (local.get $n)"
+            (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range max-arity)))
+            ")))
+  (if (i32.eqz (ref.test (ref $FnV) (local.get $f)))
+    (then (call $rt_arity_error (ref.cast (ref $Fn) (local.get $f)) (local.get $n)) unreachable))
+  (local.set $fv (ref.cast (ref $FnV) (local.get $f)))
+  (local.set $k (struct.get $FnV 8 (local.get $fv)))
+  ;; k <= 4 < n: the rest is never empty
+  (local.set $rest (struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none)))
+  (local.set $i (local.get $n))
+  (loop $l
+    (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+    (local.set $rest (struct.new $List (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (local.get $i))) (local.get $rest)
+                                 (i64.extend_i32_u (i32.sub (local.get $n) (local.get $i))) (ref.null none)))
+    (br_if $l (i32.gt_u (local.get $i) (local.get $k))))\n"
+            (apply str (for [k (range (inc max-var-fixed))]
+                         (str "  (if (i32.eq (local.get $k) (i32.const " k "))
+    (then (return_call_ref $Code" (inc k) " (local.get $f)"
+                              (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range k)))
+                              " (local.get $rest) (ref.cast (ref $Code" (inc k) ") (struct.get $FnV 7 (local.get $fv))))))\n")))
+            "  unreachable)\n"))
      ";; a non-Fn callee: keywords, symbols, maps, sets and vectors call
 ;; themselves through the runtime (wasm.core/invoke-args); anything else is
 ;; native's TypeError
@@ -2425,6 +2653,7 @@
     (cond (contains? lw-rt/defn-by-var v) v
           (lw-rt/twin-of v) (lw-rt/twin-of v)
           (contains? lw-rt/core-defns v) v
+          (contains? lw-rt/ext-defns v) v
           :else nil)))
 
 (defn qual-name [v] (subs (str v) 2))
@@ -2469,16 +2698,23 @@
     (let [d (lw-rt/source-defn v)
           multi? (> (count (:arities d)) 1)]
       (binding [*ns* (the-ns (:ns d))]
-        (let [srcs (doall (for [[params & body] (:arities d)]
-                            (do (when (some #{'&} params)
-                                  (fail "unsupported variadic runtime defn" {:var v}))
-                                (apply list 'defn (:name d) params (map expand-form body)))))]
+        (let [srcs (doall (for [[params & body] (:arities d)
+                                :let [[params body] (split-rest-pattern params body)]]
+                            (apply list 'defn (:name d) params (map expand-form body))))]
           (doseq [s srcs] (analyze-deps! s))
           (doseq [s srcs]
-            (let [argc (count (nth s 2))
+            ;; P2.12 (amends D78): a variadic arity is `<name>#v` (or the
+            ;; defn's own name when it is the only arity), registered as the
+            ;; sig's :variadic entry with its fixed-arg count
+            (let [params (nth s 2)
+                  var? (variadic-params? params)
+                  argc (if var? "v" (count params))
                   info (assoc (analyze-fn s (rt-fn-name v argc multi?) multi?) :export? false)]
-              (swap! *sigs* update v (fn [e] (-> (or e {:multi? multi? :base (str (:name d)) :var v})
-                                                 (assoc-in [:arities argc] (select-keys info [:name :params :ret])))))
+              (swap! *sigs* update v (fn [e] (let [e (or e {:multi? multi? :base (str (:name d)) :var v})
+                                                   sig (select-keys info [:name :params :ret])]
+                                               (if var?
+                                                 (assoc e :variadic (assoc sig :fixed (fixed-count params)))
+                                                 (assoc-in e [:arities argc] sig)))))
               (swap! *rt* update :pending conj info))))))
     (swap! *rt* assoc-in [:state v] :done)))
 
@@ -2724,7 +2960,8 @@
    {:sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
-    :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})}))
+    :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
+    :invoke-max (atom max-arity)}))
 
 (def ^:dynamic *shake* true)
 
@@ -2734,7 +2971,8 @@
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
-            *prog-decls* (or (:prog-decls ss) (atom {}))]
+            *prog-decls* (or (:prog-decls ss) (atom {}))
+            *invoke-max* (or (:invoke-max ss) (atom max-arity))]
     (thunk)))
 
 (defn top-forms
@@ -2767,6 +3005,16 @@
   (let [t (if-let [c (get-in funcref-fields [tn i])] (str "(ref null " c ")") (slot-wt (:type f)))]
     (if (:mut f) (str "(mut " t ")") t)))
 
+(defn fnv-types
+  "P2.12: $FnV (a $Fn plus its variadic code and fixed-arg count) and the
+   one code type rt/ lacks, $Code5 (a variadic arity with 4 fixed args)."
+  []
+  (let [fn-decl (:decl (first (filter #(= "$Fn" (lw-rt/type-name (:var %))) lw-rt/decls)))]
+    (str "  (type $FnV (sub final $Fn (struct"
+         (apply str (map-indexed (fn [i f] (str " (field " (field-wt "$Fn" i f) ")")) (:fields fn-decl)))
+         " (field funcref) (field i32))))\n"
+         "  (type $Code5 (func" (apply str (repeat 6 " (param (ref null eq))")) " (result (ref null eq))))\n")))
+
 (defn rec-group
   "ONE rec group (D25): every runtime declaration (lw-rt, source order),
    then the backend's closure env structs (D52 note 6: kept distinct)."
@@ -2778,11 +3026,14 @@
                     :let [k (:wasm.intrinsics/kind decl)]]
                 (str "  (type " tn " "
                      (case k
-                       :struct (str "(struct" (apply str (map-indexed (fn [i f] (str " (field " (field-wt tn i f) ")")) (:fields decl))) ")")
+                       ;; P2.12: $Fn is open, so the backend's $FnV can extend it
+                       :struct (let [st (str "(struct" (apply str (map-indexed (fn [i f] (str " (field " (field-wt tn i f) ")")) (:fields decl))) ")")]
+                                 (if (= tn "$Fn") (str "(sub " st ")") st))
                        :array (str "(array (mut " (if (= :i8 (:elem decl)) "i8" (slot-wt (:elem decl))) "))")
                        :func (str "(func" (apply str (map #(str " (param " (slot-wt %) ")") (:params decl)))
                                   " (result " (slot-wt (:result decl)) "))"))
                      ")\n")))
+       (fnv-types)
        (apply str (for [[kinds t] (sort-by val @*env-types*)]
                     (str "  (type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n")))
        ")\n"))
@@ -2996,7 +3247,7 @@
 
 (defn rtlib-key []
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
-                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg"])))))
+                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
@@ -3007,7 +3258,7 @@
    stay out of the library: a call to one compiles through a nil slot."
   []
   (let [fails (atom [])]
-    (doseq [d (concat lw-rt/defns (vals lw-rt/core-defns))]
+    (doseq [d (concat lw-rt/defns (vals lw-rt/core-defns) (vals lw-rt/ext-defns))]
       (try (rt-analyze! (:var d))
            (catch e (swap! *rt* update :state dissoc (:var d))
                     (swap! *sigs* dissoc (:var d))

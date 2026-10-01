@@ -53,7 +53,7 @@
   "A wasm value as lg data: seq kinds realised to lg lists, a pvec to a vector."
   [r]
   (let [k (sq/kind r)]
-    (cond (<= 2 k 10) (loop [s (sq/seq r) out []] (if (wasm/null? s) (apply list out) (recur (sq/next s) (conj out (deep (sq/first s))))))
+    (cond (or (<= 2 k 10) (= k 27)) (loop [s (sq/seq r) out []] (if (wasm/null? s) (apply list out) (recur (sq/next s) (conj out (deep (sq/first s))))))
           (= k 11) (mapv #(deep (pv/vnth r %)) (range (pv/vcount r)))
           :else (<-w r))))
 
@@ -63,11 +63,17 @@
 (defn w [n] (sq/box-int n))
 
 (defn- res
-  "[:ok v] or [:err message]; a reference trap's 'wasm trap: ' prefix is
-   dropped so native exceptions and runtime traps compare by message."
+  "[:ok v], [:err message] for a native exception or a raised runtime Err
+   (D68: a thrown wasm ref, which only catch Throwable sees under native lg),
+   or [:trap message] for a reference trap, so a trap never matches a
+   catchable native error (P2.13, D74)."
   [f]
   (try [:ok (f)]
-       (catch Exception e [:err (string/replace (ex-message e) "wasm trap: " "")])))
+       (catch Throwable e
+         (cond (and (wref? e) (wasm/is? sq/Err e)) [:err (wasm/string-of-bytes (wasm/get sq/Err 2 e))]
+               (wref? e) [:err (str "thrown ref " e)]
+               (:wasm/trap (ex-data e)) [:trap (string/replace (ex-message e) "wasm trap: " "")]
+               :else [:err (ex-message e)]))))
 
 (defn- both [nf mf] [(res nf) (res #(deep (mf)))])
 (defmacro same [native mine] `(let [[a# b#] (both (fn [] ~native) (fn [] ~mine))] (is (= a# b#) (pr-str '~native))))
@@ -392,7 +398,7 @@
       ;; the generic slot is process-global and wasm.core/install! fills it
       ;; (core-test may run first): start from an empty slot
       (sq/set-hooks! (wasm/null) (wasm/null) (wasm/null) (wasm/null))
-      (is (= [:err "wasm.seq: foreign value and no hook installed (phm/phs not linked)"] (res #(sq/first bag))))
+      (is (= [:trap "wasm.seq: foreign value and no hook installed (phm/phs not linked)"] (res #(sq/first bag))))
       (try
         (sq/set-hooks! (clo #(inner %)) (clo #(<-w (sq/count (inner %))))
                        (clo #(and (wasm/is? Bag %1) (wasm/is? Bag %2) (sq/truthy? (sq/equals (inner %1) (inner %2)))))

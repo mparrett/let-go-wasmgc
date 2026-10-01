@@ -960,6 +960,7 @@
           (= k 15) (s/lit "vm.Boolean")
           (= k 11) (if (= 0 (pv/vpkind x)) (s/lit "vm.ArrayVector") (s/lit "*vm.PersistentVector"))
           (if (= k 2) true (= k 3)) (s/lit "*vm.List")
+          (= k 27) (if (= 0 (sq/arr-seq-flavour x)) (s/lit "*vm.MapSeq") (s/lit "*vm.SetSeq"))
           (= k 30) (s/lit "*vm.PersistentMap")
           (= k 31) (s/lit "*vm.PersistentSet")
           (= k 7) (s/lit "*vm.Range")

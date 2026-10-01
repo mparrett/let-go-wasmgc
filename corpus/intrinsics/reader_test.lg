@@ -42,7 +42,7 @@
           (= k 20) (keyword (bytes->str (wasm/get sq/Kw 0 x)) (bytes->str (wasm/get sq/Kw 1 x)))
           (= k 21) (symbol (bytes->str (wasm/get sq/Sym 0 x)) (bytes->str (wasm/get sq/Sym 1 x)))
           (= k 22) (s/unbox-float x)
-          (<= 2 k 10) (wm (loop [q (sq/seq x) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
+          (or (<= 2 k 10) (= k 27)) (wm (loop [q (sq/seq x) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
           (= k 11) (wm (mapv #(<-w (pv/vnth x %)) (range (pv/vcount x))))
           (= k 30) (wm (let [es (m/entries x)] (into {} (map (fn [[kk v]] [(<-w kk) (<-w v)]) (partition 2 (mapv #(wasm/aget m/HSlots es %) (range (wasm/alen es))))))))
           (= k 31) (wm (let [es (hs/sseq x)] (set (map #(<-w (wasm/aget m/HSlots es %)) (range (wasm/alen es))))))
@@ -73,7 +73,7 @@
 (defn mine-read [in]                                    ; callers run (c/install!) once first
   (try (let [w (r/read-string (W in))]
          [:ok (wasm/string-of-bytes (s/str-bytes (s/pr-str w))) (coll-meta (<-w w)) w])
-       (catch Throwable e [:err (err-msg e)])))
+       (catch Throwable e [(if (:wasm/trap (ex-data e)) :trap :err) (err-msg e)])))
 
 (defn- has-type? [v tname]
   (cond (= (str (type v)) tname) true
@@ -181,7 +181,7 @@
       (let [rest-s (subs line start)
             nat (native-read rest-s)
             w (try (let [v (r/read-string* (W line) (sq/box-int start))] [:ok (pv/vnth v 0) (sq/unbox-int (pv/vnth v 1))])
-                   (catch Throwable e [:err (err-msg e)]))]
+                   (catch Throwable e [(if (:wasm/trap (ex-data e)) :trap :err) (err-msg e)]))]
         (is (= (first nat) (first w)) (pr-str [line start]))
         (when (= :ok (first nat) (first w))
           (is (= (second nat) (wasm/string-of-bytes (s/str-bytes (s/pr-str (second w))))) (pr-str [line start]))

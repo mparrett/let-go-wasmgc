@@ -117,7 +117,7 @@
   '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
      bit-shift-left bit-shift-right unsigned-bit-shift-right
      unchecked-add unchecked-subtract unchecked-multiply quot})
-(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote throw}) ; throw: D68 raises (P2.13)
 
 (defn- var-refs [form bound]
   (cond
@@ -358,8 +358,9 @@
     (is (= before (wasm-entries w)) "a transient never mutates the map it came from")
     (let [p (m/tpersistent! t)]
       (is (= (m/tcount t) (m/mcount p)))
-      (is (try (m/tassoc! t (bx 1) (bx 1)) false
-               (catch Exception e (boolean (:wasm/trap (ex-data e)))))
+      (is (= (try (let [nt (transient {})] (persistent! nt) (assoc! nt 1 1)) (catch Exception e (ex-message e)))
+             (try (m/tassoc! t (bx 1) (bx 1)) nil
+                  (catch Throwable e (when (wasm/is? sq/Err e) (wasm/string-of-bytes (wasm/get sq/Err 2 e))))))
           "assoc! after persistent! traps"))))
 
 (deftest seq-hooks-and-collection-keys

@@ -41,6 +41,7 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `i32-wrap` | 1 | extend_i32_s(wrap_i64) | → :int | V (32-bit murmur3 in i64) |
 | `i64-extend-i32-u` | 1 | extend_i32_u(wrap_i64) | → :int | H V (hash as uint32) |
 | `i64-to-f64` / `f64-to-i64` | 1 | f64.convert_i64_s / i64.trunc_f64_s (traps) | | V (`double`, `long`) |
+| `f64-neg` | 1 | f64.neg (sign bit only, NaN included) | [:float] → :float | V (`neg1`: unary `-` on a Float, P2.13) |
 | `bytes-new` `bget` `bset!` | 1/2/3 | array.new_default / get_u / set ($Bytes) | | V (strings, D5) IO |
 | `bytes-of-string` | 1 | array.new_data (literal only) | [:string] → :any | V IO |
 | `string-of-bytes` | 1 | none (identity) | [:any] → :string | reference/test boundary only |
@@ -48,7 +49,9 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `trap` | 1 | unreachable | [:string] → :bottom | P V |
 | `funcref` / `call-ref` | 2 / 2–7 | ref.func / call_ref $Sig (7 = `$Code4`: closure + 4 args, P2.7) | | C |
 
-42 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-09-30.
+43 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-10-01 (`f64-neg` added
+by P2.13: `(* -1.0 x)` may return either NaN sign in wasm, Go's `-x` flips it; lg's own
+unary `-` on a Float is Go's `-x`, so it is the reference, and native `hash` sees the bit).
 `new` gained its 7-field arity on 2026-10-01 for D52's `$Fn`.
 
 **Reference semantics.** Wrapping arithmetic, shift counts mod 64, packed-i8

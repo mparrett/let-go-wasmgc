@@ -33,6 +33,7 @@ under `pkg/vm/` unless they start with `rt/` (= `pkg/rt/`) or `core.lg`
 | 20 | Kw | `Kw` [ns name hash] | Keyword | | | | | stored (symbol hash + 0x9e3779b9) |
 | 21 | Sym | `Sym` [ns name hash] | Symbol | | | | | stored |
 | 22 | Float | `Float` [f64] | Float | | | | | hashUint64(float-bits) |
+| 27 | MapSeq/SetSeq | `ArrSeq` [arr i flavour] | map.go:110 / set.go:131 (PersistentList) | y | O(1) | | | FNV of String() (P2.13, R5) |
 
 The boxes of 17 and 19-22 are declared here (D38, D48) and built by
 wasm.str (`mk-str`, `kw-of-bytes`, ...), which owns interning, printing and
