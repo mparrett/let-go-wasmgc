@@ -14,3 +14,9 @@
 - I1. Two LICM validation failures on xsofy (`read-dismiss-key!`, `bfs-path`).
 - I2. Every structurize fallback on both corpora is the multi-exit loop case.
 - I3. lower-go reports "unsupported function body shape" on the probe's `fibl` loop.
+
+## let-go runtime oddities met while writing the reference intrinsics (2026-10-01)
+- R1. `(not= ##NaN ##NaN)` is false, so `not=` is not `(not (= …))` for NaN.
+- R2. `ns-resolve` returns nil even for public vars; core vars carry no `:ns` meta.
+- R3. `bit-or` takes exactly 2 args.
+- R4. Shifts follow Go (count not masked): `(bit-shift-right -8 64)` = -1. The wasm backend masks mod 64; the reference intrinsics mirror wasm, lg's own ops mirror lg (D16).

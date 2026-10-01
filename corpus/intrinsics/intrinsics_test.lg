@@ -1,0 +1,252 @@
+;; One deftest per intrinsic group of wasm.intrinsics (rt/wasm/intrinsics.lg).
+;; Every intrinsic var appears here at least once; `intrinsic-coverage`
+;; checks that mechanically against the namespace's ^:intrinsic vars.
+(ns intrinsics-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]))
+
+(def max64 9223372036854775807)
+(def min64 -9223372036854775808)
+
+(wasm/defstruct Pair [:i64 [:mut :ref]])
+(wasm/defstruct Pair2 [:i64 [:mut :ref]])   ; same shape as Pair, distinct type
+(wasm/defstruct Num [:f64 :i32 [:mut :funcref]])
+(wasm/defarray Refs :ref)
+(wasm/defarray Longs :i64)
+(wasm/deffunc Fn1 [:ref] :ref)
+(wasm/deffunc Fn2 [:ref :ref] :ref)
+
+(defn- trap? [f] (try (f) false (catch Exception e (boolean (:wasm/trap (ex-data e))))))
+
+(deftest declarations
+  (testing "declaration forms validate their field types"
+    (is (thrown-with-msg? Exception #"bad field type" (wasm/struct-decl 'X [:i16])))
+    (is (thrown-with-msg? Exception #"bad field" (wasm/struct-decl 'X [[:const :ref]])))
+    (is (thrown-with-msg? Exception #"bad element type" (wasm/array-decl 'X :string)))
+    (is (thrown-with-msg? Exception #"bad type" (wasm/func-decl 'X [:ref] :void))))
+  (testing "mutability is per field"
+    (is (= [false true] (mapv :mut (:fields Pair))))))
+
+(deftest structs
+  (let [p (wasm/new Pair 7 nil)]
+    (is (= 7 (wasm/get Pair 0 p)))
+    (is (nil? (wasm/get Pair 1 p)))
+    (wasm/set! Pair 1 p (wasm/i31 3))
+    (is (= 3 (wasm/i31-get (wasm/get Pair 1 p))))
+    (testing "immutable field, field index range, arity"
+      (is (thrown-with-msg? Exception #"immutable" (wasm/set! Pair 0 p 8)))
+      (is (thrown-with-msg? Exception #"out of range 0..1" (wasm/get Pair 2 p)))
+      (is (thrown-with-msg? Exception #"out of range" (wasm/get Pair -1 p)))
+      (is (thrown-with-msg? Exception #"2 fields, got 1" (wasm/new Pair 1))))
+    (testing "get on the wrong struct kind or null traps, naming both"
+      (is (thrown-with-msg? Exception #"expected struct Pair2, got struct Pair" (wasm/get Pair2 0 p)))
+      (is (thrown-with-msg? Exception #"expected struct Pair, got null" (wasm/get Pair 0 nil))))
+    (testing "stores are type-checked: no raw lg values in :ref, no floats in :i64"
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/new Pair 1 :kw)))
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/set! Pair 1 p 5)))
+      (is (thrown-with-msg? Exception #"expected i64" (wasm/new Pair 1.5 nil))))
+    (testing ":f64 and :i32 fields"
+      (let [n (wasm/new Num 1.5 -2147483648 nil)]
+        (is (= 1.5 (wasm/get Num 0 n)))
+        (is (= -2147483648 (wasm/get Num 1 n))))
+      (is (thrown-with-msg? Exception #"i32 slot" (wasm/new Num 1.5 2147483648 nil)))
+      (is (thrown-with-msg? Exception #"f64 slot" (wasm/new Num 1 0 nil))))))
+
+(deftest casts
+  (let [p (wasm/new Pair 1 nil) q (wasm/new Pair2 1 nil) a (wasm/array-new Refs 2 nil)]
+    (is (true? (wasm/is? Pair p)))
+    (is (false? (wasm/is? Pair q)) "same field list, different declared type")
+    (is (false? (wasm/is? Pair nil)))
+    (is (false? (wasm/is? Pair (wasm/i31 1))))
+    (is (true? (wasm/is? Refs a)))
+    (is (false? (wasm/is? Longs a)))
+    (is (identical? p (wasm/as Pair p)))
+    (is (thrown-with-msg? Exception #"cast failure, expected struct Pair, got struct Pair2" (wasm/as Pair q)))
+    (is (thrown-with-msg? Exception #"expected array Longs, got array Refs" (wasm/as Longs a)))
+    (is (thrown-with-msg? Exception #"got null" (wasm/as Pair nil)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref, got non-wasm value" (wasm/is? Pair "s")))
+    (is (trap? #(wasm/as Pair q)))))
+
+(deftest arrays
+  (let [a (wasm/array-new Longs 5 0)]
+    (is (= 5 (wasm/alen a)))
+    (dotimes [i 5] (wasm/aset! Longs a i (* 10 i)))
+    (is (= [0 10 20 30 40] (mapv #(wasm/aget Longs a %) (range 5))))
+    (testing "bounds"
+      (is (thrown-with-msg? Exception #"index 5 out of bounds for length 5" (wasm/aget Longs a 5)))
+      (is (thrown-with-msg? Exception #"index -1 out of bounds" (wasm/aset! Longs a -1 0)))
+      (is (thrown-with-msg? Exception #"index 4294967296 out of bounds" (wasm/aget Longs a 4294967296)))
+      (is (thrown-with-msg? Exception #"bad length -1" (wasm/array-new Longs -1 0)))
+      (is (= 0 (wasm/alen (wasm/array-new Refs 0 nil)))))
+    (testing "element types"
+      (is (thrown-with-msg? Exception #"expected i64" (wasm/aset! Longs a 0 nil)))
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/array-new Refs 1 0))))
+    (testing "alen on a non-array traps"
+      (is (thrown-with-msg? Exception #"expected an array, got struct Pair" (wasm/alen (wasm/new Pair 1 nil))))
+      (is (thrown-with-msg? Exception #"got null" (wasm/alen nil))))
+    (testing "array-copy: disjoint, overlapping both ways (memmove), bounds"
+      (let [b (wasm/array-new Longs 5 -1)]
+        (wasm/array-copy Longs b 1 a 2 3)
+        (is (= [-1 20 30 40 -1] (mapv #(wasm/aget Longs b %) (range 5)))))
+      (let [c (wasm/array-new Longs 5 0)]
+        (dotimes [i 5] (wasm/aset! Longs c i i))
+        (wasm/array-copy Longs c 1 c 0 4)
+        (is (= [0 0 1 2 3] (mapv #(wasm/aget Longs c %) (range 5))))
+        (wasm/array-copy Longs c 0 c 1 4)
+        (is (= [0 1 2 3 3] (mapv #(wasm/aget Longs c %) (range 5)))))
+      (is (thrown-with-msg? Exception #"range out of bounds" (wasm/array-copy Longs a 3 a 0 3)))
+      (is (thrown-with-msg? Exception #"expected array Longs" (wasm/array-copy Longs a 0 (wasm/array-new Refs 5 nil) 0 1)))
+      (wasm/array-copy Longs a 5 a 0 0)
+      (is (= 40 (wasm/aget Longs a 4)) "zero-length copy at the end is legal"))))
+
+(deftest references
+  (let [p (wasm/new Pair 1 nil) p2 (wasm/new Pair 1 nil)]
+    (is (true? (wasm/ref-eq p p)))
+    (is (false? (wasm/ref-eq p p2)) "identity, not structure")
+    (is (true? (wasm/ref-eq (wasm/i31 9) (wasm/i31 9))) "i31 compares by value")
+    (is (false? (wasm/ref-eq (wasm/i31 9) (wasm/i31 8))))
+    (is (true? (wasm/ref-eq (wasm/null) nil)))
+    (is (false? (wasm/ref-eq p nil)))
+    (is (true? (wasm/null? (wasm/null))))
+    (is (false? (wasm/null? p)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/ref-eq 1 1)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/null? false)))))
+
+(deftest i31-box
+  (is (= -1073741824 (wasm/i31-get (wasm/i31 -1073741824))) "-2^30 fits")
+  (is (= 1073741823 (wasm/i31-get (wasm/i31 1073741823))) "2^30-1 fits")
+  (is (= -1 (wasm/i31-get (wasm/i31 -1))) "i31.get_s sign-extends")
+  (is (= 0 (wasm/i31-get (wasm/i31 0))))
+  (is (thrown-with-msg? Exception #"outside" (wasm/i31 1073741824)) "2^30 does not fit")
+  (is (thrown-with-msg? Exception #"outside" (wasm/i31 -1073741825)) "-2^30-1 does not fit")
+  (is (trap? #(wasm/i31 max64)))
+  (is (true? (wasm/i31? (wasm/i31 5))))
+  (is (false? (wasm/i31? nil)))
+  (is (false? (wasm/i31? (wasm/new Pair 1 nil))))
+  (is (thrown-with-msg? Exception #"expected i31, got struct Pair" (wasm/i31-get (wasm/new Pair 1 nil))))
+  (is (thrown-with-msg? Exception #"expected i31, got null" (wasm/i31-get nil))))
+
+(deftest i64-arith
+  (testing "add/sub/mul wrap"
+    (is (= min64 (wasm/i64-add max64 1)))
+    (is (= max64 (wasm/i64-sub min64 1)))
+    (is (= -2 (wasm/i64-mul max64 2)))
+    (is (= min64 (wasm/i64-mul min64 -1)))
+    (is (= 5 (wasm/i64-add 2 3))))
+  (testing "shift counts are taken mod 64 (lg's own shifts are not)"
+    (is (= 1 (wasm/i64-shl 1 64)))
+    (is (= 2 (wasm/i64-shl 1 65)))
+    (is (= min64 (wasm/i64-shl 1 63)))
+    (is (= 1 (wasm/i64-shl 1 -64)))
+    (is (= -8 (wasm/i64-shr-s -8 64)))
+    (is (= -4 (wasm/i64-shr-s -8 1)))
+    (is (= -1 (wasm/i64-shr-s min64 63)))
+    (is (= 9223372036854775804 (wasm/i64-shr-u -8 1)))
+    (is (= 1 (wasm/i64-shr-u min64 63)))
+    (is (= -8 (wasm/i64-shr-u -8 128))))
+  (testing "unsigned compare"
+    (is (true? (wasm/i64-lt-u 1 -1)))
+    (is (false? (wasm/i64-lt-u -1 1)))
+    (is (true? (wasm/i64-lt-u max64 min64)))
+    (is (false? (wasm/i64-lt-u 3 3))))
+  (testing "clz/ctz/popcnt"
+    (is (= [64 63 0 1] (mapv wasm/i64-clz [0 1 -1 max64])))
+    (is (= [64 0 0 63 3] (mapv wasm/i64-ctz [0 1 -1 min64 8])))
+    (is (= [0 1 64 63 32] (mapv wasm/i64-popcnt [0 1 -1 max64 0xffffffff]))))
+  (testing "32-bit views"
+    (is (= -1 (wasm/i32-wrap 0xffffffff)))
+    (is (= -2147483648 (wasm/i32-wrap 0x80000000)))
+    (is (= 0 (wasm/i32-wrap 0x100000000)))
+    (is (= -1 (wasm/i32-wrap max64)) "low 32 bits of MaxInt64 are all ones")
+    (is (= 2147483647 (wasm/i32-wrap 0x123456787fffffff)))
+    (is (= 0xffffffff (wasm/i64-extend-i32-u -1)))
+    (is (= 0 (wasm/i64-extend-i32-u min64))))
+  (testing "float conversions"
+    (is (= 9007199254740992.0 (wasm/i64-to-f64 9007199254740993)) "round to nearest even")
+    (is (= -9.223372036854775808e18 (wasm/i64-to-f64 min64)))
+    (is (= 3 (wasm/f64-to-i64 3.9)))
+    (is (= -3 (wasm/f64-to-i64 -3.9)))
+    (is (= min64 (wasm/f64-to-i64 -9.223372036854775808e18)))
+    (is (= 9223372036854774784 (wasm/f64-to-i64 9.2233720368547748e18)) "largest f64 below 2^63")
+    (is (trap? #(wasm/f64-to-i64 ##NaN)))
+    (is (trap? #(wasm/f64-to-i64 9.223372036854775808e18)))
+    (is (trap? #(wasm/f64-to-i64 ##-Inf))))
+  (testing "operands must be ints"
+    (is (thrown-with-msg? Exception #"expected i64" (wasm/i64-add 1.0 1)))
+    (is (thrown-with-msg? Exception #"expected f64" (wasm/f64-to-i64 1)))))
+
+(deftest bytes-group
+  (let [b (wasm/bytes-new 3)]
+    (is (= [0 0 0] (mapv #(wasm/bget b %) (range 3))))
+    (wasm/bset! b 0 255)
+    (wasm/bset! b 1 256)
+    (wasm/bset! b 2 -1)
+    (is (= [255 0 255] (mapv #(wasm/bget b %) (range 3))) "low 8 bits stored, read back unsigned")
+    (is (= 3 (wasm/alen b)))
+    (is (thrown-with-msg? Exception #"out of bounds" (wasm/bget b 3))))
+  (testing "multi-byte UTF-8"
+    (doseq [[s n] [["" 0] ["a" 1] ["é" 2] ["€" 3] ["😀" 4] ["hé€😀" 10]]]
+      (let [b (wasm/bytes-of-string s)]
+        (is (= n (wasm/alen b)) s)
+        (is (= s (wasm/string-of-bytes b)) s)))
+    (is (= [0xF0 0x9F 0x98 0x80] (let [b (wasm/bytes-of-string "😀")] (mapv #(wasm/bget b %) (range 4))))))
+  (testing "strict decode"
+    (let [mk (fn [xs] (let [b (wasm/bytes-new (count xs))] (dotimes [i (count xs)] (wasm/bset! b i (nth xs i))) b))]
+      (is (trap? #(wasm/string-of-bytes (mk [0xC0 0x80]))) "overlong NUL")
+      (is (trap? #(wasm/string-of-bytes (mk [0xED 0xA0 0x80]))) "surrogate")
+      (is (trap? #(wasm/string-of-bytes (mk [0x80]))) "lone continuation")
+      (is (trap? #(wasm/string-of-bytes (mk [0xE2 0x82]))) "truncated")))
+  (is (thrown-with-msg? Exception #"expected array Bytes" (wasm/bget (wasm/array-new Longs 1 0) 0))))
+
+(deftest host
+  (is (= "hé\n" (with-out-str (wasm/host-write 1 (wasm/bytes-of-string "hé\n")))))
+  (is (= 4 (let [n (atom nil)] (with-out-str (reset! n (wasm/host-write 1 (wasm/bytes-of-string "hé\n")))) @n))
+      "returns the byte count, not the char count")
+  (is (trap? #(wasm/host-write 3 (wasm/bytes-new 0))))
+  (testing "virtual clock: deterministic, advanced only by sleep"
+    (reset! wasm/host-clock 0)
+    (is (= 0 (wasm/host-nanotime)))
+    (wasm/host-sleep 5)
+    (is (= 5000000 (wasm/host-nanotime)))
+    (is (= 5000000 (wasm/host-nanotime)))
+    (is (trap? #(wasm/host-sleep -1))))
+  (testing "getenv reads *host-env*, not the process"
+    (is (nil? (wasm/host-getenv (wasm/bytes-of-string "HOME"))))
+    (binding [wasm/*host-env* {"SEED" "42"}]
+      (is (= "42" (wasm/string-of-bytes (wasm/host-getenv (wasm/bytes-of-string "SEED"))))))))
+
+(deftest traps
+  (is (thrown-with-msg? Exception #"wasm trap: boom" (wasm/trap "boom")))
+  (is (trap? #(wasm/trap "x"))))
+
+(defn- first-of [a] a)
+(defn- second-of [a b] b)
+
+(deftest funcrefs
+  (let [f1 (wasm/funcref Fn1 first-of)
+        f2 (wasm/funcref Fn2 second-of)
+        x (wasm/i31 1) y (wasm/i31 2)]
+    (is (wasm/ref-eq x (wasm/call-ref Fn1 f1 x)))
+    (is (wasm/ref-eq y (wasm/call-ref Fn2 f2 x y)))
+    (testing "a funcref lives in a :funcref field, not a :ref one"
+      (let [n (wasm/new Num 0.0 0 f2)]
+        (is (wasm/ref-eq y (wasm/call-ref Fn2 (wasm/get Num 2 n) x y))))
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/new Pair 0 f1))))
+    (is (thrown-with-msg? Exception #"expected funcref of Fn2, got func Fn1" (wasm/call-ref Fn2 f1 x y)))
+    (is (thrown-with-msg? Exception #"null funcref" (wasm/call-ref Fn1 nil x)))
+    (is (thrown-with-msg? Exception #"1 params, got 2" (wasm/call-ref Fn1 f1 x y)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/call-ref Fn1 f1 5)))
+    (is (false? (wasm/null? f1)) "null? accepts funcrefs")))
+
+(def ^:private this-file-source
+  (delay (slurp "corpus/intrinsics/intrinsics_test.lg")))
+
+(deftest intrinsic-coverage
+  (let [vs (filter #(:intrinsic (meta %)) (vals (ns-publics 'wasm.intrinsics)))
+        used (set (map #(subs % 5) (re-seq #"wasm/[a-z0-9!?-]+" @this-file-source)))]
+    (is (pos? (count vs)))
+    (doseq [v vs]
+      (let [m (meta v) nm (name (:name m))]
+        (is (string? (:wasm m)) (str nm " names its wasm instruction"))
+        (is (string? (:type m)) (str nm " states its type"))
+        (is (contains? used nm) (str nm " is exercised by this file"))))))

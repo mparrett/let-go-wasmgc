@@ -1,0 +1,129 @@
+;; wasm.pvec — P2.1's sufficiency proof: a persistent vector (32-way trie
+;; plus tail, the PersistentVector shape of pkg/vm/vector.go and CLJS) written
+;; in the runtime dialect: only IR special forms, IR-op core fns on :int
+;; (+ - inc dec < <= > >= = bit-and unsigned-bit-shift-right
+;; bit-shift-left), macros that expand to those, calls to this file's own
+;; fns, and wasm.intrinsics. No nil?, not, core collections or interop.
+;; Elements are refs (box ints with wasm/i31). Out-of-range access traps;
+;; the catchable lg exception arrives with ex-info in P2.7.
+(ns wasm.pvec
+  (:require [wasm.intrinsics :as wasm]))
+
+(wasm/defstruct PVec [:i64 :i64 :ref :ref]) ; cnt, shift, root, tail
+(wasm/defarray Node :ref)                    ; trie node (32 slots) or tail (1..32)
+
+(defn- node-clone [src n]
+  (let [dst (wasm/array-new Node n (wasm/null))]
+    (wasm/array-copy Node dst 0 src 0 (if (< (wasm/alen src) n) (wasm/alen src) n))
+    dst))
+
+(defn empty-vec []
+  (wasm/new PVec 0 5 (wasm/array-new Node 32 (wasm/null)) (wasm/array-new Node 0 (wasm/null))))
+
+(defn vcount [v] (wasm/get PVec 0 v))
+
+(defn- tailoff [cnt]
+  (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5)))
+
+(defn- array-for [v i]
+  (if (>= i (tailoff (wasm/get PVec 0 v)))
+    (wasm/get PVec 3 v)
+    (loop [node (wasm/get PVec 2 v) level (wasm/get PVec 1 v)]
+      (if (> level 0)
+        (recur (wasm/aget Node node (bit-and (unsigned-bit-shift-right i level) 31)) (- level 5))
+        node))))
+
+(defn- check-index [v i]
+  (if (if (< i 0) true (>= i (wasm/get PVec 0 v)))
+    (wasm/trap "pvec: index out of bounds")
+    nil))
+
+(defn vnth [v i]
+  (check-index v i)
+  (wasm/aget Node (array-for v i) (bit-and i 31)))
+
+(defn- new-path [level node]
+  (if (= level 0)
+    node
+    (let [r (wasm/array-new Node 32 (wasm/null))]
+      (wasm/aset! Node r 0 (new-path (- level 5) node))
+      r)))
+
+(defn- push-tail [cnt level parent tail-node]
+  (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 31)
+        ret (node-clone parent 32)]
+    (if (= level 5)
+      (wasm/aset! Node ret subidx tail-node)
+      (let [child (wasm/aget Node parent subidx)]
+        (wasm/aset! Node ret subidx
+                    (if (wasm/null? child)
+                      (new-path (- level 5) tail-node)
+                      (push-tail cnt (- level 5) child tail-node)))))
+    ret))
+
+(defn vconj [v x]
+  (let [cnt (wasm/get PVec 0 v) shift (wasm/get PVec 1 v)
+        root (wasm/get PVec 2 v) tail (wasm/get PVec 3 v)]
+    (if (< (- cnt (tailoff cnt)) 32)
+      (let [nt (node-clone tail (inc (wasm/alen tail)))]
+        (wasm/aset! Node nt (wasm/alen tail) x)
+        (wasm/new PVec (inc cnt) shift root nt))
+      (let [nt (wasm/array-new Node 1 x)]
+        (if (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
+          (let [nr (wasm/array-new Node 32 (wasm/null))]
+            (wasm/aset! Node nr 0 root)
+            (wasm/aset! Node nr 1 (new-path shift tail))
+            (wasm/new PVec (inc cnt) (+ shift 5) nr nt))
+          (wasm/new PVec (inc cnt) shift (push-tail cnt shift root tail) nt))))))
+
+(defn- do-assoc [level node i x]
+  (let [ret (node-clone node 32)]
+    (if (= level 0)
+      (wasm/aset! Node ret (bit-and i 31) x)
+      (let [subidx (bit-and (unsigned-bit-shift-right i level) 31)]
+        (wasm/aset! Node ret subidx (do-assoc (- level 5) (wasm/aget Node node subidx) i x))))
+    ret))
+
+(defn vassoc [v i x]
+  (let [cnt (wasm/get PVec 0 v)]
+    (if (= i cnt)
+      (vconj v x)
+      (do (check-index v i)
+          (if (>= i (tailoff cnt))
+            (let [tail (wasm/get PVec 3 v) nt (node-clone tail (wasm/alen tail))]
+              (wasm/aset! Node nt (bit-and i 31) x)
+              (wasm/new PVec cnt (wasm/get PVec 1 v) (wasm/get PVec 2 v) nt))
+            (wasm/new PVec cnt (wasm/get PVec 1 v)
+                      (do-assoc (wasm/get PVec 1 v) (wasm/get PVec 2 v) i x)
+                      (wasm/get PVec 3 v)))))))
+
+(defn- pop-tail [cnt level node]
+  (let [subidx (bit-and (unsigned-bit-shift-right (- cnt 2) level) 31)]
+    (if (> level 5)
+      (let [nc (pop-tail cnt (- level 5) (wasm/aget Node node subidx))]
+        (if (if (wasm/null? nc) (= subidx 0) false)
+          (wasm/null)
+          (let [ret (node-clone node 32)]
+            (wasm/aset! Node ret subidx nc)
+            ret)))
+      (if (= subidx 0)
+        (wasm/null)
+        (let [ret (node-clone node 32)]
+          (wasm/aset! Node ret subidx (wasm/null))
+          ret)))))
+
+(defn vpop [v]
+  (let [cnt (wasm/get PVec 0 v) shift (wasm/get PVec 1 v)
+        root (wasm/get PVec 2 v) tail (wasm/get PVec 3 v)]
+    (cond
+      (= cnt 0) (wasm/trap "pvec: can't pop empty vector")
+      (= cnt 1) (empty-vec)
+      (> (- cnt (tailoff cnt)) 1)
+      (wasm/new PVec (dec cnt) shift root (node-clone tail (dec (wasm/alen tail))))
+      :else
+      (let [nt (array-for v (- cnt 2))
+            nr0 (pop-tail cnt shift root)
+            nr (if (wasm/null? nr0) (wasm/array-new Node 32 (wasm/null)) nr0)]
+        (if (if (> shift 5) (wasm/null? (wasm/aget Node nr 1)) false)
+          (wasm/new PVec (dec cnt) (- shift 5) (wasm/aget Node nr 0) nt)
+          (wasm/new PVec (dec cnt) shift nr nt))))))
