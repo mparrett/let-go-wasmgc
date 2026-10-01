@@ -1,0 +1,11 @@
+;; an exception thrown three frames down lands in a loop's per-iteration
+;; catch; the loop keeps going and counts the failures.
+(defn c [i] (if (and (> i 2) (< i 6)) (throw (ex-info "mid" {})) i))
+(defn b [i] (+ 1 (c i)))
+(defn a [i] (* 2 (b i)))
+(defn sum-ok [n] (loop [i 0 ok 0 bad 0]
+                   (if (< i n)
+                     (let [r (try (a i) (catch ExceptionInfo e nil))]
+                       (if r (recur (inc i) (+ ok r) bad) (recur (inc i) ok (inc bad))))
+                     (+ (* 1000 bad) ok))))
+(println "bad*1000+ok" (sum-ok 10))

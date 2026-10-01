@@ -1,0 +1,4 @@
+;; closures.lg "try": a throwing defn caught at the call site. ex-data needs
+;; maps (Phase 2), so the second catch reports ex-message instead of (:x ...).
+(defn risky [x] (if (< x 0) (throw (ex-info "neg" {})) (* x 2)))
+(println "try" (try (risky 4) (catch Exception e :caught)) (try (risky -1) (catch Exception e (ex-message e))))

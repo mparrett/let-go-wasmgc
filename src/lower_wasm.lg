@@ -7,6 +7,9 @@
 ;; recur (:tail), direct calls between the program's own defns, boxed
 ;; + - * via runtime helpers, and println of ints / boxed ints / nil /
 ;; string literals through the D11 host imports.
+;; P1.2 adds :try (body/handler/finally regions lambda-lifted to their own
+;; wasm functions, orchestrated with wasm EH), throw, ex-info, ex-message,
+;; ex-data, catch-matches?, keyword constants and the empty-map constant.
 (ns lower-wasm
   (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st]
             [clojure.string :as str]))
@@ -14,12 +17,17 @@
 (def ^:dynamic *f* nil)
 (def ^:dynamic *fname* nil)
 (def ^:dynamic *ret-type* nil)
+;; enclosing loops, innermost first: ({:id header-bid :exit exit-bid-or-nil} ...)
 (def ^:dynamic *loop* nil)
 (def ^:dynamic *param-kinds* nil)
 ;; var -> {:name str :params [kind ...] :ret kind}, for every program defn.
 (def ^:dynamic *sigs* {})
 ;; atom: string literal -> data segment index (module-wide).
 (def ^:dynamic *strings* nil)
+;; kinds of the closed-over values of the try region being lowered
+(def ^:dynamic *cap-kinds* [])
+;; atom: lowered try-region functions (WAT strings), module-wide.
+(def ^:dynamic *regions* nil)
 
 ;; Probe knobs (see ../emit-wasm-probe/ext/README.md). *checked* defaults to
 ;; :inline because D3 makes checked + - * the semantics, not an option.
@@ -55,27 +63,112 @@
 
 (defn lget [nid] (str "(local.get $v" nid ")"))
 
+(defn- incoming
+  "Values feeding param `idx` of block `bid` across all predecessor edges."
+  [bid idx]
+  (for [p (ir/block-preds bid *f*)
+        :let [t (ir/block-term p *f*) o (ir/op t *f*) a (ir/aux t *f*)]
+        bt (cond (= o :branch) [a]
+                 (= o :branch-if) [(ir/cond-target-true a) (ir/cond-target-false a)]
+                 :else [])
+        :when (= bid (ir/branch-target-target bt))
+        :let [args (ir/branch-target-args bt)]
+        :when (< idx (count args))]
+    (nth args idx)))
+
+(defn src-of
+  "Legalize threads values that get no local (vars, closures, symbol consts)
+   through blocks as block-args; this is the one value a block-arg carries,
+   or nid itself for a genuine merge. Unlike ir/resolve-single-source it sees
+   through loop-carried cycles: a loop header's param fed by the entry value
+   and by its own copy on the back-edge still has one source."
+  [nid]
+  (let [leaves (loop [todo [nid] seen #{} out []]
+                 (if (empty? todo)
+                   out
+                   (let [n (peek todo) todo (pop todo)]
+                     (cond
+                       (contains? seen n) (recur todo seen out)
+                       (= :block-arg (ir/op n *f*))
+                       (let [b (ir/block-of n *f*)
+                             idx (first (keep-indexed #(when (= %2 n) %1) (ir/block-params b *f*)))]
+                         (recur (into todo (incoming b idx)) (conj seen n) out))
+                       :else (recur todo (conj seen n) (conj out n))))))
+        rep (first leaves)
+        same? (fn [x] (or (= x rep)
+                          (and (empty? (ir/refs x *f*)) (empty? (ir/refs rep *f*))
+                               (= (ir/op x *f*) (ir/op rep *f*)) (= (ir/aux x *f*) (ir/aux rep *f*)))))]
+    (if (and rep (every? same? leaves)) rep nid)))
+
 (defn var-of
   "The var a value denotes when it is a :load-var, or a block-arg that only
    ever carries one var (legalize threads :load-var through blocks), else nil.
    Var-valued values get no local and no edge copies: they only lower in
    callee position (a var table for first-class use is P1.3)."
   [nid]
-  (let [r (ir/resolve-single-source *f* nid)]
+  (let [r (src-of nid)]
     (when (= :load-var (ir/op r *f*)) (ir/aux r *f*))))
 
 (defn dead? [nid] (= :invalid (ir/op nid *f*)))
+
+
+(defn const-val [nid]
+  ;; typeinfer rewrites some consts' aux to [:const <type> <value>]
+  (let [a (ir/aux (src-of nid) *f*)] (if (vector? a) (nth a 2) a)))
+
+(defn template? [nid]
+  (and (= :const (ir/op nid *f*))
+       (let [a (ir/aux nid *f*)] (and (map? a) (= :fn-template (:kind a))))))
+
+(defn closure-val?
+  "An fn* value: its template const, :make-closure, or a :push-closed link.
+   At P1.2 these only lower as :try regions; first-class closures are P1.3."
+  [nid]
+  (let [r (src-of nid)]
+    (or (template? r) (contains? #{:make-closure :push-closed} (ir/op r *f*)))))
+
+(defn symbol-const? [nid]
+  (and (= :const (ir/op (src-of nid) *f*)) (symbol? (const-val nid))))
+
+(defn no-local?
+  "Values that never occupy a wasm local: dead params, var-valued values,
+   closure values (consumed by :try) and symbol consts (consumed by
+   catch-matches?)."
+  [nid]
+  (or (dead? nid) (var-of nid) (closure-val? nid) (symbol-const? nid)))
 
 (defn arg-as [nid k]
   ;; A :load-var only lowers in callee position (P1.3 adds the var table).
   (when-let [v (var-of nid)]
     (fail "unsupported op :load-var used as a value" {:var v :fn *fname*}))
+  (when (closure-val? nid)
+    (fail "unsupported closure used as a value (P1.3)" {:nid nid :fn *fname*}))
+  (when (symbol-const? nid)
+    (fail "unsupported symbol constant used as a value" {:value (const-val nid) :fn *fname*}))
   (str (lget nid) (coerce (ty nid) k)))
 
 (def int-binops {:add "i64.add" :sub "i64.sub" :mul "i64.mul"})
 (def chk-binops {:add "call $add_chk" :sub "call $sub_chk" :mul "call $mul_chk"})
 (defn binop [op] (if (= *checked* :call) (chk-binops op) (int-binops op)))
-(defn raise [] (if *trap* "unreachable" "(throw $overflow)"))
+(defn string-idx [s]
+  (or (get @*strings* s)
+      (let [i (count @*strings*)] (swap! *strings* assoc s i) i)))
+
+(defn bytes-wat [s]
+  (str "(array.new_data $Bytes $s" (string-idx s) " (i32.const 0) (i32.const "
+       (count (.getBytes s)) "))"))
+
+(defn rt-error-wat
+  "A Go-side runtime error as an lg exception payload: `msg` is what lg
+   prints when it escapes uncaught, `cmsg` is what (ex-message e) returns once
+   a catch has reified it (native wraps some errors, e.g. overflow gets an
+   `ExecutionError: ` prefix, D16)."
+  [msg cmsg]
+  (str "(struct.new $Err (i32.const 1) " (bytes-wat msg) " " (bytes-wat cmsg) " (ref.null none))"))
+
+(defn raise []
+  (if *trap* "unreachable"
+      (str "(throw $lgex " (rt-error-wat "integer overflow" "ExecutionError: integer overflow") ")")))
 (defn inline-check
   "Overflow test on an already-computed result r (same sign-xor tests as $add_chk/$sub_chk)."
   [op a b r]
@@ -106,10 +199,6 @@
          "(br $done (try_table (result " (wt *ret-type*) ") (catch_all_ref $caught) " call ")))))")
     call))
 
-(defn string-idx [s]
-  (or (get @*strings* s)
-      (let [i (count @*strings*)] (swap! *strings* assoc s i) i)))
-
 (defn const-wat [nid aux]
   (let [k (ty nid)]
     (cond
@@ -118,12 +207,43 @@
       (int? aux) (str "(i64.const " aux ")" (coerce :int k))
       (nil? aux) (if (= k :box) "(ref.null none)" (fail "nil const in unboxed slot" {:nid nid :fn *fname*}))
       (boolean? aux) (str "(i32.const " (if aux 1 0) ")" (coerce :bool k))
-      (string? aux) (let [i (string-idx aux)]
-                      (str "(array.new_data $Bytes $s" i " (i32.const 0) (i32.const "
-                           (count (.getBytes aux)) "))"))
+      (string? aux) (bytes-wat aux)
+      (keyword? aux) (str "(struct.new $Kw " (bytes-wat (subs (str aux) 1)) ")")
+      ;; {} is the only map a Phase-1 program can build (ex-info's data)
+      (and (map? aux) (empty? aux)) "(global.get $map0)"
       :else (fail "unsupported const" {:value aux :type (type aux) :fn *fname*}))))
 
 (def core-println #'println)
+
+;; catch-matches? class symbol -> $rt_catch_matches code. Strict: a class
+;; outside this table is a compile error, not a clause that never matches.
+(def catch-classes
+  {'Throwable 0 'java.lang.Throwable 0
+   'Exception 1 'java.lang.Exception 1
+   'ExceptionInfo 2 'clojure.lang.ExceptionInfo 2
+   'String 3 'java.lang.String 3})
+
+(defn exn-call-wat
+  "throw / ex-info / ex-message / ex-data / catch-matches?; nil for other vars."
+  [nid v args]
+  (let [set (fn [expr] (str "(local.set $v" nid " " expr (coerce :box (ty nid)) ")"))
+        arity (fn [n] (when (not= n (count args))
+                        (fail "unsupported arity" {:var v :argc (count args) :fn *fname*})))]
+    (condp = v
+      #'throw (do (arity 1) (str "(throw $lgex " (arg-as (first args) :box) ")"))
+      #'ex-info (do (arity 2) (set (str "(call $rt_ex_info " (arg-as (first args) :box) " "
+                                        (arg-as (second args) :box) ")")))
+      #'ex-message (do (arity 1) (set (str "(call $rt_ex_message " (arg-as (first args) :box) ")")))
+      #'ex-data (do (arity 1) (set (str "(call $rt_ex_data " (arg-as (first args) :box) ")")))
+      #'catch-matches?
+      (do (arity 2)
+          (let [c (first args)
+                code (when (symbol-const? c) (catch-classes (const-val c)))]
+            (when-not code
+              (fail "unsupported catch class" {:class (when (symbol-const? c) (const-val c)) :fn *fname*}))
+            (str "(local.set $v" nid " (call $rt_catch_matches (i32.const " code ") "
+                 (arg-as (second args) :box) ")" (coerce :bool (ty nid)) ")")))
+      nil)))
 
 (defn print-wat [nid]
   ;; one value of println's argument list
@@ -142,6 +262,7 @@
                (guard-call (str "(call $" (:name sig) " "
                                 (str/join " " (map arg-as args (:params sig))) ")"))
                (coerce (:ret sig) (ty nid)) ")"))
+      (exn-call-wat nid v args) (exn-call-wat nid v args)
       (= v core-println)
       (str (str/join " (call $rt_print_space) " (map print-wat args))
            " (call $print_nl)"
@@ -178,6 +299,8 @@
 (def core-var-ops {#'< :lt #'<= :lte #'> :gt #'>= :gte
                    #'+ :add #'- :sub #'* :mul #'inc :inc #'dec :dec})
 
+(declare try-wat)
+
 (defn inst-wat [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)
         set (fn [expr] (str "(local.set $v" nid " " expr ")"))]
@@ -185,7 +308,14 @@
       (= op :block-arg) nil
       (= op :load-var) nil                 ; consumed at its :call site (arg-as rejects other uses)
       (= op :load-arg) (set (str "(local.get $p" aux ")" (coerce (nth *param-kinds* aux) (ty nid))))
+      (closure-val? nid) nil               ; consumed by its :try
+      (symbol-const? nid) nil              ; consumed by catch-matches?
+      (= op :load-closed) (set (str "(local.get $c" aux ")" (coerce (nth *cap-kinds* aux) (ty nid))))
       (= op :const) (set (const-wat nid aux))
+      (= op :try) (try-wat nid)
+      ;; build.lg stopped emitting :tail-call (fn-level recur is :recur-fn ->
+      ;; :tail); name it rather than fall into the generic arm.
+      (= op :tail-call) (fail "unsupported op :tail-call (not emitted by current ir.build)" {:nid nid :fn *fname*})
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
       (let [v (var-of (first refs))]
@@ -207,8 +337,8 @@
           (map (fn [d] (str "(local.set " d ")")) (reverse dests))))
 
 (defn edge-wat [{:keys [target args]}]
-  ;; dead (:invalid) and var-valued params take no copy
-  (let [pairs (remove (fn [[_ p]] (or (dead? p) (var-of p)))
+  ;; params that get no local (dead, var-, closure- or symbol-valued) take no copy
+  (let [pairs (remove (fn [[_ p]] (no-local? p))
                       (map vector args (ir/block-params target *f*)))]
     (copy-wat (map first pairs) (map (comp ty second) pairs) (map #(str "$v" (second %)) pairs))))
 
@@ -238,29 +368,39 @@
                     [(str "(if " (cond-wat (term-ref bid)) " (then")]
                     (edge-wat tt) (walk then) [") (else"] (edge-wat et) (walk else) ["))"]
                     (when cont (walk cont))))
-      :loop (let [[_ _ body cont] node]
+      ;; cont's head block IS the loop's exit block (structure-loop builds it
+      ;; from `exit`), which is what a :break names. A :multi-exit loop has
+      ;; no cont: structurize inlines every exit path into the body, each
+      ;; ending in :return / :tail / an outer :continue or :break.
+      :loop (let [[_ _ body cont] node
+                  frame {:id bid :exit (when cont (second cont))}]
               (concat [(str "(block $exit" bid " (loop $head" bid)]
-                      (binding [*loop* bid] (doall (walk body))) ["unreachable))"] (when cont (walk cont))))
+                      (binding [*loop* (conj (or *loop* ()) frame)] (doall (walk body)))
+                      ["unreachable))"] (when cont (walk cont))))
       :continue (concat (edge-wat (nth node 2)) [(str "(br $head" bid ")")])
-      :break (concat (edge-wat (nth node 2)) [(str "(br $exit" *loop* ")")])
+      :break (let [fr (first (filter #(= bid (:exit %)) *loop*))]
+               (when-not fr (fail "break to a block no enclosing loop exits to" {:bid bid :fn *fname*}))
+               (concat (edge-wat (nth node 2)) [(str "(br $exit" (:id fr) ")")]))
       :fallthrough []
       (fail "unsupported tree node" {:tag tag :fn *fname*}))))
 
 (defn all-values [f]
-  (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
-        :when (not (or (dead? i) (var-of i)))]
-    i))
+  (binding [*f* f]
+    (doall (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
+                 :when (not (no-local? i))]
+             i))))
 
-(defn analyze-fn
-  "Build, optimize and structurize one (already macroexpanded) defn form.
-   Resolution of vars happens against *ns*, so the caller must have defined
-   the program's vars first."
-  [src]
-  (let [fname (str (second src))
-        f (ir.build/build-fn src)
-        _ (p/optimize-fn f)
+(defn has-node? [tag tree]
+  (boolean (some #(and (vector? %) (= tag (first %))) (tree-seq vector? seq tree))))
+
+(defn analyze-ir
+  "Optimize and structurize one IR fn (a defn or a try region's fn* template)."
+  [fname f]
+  (let [_ (p/optimize-fn f)
         {:keys [tree fallbacks]} (st/structurize f)]
-    (when (pos? fallbacks)
+    ;; structurize's :fallbacks also counts :multi-exit loops, whose tree is
+    ;; complete (see walk's :loop); only a :goto node is unlowerable.
+    (when (has-node? :goto tree)
       (fail "structurize fallback (:goto)" {:fn fname :fallbacks fallbacks :tree tree}))
     (when (ir/fn-variadic? f) (fail "unsupported variadic fn" {:fn fname}))
     (binding [*f* f]
@@ -271,24 +411,85 @@
                        :when (= (ir/op t f) :return)]
                    (ty (first (ir/refs t f))))
             ret (if (and (seq rets) (every? #{:int} rets)) :int :box)]
-        {:name fname :f f :tree tree :params params :ret ret}))))
+        {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true}))))
 
-(defn has-tail? [tree]
-  (boolean (some #(and (vector? %) (= :tail (first %))) (tree-seq vector? seq tree))))
+(defn analyze-fn
+  "Build, optimize and structurize one (already macroexpanded) defn form.
+   Resolution of vars happens against *ns*, so the caller must have defined
+   the program's vars first."
+  [src]
+  (analyze-ir (str (second src)) (ir.build/build-fn src)))
 
-(defn lower-fn [{:keys [name f tree params ret]}]
-  (binding [*f* f *param-kinds* params *fname* name *ret-type* ret]
+(defn has-tail? [tree] (has-node? :tail tree))
+
+(defn lower-fn [{:keys [name f tree params ret caps export?]}]
+  (binding [*f* f *param-kinds* params *cap-kinds* caps *fname* name *ret-type* ret]
     (let [locals (distinct (all-values f))
           body (walk tree)
           body (if (has-tail? tree)
                  (concat ["(loop $fn"] body ["unreachable)"])
                  body)]
-      (str "(func $" name " (export \"" name "\")"
+      (str "(func $" name (when export? (str " (export \"" name "\")"))
            (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
+           (apply str (map-indexed (fn [i k] (str " (param $c" i " " (wt k) ")")) caps))
            " (result " (wt ret) ")\n"
-           "  (local $tmp i64)\n"
+           "  (local $tmp i64) (local $exn exnref)\n"
            (apply str (map (fn [v] (str "  (local $v" v " " (wt (ty v)) ")\n")) locals))
            "  " (str/join "\n  " body) "\n  unreachable)"))))
+
+;; :try (build.lg build-try): refs are the body fn*, then the optional
+;; handler fn* (one param, the caught value) and finally fn*, each a template
+;; const, optionally wrapped in :make-closure + a :push-closed per capture.
+;; Each region is lambda-lifted to its own wasm function taking its captures
+;; as trailing params ($c0..), as lower_go does with closures + InvokeValueEC.
+;; Orchestration (wasm EH, current proposal: try_table/exnref):
+;;   handler: catch $lgex around the body call; the payload is reified
+;;            ($rt_reify) and passed to the handler, whose class dispatch
+;;            rethrows on no match.
+;;   finally: catch_all_ref around body(+handler); run finally then
+;;            throw_ref the original exception (so a raw runtime error keeps
+;;            its uncaught message), or run finally after a normal exit.
+(defn region-of [nid]
+  (loop [n (src-of nid) caps ()]
+    (case (ir/op n *f*)
+      :push-closed (let [[cls v] (ir/refs n *f*)] (recur (src-of cls) (cons v caps)))
+      :make-closure (recur (src-of (first (ir/refs n *f*))) caps)
+      (if (template? n)
+        (let [{tfn :fn variadic? :variadic?} (ir/aux n *f*)]
+          (when variadic? (fail "unsupported variadic try region" {:fn *fname*}))
+          {:tfn tfn :caps (vec caps)})
+        (fail "unsupported :try region value" {:op (ir/op n *f*) :nid n :fn *fname*})))))
+
+(defn try-wat [nid]
+  (let [{:keys [has-handler has-finally]} (ir/aux nid *f*)
+        refs (ir/refs nid *f*)
+        k (ty nid) T (wt k) n (str nid)
+        region (fn [ref role params]
+                 (let [{:keys [tfn caps]} (region-of ref)
+                       cap-kinds (mapv ty caps)
+                       info (assoc (analyze-ir (str *fname* "__try" nid "_" role) tfn)
+                                   :caps cap-kinds :export? false :params params)]
+                   (swap! *regions* conj (lower-fn info))
+                   ;; (call-fn pre-arg to-kind); to-kind nil = the region's own result kind
+                   (fn [pre to]
+                     (str "(call $" (:name info) (when pre (str " " pre))
+                          (apply str (map #(str " " (arg-as %1 %2)) caps cap-kinds)) ")"
+                          (coerce (:ret info) (or to (:ret info)))))))
+        body-call ((region (nth refs 0) "body" []) nil k)
+        handler (when has-handler (region (nth refs 1) "catch" [:box]))
+        fin (when has-finally (region (nth refs (if has-handler 2 1)) "finally" []))
+        guarded (if handler
+                  (str "(block $hd" n " (result " T ") "
+                       (handler (str "(call $rt_reify (block $hc" n " (result (ref null eq)) (br $hd" n
+                                     " (try_table (result " T ") (catch $lgex $hc" n ") " body-call "))))") k)
+                       ")")
+                  body-call)]
+    (if fin
+      (let [fin-call (str "(drop " (fin nil nil) ")")]
+        (str "(local.set $v" n " (block $fo" n " (result " T ") (local.set $exn (block $fx" n
+             " (result exnref) (br $fo" n " (try_table (result " T ") (catch_all_ref $fx" n ") " guarded "))))"
+             " " fin-call " (throw_ref (local.get $exn)))) " fin-call))
+      (str "(local.set $v" n " " guarded ")"))))
 
 (def checked-runtime
   ;; Mirrors pkg/vm/numbers.go checkedAddInt/checkedSubInt/checkedMulInt
@@ -316,32 +517,85 @@
   (if (i64.ne (i64.div_s (local.get $r) (local.get $b)) (local.get $a)) (then (throw $overflow)))
   (local.get $r))")
 
-;; Fixed strings at the bottom of linear memory; $rt_print_bytes copies
-;; array-backed strings to offset 16 before handing ptr+len to the host.
+;; Fixed strings at the bottom of linear memory (nil true false, space, colon,
+;; {}, double quote); $rt_print_bytes copies array-backed strings to offset 32
+;; before handing ptr+len to the host.
 (defn print-runtime []
-  (str "(data (i32.const 0) \"niltruefalse \")
+  (str "(data (i32.const 0) \"niltruefalse :{}\\\"\")
 (func $rt_print_space (call $print_str (i32.const 12) (i32.const 1)))
 (func $rt_print_bool (param $b i32)
   (if (local.get $b) (then (call $print_str (i32.const 3) (i32.const 4)))
                      (else (call $print_str (i32.const 7) (i32.const 5)))))
 (func $rt_print_bytes (param $s (ref $Bytes)) (local $i i32) (local $n i32) (local $need i32)
   (local.set $n (array.len (local.get $s)))
-  (local.set $need (i32.add (local.get $n) (i32.const 16)))
+  (local.set $need (i32.add (local.get $n) (i32.const 32)))
   (if (i32.gt_u (local.get $need) (i32.mul (memory.size) (i32.const 65536)))
     (then (drop (memory.grow (i32.sub (i32.add (i32.shr_u (local.get $need) (i32.const 16)) (i32.const 1)) (memory.size))))))
   (block $done (loop $l
     (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
-    (i32.store8 offset=16 (local.get $i) (array.get_u $Bytes (local.get $s) (local.get $i)))
+    (i32.store8 offset=32 (local.get $i) (array.get_u $Bytes (local.get $s) (local.get $i)))
     (local.set $i (i32.add (local.get $i) (i32.const 1)))
     (br $l)))
-  (call $print_str (i32.const 16) (local.get $n)))
+  (call $print_str (i32.const 32) (local.get $n)))
 (func $rt_print (param $v (ref null eq))
   (if (ref.is_null (local.get $v)) (then (call $print_str (i32.const 0) (i32.const 3)) (return)))
   (if (ref.test (ref $Bool) (local.get $v))
     (then (call $rt_print_bool (struct.get $Bool 0 (ref.cast (ref $Bool) (local.get $v)))) (return)))
   (if (ref.test (ref $Bytes) (local.get $v))
     (then (call $rt_print_bytes (ref.cast (ref $Bytes) (local.get $v))) (return)))
-  (call $print_i64 (local.get $v)" (coerce :box :int) "))"))
+  (if (ref.test (ref $Kw) (local.get $v))
+    (then (call $print_str (i32.const 13) (i32.const 1))
+          (call $rt_print_bytes (struct.get $Kw 0 (ref.cast (ref $Kw) (local.get $v)))) (return)))
+  (if (ref.test (ref $Map0) (local.get $v)) (then (call $print_str (i32.const 14) (i32.const 2)) (return)))
+  (call $print_i64 (local.get $v)" (coerce :box :int) "))
+;; The uncaught-exception report (D12): run.mjs prints `error: ` and routes
+;; this to stderr. An exception value prints its message, anything else
+;; thrown prints like pr-str (strings quoted; escapes are P2.6).
+(func $rt_report (export \"_report\") (param $v (ref null eq))
+  (if (ref.test (ref $Err) (local.get $v))
+    (then (call $rt_print_bytes (struct.get $Err 1 (ref.cast (ref $Err) (local.get $v)))) (return)))
+  (if (ref.test (ref $Bytes) (local.get $v))
+    (then (call $print_str (i32.const 16) (i32.const 1))
+          (call $rt_print_bytes (ref.cast (ref $Bytes) (local.get $v)))
+          (call $print_str (i32.const 16) (i32.const 1)) (return)))
+  (call $rt_print (local.get $v)))"))
+
+(defn exn-runtime []
+  (str
+   ";; a caught raw runtime error (kind 1) becomes an exception value (kind 2)
+;; whose message is the wrapped one and whose ex-data is {}
+(func $rt_reify (param $v (ref null eq)) (result (ref null eq)) (local $e (ref null $Err))
+  (if (ref.test (ref $Err) (local.get $v))
+    (then (local.set $e (ref.cast (ref $Err) (local.get $v)))
+          (if (i32.eq (struct.get $Err 0 (local.get $e)) (i32.const 1))
+            (then (return (struct.new $Err (i32.const 2) (struct.get $Err 2 (local.get $e))
+                                       (struct.get $Err 2 (local.get $e)) (global.get $map0)))))))
+  (local.get $v))
+;; native ex-message returns a non-exception argument unchanged
+(func $rt_ex_message (param $v (ref null eq)) (result (ref null eq))
+  (if (ref.test (ref $Err) (local.get $v))
+    (then (return (struct.get $Err 1 (ref.cast (ref $Err) (local.get $v))))))
+  (local.get $v))
+(func $rt_ex_data (param $v (ref null eq)) (result (ref null eq))
+  (if (ref.test (ref $Err) (local.get $v))
+    (then (return (struct.get $Err 3 (ref.cast (ref $Err) (local.get $v))))))
+  (ref.null none))
+(func $rt_ex_info (param $m (ref null eq)) (param $d (ref null eq)) (result (ref null eq))
+  (if (i32.eqz (ref.test (ref $Bytes) (local.get $m)))
+    (then (throw $lgex " (rt-error-wat "ex-info expected String message" "ex-info expected String message") ")))
+  (if (i32.eqz (ref.test (ref $Map0) (local.get $d)))
+    (then (throw $lgex " (rt-error-wat "ex-info expected Map data" "ex-info expected Map data") ")))
+  (struct.new $Err (i32.const 0) (ref.cast (ref $Bytes) (local.get $m)) (ref.cast (ref $Bytes) (local.get $m))
+              (local.get $d)))
+;; codes from lower-wasm/catch-classes: 0 Throwable (anything thrown),
+;; 1 Exception (any exception value), 2 ExceptionInfo, 3 String
+(func $rt_catch_matches (param $c i32) (param $v (ref null eq)) (result i32)
+  (if (i32.eqz (local.get $c)) (then (return (i32.const 1))))
+  (if (i32.eq (local.get $c) (i32.const 3)) (then (return (ref.test (ref $Bytes) (local.get $v)))))
+  (if (i32.eqz (ref.test (ref $Err) (local.get $v))) (then (return (i32.const 0))))
+  (if (i32.eq (local.get $c) (i32.const 1)) (then (return (i32.const 1))))
+  (i32.eqz (struct.get $Err 0 (ref.cast (ref $Err) (local.get $v)))))
+"))
 
 (defn wat-bytes [s]
   (apply str (map #(let [b (bit-and % 255)] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b))))
@@ -358,10 +612,19 @@
          "(import \"env\" \"print_str\" (func $print_str (param i32 i32)))\n"
          "(import \"env\" \"print_nl\" (func $print_nl))\n"
          "(memory (export \"mem\") 1)\n"
-         "(tag $overflow (export \"overflow\"))\n"
          "(type $Int (struct (field i64)))\n"
          "(type $Bytes (array i8))\n"
          "(type $Bool (struct (field i32)))\n"
+         ;; Each type is its own rec group, so structurally equal types are
+         ;; the SAME type to ref.test: keep every shape here distinct.
+         "(type $Kw (struct (field (ref $Bytes))))\n"
+         "(type $Map0 (struct))\n"
+         ";; kind (0 ex-info, 1 raw runtime error, 2 caught runtime error), message,\n"
+         ";; message once caught, ex-data\n"
+         "(type $Err (struct (field i32) (field (ref $Bytes)) (field (ref $Bytes)) (field (ref null eq))))\n"
+         ";; every lg exception: the payload is the thrown value\n"
+         "(tag $lgex (export \"lgex\") (param (ref null eq)))\n"
+         "(global $map0 (ref $Map0) (struct.new $Map0))\n"
          "(global $true (ref $Bool) (struct.new $Bool (i32.const 1)))\n"
          "(global $false (ref $Bool) (struct.new $Bool (i32.const 0)))\n"
          "(func $rt_box_bool (param $b i32) (result (ref null eq))\n"
@@ -371,13 +634,14 @@
          "  (i32.and (i32.eqz (ref.is_null (local.get $v))) (i32.eqz (ref.eq (local.get $v) (global.get $false)))))\n"
          (when *checked* (str (str/replace checked-runtime "(throw $overflow)" (raise)) "\n"))
          (boxed :add) (boxed :sub) (boxed :mul)
-         (print-runtime) "\n")))
+         (print-runtime) "\n" (exn-runtime))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature."
   [infos sigs]
-  (binding [*sigs* sigs *strings* (atom {})]
-    (let [fns (doall (map lower-fn infos))
+  (binding [*sigs* sigs *strings* (atom {}) *regions* (atom [])]
+    (let [fns (vec (doall (map lower-fn infos)))
+          fns (into fns @*regions*)
           rt (runtime)
           datas (for [[s i] (sort-by val @*strings*)]
                   (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]

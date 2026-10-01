@@ -25,3 +25,9 @@
 - M1. **Real bug:** when a 2-entry collision bucket loses one key, the survivor is rebuilt at shift 0 regardless of depth (persistent_map.go:552-562): `seq` still shows it, `get` misses it, a re-assoc inserts a duplicate key, `(= c (dissoc a \a))` is false. Pinned by `collide-map.lg` bucket-* rows. Generic upstream report after the campaign.
 - M2. With ≤8 keys, `read-json`/transit/bencode-sourced maps take Go map iteration order: native lg is nondeterministic there (2 orders in 3 runs). Not on xsofy's path.
 - M3. 11 constructed hash-colliding key pairs incl. an FNV-1a string preimage ("xe2tiazy" collides with 97, \a, 4.8e-322).
+
+## IR build quirks met in P1.0/P1.2 review (2026-10-01)
+- I4. build.lg: `(- x)` → `(sub 0 x)` makes `(- MinInt64)` throw where native wraps; lower-go inherits it.
+- I5. build.lg: unary comparison `(< x)` is treated as identity, so `(defn f [x] (< x))` returns x, not true. Silent.
+- I6. `ir/resolve-single-source` stops at a loop header param fed by the entry value and its own back-edge copy; the backend replaced it with a cycle-following `src-of`.
+- I7. structurize's `:fallbacks` counter counts `:multi`-exit loops although their trees are complete (no `:goto`); the 2a census's "3% fallback" is therefore an over-count of real gaps.

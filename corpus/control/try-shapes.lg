@@ -1,0 +1,14 @@
+;; try shapes: a try inside a loop (legalize threads its fn* templates around
+;; the loop as block-args), nested finallys, a handler with its own try,
+;; finally on every frame of a 5000-deep unwind, ex-data of {} and of a
+;; non-exception.
+(defn f [n] (loop [i 0 s 0] (if (< i n) (recur (inc i) (+ s (try (* i 2) (catch e 0)))) s)))
+(println (f 10))
+(defn g [x] (try (try (if (< x 0) (throw :neg) x) (finally (println "inner" x))) (catch Exception e :exc) (finally (println "outer" x))))
+(println (g 1))
+(println (try (g -1) (catch e e)))
+(defn h [x] (try (inc x) (catch e (println "caught" (ex-message e)) (try (throw (ex-info "again" {})) (catch Exception e2 (ex-message e2))))))
+(println (h 1) (h 9223372036854775807))
+(defn rec [n] (if (< n 1) (throw (ex-info "bottom" {})) (try (rec (dec n)) (finally (if (< n 3) (println "unwind" n) nil)))))
+(println (try (rec 5000) (catch Exception e (ex-message e))))
+(println (try (ex-data (ex-info "d" {})) (catch e e)) (ex-data 5))

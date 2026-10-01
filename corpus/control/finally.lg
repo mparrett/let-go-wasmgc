@@ -1,0 +1,7 @@
+;; closures.lg "finally" with println standing in for the atom log: body,
+;; catch and finally run in that order and the try yields the catch value.
+(defn risky [x] (if (< x 0) (throw (ex-info "neg" {})) (* x 2)))
+(println "finally"
+         (try (println :body) (risky -2)
+              (catch Exception e (println :catch) :caught)
+              (finally (println :finally))))

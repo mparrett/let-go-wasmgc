@@ -1,0 +1,9 @@
+;; overflow caught per iteration and the loop continues: doubling from 1
+;; overflows at 2^63; each overflow is counted and the value restarts at 1.
+(defn step [x] (try (* x 2) (catch Exception e 1)))
+(defn run [n] (loop [i 0 x 1 resets 0]
+                (if (< i n)
+                  (let [y (step x)] (recur (inc i) y (if (< y x) (inc resets) resets)))
+                  (+ (* 1000 resets) x))))
+(println "resets*1000+x" (run 200))
+(println (try (inc 9223372036854775807) (catch Exception e (ex-message e))) "then" (+ 1 2))

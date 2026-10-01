@@ -1,0 +1,7 @@
+;; closures.lg "nested-throw" with the inner fn as a defn: the throw crosses
+;; an extra frame before the catch.
+(defn risky [x] (if (< x 0) (throw (ex-info "neg" {})) (* x 2)))
+(defn via [x] (+ 1 (risky x)))
+(println "nested-throw" (try (via -3) (catch Exception e (ex-message e))))
+(println "nested-try" (try (try (via -3) (catch ExceptionInfo e (throw (ex-info "inner" {}))))
+                           (catch Exception e (ex-message e))))

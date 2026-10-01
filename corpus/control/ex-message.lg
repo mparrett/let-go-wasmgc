@@ -1,0 +1,10 @@
+;; (catch Exception e (ex-message e)) printing, the opmatrix shape: ex-info
+;; messages, the wrapped overflow message, typed vs ExceptionInfo dispatch.
+(defn id [x] x)
+(try (println "typed + =>" (+ 9223372036854775807 1)) (catch Exception e (println "typed + => error:" (ex-message e))))
+(try (println "boxed * =>" (* (id 9223372036854775807) (id 2))) (catch Exception e (println "boxed * => error:" (ex-message e))))
+(try (println "boxed - =>" (- (id -9223372036854775808) (id 1))) (catch Exception e (println "boxed - => error:" (ex-message e))))
+(println (try (throw (ex-info "plain" {})) (catch Exception e (ex-message e))))
+(println (try (+ 9223372036854775807 1) (catch ExceptionInfo e :exinfo) (catch Exception e :ex)))
+(println (try (throw (ex-info "m" {})) (catch ExceptionInfo e :exinfo) (catch Exception e :ex)))
+(println (try (ex-info "m" nil) (catch e (ex-message e))))

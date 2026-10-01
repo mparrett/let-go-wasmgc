@@ -1,0 +1,5 @@
+;; closures.lg "overflow" minus unchecked-add (a P1.1 op): checked + throws a
+;; catchable exception, typed and boxed.
+(defn id [x] x)
+(println "overflow" (try (+ 9223372036854775807 1) (catch Exception e :overflow))
+         (try (+ (id 9223372036854775807) (id 1)) (catch Exception e :overflow)))

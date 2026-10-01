@@ -1,0 +1,3 @@
+;; a raw overflow escaping uncaught through finally: `error: integer overflow`
+(defn f [x] (try (+ x 9223372036854775807) (finally (println "fin"))))
+(f 1)

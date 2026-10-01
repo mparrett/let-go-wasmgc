@@ -1,0 +1,9 @@
+;; throwing values that are not ex-info: string, keyword, int, bool, nil.
+;; Exception does not match them; Throwable and a bare catch do.
+(println (try (throw "s") (catch Throwable e e)))
+(println (try (throw :k) (catch e e)))
+(println (try (throw 42) (catch e (+ e 1))))
+(println (try (throw false) (catch e e)))
+(println (try (throw nil) (catch e e)))
+(println (try (try (throw :k) (catch Exception e :wrong)) (catch Throwable e e)))
+(println (try (throw "s") (catch Exception e (ex-message e)) (catch String e (ex-message e))))

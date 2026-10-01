@@ -1,0 +1,13 @@
+;; finally ordering: its value is discarded, it runs on the normal path, on
+;; the caught path and on the escaping path, innermost first; a try used
+;; only as a statement still runs (the lower-go liveness trap).
+(defn noisy [tag x] (println tag x) x)
+(println "value" (try (noisy :body 1) (finally (noisy :finally 2))))
+(println "caught" (try (try (throw (ex-info "x" {})) (finally (println "f1")))
+                       (catch Exception e (println "handler") 3)
+                       (finally (println "f2"))))
+(defn stmt [] (try (println "statement try") (catch e 0)) 4)
+(println "stmt" (stmt))
+(println "nested" (try (try (try (throw :deep) (finally (println "a"))) (finally (println "b")))
+                       (catch e (println "c") e)
+                       (finally (println "d"))))

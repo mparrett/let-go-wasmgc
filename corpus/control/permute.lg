@@ -1,0 +1,4 @@
+;; closures.lg "permute" without the result vector: argument-permuting recur
+;; (let-go#972 shape), the pair encoded as 10a+b.
+(defn swap-loop [a b n] (loop [a a b b i 0] (if (< i n) (recur b a (inc i)) (+ (* 10 a) b))))
+(println "permute" (swap-loop 1 2 3) (swap-loop 1 2 4))

@@ -1,0 +1,17 @@
+;; closures.lg "two-exit" over an int range instead of a vector: a loop whose
+;; cond has two value exits plus the recur. `=` is a P1.1 call, so equality is
+;; spelled with <= and >=. two-exit joins both exits in one block; two-exit-and
+;; makes structurize report a :multi loop exit (its :fallbacks counter goes to
+;; 1 with no :goto node), which the backend lowers as a complete loop body.
+(defn two-exit [n target]
+  (loop [i 0]
+    (cond (>= i n) :miss
+          (>= i target) i
+          :else (recur (inc i)))))
+(defn two-exit-and [n target]
+  (loop [i 0]
+    (cond (>= i n) :miss
+          (and (<= i target) (>= i target)) i
+          :else (recur (inc i)))))
+(println "two-exit" (two-exit 3 1) (two-exit 3 9))
+(println "two-exit-and" (two-exit-and 3 1) (two-exit-and 3 9))

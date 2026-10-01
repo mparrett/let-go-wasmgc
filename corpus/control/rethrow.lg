@@ -1,0 +1,6 @@
+;; rethrow: a handler that throws its caught value, and a catch whose class
+;; does not match (the desugared dispatch rethrows to the next try out).
+(defn risky [x] (if (< x 0) (throw (ex-info "neg" {})) (* x 2)))
+(println "rethrow" (try (try (risky -1) (catch Exception e (throw e))) (catch Exception e (ex-message e))))
+(println "no-match" (try (try (throw "str") (catch Exception e :wrong)) (catch String e e)))
+(println "after-finally" (try (try (risky -1) (finally (println "inner finally"))) (catch Exception e (ex-message e))))

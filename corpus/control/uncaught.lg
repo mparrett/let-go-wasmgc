@@ -1,0 +1,5 @@
+;; uncaught paths (D12): a raw overflow escaping through a finally keeps
+;; lg's bare message; this program ends on the reified one, which a catch
+;; that does not match rethrows with the ExecutionError prefix.
+(println (try (try (+ 9223372036854775807 1) (finally (println "fin"))) (catch e (ex-message e))))
+(try (+ 9223372036854775807 1) (catch ExceptionInfo e :never))

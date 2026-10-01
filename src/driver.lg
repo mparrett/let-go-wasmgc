@@ -33,6 +33,9 @@
     (doseq [form forms]
       (cond
         (and (seq? form) (= 'ns (first form))) (eval form)
+        ;; declare only interns forward vars so later defns resolve; it has
+        ;; no runtime effect in the module (direct calls bind by name).
+        (and (seq? form) (= 'declare (first form))) (eval form)
         (defn-form? form) (do (eval form) (swap! defns conj (expand-defn form)))
         (and (seq? form) (#{'def 'defn- 'defmacro 'defmulti 'deftype 'defprotocol} (first form)))
         (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
