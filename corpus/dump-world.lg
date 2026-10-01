@@ -1,0 +1,60 @@
+;; Canonical world dump for the Phase 3 differential oracle.
+;;
+;;   lg -source-paths <xsofy-root> dump-world.lg <seed> <turns> [keys]
+;;
+;; Builds (make-world 79 30 seed), applies `turns` keystrokes (default: all
+;; "." = wait, the same shape bench/native.lg's :wait fixture uses), and prints
+;; ONE canonical text rendering of the resulting world. Both the native lg run
+;; and the emitted-wasm run must print identical bytes.
+;;
+;; The rendering deliberately avoids every formatting path that Phase 2 has
+;; to get bit-exact anyway (pr-str of floats, map print order, metadata):
+;;   nil/true/false/ints/keywords/symbols/strings  -> pr-str
+;;   floats   -> #f<micro-units as int>  (long (* x 1000000)); no strconv
+;;   vectors / lists / seqs -> [ ... ] in order
+;;   maps -> { k v ... } with entries sorted by the dump of the key
+;;   sets -> #{ ... } sorted by the dump of each element
+;;   let-go Arrays (int-array etc.) -> #a[ ... ] in index order
+;;   anything else (fn, atom, record) -> #<type-name>, counted and reported
+;; so a map-iteration-order divergence can never hide, and a stray fn in the
+;; world is a visible, countable thing rather than a crash.
+(require '[xsofy.world :as world] '[xsofy.input :as input] '[clojure.string :as str])
+
+(def opaque (atom 0))
+
+(declare dump)
+
+(defn dump-map [m]
+  (let [entries (map (fn [[k v]] [(dump k) (dump v)]) m)]
+    (str "{" (str/join " " (map (fn [[k v]] (str k " " v)) (sort-by first compare entries))) "}")))
+
+(defn dump [x]
+  (cond
+    (nil? x) "nil"
+    (or (true? x) (false? x)) (pr-str x)
+    (int? x) (str x)
+    (float? x) (str "#f" (long (* x 1000000)))
+    (keyword? x) (pr-str x)
+    (symbol? x) (pr-str x)
+    (string? x) (pr-str x)
+    (map? x) (dump-map x)
+    (set? x) (str "#{" (str/join " " (sort compare (map dump x))) "}")
+    (or (vector? x) (seq? x) (list? x)) (str "[" (str/join " " (map dump x)) "]")
+    ;; let-go Arrays (xsofy's :terrain is an int-array): dump as a vector
+    (re-find #"Array" (str (type x))) (str "#a[" (str/join " " (map dump (vec x))) "]")
+    :else (do (swap! opaque inc) (str "#<" (type x) ">"))))
+
+(def args (vec (rest (drop-while #(not (str/ends-with? % "dump-world.lg")) os/args))))
+(def seed  (read-string (nth args 0 "424242")))
+(def turns (read-string (nth args 1 "60")))
+(def keys* (nth args 2 "."))
+
+(defn run [seed turns]
+  (loop [w (world/make-world 79 30 seed) i 0]
+    (if (or (= i turns) (nil? (get-in w [:entities :player])))
+      w
+      (recur (world/update-world w (input/parse-key (str (nth keys* (mod i (count keys*)))))) (inc i)))))
+
+(let [w (run seed turns)]
+  (println (dump w))
+  (binding [*out* *err*] (println "seed" seed "turns" turns "opaque-values" @opaque)))
