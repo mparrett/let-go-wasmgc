@@ -10,6 +10,11 @@
 ;; P1.2 adds :try (body/handler/finally regions lambda-lifted to their own
 ;; wasm functions, orchestrated with wasm EH), throw, ex-info, ex-message,
 ;; ex-data, catch-matches?, keyword constants and the empty-map constant.
+;; P1.3 adds first-class closures (D36: a $Fn struct, one code ref per arity,
+;; env in field 3), calls through fn values ($rt_invokeN), a module-level var
+;; table for top-level def/declare, defn and core-op vars as fn values, and
+;; the minimal atom (atom/deref/reset!/swap!) that the `fn` macro's named-fn
+;; expansion needs.
 (ns lower-wasm
   (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st]
             [clojure.string :as str]))
@@ -28,6 +33,27 @@
 (def ^:dynamic *cap-kinds* [])
 ;; atom: lowered try-region functions (WAT strings), module-wide.
 (def ^:dynamic *regions* nil)
+;; var -> wasm global name, for every top-level def/declare var (the var table).
+(def ^:dynamic *var-globals* {})
+;; per fn: closure-chain links (consumed by a later :push-closed/:make-closure)
+;; and every node of a closure chain consumed by :try; neither gets a local.
+(def ^:dynamic *linked* #{})
+(def ^:dynamic *try-srcs* #{})
+;; closure code being lowered: its env struct type (nil = no captures / not a closure)
+(def ^:dynamic *env-type* nil)
+;; module-wide atoms: global decls (in dependency order), funcs referenced by
+;; ref.func in code (elem declare), env struct types, fn-value wrappers.
+(def ^:dynamic *globals* nil)
+(def ^:dynamic *elem* nil)
+(def ^:dynamic *env-types* nil)
+(def ^:dynamic *fn-values* nil)
+
+;; $Fn layout (D36, field order compatible with rt/wasm/seq.lg's Fn, whose
+;; invoke0/1/2 read fields 0/1/2 and whose env is field 3): code refs for
+;; arities 0 1 2, env, then arities 3 4, then the $FnInfo (kind, arity, name)
+;; that native's error messages need. Arity -> field index:
+(def max-arity 4)
+(def fn-slot {0 0 1 1 2 2 3 4 4 5})
 
 ;; Probe knobs (see ../emit-wasm-probe/ext/README.md). *checked* defaults to
 ;; :inline because D3 makes checked + - * the semantics, not an option.
@@ -113,12 +139,18 @@
 
 (defn var-of
   "The var a value denotes when it is a :load-var, or a block-arg that only
-   ever carries one var (legalize threads :load-var through blocks), else nil.
-   Var-valued values get no local and no edge copies: they only lower in
-   callee position (a var table for first-class use is P1.3)."
+   ever carries one var (legalize threads :load-var through blocks), else nil."
   [nid]
   (let [r (src-of nid)]
     (when (= :load-var (ir/op r *f*)) (ir/aux r *f*))))
+
+(defn var-hidden?
+  "A var value that gets no local: everything but the var table's vars. Defn
+   and core-op vars are constants, so a value use re-materialises them at
+   the use site; table vars are read where the :load-var sits (they can be
+   re-def'd between load and use)."
+  [nid]
+  (when-let [v (var-of nid)] (not (contains? *var-globals* v))))
 
 (defn dead? [nid] (= :invalid (ir/op nid *f*)))
 
@@ -129,34 +161,49 @@
 
 (defn template? [nid]
   (and (= :const (ir/op nid *f*))
-       (let [a (ir/aux nid *f*)] (and (map? a) (= :fn-template (:kind a))))))
+       (let [a (ir/aux nid *f*)] (and (map? a) (contains? #{:fn-template :multi-fn-template} (:kind a))))))
 
 (defn closure-val?
-  "An fn* value: its template const, :make-closure, or a :push-closed link.
-   At P1.2 these only lower as :try regions; first-class closures are P1.3."
+  "An fn* value: its template const, :make-closure, or a :push-closed link."
   [nid]
   (let [r (src-of nid)]
     (or (template? r) (contains? #{:make-closure :push-closed} (ir/op r *f*)))))
 
+(defn closure-hidden?
+  "A closure value with no local: a chain link (only the chain's last node is
+   the closure) or a chain consumed by :try (lambda-lifted as a region)."
+  [nid]
+  (and (closure-val? nid)
+       (let [r (src-of nid)] (or (contains? *linked* r) (contains? *try-srcs* r)))))
+
 (defn symbol-const? [nid]
   (and (= :const (ir/op (src-of nid) *f*)) (symbol? (const-val nid))))
 
-(defn no-local?
-  "Values that never occupy a wasm local: dead params, var-valued values,
-   closure values (consumed by :try) and symbol consts (consumed by
-   catch-matches?)."
+(defn var-const?
+  "A Var object constant (a :def's target, or #'x)."
   [nid]
-  (or (dead? nid) (var-of nid) (closure-val? nid) (symbol-const? nid)))
+  (and (= :const (ir/op (src-of nid) *f*)) (var? (const-val nid))))
+
+(defn def-val? [nid] (= :def (ir/op (src-of nid) *f*)))
+
+(defn no-local?
+  "Values that never occupy a wasm local: dead params, constant vars,
+   closure links and :try regions, symbol consts (consumed by
+   catch-matches?), Var objects and :def results (consumed by nothing)."
+  [nid]
+  (or (dead? nid) (var-hidden? nid) (closure-hidden? nid) (symbol-const? nid)
+      (var-const? nid) (def-val? nid)))
+
+(declare var-value-wat)
 
 (defn arg-as [nid k]
-  ;; A :load-var only lowers in callee position (P1.3 adds the var table).
-  (when-let [v (var-of nid)]
-    (fail "unsupported op :load-var used as a value" {:var v :fn *fname*}))
-  (when (closure-val? nid)
-    (fail "unsupported closure used as a value (P1.3)" {:nid nid :fn *fname*}))
-  (when (symbol-const? nid)
-    (fail "unsupported symbol constant used as a value" {:value (const-val nid) :fn *fname*}))
-  (str (lget nid) (coerce (ty nid) k)))
+  (cond
+    (var-hidden? nid) (str (var-value-wat (var-of nid)) (coerce :box k))
+    (closure-hidden? nid) (fail "unsupported closure used as a value (a :try region)" {:nid nid :fn *fname*})
+    (symbol-const? nid) (fail "unsupported symbol constant used as a value" {:value (const-val nid) :fn *fname*})
+    (var-const? nid) (fail "unsupported Var object used as a value" {:value (const-val nid) :fn *fname*})
+    (def-val? nid) (fail "unsupported :def result used as a value" {:nid nid :fn *fname*})
+    :else (str (lget nid) (coerce (ty nid) k))))
 
 (def int-binops {:add "i64.add" :sub "i64.sub" :mul "i64.mul"})
 (def chk-binops {:add "call $add_chk" :sub "call $sub_chk" :mul "call $mul_chk"})
@@ -235,7 +282,8 @@
                :unchecked-add "unchecked-add" :unchecked-sub "unchecked-subtract"
                :unchecked-mul "unchecked-multiply" :bit-and "bit-and" :bit-or "bit-or"
                :bit-xor "bit-xor" :bit-and-not "bit-and-not" :bit-shift-left "bit-shift-left"
-               :bit-shift-right "bit-shift-right" :unsigned-bit-shift-right "unsigned-bit-shift-right"})
+               :bit-shift-right "bit-shift-right" :unsigned-bit-shift-right "unsigned-bit-shift-right"
+               :zero? "zero?" :pos? "pos?" :neg? "neg?"})
 
 (defn bit-op? [op] (or (= op :bit-not) (str/starts-with? (name op) "bit-") (= op :unsigned-bit-shift-right)))
 
@@ -319,17 +367,42 @@
     :bool (str "(call $rt_print_bool " (lget nid) ")")
     :box (str "(call $rt_print " (arg-as nid :box) ")")))
 
+(defn atom-call-wat
+  "The minimal atom: the `fn` macro expands (fn name [..] ..) to an atom
+   holding the fn (letfn style), so named fns need atom/deref/reset!; swap!
+   comes free with fn values. Validators, watches and meta are Phase 2."
+  [nid v args]
+  (let [n (count args)
+        set (fn [e] (str "(local.set $v" nid " " e (coerce :box (ty nid)) ")"))
+        bx (fn [] (str/join " " (map #(arg-as % :box) args)))]
+    (condp = v
+      #'atom (when (= n 1) (set (str "(struct.new $Atom " (bx) ")")))
+      #'deref (when (= n 1) (set (str "(call $rt_deref " (bx) ")")))
+      #'reset! (when (= n 2) (set (str "(call $rt_reset " (bx) ")")))
+      #'swap! (when (<= 2 n 4) (set (str "(call $rt_swap" (- n 2) " " (bx) ")")))
+      nil)))
+
+(defn arity-error-msg
+  "Native's message for a wrong-arity call of a single-arity fn (the uncaught
+   form; caught, ex-message adds `ExecutionError: `). The address is a fixed
+   0x0: oracle.sh normalises addresses."
+  [fname declared got]
+  (str "function <fn " (when fname (str fname " ")) "0x0> expected " declared " args, got " got))
+
 (defn call-wat [nid v args]
   (let [sig (get *sigs* v)]
     (cond
       sig
-      (do (when (not= (count args) (count (:params sig)))
-            (fail "arity mismatch in direct call" {:callee (:name sig) :argc (count args) :fn *fname*}))
-          (str "(local.set $v" nid " "
-               (guard-call (str "(call $" (:name sig) " "
-                                (str/join " " (map arg-as args (:params sig))) ")"))
-               (coerce (:ret sig) (ty nid)) ")"))
+      (if (not= (count args) (count (:params sig)))
+        ;; native compiles this and fails when the call runs
+        (let [m (arity-error-msg (:name sig) (count (:params sig)) (count args))]
+          (str "(throw $lgex " (rt-error-wat m (str "ExecutionError: " m)) ")"))
+        (str "(local.set $v" nid " "
+             (guard-call (str "(call $" (:name sig) " "
+                              (str/join " " (map arg-as args (:params sig))) ")"))
+             (coerce (:ret sig) (ty nid)) ")"))
       (exn-call-wat nid v args) (exn-call-wat nid v args)
+      (atom-call-wat nid v args) (atom-call-wat nid v args)
       (= v core-println)
       (str (str/join " (call $rt_print_space) " (map print-wat args))
            " (call $print_nl)"
@@ -357,6 +430,10 @@
                 (coerce :bool (ty nid))))
       (and (#{:inc :dec} op) (= 1 (count refs)))
       (int-arith nid (if (= op :inc) :add :sub) (op-int-arg op (first refs)) "(i64.const 1)")
+      ;; int sign predicates (P1.3: closures.lg's mutual recursion uses zero?)
+      (and (#{:zero? :pos? :neg?} op) (= 1 (count refs)))
+      (set (str "(" ({:zero? "i64.eq" :pos? "i64.gt_s" :neg? "i64.lt_s"} op) " "
+                (op-int-arg op (first refs)) " (i64.const 0))" (coerce :bool (ty nid))))
       (and (= op :bit-not) (= 1 (count refs)))
       (set (str "(i64.xor " (op-int-arg op (first refs)) " (i64.const -1))" (coerce :int (ty nid))))
       (and (int-ops op) (= 2 (count refs)))
@@ -375,20 +452,183 @@
 ;; core vars lower like the matching IR op. `=` is left out: it is only i64.eq
 ;; on two ints, and nothing at P1.0 needs it.
 (def core-var-ops {#'< :lt #'<= :lte #'> :gt #'>= :gte
-                   #'+ :add #'- :sub #'* :mul #'inc :inc #'dec :dec})
+                   #'+ :add #'- :sub #'* :mul #'inc :inc #'dec :dec
+                   #'zero? :zero? #'pos? :pos? #'neg? :neg?})
 
-(declare try-wat)
+(declare try-wat analyze-ir lower-fn)
+
+;; ---------------------------------------------------------------------------
+;; Fn values (D36). A closure is
+;;   (struct.new $Fn code0 code1 code2 env code3 code4 info)
+;; where codeK is (ref.func $<fn>__fn<nid>_K) of type $CodeK or null, env is a
+;; per-closure struct of the captures (typed: an int capture stays i64) or
+;; null, and info is a static $FnInfo global. Code takes the closure itself
+;; first and its args boxed, and returns boxed (D37). A closure without
+;; captures is one immutable global.
+
+(defn name-bytes-const
+  "A string as a constant expression (array.new_data is not one)."
+  [s]
+  (let [bs (map #(bit-and % 255) (.getBytes s))]
+    (str "(array.new_fixed $Bytes " (count bs) (apply str (map #(str " (i32.const " % ")") bs)) ")")))
+
+(defn info-global
+  "kind 0 = single-arity fn (`<fn ..>`), 1 = multi-arity (`<mfn ..>`), 2 = a
+   core op as a value (only its IR-op arity); arity is the declared one for
+   kind 0; name nil = anonymous."
+  [kind arity nm]
+  (let [g (str "$info_" (count @*globals*))]
+    (swap! *globals* conj
+           (str "(global " g " (ref $FnInfo) (struct.new $FnInfo (i32.const " kind ") (i32.const " arity ") "
+                (if nm (name-bytes-const nm) "(ref.null none)") "))"))
+    g))
+
+(defn fn-struct-wat [codes env info-g]
+  (swap! *elem* into (vals codes))
+  (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))]
+    (str "(struct.new $Fn " (slot 0) " " (slot 1) " " (slot 2) " " env " " (slot 3) " " (slot 4)
+         " (global.get " info-g "))")))
+
+(defn env-type [kinds]
+  (or (get @*env-types* kinds)
+      (let [t (str "$Env_" (apply str (map {:int "i" :bool "z" :box "b"} kinds)))]
+        (swap! *env-types* assoc kinds t)
+        t)))
+
+(defn fn-code-wat
+  "A hand-written code fn of type $Code<n>: params $p0.. boxed, `body` boxed."
+  [cname n body]
+  (str "(func $" cname " (type $Code" n ") (param $self (ref null eq))"
+       (apply str (map #(str " (param $p" % " (ref null eq))") (range n)))
+       ;; $tmp: coerce's inline int boxing, when called while lowering a program fn
+       " (result (ref null eq)) (local $tmp i64)\n  " body ")"))
+
+(defn defn-fn-global
+  "A program defn as a fn value: a wrapper code fn that unboxes per the
+   defn's signature and calls it directly."
+  [v]
+  (or (get @*fn-values* v)
+      (let [{:keys [name params ret]} (get *sigs* v) n (count params)]
+        (when (> n max-arity)
+          (fail "unsupported defn with more than 4 params used as a value" {:var v :fn *fname*}))
+        (let [cname (str name "__val") g (str "$dfn_" name)
+              info (info-global 0 n name)]
+          (swap! *fn-values* assoc v g)
+          (swap! *regions* conj
+                 (fn-code-wat cname n (str "(call $" name
+                                           (apply str (map-indexed (fn [i k] (str " (local.get $p" i ")" (coerce :box k))) params))
+                                           ")" (coerce ret :box))))
+          (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat {n cname} "(ref.null none)" info) ")"))
+          g))))
+
+;; Core ops as values, e.g. (swap! a inc), (compose2 inc f): only the arity
+;; the IR op has; other arities throw a named Phase-2 limit ($FnInfo kind 2).
+(def core-fn-impls
+  {#'inc [1 "(call $add_chk (call $rt_int_inc (local.get $p0)) (i64.const 1)) (call $rt_box_int)"]
+   #'dec [1 "(call $sub_chk (call $rt_int_dec (local.get $p0)) (i64.const 1)) (call $rt_box_int)"]
+   #'+ [2 "(call $rt_add (local.get $p0) (local.get $p1))"]
+   #'- [2 "(call $rt_sub (local.get $p0) (local.get $p1))"]
+   #'* [2 "(call $rt_mul (local.get $p0) (local.get $p1))"]
+   #'< [2 "(i64.lt_s (call $rt_int_lt (local.get $p0)) (call $rt_int_lt (local.get $p1))) (call $rt_box_bool)"]
+   #'<= [2 "(i64.le_s (call $rt_int_lte (local.get $p0)) (call $rt_int_lte (local.get $p1))) (call $rt_box_bool)"]
+   #'> [2 "(i64.gt_s (call $rt_int_gt (local.get $p0)) (call $rt_int_gt (local.get $p1))) (call $rt_box_bool)"]
+   #'>= [2 "(i64.ge_s (call $rt_int_gte (local.get $p0)) (call $rt_int_gte (local.get $p1))) (call $rt_box_bool)"]})
+
+(defn core-fn-global [v]
+  (or (get @*fn-values* v)
+      (let [[n body] (core-fn-impls v)
+            op (core-var-ops v)
+            nm (op-names op)
+            cname (str "core_" (name op))
+            g (str "$cfn_" cname)
+            info (info-global 2 n nm)]
+        (swap! *fn-values* assoc v g)
+        (swap! *regions* conj (fn-code-wat cname n body))
+        (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat {n cname} "(ref.null none)" info) ")"))
+        g)))
+
+(defn var-value-wat
+  "A constant var used as a value (not in callee position)."
+  [v]
+  (cond (get *sigs* v) (str "(global.get " (defn-fn-global v) ")")
+        (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
+        :else (fail "unsupported var used as a value" {:var v :fn *fname*})))
+
+(defn closure-of [nid]
+  (loop [n (src-of nid) caps ()]
+    (case (ir/op n *f*)
+      :push-closed (let [[cls v] (ir/refs n *f*)] (recur (src-of cls) (cons v caps)))
+      :make-closure (recur (src-of (first (ir/refs n *f*))) caps)
+      (if (template? n)
+        {:tpl (ir/aux n *f*) :caps (vec caps)}
+        (fail "unsupported closure value" {:op (ir/op n *f*) :nid n :fn *fname*})))))
+
+(defn closure-wat
+  "Lambda-lift every arity of the closure built at nid and return the
+   expression constructing its $Fn."
+  [nid]
+  (let [{:keys [tpl caps]} (closure-of nid)
+        multi? (= :multi-fn-template (:kind tpl))
+        tpls (if multi? (:fns tpl) [tpl])
+        cap-kinds (mapv ty caps)
+        env-t (when (seq caps) (env-type cap-kinds))
+        base (str *fname* "__fn" nid)
+        fname (let [n (ir/fn-name (:fn (first tpls)))] (when-not (= n "fn*") n))
+        codes (into {} (for [{tfn :fn :keys [arity variadic?]} tpls]
+                         (do (when variadic?
+                               (fail "unsupported variadic fn (& args) as a closure" {:fn *fname* :name fname}))
+                             (when (> arity max-arity)
+                               (fail "unsupported closure arity > 4" {:fn *fname* :arity arity}))
+                             (let [cname (str base "_" arity)
+                                   info (assoc (analyze-ir cname tfn)
+                                               :params (vec (repeat arity :box)) :ret :box :caps []
+                                               :export? false :code arity :env env-t :env-kinds cap-kinds)]
+                               (swap! *regions* conj (lower-fn info))
+                               [arity cname]))))
+        info-g (info-global (if multi? 1 0) (if multi? 0 (:arity (first tpls))) fname)]
+    (if env-t
+      (fn-struct-wat codes (str "(struct.new " env-t " " (str/join " " (map arg-as caps cap-kinds)) ")") info-g)
+      (let [g (str "$clo_" base)]
+        (swap! *globals* conj (str "(global " g " (ref $Fn) " (fn-struct-wat codes "(ref.null none)" info-g) ")"))
+        (str "(global.get " g ")")))))
+
+(defn invoke-wat
+  "A call whose callee is a value: dispatch on the $Fn's arity slot."
+  [nid callee args]
+  (let [n (count args)]
+    (when (> n max-arity)
+      (fail "unsupported call through a fn value with more than 4 args" {:argc n :fn *fname*}))
+    (str "(local.set $v" nid " (call $rt_invoke" n " " (arg-as callee :box)
+         (apply str (map #(str " " (arg-as % :box)) args)) ")" (coerce :box (ty nid)) ")")))
+
+(defn def-wat
+  "Top-level (def x v) sets x's var-table global. A def anywhere else (in a
+   defn, a closure or a try region) stays refused (P1.4)."
+  [nid]
+  (let [[vr val] (ir/refs nid *f*) v (const-val vr) g (get *var-globals* v)]
+    (if (and g (= *fname* "_main"))
+      (when val (str "(global.set " g " " (arg-as val :box) ")"))
+      (fail "unsupported op" {:op :def :var v :nid nid :fn *fname*}))))
 
 (defn inst-wat [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)
         set (fn [expr] (str "(local.set $v" nid " " expr ")"))]
     (cond
       (= op :block-arg) nil
-      (= op :load-var) nil                 ; consumed at its :call site (arg-as rejects other uses)
+      ;; a constant var is materialised at each use (arg-as); a var-table var
+      ;; is read here
+      (= op :load-var) (when-let [g (get *var-globals* aux)]
+                         (set (str "(global.get " g ")" (coerce :box (ty nid)))))
       (= op :load-arg) (set (str "(local.get $p" aux ")" (coerce (nth *param-kinds* aux) (ty nid))))
-      (closure-val? nid) nil               ; consumed by its :try
+      (closure-hidden? nid) nil            ; a chain link, or consumed by its :try
+      (closure-val? nid) (set (str (closure-wat nid) (coerce :box (ty nid))))
       (symbol-const? nid) nil              ; consumed by catch-matches?
-      (= op :load-closed) (set (str "(local.get $c" aux ")" (coerce (nth *cap-kinds* aux) (ty nid))))
+      (var-const? nid) nil                 ; consumed by :def
+      (= op :def) (def-wat nid)
+      (= op :load-closed) (set (str (if *env-type*
+                                      (str "(struct.get " *env-type* " " aux " (local.get $env))")
+                                      (str "(local.get $c" aux ")"))
+                                    (coerce (nth *cap-kinds* aux) (ty nid))))
       (= op :const) (set (const-wat nid aux))
       (= op :try) (try-wat nid)
       ;; build.lg stopped emitting :tail-call (fn-level recur is :recur-fn ->
@@ -396,17 +636,19 @@
       (= op :tail-call) (fail "unsupported op :tail-call (not emitted by current ir.build)" {:nid nid :fn *fname*})
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
-      (let [v (var-of (first refs))]
-        (when-not v
-          (fail "unsupported op :call on a non-var callee" {:nid nid :fn *fname*}))
-        (or (when-let [cop (core-var-ops v)]
-              (or (prim-wat nid cop (rest refs))
-                  (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
-            (call-wat nid v (rest refs))))
+      (let [callee (first refs) v (var-of callee)]
+        (if (and v (not (contains? *var-globals* v)))
+          (or (when-let [cop (core-var-ops v)]
+                (or (prim-wat nid cop (rest refs))
+                    (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
+              (call-wat nid v (rest refs)))
+          (invoke-wat nid callee (rest refs))))
       :else (fail "unsupported op" {:op op :nid nid :fn *fname*}))))
 
 (defn block-wat [bid]
-  (remove nil? (map inst-wat (ir/block-insts bid *f*))))
+  ;; eager: an unsupported op must fail before the terminator's operands are
+  ;; lowered, so the error names the first offending op in program order
+  (vec (remove nil? (map inst-wat (ir/block-insts bid *f*)))))
 
 (defn copy-wat
   "Parallel copy: push every value, then pop into the destinations in reverse."
@@ -500,20 +742,45 @@
 
 (defn has-tail? [tree] (has-node? :tail tree))
 
-(defn lower-fn [{:keys [name f tree params ret caps export?]}]
-  (binding [*f* f *param-kinds* params *cap-kinds* caps *fname* name *ret-type* ret *box-inline* true]
+(defn closure-sets
+  "[linked try-srcs] for f: closure-chain nodes a later link consumes, and
+   every node of a chain a :try consumes (see closure-hidden?)."
+  [f]
+  (binding [*f* f]
+    (let [insts (for [b (ir/blocks f) i (ir/block-insts b f)] i)
+          chain (fn chain [n]
+                  (let [n (src-of n)]
+                    (if (contains? #{:push-closed :make-closure} (ir/op n f))
+                      (cons n (chain (first (ir/refs n f))))
+                      (list n))))]
+      [(set (for [i insts :when (contains? #{:push-closed :make-closure} (ir/op i f))]
+              (src-of (first (ir/refs i f)))))
+       (set (for [i insts :when (= :try (ir/op i f)) r (ir/refs i f) n (chain r)] n))])))
+
+(defn lower-fn
+  "One wasm function. `code` (an arity) makes it closure code of type
+   $Code<code>: the closure arrives as $self, its captures are read from the
+   env struct `env` (field kinds `env-kinds`). `caps` are a try region's
+   captures, passed as trailing params $c0.."
+  [{:keys [name f tree params ret caps export? code env env-kinds]}]
+  (let [[linked tries] (closure-sets f)]
+  (binding [*f* f *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
+            *box-inline* true *env-type* env *linked* linked *try-srcs* tries]
     (let [locals (distinct (all-values f))
           body (walk tree)
           body (if (has-tail? tree)
                  (concat ["(loop $fn"] body ["unreachable)"])
                  body)]
-      (str "(func $" name (when export? (str " (export \"" name "\")"))
+      (str "(func $" name (when code (str " (type $Code" code ")")) (when export? (str " (export \"" name "\")"))
+           (when code " (param $self (ref null eq))")
            (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
            (apply str (map-indexed (fn [i k] (str " (param $c" i " " (wt k) ")")) caps))
            " (result " (wt ret) ")\n"
            "  (local $tmp i64) (local $ta i64) (local $tb i64) (local $exn exnref)\n"
+           (when env (str "  (local $env (ref null " env "))\n"))
            (apply str (map (fn [v] (str "  (local $v" v " " (wt (ty v)) ")\n")) locals))
-           "  " (str/join "\n  " body) "\n  unreachable)"))))
+           (when env (str "  (local.set $env (ref.cast (ref " env ") (struct.get $Fn 3 (ref.cast (ref $Fn) (local.get $self)))))\n"))
+           "  " (str/join "\n  " body) "\n  unreachable)")))))
 
 ;; :try (build.lg build-try): refs are the body fn*, then the optional
 ;; handler fn* (one param, the caught value) and finally fn*, each a template
@@ -532,7 +799,7 @@
     (case (ir/op n *f*)
       :push-closed (let [[cls v] (ir/refs n *f*)] (recur (src-of cls) (cons v caps)))
       :make-closure (recur (src-of (first (ir/refs n *f*))) caps)
-      (if (template? n)
+      (if (and (template? n) (= :fn-template (:kind (ir/aux n *f*))))
         (let [{tfn :fn variadic? :variadic?} (ir/aux n *f*)]
           (when variadic? (fail "unsupported variadic try region" {:fn *fname*}))
           {:tfn tfn :caps (vec caps)})
@@ -675,6 +942,118 @@
   (i32.eqz (struct.get $Err 0 (ref.cast (ref $Err) (local.get $v)))))
 "))
 
+(defn fn-types []
+  (str
+   ";; D36 closure ABI: code takes the closure first, args and result boxed (D37)\n"
+   (apply str (for [n (range (inc max-arity))]
+                (str "(type $Code" n " (func (param (ref null eq))"
+                     (apply str (repeat n " (param (ref null eq))")) " (result (ref null eq))))\n")))
+   ";; kind (0 fn, 1 mfn, 2 core op as a value), declared arity (kind 0), name or null\n"
+   "(type $FnInfo (struct (field i32) (field i32) (field (ref null $Bytes))))\n"
+   ";; code0 code1 code2 env code3 code4 info: fields 0-3 as rt/wasm/seq.lg's Fn\n"
+   "(type $Fn (struct (field (ref null $Code0)) (field (ref null $Code1)) (field (ref null $Code2))"
+   " (field (ref null eq)) (field (ref null $Code3)) (field (ref null $Code4)) (field (ref $FnInfo))))\n"
+   "(type $Atom (struct (field (mut (ref null eq)))))\n"))
+
+(defn cat-wat
+  "Nested $rt_cat over WAT (ref $Bytes) exprs; a string part is a literal."
+  [& parts]
+  (let [w (map #(if (string? %) (bytes-wat %) (:wat %)) parts)]
+    (reduce (fn [acc x] (str "(call $rt_cat " acc " " x ")")) w)))
+
+(defn wexpr [s] {:wat s})
+
+(defn fn-runtime []
+  (let [throw-msg (fn [m cm] (str "(throw $lgex (struct.new $Err (i32.const 1) " m " " cm " (ref.null none)))"))
+        name (wexpr "(ref.as_non_null (local.get $name))")
+        n (wexpr "(call $rt_itoa (local.get $n))")]
+    (str
+     "(func $rt_cat (param $a (ref $Bytes)) (param $b (ref $Bytes)) (result (ref $Bytes)) (local $r (ref $Bytes))
+  (local.set $r (array.new_default $Bytes (i32.add (array.len (local.get $a)) (array.len (local.get $b)))))
+  (array.copy $Bytes $Bytes (local.get $r) (i32.const 0) (local.get $a) (i32.const 0) (array.len (local.get $a)))
+  (array.copy $Bytes $Bytes (local.get $r) (array.len (local.get $a)) (local.get $b) (i32.const 0) (array.len (local.get $b)))
+  (local.get $r))
+;; decimal of a non-negative i32 (arg counts)
+(func $rt_itoa (param $x i32) (result (ref $Bytes)) (local $buf (ref $Bytes)) (local $i i32) (local $r (ref $Bytes))
+  (local.set $buf (array.new_default $Bytes (i32.const 10))) (local.set $i (i32.const 10))
+  (loop $l
+    (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+    (array.set $Bytes (local.get $buf) (local.get $i) (i32.add (i32.const 48) (i32.rem_u (local.get $x) (i32.const 10))))
+    (local.set $x (i32.div_u (local.get $x) (i32.const 10)))
+    (br_if $l (local.get $x)))
+  (local.set $r (array.new_default $Bytes (i32.sub (i32.const 10) (local.get $i))))
+  (array.copy $Bytes $Bytes (local.get $r) (i32.const 0) (local.get $buf) (local.get $i) (i32.sub (i32.const 10) (local.get $i)))
+  (local.get $r))
+;; native's messages (vm/func.go): `function <fn NAME 0x..> expected A args, got N`
+;; and `function <mfn NAME 0x..> doesn't have a N-arity variant`, prefixed
+;; `ExecutionError: ` once caught
+(func $rt_arity_error (param $fn (ref $Fn)) (param $n i32)
+  (local $info (ref $FnInfo)) (local $name (ref null $Bytes)) (local $d (ref null $Bytes)) (local $m (ref null $Bytes))
+  (local.set $info (struct.get $Fn 6 (local.get $fn)))
+  (local.set $name (struct.get $FnInfo 2 (local.get $info)))
+  (if (i32.eq (struct.get $FnInfo 0 (local.get $info)) (i32.const 2))
+    (then (local.set $m " (cat-wat "lower-wasm: core/" name " called through a fn value with " n
+                                  " args (only its IR-op arity until Phase 2)") ")
+          " (throw-msg "(ref.as_non_null (local.get $m))" "(ref.as_non_null (local.get $m))") "))
+  (if (i32.eqz (struct.get $FnInfo 0 (local.get $info)))
+    (then
+      (local.set $d (if (result (ref $Bytes)) (ref.is_null (local.get $name))
+                      (then " (bytes-wat "<fn 0x0>") ") (else " (cat-wat "<fn " name " 0x0>") ")))
+      (local.set $m " (cat-wat "function " (wexpr "(ref.as_non_null (local.get $d))") " expected "
+                               (wexpr "(call $rt_itoa (struct.get $FnInfo 1 (local.get $info)))") " args, got " n) "))
+    (else
+      (local.set $d (if (result (ref $Bytes)) (ref.is_null (local.get $name))
+                      (then " (bytes-wat "<mfn  0x0>") ") (else " (cat-wat "<mfn " name " 0x0>") ")))
+      (local.set $m " (cat-wat "function " (wexpr "(ref.as_non_null (local.get $d))") " doesn't have a " n "-arity variant") ")))
+  " (throw-msg "(ref.as_non_null (local.get $m))" (cat-wat "ExecutionError: " (wexpr "(ref.as_non_null (local.get $m))"))) ")
+;; native: `TypeError: <type> is not a function ` (trailing space), same text caught
+(func $rt_not_fn (param $v (ref null eq)) (local $m (ref $Bytes))
+  (if (i32.or (ref.test (ref $Kw) (local.get $v)) (ref.test (ref $Map0) (local.get $v)))
+    (then " (throw-msg (bytes-wat "lower-wasm: invoking a keyword or map is Phase 2")
+                      (bytes-wat "lower-wasm: invoking a keyword or map is Phase 2")) "))
+  (local.set $m " (cat-wat "TypeError: "
+                          (wexpr (reduce (fn [acc [test name]]
+                                          (str "(if (result (ref $Bytes)) " test " (then " (bytes-wat name) ") (else " acc "))"))
+                                        (bytes-wat "lower-wasm: unknown value type")
+                                        (reverse [["(ref.is_null (local.get $v))" "nil"]
+                                                  ["(i32.or (ref.test (ref i31) (local.get $v)) (ref.test (ref $Int) (local.get $v)))" "let-go.lang.Int"]
+                                                  ["(ref.test (ref $Bool) (local.get $v))" "let-go.lang.Boolean"]
+                                                  ["(ref.test (ref $Bytes) (local.get $v))" "let-go.lang.String"]
+                                                  ["(ref.test (ref $Atom) (local.get $v))" "let-go.lang.Atom"]])))
+                          " is not a function ") ")
+  " (throw-msg "(local.get $m)" "(local.get $m)") ")
+"
+     (apply str
+            (for [n (range (inc max-arity))
+                  :let [slot (fn-slot n)
+                        args (apply str (map #(str " (local.get $a" % ")") (range n)))]]
+              (str "(func $rt_invoke" n " (param $f (ref null eq))"
+                   (apply str (map #(str " (param $a" % " (ref null eq))") (range n)))
+                   " (result (ref null eq)) (local $fn (ref null $Fn))
+  (if (i32.eqz (ref.test (ref $Fn) (local.get $f))) (then (call $rt_not_fn (local.get $f))))
+  (local.set $fn (ref.cast (ref $Fn) (local.get $f)))
+  (if (ref.is_null (struct.get $Fn " slot " (local.get $fn))) (then (call $rt_arity_error (ref.as_non_null (local.get $fn)) (i32.const " n "))))
+  (call_ref $Code" n " (local.get $f)" args " (struct.get $Fn " slot " (local.get $fn))))\n")))
+     "(func $rt_atom_of (param $a (ref null eq)) (result (ref $Atom))
+  (if (i32.eqz (ref.test (ref $Atom) (local.get $a)))
+    (then " (throw-msg (bytes-wat "lower-wasm: deref/reset!/swap! of a non-atom (Phase 2)")
+                      (bytes-wat "lower-wasm: deref/reset!/swap! of a non-atom (Phase 2)")) "))
+  (ref.cast (ref $Atom) (local.get $a)))
+(func $rt_deref (param $a (ref null eq)) (result (ref null eq))
+  (struct.get $Atom 0 (call $rt_atom_of (local.get $a))))
+(func $rt_reset (param $a (ref null eq)) (param $v (ref null eq)) (result (ref null eq))
+  (struct.set $Atom 0 (call $rt_atom_of (local.get $a)) (local.get $v)) (local.get $v))
+"
+     (apply str
+            (for [k (range 3)]
+              (str "(func $rt_swap" k " (param $a (ref null eq)) (param $f (ref null eq))"
+                   (apply str (map #(str " (param $x" % " (ref null eq))") (range k)))
+                   " (result (ref null eq)) (local $at (ref null $Atom)) (local $v (ref null eq))
+  (local.set $at (call $rt_atom_of (local.get $a)))
+  (local.set $v (call $rt_invoke" (inc k) " (local.get $f) (struct.get $Atom 0 (local.get $at))"
+                   (apply str (map #(str " (local.get $x" % ")") (range k))) "))
+  (struct.set $Atom 0 (local.get $at) (local.get $v)) (local.get $v))\n"))))))
+
 (defn wat-bytes [s]
   (apply str (map #(let [b (bit-and % 255)] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b))))
                   (.getBytes s))))
@@ -701,7 +1080,8 @@
          "(import \"env\" \"print_nl\" (func $print_nl))\n"
          "(memory (export \"mem\") 1)\n"
          "(type $Int (struct (field i64)))\n"
-         "(type $Bytes (array i8))\n"
+         ;; mutable, as wasm.intrinsics/Bytes: runtime messages are built by copying
+         "(type $Bytes (array (mut i8)))\n"
          "(type $Bool (struct (field i32)))\n"
          ;; Each type is its own rec group, so structurally equal types are
          ;; the SAME type to ref.test: keep every shape here distinct.
@@ -710,6 +1090,7 @@
          ";; kind (0 ex-info, 1 raw runtime error, 2 caught runtime error), message,\n"
          ";; message once caught, ex-data\n"
          "(type $Err (struct (field i32) (field (ref $Bytes)) (field (ref $Bytes)) (field (ref null eq))))\n"
+         (fn-types)
          ";; every lg exception: the payload is the thrown value\n"
          "(tag $lgex (export \"lgex\") (param (ref null eq)))\n"
          "(global $map0 (ref $Map0) (struct.new $Map0))\n"
@@ -733,15 +1114,25 @@
          (when *checked* (str (str/replace checked-runtime "(throw $overflow)" (raise)) "\n"))
          (boxed :add) (boxed :sub) (boxed :mul)
          (apply str (map unbox (sort (keys op-names))))
-         (print-runtime) "\n" (exn-runtime))))
+         (print-runtime) "\n" (exn-runtime) (fn-runtime))))
 
 (defn module
-  "infos: analyze-fn results, in definition order. sigs: var -> signature."
-  [infos sigs]
-  (binding [*sigs* sigs *strings* (atom {}) *regions* (atom [])]
-    (let [fns (vec (doall (map lower-fn infos)))
-          fns (into fns @*regions*)
-          rt (runtime)
-          datas (for [[s i] (sort-by val @*strings*)]
-                  (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]
-      (str "(module\n" rt (apply str datas) (str/join "\n" fns) ")\n"))))
+  "infos: analyze-fn results, in definition order. sigs: var -> signature.
+   var-globals: var -> global name (the var table, top-level def/declare)."
+  ([infos sigs] (module infos sigs {}))
+  ([infos sigs var-globals]
+   (binding [*sigs* sigs *strings* (atom {}) *regions* (atom []) *var-globals* var-globals
+             *globals* (atom []) *elem* (atom #{}) *env-types* (atom {}) *fn-values* (atom {})]
+     (let [fns (vec (doall (map lower-fn infos)))
+           fns (into fns @*regions*)
+           rt (runtime)
+           envs (for [[kinds t] (sort-by val @*env-types*)]
+                  (str "(type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n"))
+           vars (for [g (sort (vals var-globals))]
+                  (str "(global " g " (mut (ref null eq)) (ref.null none))\n"))
+           datas (for [[s i] (sort-by val @*strings*)]
+                   (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]
+       (str "(module\n" rt (apply str envs) (apply str vars)
+            (str/join "\n" @*globals*) "\n"
+            (when (seq @*elem*) (str "(elem declare func" (apply str (map #(str " $" %) (sort @*elem*))) ")\n"))
+            (apply str datas) (str/join "\n" fns) ")\n")))))

@@ -1,0 +1,5 @@
+;; P1.3: uncaught wrong-arity call of a multi-arity fn that IS a def's value
+;; (native names it: `<mfn area 0x..>`).
+(def area (fn ([s] (* s s)) ([w h] (* w h))))
+(println "ok" (area 3) (area 3 4))
+(area 1 2 3)

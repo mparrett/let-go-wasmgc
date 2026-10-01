@@ -1,0 +1,15 @@
+;; Lines split out of ../closures.lg at P1.3 (2026-10-01): each needs a
+;; Phase-2 runtime piece (vectors/conj/mapv/nth/count, non-empty map literals,
+;; keyword invoke, atom-of-vector). See README.md. Same order as the original.
+;; closure capturing a loop variable per iteration (let-go#782 shape)
+(println "per-iter" (mapv (fn [f] (f)) (loop [i 0 acc []] (if (< i 3) (recur (inc i) (conj acc (fn [] i))) acc))))
+;; argument-permuting recur (let-go#972 shape) and a 2-exit loop (2a's :multi)
+(defn swap-loop [a b n] (loop [a a b b i 0] (if (< i n) (recur b a (inc i)) [a b])))
+(println "permute" (swap-loop 1 2 3) (swap-loop 1 2 4))
+(defn two-exit [v target] (loop [i 0] (cond (>= i (count v)) [:miss i] (= (nth v i) target) [:hit i] :else (recur (inc i)))))
+(println "two-exit" (two-exit [5 6 7] 6) (two-exit [5 6 7] 9))
+;; try/throw/finally, nested, through a closure
+(defn risky [x] (if (neg? x) (throw (ex-info "neg" {:x x})) (* x 2)))
+(println "try" (try (risky 4) (catch Exception e :caught)) (try (risky -1) (catch Exception e (:x (ex-data e)))))
+(println "finally" (let [log (atom [])] (try (swap! log conj :body) (risky -2) (catch Exception e (swap! log conj :catch)) (finally (swap! log conj :finally))) @log))
+(println "nested-throw" (try ((fn [] (risky -3))) (catch Exception e (ex-message e))))

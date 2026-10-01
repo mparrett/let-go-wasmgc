@@ -1,0 +1,5 @@
+;; P1.3: uncaught wrong-arity call of a multi-arity fn def'd inside a let
+;; (native leaves it unnamed, `<mfn  0x..>`; see driver.lg name-fns).
+(def area (let [k 1] (fn ([s] (* s s k)) ([w h] (* w h k)))))
+(println "ok" (area 3) (area 3 4))
+(area 1 2 3)

@@ -1,0 +1,7 @@
+;; P1.3: a closure, a defn value and a core op value each passed to a defn
+;; that calls it 1e6 times (timing is informational; see the P1.3 report).
+(defn run-n [f n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (f acc i)) acc)))
+(defn add [a b] (+ a b))
+(let [k 3] (println "hot-closure" (run-n (fn [acc i] (+ acc (* i k))) 1000000)))
+(println "hot-defn" (run-n add 1000000))
+(println "hot-core" (run-n + 1000000))

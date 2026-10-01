@@ -6,7 +6,8 @@
 ;; form runs, in order, inside the exported `_main`. The defns are first
 ;; eval'd in this process (in the program's namespace) so ir.build resolves
 ;; self and mutual calls to real vars, which lower-wasm turns into direct
-;; calls (P1.0; a var table is P1.3).
+;; calls (P1.0). Top-level `def`/`declare` vars form the var table (P1.3):
+;; they are only interned here, never eval'd, and the def runs in `_main`.
 (ns driver
   (:require [lower-wasm :as lw] [ir.passes.pipeline :as p]))
 
@@ -37,6 +38,40 @@
 
 (defn expand [form] (unary-minus->unchecked (p/expand-all form)))
 
+(defn def-form? [form] (and (seq? form) (= 'def (first form))))
+(defn def-sym [form]
+  (let [s (second form)] (if (and (seq? s) (= 'with-meta (first s))) (second s) s)))
+
+(defn name-fns
+  "Native names fns compiled while a def's value compiles (compiler.go
+   defName; a fn body clears it), so (def g (fn [a] ..)) reports as `<fn g ..>`
+   in arity errors. Observed on lg 4e769212: a single-arity fn* anywhere in
+   the value outside a fn body gets the name; a multi-arity fn* only when it
+   IS the value (so the named-fn macro's `(fn* ([n] ..))`, inside a let, stays
+   `<mfn  ..>`). Reproduced on the expanded value by giving such fn* forms the
+   def's name, which ir.build keeps as the template name. Skipped when the
+   body mentions the name (a fn* name would shadow the var)."
+  ([nm form] (name-fns nm form true))
+  ([nm form top?]
+   (cond
+     (vector? form) (mapv #(name-fns nm % false) form)
+     (map? form) (into {} (map (fn [[k v]] [(name-fns nm k false) (name-fns nm v false)]) form))
+     (not (seq? form)) form
+     (= 'quote (first form)) form
+     (= 'fn* (first form))
+     (let [multi? (seq? (second form))]
+       (if (or (symbol? (second form)) (and multi? (not top?))
+               (some #(= nm %) (tree-seq coll? seq (rest form))))
+         form
+         (apply list 'fn* nm (rest form))))
+     :else (apply list (map #(name-fns nm % false) form)))))
+
+(defn expand-top [form]
+  (let [e (expand form)]
+    (if (def-form? e)
+      (apply list 'def (second e) (map #(name-fns (def-sym e) %) (drop 2 e)))
+      e)))
+
 (defn expand-defn
   "Macroexpand the body exactly as the IR pipeline does before build; the
    defn head and args vector stay intact for build-fn's structural reader.
@@ -51,21 +86,32 @@
 (defn -main [in out]
   (let [forms (read-program in)
         _ (eval '(ns user))
-        defns (atom []) body (atom [])]
+        defns (atom []) body (atom []) table (atom [])]
     (doseq [form forms]
       (cond
         (and (seq? form) (= 'ns (first form))) (eval form)
-        ;; declare only interns forward vars so later defns resolve; it has
-        ;; no runtime effect in the module (direct calls bind by name).
-        (and (seq? form) (= 'declare (first form))) (eval form)
+        ;; declare only interns forward vars: a later defn binds by name
+        ;; (direct calls), anything else lands in the var table.
+        (and (seq? form) (= 'declare (first form))) (do (eval form) (swap! table into (rest form)))
         (defn-form? form) (do (eval form) (swap! defns conj (expand-defn form)))
-        (and (seq? form) (#{'def 'defn- 'defmacro 'defmulti 'deftype 'defprotocol} (first form)))
+        ;; intern only: the value is computed by _main at run time
+        (def-form? form) (do (eval (list 'declare (def-sym form)))
+                             (swap! table conj (def-sym form))
+                             (swap! body conj form))
+        (and (seq? form) (#{'defn- 'defmacro 'defmulti 'deftype 'defprotocol} (first form)))
         (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
         :else (swap! body conj form)))
-    (let [main-src (apply list 'defn '_main [] (concat (map expand @body) [nil]))
+    (let [defn-names (set (map second @defns))
+          deffed (set (keep #(when (def-form? %) (def-sym %)) @body))
+          _ (doseq [s deffed :when (defn-names s)]
+              ;; defn calls are direct, so a later def could not rebind them
+              (throw (ex-info (str "lower-wasm: unsupported def of defn var " s) {:var s})))
+          var-globals (into {} (for [s (distinct @table) :when (not (defn-names s))]
+                                 [(resolve s) (str "$var_" s)]))
+          main-src (apply list 'defn '_main [] (concat (map expand-top @body) [nil]))
           infos (mapv lw/analyze-fn (conj @defns main-src))
           sigs (into {} (for [i (butlast infos)]
                           [(resolve (symbol (:name i))) (select-keys i [:name :params :ret])]))]
-      (spit out (lw/module infos sigs)))))
+      (spit out (lw/module infos sigs var-globals)))))
 
 (apply -main *command-line-args*)

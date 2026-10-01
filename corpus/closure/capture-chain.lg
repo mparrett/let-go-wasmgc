@@ -1,0 +1,23 @@
+;; P1.3: closures capturing closures, captures threaded through nested fns.
+(defn make-adder3 [a] (fn [b] (fn [c] (+ a b c))))
+(println "chain" (((make-adder3 1) 20) 300))
+
+(defn nest [x] (let [y (* x 2)] (fn [] (let [z (+ y 1)] (fn [w] (fn [] (+ x y z w)))))))
+(println "nest" ((((nest 5)) 7)))
+
+;; a closure capturing a closure (twice of twice)
+(defn twice [f] (fn [x] (f (f x))))
+(println "twice" ((twice (twice inc)) 0) ((twice (fn [x] (* x 3))) 2))
+
+;; captured bool, string and nil
+(defn pick [flag a b] (fn [] (if flag a b)))
+(println "pick" ((pick true "yes" "no")) ((pick false 1 nil)))
+
+;; an int capture outside i31 range, and one that overflows when used
+(let [big 9000000000000 f (fn [x] (+ x big))] (println "big" (f 1)))
+(let [m 9223372036854775807 f (fn [x] (+ x m))]
+  (println "cap-overflow" (try (f 1) (catch Exception e (ex-message e)))))
+
+;; compose over captured fns, three levels
+(defn compose [f g] (fn [x] (f (g x))))
+(println "compose3" ((compose (compose inc (fn [x] (* x x))) dec) 5))

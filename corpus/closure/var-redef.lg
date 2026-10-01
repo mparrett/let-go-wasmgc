@@ -1,0 +1,30 @@
+;; P1.3: the var table. A defn reads a def'd var at call time, so a second
+;; def is visible to it; a value read before the redef keeps the old fn.
+(def op (fn [a b] (+ a b)))
+(defn apply-op [x y] (op x y))
+(println "first" (apply-op 3 4))
+(def saved op)
+(def op (fn [a b] (* a b)))
+(println "second" (apply-op 3 4) (saved 3 4))
+
+(def n 10)
+(defn add-n [x] (+ x n))
+(println "n" (add-n 1))
+(def n 20)
+(println "n2" (add-n 1) n)
+
+(declare later)
+;; through a defn: a literal (later 1) in the try is a compile-time error natively
+(defn call-later [] (later 1))
+(println "declared-unbound" (try (call-later) (catch Exception e (ex-message e))))
+(def later (fn [x] (inc x)))
+(println "later" (later 1))
+
+(def inc-as-value inc)
+(def plus-as-value +)
+(println "core-value" (inc-as-value 41) (plus-as-value 40 2))
+
+(def counter (atom 0))
+(defn bump! [] (swap! counter inc))
+(bump!) (bump!)
+(println "atom-var" (bump!) (deref counter))

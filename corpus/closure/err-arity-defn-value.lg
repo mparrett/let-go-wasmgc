@@ -1,0 +1,6 @@
+;; P1.3: a defn passed as a value and called with the wrong arity
+;; (`<fn plain 0x..>`), after a caught not-a-function error.
+(defn plain [a] (* a 10))
+(defn call2 [f] (f 1 2))
+(println "not-fn" (try (call2 7) (catch Exception e (ex-message e))))
+(call2 plain)

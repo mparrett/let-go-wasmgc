@@ -1,0 +1,16 @@
+;; P1.3: mutual recursion through def'd closures (declare + def), and
+;; between a defn and a def'd closure.
+(declare g)
+(def f (fn [n] (if (zero? n) :f-done (g (dec n)))))
+(def g (fn [n] (if (zero? n) :g-done (f (dec n)))))
+(println "mutual-def" (f 10) (f 11) (g 3))
+(println "deep-mutual" (f 100000))
+
+(declare k)
+(defn h [n] (if (zero? n) 0 (+ 1 (k (dec n)))))
+(def k (fn [n] (if (zero? n) 0 (+ 1 (h (dec n))))))
+(println "mixed" (h 1000) (k 1001))
+
+;; named fn recursing through itself, multi-arity with an accumulator
+(def fact (fn self ([n] (self n 1)) ([n acc] (if (<= n 1) acc (self (dec n) (* n acc))))))
+(println "named-multi" (fact 20))

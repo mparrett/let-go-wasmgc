@@ -1,0 +1,24 @@
+;; P1.3: closures over loop-carried values; each closure must keep its own
+;; iteration's binding (the let-go#782 shape, without vectors).
+(defn build [n]
+  (loop [i 0 acc nil]
+    (if (< i n) (recur (inc i) (fn [] (+ (* 10 (if acc (acc) 0)) i))) acc)))
+(println "per-iter" ((build 3)) ((build 5)))
+
+(defn sum-closures [n]
+  (loop [i 0 fs nil]
+    (if (< i n)
+      (recur (inc i) (let [prev fs] (fn [] (+ i (if prev (prev) 0)))))
+      (fs))))
+(println "sum" (sum-closures 100))
+
+;; created and called inside the same iteration
+(defn tick [n] (loop [i 0 total 0] (if (< i n) (let [f (fn [x] (+ x i))] (recur (inc i) (f total))) total)))
+(println "tick" (tick 10))
+
+;; dotimes-built chain through an atom of a closure
+(defn chain-of [n]
+  (let [a (atom (fn [] 0))]
+    (dotimes [i n] (let [prev (deref a)] (reset! a (fn [] (+ 1 (prev))))))
+    ((deref a))))
+(println "dotimes" (chain-of 50))
