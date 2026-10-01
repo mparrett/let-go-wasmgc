@@ -228,8 +228,129 @@
         more (if (map? (first more)) (rest more) more)]
     (list 'def nm (apply list 'fn more))))
 
+;; ---------------------------------------------------------------------------
+;; P3.2: multi-namespace programs. `-source-paths <dirs>` (lg's flag, the
+;; same ':'-separated list) names the roots a program's `require`d library
+;; namespaces load from. A require (top-level form or ns clause) is loaded
+;; natively here (lg itself resolves it, so the driver's lg must be started
+;; with the same roots on its own -source-paths), and every namespace it
+;; reaches transitively that lives under a root is indexed, dependency first
+;; (lg's own load order: a post-order walk of the :require clauses):
+;;   defn/defn-   -> lw-rt/lib-defns, compiled on demand (tree-shaken, D64)
+;;   def          -> a var-table global $var_<munged ns/name> (D54, D92)
+;;   other forms  -> run in order by the namespace's init fn
+;; Each namespace's init is a 0-arg lib defn `<ns>/__lw_nsinit` holding its
+;; defs and top-level forms; the require's position in _main calls the inits
+;; of the namespaces it loaded, so load-order side effects (xsofy's
+;; defcreature/defitem registering templates) run where natively they do.
+;; Namespaces outside the roots (string, math, term, ...) are the runtime's.
+
+(def source-paths (atom []))
+
+(defn path-exists? [p] (some? (try (os/stat p) (catch e nil))))
+
+(defn ns-file
+  "The source file of ns-sym under the source paths, or nil (a native or
+   runtime namespace)."
+  [ns-sym]
+  (let [rel (str (-> (str ns-sym) (clojure.string/replace "." "/") (clojure.string/replace "-" "_")) ".lg")]
+    (some #(let [p (str % "/" rel)] (when (path-exists? p) p)) @source-paths)))
+
+(defn libspec-ns [spec]
+  (cond (symbol? spec) spec
+        (and (vector? spec) (symbol? (first spec))) (first spec)
+        :else nil))
+
+(defn ns-form-requires [nsf]
+  (for [clause (drop 2 nsf)
+        :when (and (seq? clause) (#{:require :use} (first clause)))
+        spec (rest clause)
+        :let [n (libspec-ns spec)] :when n]
+    n))
+
+(defn require-form-nss
+  "Namespaces a top-level (require 'a '[b :as c]) names, or nil when form
+   is not one."
+  [form]
+  (when (and (seq? form) (#{'require 'use} (first form)))
+    (keep #(libspec-ns (if (and (seq? %) (= 'quote (first %))) (second %) %)) (rest form))))
+
+(def lib-loaded (atom #{}))   ; namespaces already indexed (each inits once)
+
+(defn lib-order!
+  "[[ns path] ...] not yet indexed that loading roots reaches, dependency
+   first; a cycle is an error (lg would fail on it too)."
+  [roots]
+  (let [out (atom []) seen (atom @lib-loaded)]
+    (letfn [(visit [n stack]
+              (when-let [path (ns-file n)]
+                (cond (some #{n} stack)
+                      (throw (ex-info (str "lower-wasm: namespace cycle " (clojure.string/join " -> " (map str (conj stack n)))) {}))
+                      (contains? @seen n) nil
+                      :else
+                      (let [nsf (first (filter #(and (seq? %) (= 'ns (first %))) (read-program path)))]
+                        (doseq [r (ns-form-requires nsf)] (visit r (conj stack n)))
+                        (swap! seen conj n)
+                        (swap! out conj [n path])))))]
+      (doseq [r roots] (visit r [])))
+    @out))
+
+(defn strip-def-doc
+  "(def x \"doc\" v) as (def x v)."
+  [form]
+  (if (and (= 4 (count form)) (string? (nth form 2))) (list 'def (second form) (nth form 3)) form))
+
+(declare expand-top)
+
+(defn index-lib-ns!
+  "Index one loaded library namespace (see above). Returns the init var's
+   symbol. var-globals collects the namespace's def vars."
+  [ns-sym path var-globals]
+  (binding [*ns* (the-ns ns-sym)]
+    (let [forms (read-program path)
+          init-forms (atom [])]
+      (doseq [form forms]
+        (let [head (when (seq? form) (first form))]
+          (cond
+            (#{'ns 'defmacro 'declare} head) nil
+            (#{'defn 'defn-} head)
+            (let [[nm _] (lw-rt/strip-meta-name (second form))
+                  v (lw-rt/ns-var ns-sym nm)]
+              (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " did not load") {})))
+              (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name nm :lib true
+                                              :arities (lw-rt/arities (drop 2 form))}))
+            (#{'def 'defonce} head)
+            (let [form (strip-def-doc (apply list 'def (rest form)))
+                  [nm _] (lw-rt/strip-meta-name (second form))
+                  v (lw-rt/ns-var ns-sym nm)]
+              (swap! var-globals assoc v (str "$var_" (lw/munge-id (str ns-sym "/" nm))))
+              ;; the name's reader meta (^:private, ^:dynamic) has no run-time
+              ;; effect here, and ir.build would evaluate a (with-meta ..) name
+              (swap! init-forms conj (expand-top (list 'def nm (nth form 2)))))
+            (#{'defmulti 'deftype 'defprotocol 'defrecord} head)
+            (throw (ex-info (str "lower-wasm: unsupported top-level form " head " in " ns-sym) {:head head}))
+            :else (swap! init-forms conj (expand-top form)))))
+      (let [init-sym '__lw_nsinit
+            v (intern ns-sym init-sym (fn [] nil))]
+        (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name init-sym :lib true :pre-expanded true
+                                        :arities [(into [[]] (conj @init-forms nil))]})
+        (symbol (str ns-sym) (str init-sym))))))
+
+(defn load-libs!
+  "Natively load what form requires, index each newly reached library
+   namespace, and return the form _main runs in its place (the inits)."
+  [form nss var-globals]
+  (let [order (lib-order! nss)]
+    (eval form)
+    (let [inits (doall (for [[n path] order]
+                         (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
+      (when (seq inits) (apply list 'do (map list inits))))))
+
 (defn -main [& argv]
-  (let [skip-arg (second (drop-while #(not= "--skip" %) argv))
+  (let [sp-arg (second (drop-while #(not= "-source-paths" %) argv))
+        _ (reset! source-paths (if sp-arg (vec (remove empty? (clojure.string/split sp-arg #":"))) []))
+        argv (if sp-arg (remove #{"-source-paths" sp-arg} argv) argv)
+        skip-arg (second (drop-while #(not= "--skip" %) argv))
         skip (set (map symbol (when skip-arg (clojure.string/split skip-arg #","))))
         argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
         flags (set (filter #(clojure.string/starts-with? % "--") argv))
@@ -253,6 +374,7 @@
                 forms)
         _ (eval '(ns user))
         defns (atom []) body (atom []) table (atom []) decls (atom [])
+        lib-globals (atom {})
         ;; names defined by more than one defn/defn-/def form (bug-09)
         redef (set (for [[s n] (frequencies (keep defining-sym forms)) :when (> n 1)] s))
         process!
@@ -269,7 +391,16 @@
                   (doseq [m test-macros] (eval m)))
               (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defns into (expand-defn form)))
               (decl-form? form) (do (native! form) (swap! decls conj (resolve (second form))))
-              (and (seq? form) (= 'ns (first form))) (native! form)
+              (and (seq? form) (= 'ns (first form)))
+              (let [nss (ns-form-requires form)
+                    init (load-libs! form nss lib-globals)]
+                (when init (swap! body conj init)))
+              ;; P3.2: a require of library namespaces runs their inits here
+              (require-form-nss form)
+              (let [init (try (load-libs! form (require-form-nss form) lib-globals)
+                              (catch e (if (::native (ex-data e)) (throw e)
+                                           (throw (ex-info "native compile error" {::native (native-msg e false)})))))]
+                (when init (swap! body conj init)))
               ;; declare only interns forward vars: a later defn binds by name
               ;; (direct calls), anything else lands in the var table.
               (and (seq? form) (= 'declare (first form))) (do (native! form) (swap! table into (rest form)))
@@ -295,8 +426,9 @@
           _ (doseq [s deffed :when (defn-names s)]
               ;; defn calls are direct, so a later def could not rebind them
               (throw (ex-info (str "lower-wasm: unsupported def of defn var " s) {:var s})))
-          var-globals (into {} (for [s (distinct @table) :when (not (defn-names s))]
-                                 [(resolve s) (str "$var_" (lw/munge-id s))]))
+          var-globals (into @lib-globals
+                            (for [s (distinct @table) :when (not (defn-names s))]
+                              [(resolve s) (str "$var_" (lw/munge-id s))]))
           body (if test?
                  (concat @body [(list 'println (str "\nTesting " (ns-name *ns*)))]
                          (map list @tests) ['(__t-summary)])

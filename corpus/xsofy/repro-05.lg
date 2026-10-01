@@ -1,0 +1,14 @@
+;; repro-05 (P3.2): natives the dump and xsofy reach with no rt/ twin, and
+;; binding *out*. Native stdout:
+;;   2 10000000000 -3 1,2
+;;   Array [1 2] true
+;;   after 3 4
+;; ("to stderr" goes to stderr). Backend before: TypeError: nil is not a
+;; function (core/long, core/ints, core/re-find, string/join, *assert*,
+;; push-binding!), and binding *out* printed to stdout.
+(require '[clojure.string :as str])
+(println (long 2.7) (long 1e10) (long -3.9) (str/join "," [1 2]))
+(println (re-find #"Array" (str (type (int-array [1 2])))) (vec (ints [1 2])) (some? (now)))
+(binding [*out* *err*] (println "to stderr"))
+(println "after" (deref (volatile! 3)) @(reduced 4))
+(assert (= 1 1))

@@ -1,0 +1,7 @@
+;; repro-06 (P3.2): os/args. dump-world.lg finds its own arguments by
+;; scanning os/args. Run as `repro-06.lg a b`. Native:
+;;   ["a" "b"]
+;; backend before: os/args was an unbound native (nil), so the dump ran with
+;; its default seed whatever the command line said.
+(require '[clojure.string :as str])
+(println (pr-str (vec (rest (drop-while #(not (str/ends-with? % "repro-06.lg")) os/args)))))

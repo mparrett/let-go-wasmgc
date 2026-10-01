@@ -304,14 +304,16 @@
   "typeinfer rewrites some consts' aux to [:const <type> <value>]; any other
    vector aux is a vector literal."
   [a]
-  (and (vector? a) (= 3 (count a)) (= :const (first a)) (keyword? (second a))))
+  ;; P3.2: not a Var: lg's vector?/string?/keyword? see through a Var to its
+  ;; value, and a library def's var is bound at compile time
+  (and (not (var? a)) (vector? a) (= 3 (count a)) (= :const (first a)) (keyword? (second a))))
 
 (defn const-val [nid]
   (let [a (ir/aux (src-of nid) *f*)] (if (typed-aux? a) (nth a 2) a)))
 
 (defn template? [nid]
   (and (= :const (ir/op nid *f*))
-       (let [a (ir/aux nid *f*)] (and (map? a) (contains? #{:fn-template :multi-fn-template} (:kind a))))))
+       (let [a (ir/aux nid *f*)] (and (not (var? a)) (map? a) (contains? #{:fn-template :multi-fn-template} (:kind a))))))
 
 (defn closure-val?
   "An fn* value: its template const, :make-closure, or a :push-closed link."
@@ -327,7 +329,7 @@
        (let [r (src-of nid)] (or (contains? *linked* r) (contains? *try-srcs* r)))))
 
 (defn symbol-const? [nid]
-  (and (= :const (ir/op (src-of nid) *f*)) (symbol? (const-val nid))))
+  (and (= :const (ir/op (src-of nid) *f*)) (let [v (const-val nid)] (and (not (var? v)) (symbol? v)))))
 
 (defn var-const?
   "A Var object constant (a :def's target, or #'x)."
@@ -350,7 +352,7 @@
   "A string literal: materialised at each use, so an intrinsic that wants the
    literal itself (bytes-of-string, trap) reads it without a Str being built."
   [nid]
-  (and (= :const (ir/op (src-of nid) *f*)) (string? (const-val nid))))
+  (and (= :const (ir/op (src-of nid) *f*)) (let [v (const-val nid)] (and (not (var? v)) (string? v)))))
 
 (defn call-var
   "The var a :call inst calls directly, or nil."
@@ -623,6 +625,13 @@
     (str "(struct.new $Kw " (if (namespace kw) (bytes-wat (namespace kw)) "(ref.null none)") " "
          (bytes-wat (name kw)) " (i64.const 0))")))
 
+(defn literal-regex
+  "The source text of regex v when it matches only itself, else nil."
+  [v]
+  (when (= "let-go.lang.Regex" (str (type v)))
+    (let [t (str v) src (subs t 2 (dec (count t)))]
+      (when (re-matches #"[A-Za-z0-9 _:,;=<>/'-]*" src) src))))
+
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
   [v]
@@ -630,6 +639,9 @@
         (keyword? v) (kw-wat v)
         (char? v) (str "(struct.new $Char (i32.const " (int v) "))")
         (float? v) (float-wat v)
+        ;; P3.2: a regex whose source has no metacharacter is matched as a
+        ;; plain string (lw-ext/re-find-lit); others stay Phase-2 constants
+        (and *rt* (literal-regex v)) (str-wat (literal-regex v))
         (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
         (str "(global.get " (const-global! v) ")")
         :else nil))
@@ -912,6 +924,81 @@
         (set (rt-call-expr #'wasm.core/sub [(arg-as x :box)]) :box)
         (set (str "(i64.sub (i64.const 0) (call $rt_int_sub " (arg-as x :box) "))") :int)))))
 
+(defn push-out!
+  "Stand-in for (push-binding! #'*out* h) in lowered code (P3.2,
+   binding-out); never called natively."
+  [h] nil)
+(defn pop-out! "Stand-in for (pop-binding! #'*out*)." [] nil)
+(defn push-var! "Stand-in for (push-binding! #'v x); k names v." [k x] nil)
+(defn pop-var! "Stand-in for (pop-binding! #'v)." [k] nil)
+
+(declare print->rt)
+
+(defn binding-out
+  "P3.2: (binding [*out* h] ..) expands to push-binding!/pop-binding! of
+   (var *out*); a var constant would be a Phase-2 value (and a capture in the
+   finally region), so the expanded form is rewritten to push-out!/pop-out!,
+   which the backend lowers onto a stack of output fds that host-write's fd 1
+   follows. Binding any other dynamic var is refused by name."
+  [form]
+  (cond
+    (vector? form) (mapv binding-out form)
+    (map? form) (into {} (map (fn [[k v]] [(binding-out k) (binding-out v)]) form))
+    (not (seq? form)) form
+    (= 'quote (first form)) form
+    (and (symbol? (first form)) (#{#'push-binding! #'pop-binding!} (try (resolve (first form)) (catch e nil))))
+    (let [[_ vf & more] form
+          vr (when (and (seq? vf) (= 'var (first vf))) (try (resolve (second vf)) (catch e nil)))]
+      (when-not (var? vr)
+        (throw (ex-info (str "lower-wasm: binding of " (pr-str vf) " is not supported") {})))
+      ;; never in tail position: a tail call skips call-wat's intercept.
+      ;; Any other var is a var-table var (checked at lowering): binding
+      ;; saves its global on a stack and restores it in the finally, which is
+      ;; exact for a single-threaded program (no binding conveyance)
+      (let [push? (= #'push-binding! (resolve (first form)))
+            k (keyword (namespace (symbol vr)) (name (symbol vr)))]
+        (cond (and push? (= vr #'*out*)) (list 'do (list 'lower-wasm/push-out! (binding-out (first more))) nil)
+              (= vr #'*out*) (list 'do (list 'lower-wasm/pop-out!) nil)
+              push? (list 'do (list 'lower-wasm/push-var! k (binding-out (first more))) nil)
+              :else (list 'do (list 'lower-wasm/pop-var! k) nil))))
+    ;; the binding's body: the backend's own println (env.print_*) knows no
+    ;; fds, so a print call written inside it goes through the runtime's
+    ;; twin, which writes with host-write (named limit: one in a fn called
+    ;; from the body still prints to stdout)
+    (and (= 'do (first form)) (seq? (second form)) (symbol? (first (second form)))
+         (= #'push-binding! (try (resolve (first (second form))) (catch e nil))))
+    (apply list 'do (binding-out (second form)) (map #(binding-out (print->rt %)) (drop 2 form)))
+    :else (apply list (map binding-out form))))
+
+(def print-twins {#'println 'wasm.host/println #'print 'wasm.host/print #'prn 'wasm.host/prn #'pr 'wasm.host/pr})
+
+(defn print->rt [form]
+  (cond (vector? form) (mapv print->rt form)
+        (map? form) (into {} (map (fn [[k v]] [(print->rt k) (print->rt v)]) form))
+        (symbol? form) (or (print-twins (try (resolve form) (catch e nil))) form)
+        (not (seq? form)) form
+        (= 'quote (first form)) form
+        :else (apply list (map print->rt form))))
+
+(defn binding-call-wat [nid v args]
+  (let [bound-global
+        (fn []
+          (let [k (const-val (first args))
+                vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
+                g (when vr (var-global vr))]
+            (or g (fail (str "lower-wasm: binding of " (namespace k) "/" (name k)
+                             " is not supported (not a var-table var)") {:var vr :fn *fname*}))))]
+    (str (condp = v
+           #'push-out! (str "(call $rt_push_out " (arg-as (first args) :box) ")")
+           #'pop-out! "(call $rt_pop_out)"
+           #'push-var! (let [g (bound-global)]
+                         (str "(global.set $bind_stack (struct.new $List (global.get " g ") (global.get $bind_stack) (i64.const 1) (ref.null none)))"
+                              " (global.set " g " " (arg-as (second args) :box) ")"))
+           #'pop-var! (let [g (bound-global)]
+                        (str "(global.set " g " (struct.get $List 0 (ref.cast (ref $List) (global.get $bind_stack))))"
+                             " (global.set $bind_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $bind_stack))))")))
+         " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))
+
 (defn call-wat [nid v args]
   (let [ent (get @*sigs* v)]
     (cond
@@ -919,6 +1006,7 @@
       (and *rt* (rt-overrides v)) ((rt-overrides v) nid args)
       ent (direct-call-wat nid ent args)
       (exn-call-wat nid v args) (exn-call-wat nid v args)
+      (#{#'push-out! #'pop-out! #'push-var! #'pop-var!} v) (binding-call-wat nid v args)
       (atom-call-wat nid v args) (atom-call-wat nid v args)
       (= v core-println)
       (str (str/join " (call $rt_print_space) " (map print-wat args))
@@ -1077,7 +1165,7 @@
       ;; the boundary helper: in wasm the bytes already are the string (D5);
       ;; as an lg value a string is the Str box
       "string-of-bytes" [(str "(struct.new $Str " (arg-as (a 0) :box) " (i64.const -1))") :box]
-      "host-write" [(str "(i64.extend_i32_s (call $rt_host_write (i32.wrap_i64 " (arg-as (a 0) :int) ") "
+      "host-write" [(str "(i64.extend_i32_s (call $rt_host_write (call $rt_out_fd (i32.wrap_i64 " (arg-as (a 0) :int) ")) "
                          (cast-ref "$Bytes" (a 1)) "))") :int]
       "host-sleep" [(str "(call $host_sleep " (arg-as (a 0) :int) ")") :void]
       "host-nanotime" ["(call $host_nanotime)" :int]
@@ -1391,7 +1479,15 @@
   [v]
   ;; a core op as a value: the runtime's twin when it is compiled in (every
   ;; arity, native's errors), else the backend's IR-op-arity-only fn
-  (cond (and *rt* (value-substs v)) (str "(global.get " (defn-fn-global (value-substs v)) ")")
+  (cond (= v #'*in-wasm*) "(global.get $true)"
+        ;; P3.2: *assert* is true natively (assert's check runs)
+        (= v #'*assert*) "(global.get $true)"
+        ;; D87: *out*/*err* are the runtime's two standard handles
+        (and *rt* (#{#'*out* #'*err*} v))
+        (let [s (get-in (callee-sig (if (= v #'*out*) #'wasm.host/out-handle #'wasm.host/err-handle)) [:arities 0])]
+          (str "(call $" (:name s) ")" (coerce (:ret s) :box)))
+        (and *rt* (= v #'os/args)) "(call $rt_os_args)"
+        (and *rt* (value-substs v)) (str "(global.get " (defn-fn-global (value-substs v)) ")")
         (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
         (callee-sig v) (str "(global.get " (defn-fn-global v) ")")
@@ -1453,7 +1549,7 @@
    defn, a closure or a try region) stays refused (P1.4)."
   [nid]
   (let [[vr val] (ir/refs nid *f*) v (const-val vr) g (get *var-globals* v)]
-    (if (and g (= *fname* "_main"))
+    (if (and g (or (= *fname* "_main") (str/ends-with? *fname* "/__lw_nsinit")))
       (when val (str "(global.set " g " " (arg-as val :box) ")"))
       (fail "unsupported op :def" {:op :def :var v :nid nid :fn *fname*}))))
 
@@ -1790,17 +1886,27 @@
           {:name fname :f f :tree tree :params params :ret ret :caps [] :export? true
            :absorbed (or absorbed-insts #{}) :func-vals fvals})))))
 
-(defn self-call?
-  "Does f call itself by var (typeinfer's own self-call test)?"
+(defn same-name-calls
+  "The vars f calls whose name is f's own (typeinfer's self-call test
+   compares names only)."
   [f]
   (let [nm (str (ir/fn-name f))]
-    (some (fn [b]
-            (some (fn [i]
-                    (and (= :call (ir/op i f))
-                         (let [c (first (ir/refs i f))]
-                           (and c (= :load-var (ir/op c f)) (= nm (name (symbol (ir/aux c f))))))))
-                  (ir/block-insts b f)))
-          (ir/blocks f))))
+    (set (for [b (ir/blocks f) i (ir/block-insts b f)
+               :when (= :call (ir/op i f))
+               :let [c (first (ir/refs i f))]
+               :when (and c (= :load-var (ir/op c f)) (= nm (name (symbol (ir/aux c f)))))]
+           (ir/aux c f)))))
+
+(defn self-call?
+  "Does f call itself by var (typeinfer's own self-call test)? P3.2: false
+   when f also calls a same-named var of another namespace (string's
+   ends-with? calling core/ends-with?): typeinfer would apply the declared
+   self return type to that call too. UPSTREAM finding (typeinfer's
+   call-declared-type matches the callee by name, not var)."
+  [f]
+  (let [vs (same-name-calls f)
+        own (try (resolve (symbol (str (ir/fn-name f)))) (catch e nil))]
+    (and (seq vs) (every? #(= own %) vs))))
 
 ;; P2.11 (F9, D87): infer-arg-types types every param that + - * < ... touch
 ;; :int, whatever the other operand is, so a float helper (wasm.math/exp*:
@@ -1874,7 +1980,30 @@
            more (remove boxed (float-tainted-params info))]
        (if (empty? more) info (recur (into boxed more)))))))
 
+(defn licm-validate-error? [e]
+  (str/includes? (str (ex-message e)) "validate after licm"))
+
+(defn without-licm
+  "Run thunk with the pipeline's licm pass left out (P3.2). ir.passes.licm
+   leaves a cross-block ref on a few shapes (xsofy's bfs-path and
+   read-dismiss-key!, census 2026-10-01), which the validate after it
+   rejects; hoisting is an optimisation, so the fn is rebuilt and optimised
+   without it. UPSTREAM finding."
+  [thunk]
+  (let [orig p/default-pass-list]
+    (alter-var-root #'p/default-pass-list (fn [l] (vec (remove #(= "licm" (nth % 1)) l))))
+    (try (thunk) (finally (alter-var-root #'p/default-pass-list (constantly orig))))))
+
+(declare analyze-fn**)
+
 (defn analyze-fn*
+  [src wname multi?]
+  (try (analyze-fn** src wname multi?)
+       (catch e (if (licm-validate-error? e)
+                  (without-licm #(analyze-fn** src wname multi?))
+                  (throw e)))))
+
+(defn analyze-fn**
   [src wname multi?]
   (do
    (let [nm (str (second src)) f (ir.build/build-fn src)]
@@ -2169,7 +2298,45 @@
     (i32.store8 offset=32 (local.get $i) (array.get_u $Bytes (local.get $b) (local.get $i)))
     (local.set $i (i32.add (local.get $i) (i32.const 1)))
     (br $l)))
-  (call $host_write (local.get $fd) (i32.const 32) (local.get $n)))"))
+  (call $host_write (local.get $fd) (i32.const 32) (local.get $n)))
+;; (binding [*out* h] ..) (P3.2): a stack of boxed fds; fd 1 follows its top
+(global $out_stack (mut (ref null eq)) (ref.null none))
+;; saved values of bound var-table vars (P3.2), most recent first
+(global $bind_stack (mut (ref null eq)) (ref.null none))
+(func $rt_out_fd (param $fd i32) (result i32)
+  (if (i32.and (i32.eq (local.get $fd) (i32.const 1)) (i32.eqz (ref.is_null (global.get $out_stack))))
+    (then (return (i32.wrap_i64 (call $rt_unbox_int (struct.get $List 0 (ref.cast (ref $List) (global.get $out_stack))))))))
+  (local.get $fd))
+(func $rt_push_out (param $h (ref null eq))
+  (global.set $out_stack (struct.new $List
+    (call $rt_box_int (struct.get $Handle 0 (ref.cast (ref $Handle) (local.get $h))))
+    (global.get $out_stack) (i64.const 1) (ref.null none))))
+(func $rt_pop_out
+  (global.set $out_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $out_stack)))))
+;; os/args (P3.2): the host's argv as an ArrayVector of Strings, like
+;; native's [lg-path prog args...]; env.arg follows getenv's contract (the
+;; byte length; nothing copied when it exceeds cap), so ask, grow, copy
+(func $rt_host_arg (param $i i32) (result (ref null eq)) (local $n i32) (local $j i32) (local $r (ref null $Bytes))
+  (local.set $n (call $host_arg (local.get $i) (i32.const 32) (i32.const 0)))
+  (if (i32.gt_u (i32.add (local.get $n) (i32.const 32)) (i32.mul (memory.size) (i32.const 65536)))
+    (then (drop (memory.grow (i32.sub (i32.add (i32.shr_u (i32.add (local.get $n) (i32.const 32)) (i32.const 16)) (i32.const 1)) (memory.size))))))
+  (drop (call $host_arg (local.get $i) (i32.const 32) (local.get $n)))
+  (local.set $r (array.new_default $Bytes (local.get $n)))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $j) (local.get $n)))
+    (array.set $Bytes (local.get $r) (local.get $j) (i32.load8_u offset=32 (local.get $j)))
+    (local.set $j (i32.add (local.get $j) (i32.const 1)))
+    (br $l)))
+  (struct.new $Str (local.get $r) (i64.const -1)))
+(func $rt_os_args (result (ref null eq)) (local $v (ref null eq)) (local $i i32) (local $n i32)
+  (local.set $n (call $host_argc))
+  (local.set $v (call $wasm.pvec/empty-vec#0__box))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+    (local.set $v (call $wasm.pvec/vconj#2__box (local.get $v) (call $rt_host_arg (local.get $i))))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (call $wasm.pvec/varray#1__box (local.get $v)))"))
 
 (defn exn-runtime []
   (str
@@ -2377,15 +2544,25 @@
                       (bytes-wat "lower-wasm: deref/reset!/swap! of a non-atom (Phase 2)")) "))
   (ref.cast (ref $Atom) (local.get $a)))
 (func $rt_deref (param $a (ref null eq)) (result (ref null eq))
-  (struct.get $Atom 0 (call $rt_atom_of (local.get $a))))
+  " (when *rt* ";; D108: anything but an Atom goes to the runtime's deref (volatile,
+  ;; reduced, native's error text)
+  (if (i32.eqz (ref.test (ref $Atom) (local.get $a)))
+    (then (return_call $wasm.core/deref#1__box (local.get $a))))
+  ") "(struct.get $Atom 0 (call $rt_atom_of (local.get $a))))
 (func $rt_reset (param $a (ref null eq)) (param $v (ref null eq)) (result (ref null eq))
-  (struct.set $Atom 0 (call $rt_atom_of (local.get $a)) (local.get $v)) (local.get $v))
+  " (when *rt* "(if (i32.eqz (ref.test (ref $Atom) (local.get $a)))
+    (then (return_call $wasm.core/reset!#2__box (local.get $a) (local.get $v))))
+  ") "(struct.set $Atom 0 (call $rt_atom_of (local.get $a)) (local.get $v)) (local.get $v))
 "
      (apply str
             (for [k (range 3)]
               (str "(func $rt_swap" k " (param $a (ref null eq)) (param $f (ref null eq))"
                    (apply str (map #(str " (param $x" % " (ref null eq))") (range k)))
                    " (result (ref null eq)) (local $at (ref null $Atom)) (local $v (ref null eq))
+  " (when *rt* (str "(if (i32.eqz (ref.test (ref $Atom) (local.get $a)))
+    (then (return_call $wasm.core/swap!#" (+ k 2) "__box (local.get $a) (local.get $f)"
+                                     (apply str (map #(str " (local.get $x" % ")") (range k))) ")))
+  ")) "
   (local.set $at (call $rt_atom_of (local.get $a)))
   (local.set $v (call $rt_invoke" (inc k) " (local.get $f) (struct.get $Atom 0 (local.get $at))"
                    (apply str (map #(str " (local.get $x" % ")") (range k))) "))
@@ -2437,6 +2614,9 @@
          "(import \"env\" \"write\" (func $host_write (param i32 i32 i32) (result i32)))\n"
          "(import \"env\" \"sleep\" (func $host_sleep (param i64)))\n"
          "(import \"env\" \"nanotime\" (func $host_nanotime (result i64)))\n"
+         ;; P3.2: os/args (proposed ABI addition, see run.mjs)
+         "(import \"env\" \"argc\" (func $host_argc (result i32)))\n"
+         "(import \"env\" \"arg\" (func $host_arg (param i32 i32 i32) (result i32)))\n"
          ;; D88/D97: the term imports (read_key suspends under JSPI)
          "(import \"term\" \"read_key\" (func $term.read_key (param i32 i32) (result i32)))\n"
          "(import \"term\" \"key_pending\" (func $term.key_pending (result i32)))\n"
@@ -2626,7 +2806,7 @@
 
 (defn expand-form
   "Macroexpand one form as the driver does before ir.build (D23, D35)."
-  [form] (seq-loop-bindings (fold-literal-ifs (bare-try->do (unary-minus->unchecked (p/expand-all form))))))
+  [form] (seq-loop-bindings (fold-literal-ifs (bare-try->do (unary-minus->unchecked (binding-out (p/expand-all form)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The runtime compiled through the backend (P2.1). Runtime defns are
@@ -2651,9 +2831,12 @@
   [v]
   (when (and *rt* (var? v))
     (cond (contains? lw-rt/defn-by-var v) v
+          ;; P3.2: backend fills win over a runtime twin (let-go.core/now)
+          (contains? lw-rt/ext-twins v) (lw-rt/ext-twins v)
           (lw-rt/twin-of v) (lw-rt/twin-of v)
           (contains? lw-rt/core-defns v) v
           (contains? lw-rt/ext-defns v) v
+          (contains? @lw-rt/lib-defns v) v
           :else nil)))
 
 (defn qual-name [v] (subs (str v) 2))
@@ -2689,7 +2872,11 @@
            (catch e (swap! *rt* assoc-in [:state v] :failed)
                     (swap! *sigs* dissoc v)
                     (swap! *rt* update :failures (fnil conj []) [(qual-name v) (ex-message e)])))
-      (rt-analyze*! v))))
+      (if (:lib (lw-rt/source-defn v))
+        ;; P3.2: name the library defn (callers first) in a compile error
+        (try (rt-analyze*! v)
+             (catch e (throw (ex-info (str "in " (qual-name v) ": " (ex-message e)) (or (ex-data e) {}) e))))
+        (rt-analyze*! v)))))
 
 (defn rt-analyze*!
   [v]
@@ -2700,7 +2887,8 @@
       (binding [*ns* (the-ns (:ns d))]
         (let [srcs (doall (for [[params & body] (:arities d)
                                 :let [[params body] (split-rest-pattern params body)]]
-                            (apply list 'defn (:name d) params (map expand-form body))))]
+                            ;; a namespace init (driver, P3.2) arrives expanded
+                            (apply list 'defn (:name d) params (if (:pre-expanded d) body (map expand-form body)))))]
           (doseq [s srcs] (analyze-deps! s))
           (doseq [s srcs]
             ;; P2.12 (amends D78): a variadic arity is `<name>#v` (or the
@@ -2709,7 +2897,13 @@
             (let [params (nth s 2)
                   var? (variadic-params? params)
                   argc (if var? "v" (count params))
-                  info (assoc (analyze-fn s (rt-fn-name v argc multi?) multi?) :export? false)]
+                  ;; P3.2: a library defn's params stay boxed. Its callers
+                  ;; are not covered by the driver's param-typing fixpoint,
+                  ;; and typeinfer types a param :int from int ops alone, so
+                  ;; a float or nil argument would hit the unbox error
+                  info (assoc (binding [*box-params* (boolean (:lib d))]
+                                (analyze-fn s (rt-fn-name v argc multi?) multi?))
+                              :export? false :lib (:lib d))]
               (swap! *sigs* update v (fn [e] (let [e (or e {:multi? multi? :base (str (:name d)) :var v})
                                                    sig (select-keys info [:name :params :ret])]
                                                (if var?
@@ -3123,9 +3317,12 @@
   "Lower one pending runtime fn into :lowered (a stub if it fails)."
   [info]
   (swap! *rt* assoc-in [:lowered (str "$" (:name info))]
-         (try (lower-fn info)
+         ;; P3.2: a program library fn fails the compile (no stub)
+         (if (:lib info)
+           (lower-fn info)
+           (try (lower-fn info)
               (catch e (swap! *rt* update :failures (fnil conj []) [(:name info) (ex-message e)])
-                       (stub-fn info (subs (str (ex-message e)) 0 (min 80 (count (str (ex-message e))))))))))
+                       (stub-fn info (subs (str (ex-message e)) 0 (min 80 (count (str (ex-message e)))))))))))
 
 (def box-ref #"\$([^\s()#]+)#([0-9]+)__box")
 
@@ -3243,7 +3440,7 @@
 ;; Names are content-addressed, so a program's additions merge without
 ;; renumbering; the shake then keeps what the program reaches.
 
-(def rtlib-dir (str lw-rt/src-dir "/.rtlib"))
+(def rtlib-dir (let [d (os/getenv "LW_RTLIB_DIR")] (if (seq d) d (str lw-rt/src-dir "/.rtlib"))))
 
 (defn rtlib-key []
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)

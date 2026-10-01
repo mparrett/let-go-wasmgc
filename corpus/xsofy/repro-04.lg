@@ -1,0 +1,9 @@
+;; repro-04 (P3.2): typeinfer's self-call test matches by NAME. string's
+;; ends-with? calls core/ends-with?, so the optimistic self typing
+;; ({ends-with? :int}) typed that call :int and the fn returned i64.
+;; Native:
+;;   true false
+;; backend before the fix:
+;;   error: lower-wasm: a non-Int value reached an Int-typed slot (numeric tower is Phase 2)
+(require '[clojure.string :as str])
+(println (str/ends-with? "abc" "bc") (str/ends-with? "abc" "x"))

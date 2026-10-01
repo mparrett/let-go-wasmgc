@@ -1,0 +1,12 @@
+(ns p32.lib)
+;; repro-02: a library def's var is bound when the backend compiles (the
+;; driver loads the namespace natively); lg's vector?/string?/keyword? see
+;; through a Var to its value, so the :def's Var constant looked like a
+;; vector literal. repro-03: the reader turns ^:private into a
+;; (with-meta name {...}) def name, which ir.build evaluated as an expression.
+(def ^:private mults [[1 0 0 1] [0 -1 -1 0]])
+(def greeting "hi")
+(def ^:dynamic *ctx* {})
+(defn get-m [] mults)
+(defn ctx [] *ctx*)
+(defmacro with-ctx [m & body] `(binding [*ctx* (merge *ctx* ~m)] ~@body))

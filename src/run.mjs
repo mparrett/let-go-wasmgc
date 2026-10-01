@@ -12,7 +12,7 @@ import { Worker, isMainThread, workerData } from 'node:worker_threads';
 
 if (isMainThread) {
   const w = new Worker(new URL(import.meta.url), {
-    workerData: process.argv[2], resourceLimits: { stackSizeMb: 256 },
+    workerData: { wasm: process.argv[2], argv: process.argv.slice(3) }, resourceLimits: { stackSizeMb: 256 },
   });
   w.on('error', (e) => { fs.writeSync(2, `error: ${e && e.message || e}\n`); process.exitCode = 1; });
   w.on('exit', (c) => { if (c) process.exitCode = c; });
@@ -24,6 +24,7 @@ if (isMainThread) {
   const emit = (buf) => { chunks.push(buf); pending += buf.length; if (pending > 1 << 16) flush(); };
 
   let mem;
+  const argv = ['lg', ...workerData.argv];
   const env = {
     print_i64: (v) => emit(Buffer.from(String(v))),
     // copy: the module reuses the scratch region for the next string
@@ -38,13 +39,25 @@ if (isMainThread) {
     },
     sleep: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(ms)); },
     nanotime: () => process.hrtime.bigint(),
+    // os/args (P3.2, proposed ABI addition): `node run.mjs m.wasm prog.lg a b`
+    // reads as native's [lg-path "prog.lg" "a" "b"]; arg follows getenv's
+    // contract (returns the byte length, copies only when it fits in cap)
+    argc: () => argv.length,
+    arg: (i, buf, cap) => {
+      const b = Buffer.from(argv[i] ?? '');
+      if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
+      return b.length;
+    },
   };
 
   // D97 term imports: node has no terminal input here, so this host reads as
   // the runtime's reference does with no input queued: end of input, nothing
   // pending, the 80x24 default (host/ is the interactive JSPI host)
-  const term = { read_key: () => 0, key_pending: () => 0, size: () => [80, 24] };
-  const { instance } = await WebAssembly.instantiate(fs.readFileSync(workerData), { env, term });
+  // P3.2: size (-1, -1) = no terminal: this runner mirrors native lg run
+  // headless, whose term/size is nil off a TTY (term.go), and xsofy keys
+  // its title-card animation on that nil (lw-ext/term-size-v)
+  const term = { read_key: () => 0, key_pending: () => 0, size: () => [-1, -1] };
+  const { instance } = await WebAssembly.instantiate(fs.readFileSync(workerData.wasm), { env, term });
   // the backend's own exports have names no lg symbol can spell (a space),
   // so a program defn exported under its lg name never collides (P1.7 bug-09)
   const ex = instance.exports;

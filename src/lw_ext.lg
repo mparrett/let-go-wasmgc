@@ -27,3 +27,46 @@
 (defn vector-v [& xs] (vec xs))
 (defn hash-map-v [& kvs] (if (nil? kvs) {} (apply assoc {} kvs)))
 (defn hash-set-v [& xs] (into #{} xs))
+
+;; P3.2: natives xsofy's world dump reaches that rt/ has no twin for (lw_rt's
+;; ext-twins routes the native's var here).
+
+(defn long-v
+  "core/long (CoreLongf, lang.go:6552): Int as is, Float truncated (the
+   range check is Go's, against float64 MinInt64/MaxInt64), Char its code,
+   Boolean 1/0."
+  [x]
+  (cond (int? x) x
+        (float? x) (let [f (wasm.str/unbox-float x)]
+                     (if (if (< f -9.223372036854775808e18) true (> f 9.223372036854775807e18))
+                       (wasm.core/raise (wasm.str/str-bytes (str x " can't be coerced to long")))
+                       (wasm.intrinsics/f64-to-i64 f)))
+        (char? x) (int x)
+        (true? x) 1
+        (false? x) 0
+        :else (wasm.core/raise (wasm.str/str-bytes (str x " can't be coerced to long")))))
+
+(defn ints-v
+  "core/ints, core/longs (lang.go:4322): an int-array as is, else a new one."
+  [x]
+  (if (= "let-go.lang.Array" (str (type x))) x (int-array x)))
+
+(defn re-find-lit
+  "core/re-find for a literal pattern: the backend lowers a regex constant
+   with no metacharacters to the String of its source (named limit: regexes
+   are not in the runtime), so a match is the pattern itself."
+  [re s]
+  (if (clojure.string/includes? s re) re nil))
+
+(defn now-v
+  "let-go.core/now: natively a Go time.Time, which only interop (.Sub) can
+   read. The runtime's twin traps; xsofy evaluates (now) at load
+   (ui/clock-epoch) without using it on the world path, so this stands in
+   the host's monotonic ns as an Int (interop on it stays unsupported)."
+  [] (wasm.intrinsics/host-nanotime))
+
+(defn term-size-v
+  "term/size: nil when the host reports no terminal (term.size = -1, -1:
+   native lg off a TTY, which checks/wasm-run.sh mirrors), else the runtime's
+   [cols rows] (term_wasm.go's defaults for a zero dimension)."
+  [] (if (= -1 (wasm.term/term-size)) nil (wasm.term/size)))

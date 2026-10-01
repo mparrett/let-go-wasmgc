@@ -1,0 +1,11 @@
+;; repro-01 (P3.2): term/size off a TTY. Native lg run headless (the oracle):
+;;   nil
+;; backend before the fix (run.mjs reported 80x24, rt's twin mirrors
+;; term_wasm.go, which never returns nil):
+;;   [80 24]
+;; xsofy keys its descend title card on (term/size), so every descend wrote
+;; ANSI escapes to stdout under the backend only (seeds 7/9/10, deep keys).
+;; Fix: run.mjs reports term.size (-1, -1) = no terminal; lw-ext/term-size-v
+;; maps that to nil.
+(require '[term])
+(println (pr-str (term/size)))

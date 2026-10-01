@@ -192,24 +192,36 @@
 (def letgo-commit "4e769212")
 (def letgo-dir (str (os/getenv "HOME") "/projects-new/3p/let-go"))
 
-(def core-forms
-  (let [r (try (os/sh "git" "-C" letgo-dir "show" (str letgo-commit ":pkg/rt/core/core.lg")) (catch e nil))]
+(defn embedded-forms
+  "The forms of let-go's embedded pkg/rt/core/<file> at letgo-commit, read in
+   ns-sym (loaded first: string is loaded on demand natively)."
+  [file ns-sym]
+  (let [r (try (os/sh "git" "-C" letgo-dir "show" (str letgo-commit ":pkg/rt/core/" file)) (catch e nil))]
     (if (and r (= 0 (:exit r)))
-      (binding [*ns* (the-ns 'core)] (read-string (str "[" (:out r) "\n]")))
+      (do (require ns-sym)
+          (binding [*ns* (the-ns ns-sym)] (read-string (str "[" (:out r) "\n]"))))
       [])))
 
-(defn lg-defined? [v]
-  (let [m (meta v)] (and (= "<embedded:core>" (:file m)) (:line m))))
+(def core-forms (embedded-forms "core.lg" 'core))
 
-(def core-defns
-  ;; var -> {:var :ns 'core :name :arities [...]}
-  (into {} (for [form core-forms
+(defn lg-defined?
+  ([v] (lg-defined? v 'core))
+  ([v ns-sym] (let [m (meta v)] (and (= (str "<embedded:" ns-sym ">") (:file m)) (:line m)))))
+
+(defn embedded-defns [ns-sym forms]
+  (into {} (for [form forms
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
-                       v (ns-var 'core nm)
+                       v (ns-var ns-sym nm)
                        ars (arities (drop 2 form))]
-                 :when (and v (lg-defined? v) (seq ars))]
-             [v {:var v :ns 'core :name nm :arities ars :core-lg true}])))
+                 :when (and v (lg-defined? v ns-sym) (seq ars))]
+             [v {:var v :ns ns-sym :name nm :arities ars :core-lg true}])))
+
+(def core-defns
+  ;; var -> {:var :ns 'core :name :arities [...]}; P3.2: let-go's embedded
+  ;; string.lg too (string/join, string/ends-with?: clojure.string's lg fns)
+  (merge (embedded-defns 'core core-forms)
+         (embedded-defns 'string (embedded-forms "string.lg" 'string))))
 
 ;; P2.12: lg defns the backend adds where rt/ has no form for a native's
 ;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
@@ -226,7 +238,20 @@
                  :when v]
              [v {:var v :ns 'lw-ext :name nm :arities (arities (drop 2 form)) :core-lg true}])))
 
+;; P3.2: defns of the program's own library namespaces (the driver's
+;; -source-paths, e.g. xsofy), registered by the driver after it loads them:
+;; var -> {:var :ns :name :arities :lib true}. Compiled on demand like
+;; runtime defns, so only what the program reaches is analysed.
+(def lib-defns (atom {}))
+
+;; P3.2: natives the backend fills from lw_ext.lg (no rt/ twin)
+(def ext-twins
+  {#'core/long #'lw-ext/long-v #'core/ints #'lw-ext/ints-v #'core/longs #'lw-ext/ints-v
+   #'core/re-find #'lw-ext/re-find-lit
+   (resolve 'let-go.core/now) #'lw-ext/now-v
+   #'term/size #'lw-ext/term-size-v})
+
 (defn source-defn
   "The source defn the backend compiles for v: a runtime defn, an lg-defined
-   core fn, or one of src/lw_ext.lg's."
-  [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v)))
+   core fn, one of src/lw_ext.lg's, or a program library defn."
+  [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v) (get @lib-defns v)))

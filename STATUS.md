@@ -35,5 +35,6 @@
 | perf | investigated 2026-10-01 | fable | corpus/perf-report.md; D106; P0.1 queued for application |
 | P2.1 + P2.11 | GREEN 2026-10-01 | — | checks/run-corpus.sh corpus/wasm = 14/14 |
 | P0.1 | running | sonnet | apply D106 speedups |
-| P3.2 | running | opus | driver resolves xsofy; world parity 20 seeds |
+| P3.2 + P3.GATE | PASSED 2026-10-01 | opus | 20/20 (+5/5 autoex, 5/5 descend, 3/3 deep); 313 KB module; verified |
 | P2.3 | measured 2026-10-01 | sonnet | 133/273 (49%); blockers → P2.14 (D112) |
+| P4.1-backend | running | opus | xsofy bundle in the real shell: title + map |

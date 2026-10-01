@@ -1,0 +1,12 @@
+;; repro-02/03 (P3.2): library defs. Run with LG_ARGS="-source-paths corpus/xsofy/lib".
+;; Native:
+;;   [[1 0 0 1] [0 -1 -1 0]] hi
+;;   {:a 1}
+;;   {}
+;; backend before the fixes: compile error `count expected Counted`
+;; (typed-aux? on the def's Var), then the def name evaluated as
+;; (with-meta mults ..); then `binding of p32.lib/*ctx* is not supported`.
+(require '[p32.lib :as lib])
+(println (lib/get-m) lib/greeting)
+(lib/with-ctx {:a 1} (println (lib/ctx)))
+(println (lib/ctx))
