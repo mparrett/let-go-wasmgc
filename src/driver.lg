@@ -1,0 +1,46 @@
+;; lower-wasm driver: compile a whole .lg program to one WasmGC module (D10).
+;;
+;;   lg -source-paths src src/driver.lg <prog.lg> <out.wat>
+;;
+;; Every top-level defn becomes an exported function; every other top-level
+;; form runs, in order, inside the exported `_main`. The defns are first
+;; eval'd in this process (in the program's namespace) so ir.build resolves
+;; self and mutual calls to real vars, which lower-wasm turns into direct
+;; calls (P1.0; a var table is P1.3).
+(ns driver
+  (:require [lower-wasm :as lw] [ir.passes.pipeline :as p]))
+
+(defn read-program [path]
+  (read-string (str "[" (slurp path) "\n]")))
+
+(defn defn-form? [form] (and (seq? form) (= 'defn (first form))))
+
+(defn expand-defn
+  "Macroexpand the body exactly as the IR pipeline does before build; the
+   defn head and args vector stay intact for build-fn's structural reader.
+   A docstring is dropped (it has no runtime effect)."
+  [[_ name & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (when-not (vector? (first more))
+      (throw (ex-info (str "lower-wasm: unsupported defn shape (multi-arity, attr-map or return hint) in " name)
+                      {:name name})))
+    (apply list 'defn name (first more) (map p/expand-all (rest more)))))
+
+(defn -main [in out]
+  (let [forms (read-program in)
+        _ (eval '(ns user))
+        defns (atom []) body (atom [])]
+    (doseq [form forms]
+      (cond
+        (and (seq? form) (= 'ns (first form))) (eval form)
+        (defn-form? form) (do (eval form) (swap! defns conj (expand-defn form)))
+        (and (seq? form) (#{'def 'defn- 'defmacro 'defmulti 'deftype 'defprotocol} (first form)))
+        (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
+        :else (swap! body conj form)))
+    (let [main-src (apply list 'defn '_main [] (concat (map p/expand-all @body) [nil]))
+          infos (mapv lw/analyze-fn (conj @defns main-src))
+          sigs (into {} (for [i (butlast infos)]
+                          [(resolve (symbol (:name i))) (select-keys i [:name :params :ret])]))]
+      (spit out (lw/module infos sigs)))))
+
+(apply -main *command-line-args*)

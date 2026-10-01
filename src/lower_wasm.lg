@@ -1,0 +1,373 @@
+;; lower-wasm: walk ir.structurize's control tree and emit WasmGC text (WAT).
+;; Promoted from ../emit-wasm-probe/lower_wasm.lg at P1.0 (DECISIONS D10/D11).
+;; Strict by design (plan D1): an unknown op, const, tree node or a
+;; structurize fallback is an ex-info naming it, never a silent fallback.
+;;
+;; Scope at P1.0: int/bool arithmetic, comparisons, if/loop/recur, fn-level
+;; recur (:tail), direct calls between the program's own defns, boxed
+;; + - * via runtime helpers, and println of ints / boxed ints / nil /
+;; string literals through the D11 host imports.
+(ns lower-wasm
+  (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st]
+            [clojure.string :as str]))
+
+(def ^:dynamic *f* nil)
+(def ^:dynamic *fname* nil)
+(def ^:dynamic *ret-type* nil)
+(def ^:dynamic *loop* nil)
+(def ^:dynamic *param-kinds* nil)
+;; var -> {:name str :params [kind ...] :ret kind}, for every program defn.
+(def ^:dynamic *sigs* {})
+;; atom: string literal -> data segment index (module-wide).
+(def ^:dynamic *strings* nil)
+
+;; Probe knobs (see ../emit-wasm-probe/ext/README.md). *checked* defaults to
+;; :inline because D3 makes checked + - * the semantics, not an option.
+;; *checked*     :call | :inline | false
+;; *trap*        true -> overflow is `unreachable` instead of (throw $overflow)
+;; *box*         :struct (struct.new $Int) | :i31 (ref.i31, 31-bit range only)
+;; *guard-calls* true -> every direct call sits in a rethrowing try_table
+(def ^:dynamic *checked* :inline)
+(def ^:dynamic *trap* false)
+(def ^:dynamic *box* :struct)
+(def ^:dynamic *guard-calls* false)
+
+(defn fail [msg data]
+  (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
+
+(defn ty [nid]
+  (let [t (ir/type-of nid *f*)]
+    (cond (= t :int) :int (= t :bool) :bool :else :box)))
+
+(defn wt [k] (case k :int "i64" :bool "i32" :box "(ref null eq)"))
+
+(defn coerce [from to]
+  (cond (= from to) ""
+        (and (= from :int) (= to :box))
+        (case *box* :struct " (struct.new $Int)" :i31 " (i32.wrap_i64) (ref.i31)")
+        (and (= from :box) (= to :int))
+        (case *box* :struct " (ref.cast (ref $Int)) (struct.get $Int 0)"
+                    :i31 " (ref.cast (ref i31)) (i31.get_s) (i64.extend_i32_s)")
+        ;; booleans box to the two singletons (D2)
+        (and (= from :bool) (= to :box)) " (call $rt_box_bool)"
+        (and (= from :box) (= to :bool)) " (ref.cast (ref $Bool)) (struct.get $Bool 0)"
+        :else (fail "unsupported coercion" {:from from :to to :fn *fname*})))
+
+(defn lget [nid] (str "(local.get $v" nid ")"))
+
+(defn var-load? [nid] (= (ir/op nid *f*) :load-var))
+
+(defn arg-as [nid k]
+  ;; A :load-var only lowers in callee position (P1.3 adds the var table).
+  (when (var-load? nid)
+    (fail "unsupported op :load-var used as a value" {:var (ir/aux nid *f*) :fn *fname*}))
+  (str (lget nid) (coerce (ty nid) k)))
+
+(def int-binops {:add "i64.add" :sub "i64.sub" :mul "i64.mul"})
+(def chk-binops {:add "call $add_chk" :sub "call $sub_chk" :mul "call $mul_chk"})
+(defn binop [op] (if (= *checked* :call) (chk-binops op) (int-binops op)))
+(defn raise [] (if *trap* "unreachable" "(throw $overflow)"))
+(defn inline-check
+  "Overflow test on an already-computed result r (same sign-xor tests as $add_chk/$sub_chk)."
+  [op a b r]
+  (let [x (if (= op :add) (str "(i64.xor " b " " r ")") (str "(i64.xor " a " " b ")"))]
+    (str "(if (i64.lt_s (i64.and (i64.xor " a " " r ") " x ") (i64.const 0)) (then " (raise) "))")))
+(defn inline-checked? [op] (and (= *checked* :inline) (#{:add :sub :inc :dec} op)))
+(defn int-arith
+  "Instructions computing a op b (i64 operand exprs) into local nid, checked per
+   *checked*. :mul has no inline form, so :inline routes it through $mul_chk."
+  [nid op a b]
+  (let [inst (if (and (= op :mul) *checked*) "call $mul_chk" (binop op))
+        r (str "(" inst " " a " " b ")")]
+    (if (= (ty nid) :int)
+      (str "(local.set $v" nid " " r ")"
+           (when (inline-checked? op) (str " " (inline-check op a b (lget nid)))))
+      ;; result typed :box: compute in a scratch i64, check, then box
+      (str "(local.set $tmp " r ")"
+           (when (inline-checked? op) (str " " (inline-check op a b "(local.get $tmp)")))
+           " (local.set $v" nid " (local.get $tmp)" (coerce :int (ty nid)) ")"))))
+
+(def cmp-ops {:lt "i64.lt_s" :lte "i64.le_s" :gt "i64.gt_s" :gte "i64.ge_s" :eq "i64.eq"})
+
+(defn guard-call [call]
+  ;; try_table whose only handler re-raises: the "cleanup" shape of the EH
+  ;; proposal, so the hot path pays for the table and nothing else.
+  (if *guard-calls*
+    (str "(block $done (result " (wt *ret-type*) ") (throw_ref (block $caught (result exnref) "
+         "(br $done (try_table (result " (wt *ret-type*) ") (catch_all_ref $caught) " call ")))))")
+    call))
+
+(defn string-idx [s]
+  (or (get @*strings* s)
+      (let [i (count @*strings*)] (swap! *strings* assoc s i) i)))
+
+(defn const-wat [nid aux]
+  (let [k (ty nid)]
+    (cond
+      (int? aux) (str "(i64.const " aux ")" (coerce :int k))
+      (nil? aux) (if (= k :box) "(ref.null none)" (fail "nil const in unboxed slot" {:nid nid :fn *fname*}))
+      (boolean? aux) (if (= k :bool) (str "(i32.const " (if aux 1 0) ")")
+                         (fail "unsupported boxed boolean const" {:nid nid :fn *fname*}))
+      (string? aux) (let [i (string-idx aux)]
+                      (str "(array.new_data $Bytes $s" i " (i32.const 0) (i32.const "
+                           (count (.getBytes aux)) "))"))
+      :else (fail "unsupported const" {:value aux :type (type aux) :fn *fname*}))))
+
+(def core-println #'println)
+
+(defn print-wat [nid]
+  ;; one value of println's argument list
+  (case (ty nid)
+    :int (str "(call $print_i64 " (lget nid) ")")
+    :bool (str "(call $rt_print_bool " (lget nid) ")")
+    :box (str "(call $rt_print " (arg-as nid :box) ")")))
+
+(defn call-wat [nid callee args]
+  (let [v (ir/aux callee *f*)
+        sig (get *sigs* v)]
+    (cond
+      sig
+      (do (when (not= (count args) (count (:params sig)))
+            (fail "arity mismatch in direct call" {:callee (:name sig) :argc (count args) :fn *fname*}))
+          (str "(local.set $v" nid " "
+               (guard-call (str "(call $" (:name sig) " "
+                                (str/join " " (map arg-as args (:params sig))) ")"))
+               (coerce (:ret sig) (ty nid)) ")"))
+      (= v core-println)
+      (str (str/join " (call $rt_print_space) " (map print-wat args))
+           " (call $print_nl)"
+           (if (= (ty nid) :box)
+             (str " (local.set $v" nid " (ref.null none))")
+             (fail "println result in unboxed slot" {:nid nid :fn *fname*})))
+      :else (fail "unsupported call target" {:var v :fn *fname*}))))
+
+(defn prim-wat
+  "Arithmetic/compare op `op` over value ids `refs`, result into local nid;
+   nil when op is not one of these."
+  [nid op refs]
+  (let [set (fn [expr] (str "(local.set $v" nid " " expr ")"))
+        all-int? (every? #(= (ty %) :int) refs)]
+    (cond
+      (and (int-binops op) (= 2 (count refs)) all-int?)
+      (int-arith nid op (arg-as (first refs) :int) (arg-as (second refs) :int))
+      (and (int-binops op) (= 2 (count refs)))
+      (set (str "(call $rt_" (name op) " " (arg-as (first refs) :box) " " (arg-as (second refs) :box) ")"
+                (coerce :box (ty nid))))
+      ;; boxed operands are unboxed as ints: a non-int traps (P1.1 owns the
+      ;; general numeric tower)
+      (and (cmp-ops op) (= 2 (count refs)))
+      (set (str "(" (cmp-ops op) " " (arg-as (first refs) :int) " " (arg-as (second refs) :int) ")"
+                (coerce :bool (ty nid))))
+      (and (#{:inc :dec} op) (= 1 (count refs)))
+      (int-arith nid (if (= op :inc) :add :sub) (arg-as (first refs) :int) "(i64.const 1)")
+      :else nil)))
+
+;; Macroexpansion leaves namespace-qualified heads (dotimes -> core/<,
+;; core/inc), which ir.build deliberately keeps as var calls. Calls to these
+;; core vars lower like the matching IR op. `=` is left out: it is only i64.eq
+;; on two ints, and nothing at P1.0 needs it.
+(def core-var-ops {#'< :lt #'<= :lte #'> :gt #'>= :gte
+                   #'+ :add #'- :sub #'* :mul #'inc :inc #'dec :dec})
+
+(defn inst-wat [nid]
+  (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)
+        set (fn [expr] (str "(local.set $v" nid " " expr ")"))]
+    (cond
+      (= op :block-arg) nil
+      (= op :load-var) nil                 ; consumed at its :call site (arg-as rejects other uses)
+      (= op :load-arg) (set (str "(local.get $p" aux ")" (coerce (nth *param-kinds* aux) (ty nid))))
+      (= op :const) (set (const-wat nid aux))
+      (prim-wat nid op refs) (prim-wat nid op refs)
+      (= op :call)
+      (let [callee (first refs)]
+        (when-not (var-load? callee)
+          (fail "unsupported op :call on a non-var callee" {:nid nid :fn *fname*}))
+        (or (when-let [cop (core-var-ops (ir/aux callee *f*))]
+              (or (prim-wat nid cop (rest refs))
+                  (fail "unsupported core call shape" {:var (ir/aux callee *f*) :argc (count (rest refs)) :fn *fname*})))
+            (call-wat nid callee (rest refs))))
+      :else (fail "unsupported op" {:op op :nid nid :fn *fname*}))))
+
+(defn block-wat [bid]
+  (remove nil? (map inst-wat (ir/block-insts bid *f*))))
+
+(defn copy-wat
+  "Parallel copy: push every value, then pop into the destinations in reverse."
+  [vals kinds dests]
+  (concat (map arg-as vals kinds)
+          (map (fn [d] (str "(local.set " d ")")) (reverse dests))))
+
+(defn edge-wat [{:keys [target args]}]
+  (let [params (ir/block-params target *f*)]
+    (copy-wat args (map ty params) (map #(str "$v" %) params))))
+
+(defn term-ref [bid] (first (ir/refs (ir/block-term bid *f*) *f*)))
+
+(defn cond-wat [nid]
+  (case (ty nid)
+    :bool (lget nid)
+    :box (str "(call $rt_truthy " (arg-as nid :box) ")")
+    (fail "unsupported branch condition type" {:type (ty nid) :fn *fname*})))
+
+(defn walk [node]
+  (let [[tag bid] node]
+    (case tag
+      :return (concat (block-wat bid) [(str "(return " (arg-as (term-ref bid) *ret-type*) ")")])
+      ;; fn-level recur: the params are the recur slots; re-enter the body
+      :tail (let [refs (ir/refs (ir/block-term bid *f*) *f*)
+                  kinds *param-kinds*]
+              (when (not= (count refs) (count kinds))
+                (fail "recur arity mismatch" {:fn *fname* :argc (count refs)}))
+              (concat (block-wat bid)
+                      (copy-wat refs kinds (map #(str "$p" %) (range (count kinds))))
+                      ["(br $fn)"]))
+      :seq (let [[_ _ edge next] node] (concat (block-wat bid) (edge-wat edge) (walk next)))
+      :if (let [[_ _ tt et then else cont] node]
+            (concat (block-wat bid)
+                    [(str "(if " (cond-wat (term-ref bid)) " (then")]
+                    (edge-wat tt) (walk then) [") (else"] (edge-wat et) (walk else) ["))"]
+                    (when cont (walk cont))))
+      :loop (let [[_ _ body cont] node]
+              (concat [(str "(block $exit" bid " (loop $head" bid)]
+                      (binding [*loop* bid] (doall (walk body))) ["unreachable))"] (when cont (walk cont))))
+      :continue (concat (edge-wat (nth node 2)) [(str "(br $head" bid ")")])
+      :break (concat (edge-wat (nth node 2)) [(str "(br $exit" *loop* ")")])
+      :fallthrough []
+      (fail "unsupported tree node" {:tag tag :fn *fname*}))))
+
+(defn all-values [f]
+  (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
+        :when (not (#{:load-var} (ir/op i f)))]
+    i))
+
+(defn analyze-fn
+  "Build, optimize and structurize one (already macroexpanded) defn form.
+   Resolution of vars happens against *ns*, so the caller must have defined
+   the program's vars first."
+  [src]
+  (let [fname (str (second src))
+        f (ir.build/build-fn src)
+        _ (p/optimize-fn f)
+        {:keys [tree fallbacks]} (st/structurize f)]
+    (when (pos? fallbacks)
+      (fail "structurize fallback (:goto)" {:fn fname :fallbacks fallbacks :tree tree}))
+    (when (ir/fn-variadic? f) (fail "unsupported variadic fn" {:fn fname}))
+    (binding [*f* f]
+      (let [params (vec (for [i (range (ir/fn-arity f))]
+                          (let [nid (ir/fn-load-arg f i)] (if nid (ty nid) :box))))
+            rets (for [b (ir/blocks f)
+                       :let [t (ir/block-term b f)]
+                       :when (= (ir/op t f) :return)]
+                   (ty (first (ir/refs t f))))
+            ret (if (and (seq rets) (every? #{:int} rets)) :int :box)]
+        {:name fname :f f :tree tree :params params :ret ret}))))
+
+(defn has-tail? [tree]
+  (boolean (some #(and (vector? %) (= :tail (first %))) (tree-seq vector? seq tree))))
+
+(defn lower-fn [{:keys [name f tree params ret]}]
+  (binding [*f* f *param-kinds* params *fname* name *ret-type* ret]
+    (let [locals (distinct (all-values f))
+          body (walk tree)
+          body (if (has-tail? tree)
+                 (concat ["(loop $fn"] body ["unreachable)"])
+                 body)]
+      (str "(func $" name " (export \"" name "\")"
+           (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
+           " (result " (wt ret) ")\n"
+           "  (local $tmp i64)\n"
+           (apply str (map (fn [v] (str "  (local $v" v " " (wt (ty v)) ")\n")) locals))
+           "  " (str/join "\n  " body) "\n  unreachable)"))))
+
+(def checked-runtime
+  ;; Mirrors pkg/vm/numbers.go checkedAddInt/checkedSubInt/checkedMulInt
+  ;; (sign-xor tests for add/sub; half-width fast path + MIN*-1 guard +
+  ;; divide-back for mul). i64.div_s traps on MIN/-1, hence the guard order.
+  "(func $add_chk (param $a i64) (param $b i64) (result i64) (local $r i64)
+  (local.set $r (i64.add (local.get $a) (local.get $b)))
+  (if (i64.lt_s (i64.and (i64.xor (local.get $a) (local.get $r)) (i64.xor (local.get $b) (local.get $r))) (i64.const 0))
+    (then (throw $overflow)))
+  (local.get $r))
+(func $sub_chk (param $a i64) (param $b i64) (result i64) (local $r i64)
+  (local.set $r (i64.sub (local.get $a) (local.get $b)))
+  (if (i64.lt_s (i64.and (i64.xor (local.get $a) (local.get $b)) (i64.xor (local.get $a) (local.get $r))) (i64.const 0))
+    (then (throw $overflow)))
+  (local.get $r))
+(func $mul_chk (param $a i64) (param $b i64) (result i64) (local $r i64)
+  (if (i32.and (i32.and (i64.ge_s (local.get $a) (i64.const -2147483648)) (i64.le_s (local.get $a) (i64.const 2147483647)))
+               (i32.and (i64.ge_s (local.get $b) (i64.const -2147483648)) (i64.le_s (local.get $b) (i64.const 2147483647))))
+    (then (return (i64.mul (local.get $a) (local.get $b)))))
+  (if (i32.or (i64.eqz (local.get $a)) (i64.eqz (local.get $b))) (then (return (i64.const 0))))
+  (if (i32.or (i32.and (i64.eq (local.get $a) (i64.const -9223372036854775808)) (i64.eq (local.get $b) (i64.const -1)))
+              (i32.and (i64.eq (local.get $b) (i64.const -9223372036854775808)) (i64.eq (local.get $a) (i64.const -1))))
+    (then (throw $overflow)))
+  (local.set $r (i64.mul (local.get $a) (local.get $b)))
+  (if (i64.ne (i64.div_s (local.get $r) (local.get $b)) (local.get $a)) (then (throw $overflow)))
+  (local.get $r))")
+
+;; Fixed strings at the bottom of linear memory; $rt_print_bytes copies
+;; array-backed strings to offset 16 before handing ptr+len to the host.
+(defn print-runtime []
+  (str "(data (i32.const 0) \"niltruefalse \")
+(func $rt_print_space (call $print_str (i32.const 12) (i32.const 1)))
+(func $rt_print_bool (param $b i32)
+  (if (local.get $b) (then (call $print_str (i32.const 3) (i32.const 4)))
+                     (else (call $print_str (i32.const 7) (i32.const 5)))))
+(func $rt_print_bytes (param $s (ref $Bytes)) (local $i i32) (local $n i32) (local $need i32)
+  (local.set $n (array.len (local.get $s)))
+  (local.set $need (i32.add (local.get $n) (i32.const 16)))
+  (if (i32.gt_u (local.get $need) (i32.mul (memory.size) (i32.const 65536)))
+    (then (drop (memory.grow (i32.sub (i32.add (i32.shr_u (local.get $need) (i32.const 16)) (i32.const 1)) (memory.size))))))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+    (i32.store8 offset=16 (local.get $i) (array.get_u $Bytes (local.get $s) (local.get $i)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (call $print_str (i32.const 16) (local.get $n)))
+(func $rt_print (param $v (ref null eq))
+  (if (ref.is_null (local.get $v)) (then (call $print_str (i32.const 0) (i32.const 3)) (return)))
+  (if (ref.test (ref $Bool) (local.get $v))
+    (then (call $rt_print_bool (struct.get $Bool 0 (ref.cast (ref $Bool) (local.get $v)))) (return)))
+  (if (ref.test (ref $Bytes) (local.get $v))
+    (then (call $rt_print_bytes (ref.cast (ref $Bytes) (local.get $v))) (return)))
+  (call $print_i64 (local.get $v)" (coerce :box :int) "))"))
+
+(defn wat-bytes [s]
+  (apply str (map #(let [b (bit-and % 255)] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b))))
+                  (.getBytes s))))
+
+(defn runtime []
+  (let [ua (str "(local.get $a)" (coerce :box :int)) ub (str "(local.get $b)" (coerce :box :int))
+        boxed (fn [op]
+                (str "(func $rt_" (name op) " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64)\n  "
+                     (str "(local.set $tmp (" (if (and (= op :mul) *checked*) "call $mul_chk" (binop op)) " " ua " " ub "))"
+                                             (when (inline-checked? op) (str " " (inline-check op ua ub "(local.get $tmp)"))))
+                     " (local.get $tmp)" (coerce :int :box) ")\n"))]
+    (str "(import \"env\" \"print_i64\" (func $print_i64 (param i64)))\n"
+         "(import \"env\" \"print_str\" (func $print_str (param i32 i32)))\n"
+         "(import \"env\" \"print_nl\" (func $print_nl))\n"
+         "(memory (export \"mem\") 1)\n"
+         "(tag $overflow (export \"overflow\"))\n"
+         "(type $Int (struct (field i64)))\n"
+         "(type $Bytes (array i8))\n"
+         "(type $Bool (struct (field i32)))\n"
+         "(global $true (ref $Bool) (struct.new $Bool (i32.const 1)))\n"
+         "(global $false (ref $Bool) (struct.new $Bool (i32.const 0)))\n"
+         "(func $rt_box_bool (param $b i32) (result (ref null eq))\n"
+         "  (if (result (ref null eq)) (local.get $b) (then (global.get $true)) (else (global.get $false))))\n"
+         ";; Clojure truthiness: everything but nil and false\n"
+         "(func $rt_truthy (param $v (ref null eq)) (result i32)\n"
+         "  (i32.and (i32.eqz (ref.is_null (local.get $v))) (i32.eqz (ref.eq (local.get $v) (global.get $false)))))\n"
+         (when *checked* (str (str/replace checked-runtime "(throw $overflow)" (raise)) "\n"))
+         (boxed :add) (boxed :sub) (boxed :mul)
+         (print-runtime) "\n")))
+
+(defn module
+  "infos: analyze-fn results, in definition order. sigs: var -> signature."
+  [infos sigs]
+  (binding [*sigs* sigs *strings* (atom {})]
+    (let [fns (doall (map lower-fn infos))
+          rt (runtime)
+          datas (for [[s i] (sort-by val @*strings*)]
+                  (str "(data $s" i " \"" (wat-bytes s) "\")\n"))]
+      (str "(module\n" rt (apply str datas) (str/join "\n" fns) ")\n"))))

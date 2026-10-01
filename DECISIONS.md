@@ -1,0 +1,10 @@
+# DECISIONS (orchestrator-owned; D1–D9 are in the plan, section 3)
+
+- 2026-09-30 D10. Module layout: one wasm module per program; the runtime WAT is prepended as text by the driver (as the probe does) until Phase 2 turns it into generated sections. Exports: `_main` (runs top-level forms in order) plus every defn by name.
+- 2026-09-30 D11. Host imports for Phase 1 are exactly: `env.print_i64`, `env.print_str` (utf-8 ptr+len or array ref), `env.print_nl`; everything a scalar program prints goes through them. Phase 2 replaces them with `str`/`pr-str` in the runtime and one `env.write` import.
+- 2026-09-30 D12. The runner `checks/wasm-run.sh <prog.lg>` compiles with the driver, assembles with wasm-tools, runs under node, and mirrors lg's observable behaviour: program stdout to stdout, exit 0 on success, non-zero with an `error: <message>` first line on an uncaught exception (so oracle.sh's normalised comparison works).
+- 2026-09-30 D13. `.expected` files beside corpus programs are snapshots of native lg's stdout; `run-corpus.sh` fails STALE-EXPECTED if native lg no longer produces them, THEN calls oracle.sh. oracle.sh itself never reads them. Catches hand edits and lg drift the oracle would silently follow.
+- 2026-09-30 D14. run-corpus.sh exit precedence: any MISMATCH or STALE → 1; otherwise anything short of all-MATCH (NOT IMPLEMENTED) → 2; all MATCH → 0.
+- 2026-09-30 D15. `/` on ints yields ratios and, for MinInt64/-1, a bigint. Those are runtime value types (Phase 2). The div-*.lg op-matrix programs are skipped by P1.1 (run-corpus.sh honours a `SKIP` file in the corpus dir listing basenames) and re-enter at P2.7. `quot` stays in Phase 1.
+- 2026-09-30 D16. Native quirks the backend must reproduce, not fix: (quot MinInt64 -1) = MinInt64; (- MinInt64) = MinInt64 while (- MinInt64 1) and (dec MinInt64) throw; shift counts ≥ 64 or negative follow Go (0 or sign), never throw; overflow message carries an `ExecutionError:` prefix, divide-by-zero does not.
+- 2026-09-30 D17. P1.1's programs wrap every application in try/catch, so P1.1 cannot go green before P1.2 lands `:try`. Order within Phase 1 is therefore P1.0 → P1.2 → P1.1 ∥ P1.3 ∥ P1.4.

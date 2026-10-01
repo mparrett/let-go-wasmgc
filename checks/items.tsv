@@ -1,6 +1,6 @@
 # id	phase	check command (exit 0 = done; exit 2 = check itself not built yet)	done-when, in one line
 P1.0	1	test -x checks/wasm-run.sh && WASM_RUN=checks/wasm-run.sh checks/oracle.sh ../emit-wasm-probe/ref.lg	driver+runner exist; the probe's own ref.lg MATCHes
-P1.1	1	checks/run-corpus.sh corpus/scalar corpus/opmatrix	every scalar program and the generated op matrix (gen-opmatrix.lg: 41 ops × edge values incl. MinInt64, -1, 0, MaxInt64) MATCH
+P1.1	1	checks/run-corpus.sh corpus/scalar corpus/opmatrix	every scalar program and the generated op matrix (gen-opmatrix.lg: 23 builtin ops × edge values incl. MinInt64, -1, 0, MaxInt64, typed and boxed; the div-*.lg programs are excluded until Phase 2 per D15) MATCH
 P1.2	1	checks/run-corpus.sh corpus/control	closures.lg's try/finally/throw/permute/two-exit lines plus let-go test/thrown_test.lg and special_forms_test.lg MATCH
 P1.3	1	checks/run-corpus.sh corpus/closure	corpus/closure/*.lg MATCH (counter, compose, per-iteration capture, mutual recursion, named fn, deep recursion)
 P1.4	1	checks/refuse.sh corpus/refused	each program in corpus/refused (uses :dot or in-fn def) fails with the documented "unsupported op" error, nothing else
