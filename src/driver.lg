@@ -15,6 +15,28 @@
 
 (defn defn-form? [form] (and (seq? form) (= 'defn (first form))))
 
+(def core-minus #'clojure.core/-)
+
+(defn unary-minus->unchecked
+  "D35: build.lg turns (- x) into (sub 0 x), which throws on MinInt64 where
+   native bytecode negates with a wrap. Rewrite unary core `-` to
+   (unchecked-subtract 0 x) before build so the IR path matches native.
+   Runs on macroexpanded forms; quoted data is left alone. Lexical shadowing
+   of `-` is not tracked (build.lg would treat a shadowed `-` as a call)."
+  [form]
+  (cond
+    (and (seq? form) (= 'quote (first form))) form
+    (and (seq? form) (= 2 (count form)) (symbol? (first form))
+         (= core-minus (resolve (first form))))
+    (list 'unchecked-subtract 0 (unary-minus->unchecked (second form)))
+    (seq? form) (apply list (map unary-minus->unchecked form))
+    (vector? form) (mapv unary-minus->unchecked form)
+    (map? form) (into {} (map (fn [[k v]] [(unary-minus->unchecked k) (unary-minus->unchecked v)]) form))
+    (set? form) (set (map unary-minus->unchecked form))
+    :else form))
+
+(defn expand [form] (unary-minus->unchecked (p/expand-all form)))
+
 (defn expand-defn
   "Macroexpand the body exactly as the IR pipeline does before build; the
    defn head and args vector stay intact for build-fn's structural reader.
@@ -24,7 +46,7 @@
     (when-not (vector? (first more))
       (throw (ex-info (str "lower-wasm: unsupported defn shape (multi-arity, attr-map or return hint) in " name)
                       {:name name})))
-    (apply list 'defn name (first more) (map p/expand-all (rest more)))))
+    (apply list 'defn name (first more) (map expand (rest more)))))
 
 (defn -main [in out]
   (let [forms (read-program in)
@@ -40,7 +62,7 @@
         (and (seq? form) (#{'def 'defn- 'defmacro 'defmulti 'deftype 'defprotocol} (first form)))
         (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
         :else (swap! body conj form)))
-    (let [main-src (apply list 'defn '_main [] (concat (map p/expand-all @body) [nil]))
+    (let [main-src (apply list 'defn '_main [] (concat (map expand @body) [nil]))
           infos (mapv lw/analyze-fn (conj @defns main-src))
           sigs (into {} (for [i (butlast infos)]
                           [(resolve (symbol (:name i))) (select-keys i [:name :params :ret])]))]

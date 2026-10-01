@@ -35,3 +35,5 @@
 ## Seqs (rt/wasm/SEQ.md, 2026-10-01)
 - S1. Range, InfiniteRange, Repeat and the vector seq do not implement Hashable; `hash` falls back to FNV over the printed form, so `(hash (range 3))` ≠ `(hash '(0 1 2))` although they are `=`. Reproduced.
 - S2. `(count (seq (map inc (range 3))))` throws (ChunkedCons has no count); `(peek (cons 1 nil))` throws; a throwing lazy-seq thunk is NOT re-run natively (error cached). Reproduced except the last (needs ex-info, P2.7).
+- I8. `optimize-fn` DCEs an unused op that would throw (`(+ (id MaxInt64) 1)` at top level exits 0 under wasm, native throws); `quot` is kept. The pass treats checked arithmetic as pure; lower-go likely inherits it. Parity gap, recorded not fixed.
+- I9. The oracle reports MATCH when both sides fail identically (e.g. a reader error in the program); check line counts when a new corpus program "passes" first time.

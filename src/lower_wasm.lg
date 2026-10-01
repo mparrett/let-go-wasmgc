@@ -34,11 +34,14 @@
 ;; *checked*     :call | :inline | false
 ;; *trap*        true -> overflow is `unreachable` instead of (throw $overflow)
 ;; *box*         :struct (struct.new $Int) | :i31 (ref.i31, 31-bit range only)
+;;               | :hybrid (D2: ref.i31 when the value fits 31 bits signed, else $Int)
 ;; *guard-calls* true -> every direct call sits in a rethrowing try_table
 (def ^:dynamic *checked* :inline)
 (def ^:dynamic *trap* false)
-(def ^:dynamic *box* :struct)
+(def ^:dynamic *box* :hybrid)
 (def ^:dynamic *guard-calls* false)
+;; true while lowering program fns (lower-fn), false in runtime helpers
+(def ^:dynamic *box-inline* false)
 
 (defn fail [msg data]
   (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
@@ -52,10 +55,18 @@
 (defn coerce [from to]
   (cond (= from to) ""
         (and (= from :int) (= to :box))
-        (case *box* :struct " (struct.new $Int)" :i31 " (i32.wrap_i64) (ref.i31)")
+        (case *box* :struct " (struct.new $Int)" :i31 " (i32.wrap_i64) (ref.i31)"
+              ;; Inline in program fns (they declare $tmp; the value is consumed
+              ;; before $tmp's next use): fib(32) 19.6 -> 15.5 ms. Runtime helpers
+              ;; keep the call: inlining it into $rt_add made fib slower again
+              ;; (19.7 ms), presumably by pushing $rt_add past V8's inlining budget.
+              :hybrid (if-not *box-inline* " (call $rt_box_int)" (str " (local.set $tmp) (if (result (ref null eq)) (i64.lt_u (i64.add (local.get $tmp)"
+                           " (i64.const 0x40000000)) (i64.const 0x80000000)) (then (ref.i31 (i32.wrap_i64 (local.get $tmp))))"
+                           " (else (struct.new $Int (local.get $tmp))))")))
         (and (= from :box) (= to :int))
         (case *box* :struct " (ref.cast (ref $Int)) (struct.get $Int 0)"
-                    :i31 " (ref.cast (ref i31)) (i31.get_s) (i64.extend_i32_s)")
+                    :i31 " (ref.cast (ref i31)) (i31.get_s) (i64.extend_i32_s)"
+                    :hybrid " (call $rt_unbox_int)")
         ;; booleans box to the two singletons (D2)
         (and (= from :bool) (= to :box)) " (call $rt_box_bool)"
         (and (= from :box) (= to :bool)) " (ref.cast (ref $Bool)) (struct.get $Bool 0)"
@@ -191,6 +202,62 @@
 
 (def cmp-ops {:lt "i64.lt_s" :lte "i64.le_s" :gt "i64.gt_s" :gte "i64.ge_s" :eq "i64.eq"})
 
+;; P1.1 int ops that never overflow-check: bit ops, Go-semantics shifts, quot
+;; and the unchecked-* family. Operand exprs must be side-effect free and cheap
+;; to repeat (prim-wat stages anything else into $ta/$tb first).
+(def plain-binops {:bit-and "i64.and" :bit-or "i64.or" :bit-xor "i64.xor"
+                   :unchecked-add "i64.add" :unchecked-sub "i64.sub" :unchecked-mul "i64.mul"})
+(def int-ops (into #{:bit-and-not :bit-shift-left :bit-shift-right :unsigned-bit-shift-right :quot}
+                   (keys plain-binops)))
+
+(defn int-op-wat
+  "[pre expr]: statements that must run first (quot's zero test) and the i64
+   expression for a op b."
+  [op a b]
+  (let [lt64 (str "(i64.lt_u " b " (i64.const 64))")]
+    (cond
+      (plain-binops op) [nil (str "(" (plain-binops op) " " a " " b ")")]
+      (= op :bit-and-not) [nil (str "(i64.and " a " (i64.xor " b " (i64.const -1)))")]
+      ;; Go shifts, not wasm's count-mod-64: a count >= 64, or negative (huge
+      ;; as unsigned), shifts every bit out (D16).
+      (= op :bit-shift-left) [nil (str "(select (i64.shl " a " " b ") (i64.const 0) " lt64 ")")]
+      (= op :bit-shift-right) [nil (str "(select (i64.shr_s " a " " b ") (i64.shr_s " a " (i64.const 63)) " lt64 ")")]
+      (= op :unsigned-bit-shift-right) [nil (str "(select (i64.shr_u " a " " b ") (i64.const 0) " lt64 ")")]
+      ;; i64.div_s traps on MinInt64/-1 where Go wraps to MinInt64 (D16), and
+      ;; a/-1 is 0-a for every a, so -1 takes the wrapping negate.
+      (= op :quot) [(str "(if (i64.eqz " b ") (then (throw $lgex " (rt-error-wat "divide by zero" "divide by zero") ")))")
+                    (str "(if (result i64) (i64.eq " b " (i64.const -1)) (then (i64.sub (i64.const 0) " a
+                         ")) (else (i64.div_s " a " " b ")))")])))
+
+;; Native spelling of each op, for the boxed-operand error text.
+(def op-names {:add "+" :sub "-" :mul "*" :lt "<" :lte "<=" :gt ">" :gte ">=" :eq "="
+               :inc "inc" :dec "dec" :quot "quot" :bit-not "bit-not"
+               :unchecked-add "unchecked-add" :unchecked-sub "unchecked-subtract"
+               :unchecked-mul "unchecked-multiply" :bit-and "bit-and" :bit-or "bit-or"
+               :bit-xor "bit-xor" :bit-and-not "bit-and-not" :bit-shift-left "bit-shift-left"
+               :bit-shift-right "bit-shift-right" :unsigned-bit-shift-right "unsigned-bit-shift-right"})
+
+(defn bit-op? [op] (or (= op :bit-not) (str/starts-with? (name op) "bit-") (= op :unsigned-bit-shift-right)))
+
+(defn unbox-msg
+  "What a non-Int boxed operand throws. Bit ops reproduce native's text; the
+   numeric ops would need the Phase-2 numeric tower (floats, ratios, type
+   names in `cannot add X and Y`), so they throw a named Phase-1 limit."
+  [op]
+  (if (bit-op? op)
+    (str (op-names op) " expected Int")
+    (str "lower-wasm: " (op-names op) " on a non-Int operand (numeric tower is Phase 2)")))
+
+(defn unbox-fn [op] (str "$rt_int_" (str/replace (name op) "-" "_")))
+
+(defn op-int-arg
+  "Operand nid as i64 for op: an unboxed int as is, a boxed value through the
+   op's checked unbox (never a bare ref.cast, which would trap uncatchably)."
+  [op nid]
+  (if (= (ty nid) :box)
+    (do (arg-as nid :box) (str "(call " (unbox-fn op) " " (lget nid) ")"))
+    (arg-as nid :int)))
+
 (defn guard-call [call]
   ;; try_table whose only handler re-raises: the "cleanup" shape of the EH
   ;; proposal, so the hot path pays for the table and nothing else.
@@ -283,13 +350,24 @@
       (and (int-binops op) (= 2 (count refs)))
       (set (str "(call $rt_" (name op) " " (arg-as (first refs) :box) " " (arg-as (second refs) :box) ")"
                 (coerce :box (ty nid))))
-      ;; boxed operands are unboxed as ints: a non-int traps (P1.1 owns the
-      ;; general numeric tower)
+      ;; boxed operands go through the checked unbox: a non-int throws a named
+      ;; error (the general numeric tower is Phase 2)
       (and (cmp-ops op) (= 2 (count refs)))
-      (set (str "(" (cmp-ops op) " " (arg-as (first refs) :int) " " (arg-as (second refs) :int) ")"
+      (set (str "(" (cmp-ops op) " " (op-int-arg op (first refs)) " " (op-int-arg op (second refs)) ")"
                 (coerce :bool (ty nid))))
       (and (#{:inc :dec} op) (= 1 (count refs)))
-      (int-arith nid (if (= op :inc) :add :sub) (arg-as (first refs) :int) "(i64.const 1)")
+      (int-arith nid (if (= op :inc) :add :sub) (op-int-arg op (first refs)) "(i64.const 1)")
+      (and (= op :bit-not) (= 1 (count refs)))
+      (set (str "(i64.xor " (op-int-arg op (first refs)) " (i64.const -1))" (coerce :int (ty nid))))
+      (and (int-ops op) (= 2 (count refs)))
+      ;; a boxed operand's unbox is a call: stage it so int-op-wat may repeat it
+      (let [stage (fn [r l] (if (= (ty r) :box)
+                              [(str "(local.set " l " " (op-int-arg op r) ")") (str "(local.get " l ")")]
+                              [nil (arg-as r :int)]))
+            [sa a] (stage (first refs) "$ta")
+            [sb b] (stage (second refs) "$tb")
+            [pre expr] (int-op-wat op a b)]
+        (str/join " " (remove nil? [sa sb pre (set (str expr (coerce :int (ty nid))))])))
       :else nil)))
 
 ;; Macroexpansion leaves namespace-qualified heads (dotimes -> core/<,
@@ -423,7 +501,7 @@
 (defn has-tail? [tree] (has-node? :tail tree))
 
 (defn lower-fn [{:keys [name f tree params ret caps export?]}]
-  (binding [*f* f *param-kinds* params *cap-kinds* caps *fname* name *ret-type* ret]
+  (binding [*f* f *param-kinds* params *cap-kinds* caps *fname* name *ret-type* ret *box-inline* true]
     (let [locals (distinct (all-values f))
           body (walk tree)
           body (if (has-tail? tree)
@@ -433,7 +511,7 @@
            (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
            (apply str (map-indexed (fn [i k] (str " (param $c" i " " (wt k) ")")) caps))
            " (result " (wt ret) ")\n"
-           "  (local $tmp i64) (local $exn exnref)\n"
+           "  (local $tmp i64) (local $ta i64) (local $tb i64) (local $exn exnref)\n"
            (apply str (map (fn [v] (str "  (local $v" v " " (wt (ty v)) ")\n")) locals))
            "  " (str/join "\n  " body) "\n  unreachable)"))))
 
@@ -602,12 +680,22 @@
                   (.getBytes s))))
 
 (defn runtime []
-  (let [ua (str "(local.get $a)" (coerce :box :int)) ub (str "(local.get $b)" (coerce :box :int))
-        boxed (fn [op]
-                (str "(func $rt_" (name op) " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64)\n  "
+  (let [boxed (fn [op]
+                ;; unbox once into $x/$y: the inline overflow test repeats its operands
+                (let [ua "(local.get $x)" ub "(local.get $y)"]
+                (str "(func $rt_" (name op) " (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (local $tmp i64) (local $x i64) (local $y i64)\n  "
+                     "(local.set $x (call " (unbox-fn op) " (local.get $a))) (local.set $y (call " (unbox-fn op) " (local.get $b)))\n  "
                      (str "(local.set $tmp (" (if (and (= op :mul) *checked*) "call $mul_chk" (binop op)) " " ua " " ub "))"
                                              (when (inline-checked? op) (str " " (inline-check op ua ub "(local.get $tmp)"))))
-                     " (local.get $tmp)" (coerce :int :box) ")\n"))]
+                     " (local.get $tmp)" (coerce :int :box) ")\n")))
+        ;; checked unbox per op: Int -> i64, anything else throws (op-int-arg)
+        unbox (fn [op]
+                (str "(func " (unbox-fn op) " (param $v (ref null eq)) (result i64)\n"
+                     (when (= *box* :hybrid)
+                       "  (if (ref.test (ref i31) (local.get $v)) (then (return (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $v)))))))\n")
+                     "  (if (i32.eqz (ref.test (ref $Int) (local.get $v)))\n"
+                     "    (then (throw $lgex " (rt-error-wat (unbox-msg op) (unbox-msg op)) ")))\n"
+                     "  (struct.get $Int 0 (ref.cast (ref $Int) (local.get $v))))\n"))]
     (str "(import \"env\" \"print_i64\" (func $print_i64 (param i64)))\n"
          "(import \"env\" \"print_str\" (func $print_str (param i32 i32)))\n"
          "(import \"env\" \"print_nl\" (func $print_nl))\n"
@@ -627,6 +715,16 @@
          "(global $map0 (ref $Map0) (struct.new $Map0))\n"
          "(global $true (ref $Bool) (struct.new $Bool (i32.const 1)))\n"
          "(global $false (ref $Bool) (struct.new $Bool (i32.const 0)))\n"
+         ;; D2 hybrid boxing. Canonical: an int in i31 range is never a $Int,
+         ;; so a later value-equality/hash need not normalise representations.
+         (when (= *box* :hybrid)
+           (str "(func $rt_box_int (param $x i64) (result (ref null eq))\n"
+                "  (if (result (ref null eq)) (i64.lt_u (i64.add (local.get $x) (i64.const 0x40000000)) (i64.const 0x80000000))\n"
+                "    (then (ref.i31 (i32.wrap_i64 (local.get $x)))) (else (struct.new $Int (local.get $x)))))\n"
+                "(func $rt_unbox_int (param $v (ref null eq)) (result i64)\n"
+                "  (if (result i64) (ref.test (ref i31) (local.get $v))\n"
+                "    (then (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $v)))))\n"
+                "    (else (struct.get $Int 0 (ref.cast (ref $Int) (local.get $v))))))\n"))
          "(func $rt_box_bool (param $b i32) (result (ref null eq))\n"
          "  (if (result (ref null eq)) (local.get $b) (then (global.get $true)) (else (global.get $false))))\n"
          ";; Clojure truthiness: everything but nil and false\n"
@@ -634,6 +732,7 @@
          "  (i32.and (i32.eqz (ref.is_null (local.get $v))) (i32.eqz (ref.eq (local.get $v) (global.get $false)))))\n"
          (when *checked* (str (str/replace checked-runtime "(throw $overflow)" (raise)) "\n"))
          (boxed :add) (boxed :sub) (boxed :mul)
+         (apply str (map unbox (sort (keys op-names))))
          (print-runtime) "\n" (exn-runtime))))
 
 (defn module

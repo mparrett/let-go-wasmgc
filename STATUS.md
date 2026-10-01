@@ -10,5 +10,6 @@
 | P1.2 | done 2026-10-01 | opus | 16/16; fixed 4 P1.0 bugs (declare, deep recursion, :multi loops, :break target); opmatrix 18/39; verified |
 | P2.4-hamt | running | opus | HAMT in the dialect over intrinsics, order parity vs native |
 | P2.5-native | done 2026-10-01 | opus | seq.lg 786 lines, 11 tests/12k asserts, chunk parity, 4 gate programs match natively |
-| P1.1-backend | running | opus | bit ops, quot, unchecked, unary minus; opmatrix 39/39 target |
+| P1.1-backend | done 2026-10-01 | opus | 44/44 incl. typed probe; hybrid i31 (fib 15.5 ms); verified |
 | P2.6-native | running | opus | strings/chars/str/pr-str in the dialect; float formatting decision |
+| P1.3 | running | opus | closures (D36 ABI), var table, unknown-callee calls |
