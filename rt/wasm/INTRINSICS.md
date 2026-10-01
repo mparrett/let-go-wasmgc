@@ -59,7 +59,10 @@ masks the count; `(long ##NaN)` is 0 and `(long 1e19)` saturates, so
 wasm where wasm is silent and a correct runtime never relies on it: an
 out-of-range `i31` traps (wasm drops the top bit), an index ≥ 2^32 traps (wasm
 would wrap it to i32 and may land in bounds), a raw lg value in a `:ref` slot
-or an out-of-range value in an `:i32` slot throws. Host calls are
+or an out-of-range value in an `:i32` slot throws. One exception (P2.10): a
+native exception may sit in a `:ref` slot, as the stand-in for the payload a
+wasm `catch` binds, which is always a `(ref null eq)` (a LazySeq caches the
+error its thunk threw). Host calls are
 deterministic: a virtual clock advanced only by `host-sleep`, env from
 `*host-env*`.
 

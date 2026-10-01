@@ -597,6 +597,19 @@
     (let [o (t-okvs t) i (okvs-index o (* 2 (tcount t)) key)]
       (if (< i 0) nf (sget o (inc i))))))
 
+(defn tentry-seq                                            ; TransientMap.Seq :231-251, as entry-seq
+  "The seq of transient t: a Cons chain of MapEntry in seq order, or null."
+  [t]
+  (let [n (tcount t)
+        e (cond (= n 0) (slots 0)
+                (if (t-hamt? t) false true) (t-okvs t)
+                (wasm/null? (t-root t)) (slots 0)
+                :else (let [out (slots (* 2 n))] (node-fill (t-root t) out 0) out))]
+    (loop [i (- (* 2 n) 2) acc (wasm/null)]
+      (if (if (< i 0) true (= 0 (wasm/alen e)))
+        acc
+        (recur (- i 2) (sq/cons (wasm/new sq/MapEntry (sget e i) (sget e (inc i))) acc))))))
+
 (defn tpersistent! [t]                                      ; Persistent :193-207
   (t-ensure-editable t)
   (wasm/set! HFlag 0 (t-edit t) 0)

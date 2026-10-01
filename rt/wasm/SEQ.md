@@ -15,13 +15,13 @@ under `pkg/vm/` unless they start with `rt/` (= `pkg/rt/`) or `core.lg`
 | 2 | EmptyList | `List` count 0 | `*List` (PersistentList), list.go:41 | y | 0 | | | ordered, counts as one nil (H1) |
 | 3 | List | `List` [first next count] | list.go:44 | y | O(1) | | | ordered (Go caches; we recompute) |
 | 4 | Cons | `Cons` [first more] | cons.go:12 (PersistentList) | y | walks tail, cons.go:76 | | | ordered |
-| 5 | LazySeq | `LazySeq` [fn s done] | lazy_seq.go:16 (PersistentList) | y | walks | | via resolve | ordered; empty = EmptyList, :232 |
+| 5 | LazySeq | `LazySeq` [fn s done err] | lazy_seq.go:16 (PersistentList) | y | walks | | via resolve | ordered; empty = EmptyList, :232 |
 | 6 | ChunkedCons | `ChunkedCons` [chunk more] | chunk.go:112 (PersistentList) | y | **no** (count throws) | | y | ordered |
 | 7 | Range | `Range` [start end step] | range.go:28 (Range) | y | O(1), :97 | y | y, 32 | **FNV of String()** |
 | 8 | InfiniteRange | `InfiniteRange` [start step] | range.go:156 (Range) | y | **no** | | y, 32 | FNV of `"(range ...)"` |
 | 9 | Repeat | `Repeat` [i val] | repeat.go:22 (Repeat) | y | `i`, **-1** when infinite | | | FNV of String() (`"()"` when infinite) |
-| 10 | PVecSeq | `PVecSeq` [vec i] | persistent_vector.go:183 (Sequence) | y | O(1) | y | y, leaves | FNV of `"(seq [whole vector])"` |
-| 11 | PVec | `wasm.pvec/PVec` | PersistentVector | | O(1) | y | | ordered over Seq (empty → EmptyList) |
+| 10 | PVecSeq | `PVecSeq` [vec i clen] | of a PersistentVector: persistent_vector.go:183 (Sequence); of an ArrayVector: vector.go:198 (PersistentList) | y | O(1) | y | PV: leaves; AV: 1, 2, 4, ... | PV: FNV of `"(seq [whole vector])"`; AV: FNV of `"(e_i ...)"` |
+| 11 | PVec | `wasm.pvec/PVec` [... pkind] | ArrayVector (pkind 0) or PersistentVector (1), D73 | | O(1) | y | | ordered over the elements; empty: AV mixFinish(1), PV EmptyList's |
 | 12 | ArrayChunk | `ArrayChunk` [arr off end] | chunk.go:39 | | y | y | | |
 | 13 | ChunkBuffer | `ChunkBuffer` [arr n] | chunk.go:225 | | y | | | |
 | 14 | Reduced | `Reduced` | reduced.go:6 | | | | | |
@@ -53,6 +53,10 @@ form (hash.go:31). `(hash (range 3))` = 3057436279 while `(hash '(0 1 2))` =
   value goes through `Sequable.Seq()` (so a nested LazySeq is resolved and an
   empty collection becomes nil) and an empty result is cached as nil
   (lazy_seq.go:84-150). `realized?` = done or thunk consumed (:38).
+- A thunk that throws stores its error and every later access rethrows it
+  without re-running; `realized?` is then true (lazy_seq.go:59-68). When the
+  thunk returns but realising its value throws (a nested lazy seq), native
+  keeps nothing and the next access reads `()`: mirrored (P2.10, D74).
 - `cons`/`rest` never force a lazy tail; `next` does (Cons.Next resolves,
   cons.go:49; ChunkedCons.Next, chunk.go:151). `seqOf` returns a LazySeq
   unresolved (rt/lang.go:1398); `seq` resolves it (rt/lang.go:2247 via
@@ -127,13 +131,7 @@ runtime imports the other's, and seq.lg imports neither.
   ported. `list`/`conj` are fixed-arity (0-3 / 0-3) pending the backend's
   variadic-native convention. Float range bounds trap (`range-int`), as
   does any numeric-tower mixing (P2.7).
-- A thunk that throws is re-run on the next access; Go stores and re-raises
-  the error without re-running (lazy_seq.go:59-68). Needs ex-info (P2.7).
 - List hash is recomputed, not cached (observationally identical).
-- `vec` returns a PVec where Go returns an ArrayVector; PVec is treated as
-  PersistentVector for `=`/hash, so an empty pvec hashes like `()` while a
-  literal `[]` (ArrayVector) would not. Which vector kind literals become is a
-  value-model decision.
 - The FNV-of-String() hash of Range/Repeat/PVecSeq over elements that are
   not ints or nil traps: printing is wasm.str's, and seq.lg cannot require
   it. A print hook in seq.lg (as wasm.str has for foreign values) would

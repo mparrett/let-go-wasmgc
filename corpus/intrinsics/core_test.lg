@@ -51,7 +51,9 @@
         (symbol? x) (s/sym-of-bytes (wasm/bytes-of-string (str x)))
         (float? x) (s/box-float x)
         (map-entry? x) (c/map-entry (->w (key x)) (->w (val x)))
-        (vector? x) (with-native-meta (reduce (fn [v e] (pv/vconj v (->w e))) (pv/empty-vec) x) x)
+        ;; the Go type native holds (D73): a meta'd/conj-grown PersistentVector or an ArrayVector
+        (vector? x) (with-native-meta (pv/vretag (reduce (fn [v e] (pv/vconj v (->w e))) (pv/empty-vec) x)
+                                                 (if (= (type x) (type (with-meta [] {}))) 1 0) (wasm/null)) x)
         (map? x) (with-native-meta (reduce (fn [w [k v]] (c/assoc w (->w k) (->w v))) (m/empty-map) (seq x)) x)
         (set? x) (with-native-meta (reduce (fn [w e] (hs/sconj w (->w e))) (hs/empty-set) (seq x)) x)
         (fn? x) (clo x)
@@ -388,8 +390,10 @@
   (same (hash (repeat 3 "a")) (sq/hash (sq/repeat (W 3) (W "a"))))
   (same (hash (repeat 2 [:k 1.5])) (sq/hash (sq/repeat (W 2) (W [:k 1.5]))))
   (same (hash (repeat 2 {:a "x"})) (sq/hash (sq/repeat (W 2) (W {:a "x"}))))
-  (same (hash (seq (with-meta [:a "b" \c 1.5 nil] {:pv true}))) (sq/hash (sq/seq (W [:a "b" \c 1.5 nil]))))
-  (same (hash (rest (with-meta [1 "x"] {:pv true}))) (sq/hash (sq/rest (W [1 "x"]))))
+  (same (hash (seq (with-meta [:a "b" \c 1.5 nil] {:pv true}))) (sq/hash (sq/seq (W (with-meta [:a "b" \c 1.5 nil] {:pv true})))))
+  (same (hash (seq [:a "b" \c 1.5 nil])) (sq/hash (sq/seq (W [:a "b" \c 1.5 nil]))))
+  (same (hash (rest (with-meta [1 "x"] {:pv true}))) (sq/hash (sq/rest (W (with-meta [1 "x"] {:pv true})))))
+  (same (hash (rest [1 "x"])) (sq/hash (sq/rest (W [1 "x"]))))
   (doseq [a [1 1.5 "a" "b" :a :b/c 'x \a nil true [1 2] [1 3] [1] (first {:a 1}) [:a 1]]
           b [1 2.5 "a" :a 'y \b nil false [1 2] [:a 2]]]
     (same (compare a b) (c/compare (W a) (W b)))))

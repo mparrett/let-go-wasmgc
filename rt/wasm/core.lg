@@ -81,9 +81,11 @@
 (defn raise [msg] (throw (wasm/new sq/Err 1 msg msg (wasm/null) (wasm/null))))
 (defn- raise-str [st] (raise (s/str-bytes st)))
 
-;; Value.Type().Name() (nil prints "nil"). A vector reports ArrayVector unless
-;; it carries meta: let-go's ArrayVector/PersistentVector split depends on
-;; how the vector was built, which wasm.pvec does not record (one PVec).
+;; Value.Type().Name() (nil prints "nil"). A vector reports the Go type
+;; wasm.pvec records (D73); so does a vector's seq (PersistentVectorSeq is
+;; Sequence, ArrayVectorSeq PersistentList). The Repeat type's own Type() is
+;; the Repeat type (a let-go quirk, mirrored: (type (type (repeat 1 1)))).
+(defn- repeat-type? [x] (if (= 35 (ckind x)) (= 9 (wasm/get TypeVal 1 x)) false))
 (defn type-name [x]
   (let [x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
         k (ckind x)]
@@ -95,8 +97,10 @@
           (= k 21) (wasm/bytes-of-string "let-go.lang.Symbol")
           (= k 19) (wasm/bytes-of-string "let-go.lang.Character")
           (= k 15) (wasm/bytes-of-string "let-go.lang.Boolean")
-          (= k 11) (if (wasm/null? (pv/vmeta x)) (wasm/bytes-of-string "let-go.lang.ArrayVector")
+          (= k 11) (if (= 0 (pv/vpkind x)) (wasm/bytes-of-string "let-go.lang.ArrayVector")
                        (wasm/bytes-of-string "let-go.lang.PersistentVector"))
+          (= k 10) (if (= 0 (pv/vpkind (wasm/get sq/PVecSeq 0 x))) (wasm/bytes-of-string "let-go.lang.PersistentList")
+                       (wasm/bytes-of-string "let-go.lang.Sequence"))
           (= k 23) (wasm/bytes-of-string "let-go.lang.ArrayVector")
           (if (= k 7) true (= k 8)) (wasm/bytes-of-string "let-go.lang.Range")
           (= k 9) (wasm/bytes-of-string "let-go.lang.Repeat")
@@ -114,7 +118,7 @@
           (= k 32) (wasm/bytes-of-string "let-go.lang.TransientMap")
           (= k 33) (wasm/bytes-of-string "let-go.lang.TransientSet")
           (= k 34) (wasm/bytes-of-string "let-go.lang.TransientVector")
-          (= k 35) (wasm/bytes-of-string "let-go.lang.Type")
+          (= k 35) (if (repeat-type? x) (wasm/bytes-of-string "let-go.lang.Repeat") (wasm/bytes-of-string "let-go.lang.Type"))
           :else (wasm/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -135,7 +139,9 @@
 (defn- type-id [x]
   (let [x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
         k (ckind x)]
-    (cond (= k 11) (if (wasm/null? (pv/vmeta x)) 23 39) ; ArrayVector shares MapEntry's id
+    (cond (= k 11) (if (= 0 (pv/vpkind x)) 23 39)       ; ArrayVector shares MapEntry's id
+          (= k 10) (if (= 0 (pv/vpkind (wasm/get sq/PVecSeq 0 x))) 2 10) ; Sequence: id 10
+          (= k 35) (if (repeat-type? x) 9 35)
           (= k 26) (if (= 0 (wasm/get sq/Err 0 x)) 26 38)
           (= k 8) 7
           (if (>= k 2) (<= k 13) false) (if (= k 7) 7 (if (= k 9) 9 (if (= k 12) 12 (if (= k 11) 11 2))))
@@ -182,7 +188,11 @@
 (defn- invoke-ifn [f n a b]                               ; Keyword/Symbol/Map/Set/ArrayVector .Invoke
   (let [k (ckind f)]
     (cond (if (= k 11) true (= k 31))                     ; a vector or set takes exactly one argument
-          (cond (if (= n 1) false true) (raise-arity n)
+          (cond (if (= n 1) false true)
+                (if (if (= k 11) (= 1 (pv/vpkind f)) false)         ; PersistentVector.Invoke's own text
+                  (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments: ")) (sq/box-int n)
+                                    (lit (wasm/bytes-of-string ", expected: 1"))))
+                  (raise-arity n))
                 (= k 31) (hs/sget f a (wasm/null))
                 (if (int-key? a) false true) (raise (wasm/bytes-of-string "vector key must be Int"))
                 (index-in? a (pv/vcount f)) (pv/vnth f (sq/unbox-int a))
@@ -583,7 +593,7 @@
           (= c 30) (m/massoc coll k v)
           (= c 11) (if (index-in? k (inc (pv/vcount coll)))
                      (pv/vassoc coll (sq/unbox-int k) v)
-                     (raise-str (s/str (lit (wasm/bytes-of-string "assoc failed for key ")) (s/pr-str k))))
+                     (raise-str (s/str (lit (wasm/bytes-of-string "assoc failed for key ")) (s/value-string k))))
           :else (raise (wasm/bytes-of-string "assoc expected Associative")))))
 
 (defn- assoc-kvs [coll kvs]                               ; kvs: a seq of k v ..., even length
@@ -604,7 +614,7 @@
   (let [c (ckind coll)]
     (cond (= c 0) (wasm/null)
           (= c 30) (m/mdissoc coll k)
-          (= c 11) (raise-str (s/str (lit (wasm/bytes-of-string "dissoc failed for key ")) (s/pr-str k)))
+          (= c 11) (raise-str (s/str (lit (wasm/bytes-of-string "dissoc failed for key ")) (s/value-string k)))
           :else (raise (wasm/bytes-of-string "dissoc expected Associative")))))
 
 (defn ^{:twin "core/dissoc"} dissoc
@@ -639,14 +649,14 @@
 (defn conj-seq "(apply conj coll xs)" [coll xs]
   (loop [c coll s (sq/seq xs)] (if (wasm/null? s) c (recur (conj1 c (sq/first s)) (sq/next s)))))
 
-(defn- seqable-k? [k]
-  (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true :else false))
+(defn- seqable-k? [k]                                     ; a TransientMap seqs natively (transient.go:231)
+  (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 32) true :else false))
 
 (defn ^{:twin "core/nth"} nth                             ; Nth/Nth3 plus TransientVector (Indexed, not seqable)
   ([coll i] (let [k (ckind coll)]
               (cond (= k 34)
                     (let [v (wasm/get TVec 0 coll) n (sq/unbox-int i)]
-                      (if (if (< n 0) true (>= n (pv/vcount v))) (wasm/trap "nth index out of bounds") (pv/vnth v n)))
+                      (if (if (< n 0) true (>= n (pv/vcount v))) (raise (wasm/bytes-of-string "nth index out of bounds")) (pv/vnth v n)))
                     (seqable-k? k) (sq/nth coll i)
                     (< (sq/unbox-int i) 0) (wasm/trap "nth index out of bounds")   ; checked before seqOf (native_prims.go:173)
                     :else (raise-not-supported (lit (wasm/bytes-of-string "don't know how to create ISeq from ")) coll))))
@@ -677,7 +687,7 @@
         :else (let [s0 (to-int start) n (pv/vcount v) e (if has-end (to-int end) n)]
                 (if (if (< s0 0) true (if (> e n) true (> s0 e)))
                   (raise (wasm/bytes-of-string "subvec: index out of bounds"))
-                  (loop [i s0 out (pv/empty-vec)] (if (< i e) (recur (inc i) (pv/vconj out (pv/vnth v i))) out))))))
+                  (loop [i s0 out (pv/empty-vec)] (if (< i e) (recur (inc i) (pv/vconj out (pv/vnth v i))) (pv/varray out)))))))
 
 (defn ^{:twin "core/subvec"} subvec
   ([v start] (subvec* v start (wasm/null) false))
@@ -700,9 +710,11 @@
   (let [k (ckind t)]
     (cond (= k 32) (m/tpersistent! t)
           (= k 33) (hs/tpersistent-set! (wasm/get TSet 0 t))
+          ;; TransientVector.Persistent (transient.go:364): an ArrayVector up to 32, else a
+          ;; PersistentVector, never with meta
           (= k 34) (do (tvec-editable t)
                        (wasm/set! TVec 1 t 0)
-                       (let [v (wasm/get TVec 0 t)] (if (wasm/null? (pv/vmeta v)) v (pv/vwith-meta v (wasm/null)))))
+                       (let [v (wasm/get TVec 0 t)] (pv/vretag v (if (> (pv/vcount v) 32) 1 0) (wasm/null))))
           :else (raise-not-supported (lit (wasm/bytes-of-string "persistent! not supported on ")) t))))
 
 (defn- tmap-conj! [t x]                                   ; TransientMap.Conj (transient.go:143)
@@ -797,7 +809,9 @@
   (let [ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka kb) false true) false
           ;; two slices: Go panics, and the VM reports the recovered panic
-          (= ka 11) (raise (wasm/bytes-of-string "runtime error: comparing uncomparable type vm.ArrayVector"))
+          (= ka 11) (cond (if (= (pv/vpkind a) (pv/vpkind b)) false true) false  ; two Go types: unequal, no panic
+                          (= 1 (pv/vpkind a)) (raise (wasm/bytes-of-string "runtime error: comparing uncomparable type vm.PersistentVector"))
+                          :else (raise (wasm/bytes-of-string "runtime error: comparing uncomparable type vm.ArrayVector")))
           (= ka 0) true
           (= ka 1) (= (sq/unbox-int a) (sq/unbox-int b))
           (= ka 15) (= (wasm/get sq/Bool 0 a) (wasm/get sq/Bool 0 b))
@@ -919,8 +933,10 @@
   (cond (if (callable? f) false true) (raise (wasm/bytes-of-string "apply expected Fn"))
         (wasm/null? args) (invoke-args f 0 nil nil nil nil)
         (= 11 (sq/kind args)) (invoke-vec f args)
+        ;; seqOf failing is "apply expected Seq"; core.lg's apply seqs its spread
+        ;; argument first, which is where "seq expected Seqable" comes from
         :else (let [k (ckind args)]
-                (if (cond (if (>= k 2) (<= k 10) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true :else false)
+                (if (cond (if (>= k 2) (<= k 10) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 32) true :else false)
                   (invoke-vec f (sq/vec args))
                   (raise (wasm/bytes-of-string "apply expected Seq"))))))
 
@@ -973,16 +989,22 @@
       (wasm/array-copy pv/Node a lo tmp lo (- hi lo)))))
 
 (defn- sortable? [x]                                      ; a vm.Collection (nil included: (sort nil) is ())
-  (let [k (ckind x)]
-    (cond (= k 0) true (if (>= k 2) (<= k 11) false) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true :else false)))
+  (let [k (ckind x)]                                      ; Repeat, InfiniteRange, ChunkedCons are not one (bug-14)
+    (cond (= k 0) true (= k 6) false (= k 8) false (= k 9) false (if (>= k 2) (<= k 11) false) true
+          (= k 17) true (= k 23) true (= k 30) true (= k 31) true :else false)))
 
 (defn- sort* [f coll]
-  (if (sortable? coll)
+  (cond
+    ;; native sort's Sequable assertion panics on a PersistentVectorSeq; the VM
+    ;; reports the recovered panic as a catchable error
+    (if (= 10 (ckind coll)) (= 1 (pv/vpkind (wasm/get sq/PVecSeq 0 coll))) false)
+    (raise (wasm/bytes-of-string "interface conversion: *vm.PersistentVectorSeq is not vm.Sequable: missing method Seq"))
+    (sortable? coll)
     (let [v (sq/vec coll) n (pv/vcount v) a (wasm/array-new pv/Node n (wasm/null))]
       (loop [i 0] (when (< i n) (wasm/aset! pv/Node a i (pv/vnth v i)) (recur (inc i))))
       (merge-sort! f a (wasm/array-new pv/Node n (wasm/null)) 0 n)
       (loop [i (dec n) l (sq/list)] (if (< i 0) l (recur (dec i) (sq/conj l (wasm/aget pv/Node a i))))))
-    (raise (wasm/bytes-of-string "sort expected a Collection"))))
+    :else (raise (wasm/bytes-of-string "sort expected a Collection"))))
 
 (defn ^{:twin "core/sort"} sort
   ([coll] (sort* (wasm/null) coll))
@@ -1039,6 +1061,9 @@
                      (s/str (s/str (lit (wasm/bytes-of-string "#error {:message ")) (s/pr-str (lit (wasm/get sq/Err 1 x))))
                             (lit (wasm/bytes-of-string ", :data ")) (s/str (s/pr-str (wasm/get sq/Err 3 x)) (lit (wasm/bytes-of-string "}"))))
                      (lit (wasm/get sq/Err 1 x)))
+          (= k 32) (s/str (lit (wasm/bytes-of-string "<transient-map count=")) (sq/box-int (m/tcount x)) (lit (wasm/bytes-of-string ">")))
+          (= k 33) (s/str (lit (wasm/bytes-of-string "<transient-set count="))
+                          (sq/box-int (hs/tscount (wasm/get TSet 0 x))) (lit (wasm/bytes-of-string ">")))
           (= k 34) (s/str (lit (wasm/bytes-of-string "<transient-vector count="))
                           (sq/box-int (pv/vcount (wasm/get TVec 0 x))) (lit (wasm/bytes-of-string ">")))
           (= k 35) (lit (wasm/get TypeVal 0 x))
@@ -1053,9 +1078,16 @@
           (= k 34) (sq/box-int (pv/vcount (wasm/get TVec 0 x)))
           :else (wasm/trap "count expected Counted"))))
 (defn- foreign-seq [self x]
-  (raise-str (s/str (lit (wasm/bytes-of-string "don't know how to create ISeq from ")) (tn x))))
+  (if (= 32 (ckind x))
+    (m/tentry-seq x)
+    (raise-str (s/str (lit (wasm/bytes-of-string "don't know how to create ISeq from ")) (tn x)))))
+(defn- foreign-seqable [self x]                          ; maps, sets and transient maps are vm.Sequable
+  (let [k (ckind x)] (sq/bool (if (= k 18) true (if (>= k 30) (<= k 32) false)))))
 (defn- foreign-equiv [self a b] (sq/bool (wasm/ref-eq a b)))  ; identity: the transients and types
-(defn- foreign-hash [self x] (wasm/trap "wasm.core: hash of a transient or type is not implemented"))
+;; None of these is Hashable natively: FNV-1a of String() (hash.go:31), so a
+;; meta'd keyword hashes as ":a" text, apart from the bare keyword, a type as
+;; its name and a transient as "<transient-map count=N>".
+(defn- foreign-hash [self x] (sq/hash (s/value-string x)))
 
 (defn install!
   "The link step for the whole runtime: maps and sets (slots 0 and 1), this
@@ -1068,5 +1100,6 @@
                       (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-count))
                       (sq/mk-fn2 (wasm/funcref sq/Code2 foreign-equiv))
                       (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-hash)))
+  (sq/set-seqable-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-seqable)))
   (s/set-print-hook! (sq/mk-fn2 (wasm/funcref sq/Code2 print-foreign)))
   (sq/set-print-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 pr-hook))))

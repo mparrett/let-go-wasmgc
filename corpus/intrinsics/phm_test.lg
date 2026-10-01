@@ -34,7 +34,8 @@
         (symbol? x) (st/sym-of-bytes (wasm/bytes-of-string (str x)))
         (char? x) (st/mk-char (int x))
         (float? x) (st/box-float x)
-        (vector? x) (reduce (fn [w e] (pv/vconj w (->w e))) (pv/empty-vec) x)
+        (vector? x) (pv/vretag (reduce (fn [w e] (pv/vconj w (->w e))) (pv/empty-vec) x)
+                               (if (= (type x) (type (with-meta [] {}))) 1 0) (wasm/null)) ; the Go type native holds (D73)
         :else (throw (ex-info (str "->w: no runtime form for " (pr-str x)) {}))))
 
 (defn- bytes->str [b] (when-not (wasm/null? b) (wasm/string-of-bytes b)))

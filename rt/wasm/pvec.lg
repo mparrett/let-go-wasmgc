@@ -9,7 +9,12 @@
 (ns wasm.pvec
   (:require [wasm.intrinsics :as wasm]))
 
-(wasm/defstruct PVec [:i64 :i64 :ref :ref :ref]) ; cnt, shift, root, tail, meta (null = none)
+;; pkind (D73) records which Go type native would hold: 0 ArrayVector
+;; (literals, vec, subvec, persistent! up to 32, conj up to 32), 1
+;; PersistentVector (conj past 32, with-meta, persistent! past 32). Native
+;; never demotes a PersistentVector, so conj/assoc/pop keep it; hash, print,
+;; type and the seq view all depend on it (rt/wasm/README.md).
+(wasm/defstruct PVec [:i64 :i64 :ref :ref :ref :i64]) ; cnt, shift, root, tail, meta (null = none), pkind
 (wasm/defarray Node :ref)                    ; trie node (32 slots) or tail (1..32)
 
 (defn- node-clone [src n]
@@ -18,11 +23,20 @@
     dst))
 
 (defn empty-vec []
-  (wasm/new PVec 0 5 (wasm/array-new Node 32 (wasm/null)) (wasm/array-new Node 0 (wasm/null)) (wasm/null)))
+  (wasm/new PVec 0 5 (wasm/array-new Node 32 (wasm/null)) (wasm/array-new Node 0 (wasm/null)) (wasm/null) 0))
 
 (defn vmeta [v] (wasm/get PVec 4 v))
-(defn vwith-meta [v m]                       ; with-meta: the trie is shared
-  (wasm/new PVec (wasm/get PVec 0 v) (wasm/get PVec 1 v) (wasm/get PVec 2 v) (wasm/get PVec 3 v) m))
+(defn vpkind [v]                            ; 0 ArrayVector, 1 PersistentVector (D73)
+  (wasm/get PVec 5 v))
+(defn vretag [v pk m]                      ; v's trie as kind pk with meta m (shared)
+  (wasm/new PVec (wasm/get PVec 0 v) (wasm/get PVec 1 v) (wasm/get PVec 2 v) (wasm/get PVec 3 v) m pk))
+(defn varray [v]                           ; an ArrayVector without meta: what vec, subvec and a literal build at any size
+  (vretag v 0 (wasm/null)))
+(defn vwith-meta [v m]                       ; with-meta: the trie is shared; ArrayVector.WithMeta promotes
+  (vretag v 1 m))
+
+(defn- mk [v cnt shift root tail]            ; a successor of v: same meta and kind
+  (wasm/new PVec cnt shift root tail (wasm/get PVec 4 v) (wasm/get PVec 5 v)))
 
 (defn vcount [v] (wasm/get PVec 0 v))
 
@@ -67,18 +81,20 @@
 
 (defn vconj [v x]
   (let [cnt (wasm/get PVec 0 v) shift (wasm/get PVec 1 v)
-        root (wasm/get PVec 2 v) tail (wasm/get PVec 3 v)]
+        root (wasm/get PVec 2 v) tail (wasm/get PVec 3 v)
+        ;; ArrayVector.Conj promotes once the result passes 32 (vector.go:39)
+        pk (if (= 1 (wasm/get PVec 5 v)) 1 (if (> (inc cnt) 32) 1 0))]
     (if (< (- cnt (tailoff cnt)) 32)
       (let [nt (node-clone tail (inc (wasm/alen tail)))]
         (wasm/aset! Node nt (wasm/alen tail) x)
-        (wasm/new PVec (inc cnt) shift root nt (vmeta v)))
+        (wasm/new PVec (inc cnt) shift root nt (vmeta v) pk))
       (let [nt (wasm/array-new Node 1 x)]
         (if (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
           (let [nr (wasm/array-new Node 32 (wasm/null))]
             (wasm/aset! Node nr 0 root)
             (wasm/aset! Node nr 1 (new-path shift tail))
-            (wasm/new PVec (inc cnt) (+ shift 5) nr nt (vmeta v)))
-          (wasm/new PVec (inc cnt) shift (push-tail cnt shift root tail) nt (vmeta v)))))))
+            (wasm/new PVec (inc cnt) (+ shift 5) nr nt (vmeta v) pk))
+          (wasm/new PVec (inc cnt) shift (push-tail cnt shift root tail) nt (vmeta v) pk))))))
 
 (defn- do-assoc [level node i x]
   (let [ret (node-clone node 32)]
@@ -96,10 +112,10 @@
           (if (>= i (tailoff cnt))
             (let [tail (wasm/get PVec 3 v) nt (node-clone tail (wasm/alen tail))]
               (wasm/aset! Node nt (bit-and i 31) x)
-              (wasm/new PVec cnt (wasm/get PVec 1 v) (wasm/get PVec 2 v) nt (vmeta v)))
-            (wasm/new PVec cnt (wasm/get PVec 1 v)
-                      (do-assoc (wasm/get PVec 1 v) (wasm/get PVec 2 v) i x)
-                      (wasm/get PVec 3 v) (vmeta v)))))))
+              (mk v cnt (wasm/get PVec 1 v) (wasm/get PVec 2 v) nt))
+            (mk v cnt (wasm/get PVec 1 v)
+                (do-assoc (wasm/get PVec 1 v) (wasm/get PVec 2 v) i x)
+                (wasm/get PVec 3 v)))))))
 
 (defn- pop-tail [cnt level node]
   (let [subidx (bit-and (unsigned-bit-shift-right (- cnt 2) level) 31)]
@@ -121,13 +137,13 @@
         root (wasm/get PVec 2 v) tail (wasm/get PVec 3 v)]
     (cond
       (= cnt 0) (wasm/trap "pvec: can't pop empty vector")
-      (= cnt 1) (vwith-meta (empty-vec) (vmeta v))
+      (= cnt 1) (vretag (empty-vec) (wasm/get PVec 5 v) (vmeta v)) ; PersistentVector.Pop keeps kind and meta
       (> (- cnt (tailoff cnt)) 1)
-      (wasm/new PVec (dec cnt) shift root (node-clone tail (dec (wasm/alen tail))) (vmeta v))
+      (mk v (dec cnt) shift root (node-clone tail (dec (wasm/alen tail))))
       :else
       (let [nt (array-for v (- cnt 2))
             nr0 (pop-tail cnt shift root)
             nr (if (wasm/null? nr0) (wasm/array-new Node 32 (wasm/null)) nr0)]
         (if (if (> shift 5) (wasm/null? (wasm/aget Node nr 1)) false)
-          (wasm/new PVec (dec cnt) (- shift 5) (wasm/aget Node nr 0) nt (vmeta v))
-          (wasm/new PVec (dec cnt) shift nr nt (vmeta v)))))))
+          (mk v (dec cnt) (- shift 5) (wasm/aget Node nr 0) nt)
+          (mk v (dec cnt) shift nr nt))))))

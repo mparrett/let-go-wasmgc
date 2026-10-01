@@ -43,7 +43,10 @@
         :else (str "non-wasm value " (pr-str x) " (" (type x) ")")))
 
 (defn- eqref? [x]
-  (or (nil? x) (and (tagged? x) (not= :func (::kind (core/aget x 0))))))
+  ;; A native exception is the reference's stand-in for the payload a wasm
+  ;; `catch $lgex` binds, which is always a (ref null eq): runtime code may
+  ;; keep what it caught (a LazySeq caches its thunk's error, D74).
+  (or (nil? x) (and (tagged? x) (not= :func (::kind (core/aget x 0)))) (instance? Throwable x)))
 
 (defn- funcref? [x]
   (or (nil? x) (and (tagged? x) (= :func (::kind (core/aget x 0))))))

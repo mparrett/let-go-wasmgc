@@ -765,7 +765,8 @@
         fs (read-forms st 41)]
     (if (failed? st fs) st (sq/list-with-meta (vec->list fs) (pos-meta st line col)))))
 
-(defn- read-vector [st] (read-forms st 93))              ; readVector (reader.go:787)
+(defn- read-vector [st]                                  ; readVector (reader.go:787): an ArrayVector at any size
+  (let [fs (read-forms st 93)] (if (failed? st fs) fs (pv/varray fs))))
 
 (defn- read-map [st]                                     ; readMap (reader.go:816), data semantics
   (let [fs (read-forms st 125)]
@@ -957,7 +958,7 @@
           (= k 21) (s/lit "vm.Symbol")
           (= k 19) (s/lit "vm.Char")
           (= k 15) (s/lit "vm.Boolean")
-          (= k 11) (if (wasm/null? (pv/vmeta x)) (s/lit "vm.ArrayVector") (s/lit "*vm.PersistentVector"))
+          (= k 11) (if (= 0 (pv/vpkind x)) (s/lit "vm.ArrayVector") (s/lit "*vm.PersistentVector"))
           (if (= k 2) true (= k 3)) (s/lit "*vm.List")
           (= k 30) (s/lit "*vm.PersistentMap")
           (= k 31) (s/lit "*vm.PersistentSet")

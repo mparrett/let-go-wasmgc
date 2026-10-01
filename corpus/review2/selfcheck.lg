@@ -1,0 +1,174 @@
+;; corpus/review2/selfcheck.lg: the bug-NN repros as [native runtime] pairs,
+;; each side rendered to a string, compared in one native lg process (so the
+;; native column is a fresh run, never a header). Each check uses the
+;; expressions of its bug-NN-*.lg file, plus the neighbours its header names.
+;; Prints one `bug-NN MATCH|MISMATCH` line per file and, for a mismatch, the
+;; differing labels. checks/run-review2.sh drives it.
+;;
+;;   lg -source-paths rt corpus/review2/selfcheck.lg
+(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s]
+         '[wasm.phm :as m] '[wasm.phs :as hs] '[wasm.core :as c] '[string])
+(c/install!)
+
+(def array-type (type (object-array 0)))
+(defn wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
+(defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
+(defn R [w] (wasm/string-of-bytes (s/str-bytes w)))
+(defn H [w] (sq/unbox-int (sq/hash w)))
+(defn kw [x] (s/kw-of-bytes (wasm/bytes-of-string x)))
+(defn sym [x] (s/sym-of-bytes (wasm/bytes-of-string x)))
+(defn st [x] (s/mk-str (wasm/bytes-of-string x)))
+(defn thunk [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+(defn wv [xs] (reduce (fn [v i] (c/conj v (sq/box-int i))) (pv/empty-vec) xs))
+
+(defn em
+  "An error's message: a native exception's, a runtime Err's caught message,
+   a reference trap's text marked as a trap (uncatchable in wasm)."
+  [e]
+  (cond (and (wref? e) (wasm/is? sq/Err e)) (wasm/string-of-bytes (wasm/get sq/Err 2 e))
+        (string/starts-with? (str (ex-message e)) "wasm trap: ") (str "TRAP " (subs (ex-message e) 11))
+        :else (ex-message e)))
+(defmacro r
+  "The value's printed form (runtime refs through the runtime printer), or THROWS msg."
+  [e]
+  `(try (let [v# ~e] (if (wref? v#) (P v#) (pr-str v#))) (catch Throwable x# (str "THROWS " (em x#)))))
+
+(def checks
+  ;; bug -> [[label native runtime] ...], both sides strings
+  {"01" (let [w-abc (c/conj (c/conj (c/conj (c/conj (hs/empty-set) (pv/empty-vec)) (kw "a")) (kw "b")) (kw "c"))]
+          [["(hash [])" (r (hash [])) (r (H (pv/empty-vec)))]
+           ["(hash (vec ()))" (r (hash (vec ()))) (r (H (sq/vec (sq/list))))]
+           ["(hash [[]])" (r (hash [[]])) (r (H (c/conj (pv/empty-vec) (pv/empty-vec))))]
+           ["(hash (with-meta [] m))" (r (hash (with-meta [] {:a 1}))) (r (H (c/with-meta (pv/empty-vec) (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)))))]
+           ["set holding []" (r (conj #{} [] :a :b :c)) (r w-abc)]
+           ["(contains? #{[]} ())" (r (contains? #{[]} ())) (r (c/contains? (c/conj (hs/empty-set) (pv/empty-vec)) (sq/list)))]])
+   "02" (let [nrun (fn [] (let [n (atom 0) ls (lazy-seq (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) (list 1 2)))]
+                            [(r (pr-str ls)) (r (pr-str ls)) @n]))
+              wrun (fn [] (let [n (atom 0)
+                                ls (sq/lazy-seq* (thunk #(if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) (sq/list (sq/box-int 1) (sq/box-int 2)))))]
+                            [(r (P ls)) (r (P ls)) @n]))
+              ;; the error comes from a runtime raise (what a compiled thunk's throw is)
+              wrun2 (fn [] (let [n (atom 0)
+                                 ls (sq/lazy-seq* (thunk #(if (= 1 (swap! n inc)) (c/raise (wasm/bytes-of-string "boom")) (sq/list (sq/box-int 1)))))]
+                             [(r (P ls)) (r (P ls)) @n]))
+              nmap (fn [] (let [n (atom 0) ls (map (fn [x] (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) x)) [1 2 3])]
+                            [(r (pr-str ls)) (r (pr-str ls)) @n]))
+              wmap (fn [] (let [n (atom 0) f (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) x))))
+                                ls (sq/map* f (sq/vec (wv [1 2 3])))]
+                            [(r (P ls)) (r (P ls)) @n]))
+              ns* (take 9 false)
+              ws (sq/lazy-seq* (thunk #(c/raise (wasm/bytes-of-string "seq expected Seqable"))))]
+          (try (pr-str ns*) (catch Throwable e nil)) (try (P ws) (catch Throwable e nil))
+          [["flat thunk: 1st, 2nd, runs" (pr-str (nrun)) (pr-str (wrun))]
+           ["flat thunk, runtime raise" (pr-str (nrun)) (pr-str (wrun2))]
+           ["(map f v) chunk error cached" (pr-str (nmap)) (pr-str (wmap))]
+           ["realized? after a throw" (r (realized? ns*)) (r (sq/realized? ws))]])
+   "03" (let [v33 (reduce conj [] (range 33)) w33 (wv (range 33))]
+          [["pr-str (seq v33)" (r (seq v33)) (r (sq/seq w33))]
+           ["type (seq v33)" (r (str (type (seq v33)))) (r (R (s/str (c/type-of (sq/seq w33)))))]
+           ["pr-str (rest (seq v33))" (r (rest (seq v33))) (r (sq/rest (sq/seq w33)))]
+           ["str/print-str (seq v33)" (r [(str (seq v33)) (print-str (seq v33))]) (r [(R (s/str (sq/seq w33))) (R (s/print-str (sq/seq w33)))])]
+           ["type (seq [1 2])" (r (str (type (seq [1 2])))) (r (R (s/str (c/type-of (sq/seq (wv [1 2]))))))]])
+   "04" (let [nt (transient {:a 1}) wt (c/transient (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)))
+              wconj (sq/mk-fn2 (wasm/funcref sq/Code2 (fn [_ a b] (c/conj a b))))]
+          [["seq" (r (seq nt)) (r (sq/seq wt))]
+           ["count" (r (count nt)) (r (sq/count wt))]
+           ["first" (r (first nt)) (r (sq/first wt))]
+           ["reduce conj []" (r (reduce conj [] nt)) (r (sq/reduce wconj (pv/empty-vec) wt))]
+           ["nth 0 :nf" (r (nth nt 0 :nf)) (r (c/nth wt (sq/box-int 0) (kw "nf")))]
+           ["nth 0" (r (nth nt 0)) (r (c/nth wt (sq/box-int 0)))]
+           ["vec" (r (vec nt)) (r (sq/vec wt))]
+           ["seq of transient set" (r (seq (transient #{1}))) (r (sq/seq (c/transient (c/conj (hs/empty-set) (sq/box-int 1)))))]])
+   "05" [["pr-str transient map" (r (pr-str (transient {}))) (r (R (s/pr-str (c/transient (m/empty-map)))))]
+         ["str transient set" (r (str (transient #{1}))) (r (R (s/str (c/transient (c/conj (hs/empty-set) (sq/box-int 1))))))]
+         ["print-str transient vector" (r (print-str (transient [1]))) (r (R (s/print-str (c/transient (c/conj (pv/empty-vec) (sq/box-int 1))))))]
+         ["nested" (r (pr-str [(transient {:a 1})])) (r (R (s/pr-str (c/conj (pv/empty-vec) (c/transient (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)))))))]]
+   "06" (let [wmeta (c/assoc (m/empty-map) (kw "x") (sq/box-int 1))
+              w9 (reduce (fn [w i] (c/assoc w (sq/box-int i) (sq/box-int i))) (m/empty-map) (range 9))]
+          [["hash meta'd symbol" (r (hash (with-meta 'a {:x 1}))) (r (H (c/with-meta (sym "a") wmeta)))]
+           ["hash meta'd keyword" (r (hash (with-meta :a {:x 1}))) (r (H (c/with-meta (kw "a") wmeta)))]
+           ["hash 'a" (r (hash 'a)) (r (H (sym "a")))]
+           ["hash (type 1)" (r (hash (type 1))) (r (H (c/type-of (sq/box-int 1))))]
+           ["hash transient map" (r (hash (transient {}))) (r (H (c/transient (m/empty-map))))]
+           ["9-key map keyed by a meta'd symbol" (r (count (assoc (zipmap (range 9) (range 9)) (with-meta 'a {:x 1}) 1)))
+            (r (sq/count (c/assoc w9 (c/with-meta (sym "a") wmeta) (sq/box-int 1))))]])
+   "07" (let [ns* (lazy-seq (lazy-seq (throw (ex-info "boom" {}))))
+              ws (sq/lazy-seq* (thunk (fn [] (sq/lazy-seq* (thunk (fn [] (throw (ex-info "boom" {}))))))))]
+          [["1st, 2nd" (pr-str [(r (pr-str ns*)) (r (pr-str ns*))]) (pr-str [(r (P ws)) (r (P ws))])]])
+   "08" [["(hash (seq [1 2]))" (r (hash (seq [1 2]))) (r (H (sq/seq (wv [1 2]))))]
+         ["(hash '(1 2))" (r (hash '(1 2))) (r (H (sq/list (sq/box-int 1) (sq/box-int 2))))]
+         ["(hash (rest [1 2 3]))" (r (hash (rest [1 2 3]))) (r (H (sq/rest (wv [1 2 3]))))]
+         ["(hash (next [1 2 3]))" (r (hash (next [1 2 3]))) (r (H (sq/next (wv [1 2 3]))))]
+         ["(hash (seq v33))" (r (hash (seq (reduce conj [] (range 33))))) (r (H (sq/seq (wv (range 33)))))]
+         ["(= (seq [1 2]) '(1 2))" (r (= (seq [1 2]) '(1 2))) (r (sq/equals (sq/seq (wv [1 2])) (sq/list (sq/box-int 1) (sq/box-int 2))))]]
+   "09" (let [wmap (c/assoc (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)) (kw "b") (sq/box-int 2))
+              wmeta (c/assoc (m/empty-map) (kw "m") (sq/box-int 1))]
+          [["pr-str meta'd vector of a map" (r (pr-str (with-meta [{:a 1 :b 2}] {:m 1}))) (r (R (s/pr-str (c/with-meta (c/conj (pv/empty-vec) wmap) wmeta))))]
+           ["print-str meta'd vector" (r (print-str (with-meta ["s" \a] {:m 1})))
+            (r (R (s/print-str (c/with-meta (c/conj (c/conj (pv/empty-vec) (st "s")) (s/mk-char 97)) wmeta))))]
+           ["print-str repeat" (r (print-str (repeat 2 "s"))) (r (R (s/print-str (sq/repeat (sq/box-int 2) (st "s")))))]
+           ["pr-str repeat of a map" (r (pr-str (repeat 1 {:a 1 :b 2}))) (r (R (s/pr-str (sq/repeat (sq/box-int 1) wmap))))]
+           ["print-str 33-vector" (r (print-str (conj (reduce conj [] (range 32)) "s"))) (r (R (s/print-str (c/conj (wv (range 32)) (st "s")))))]])
+   "10" (let [a (c/atom (sq/box-int 1)) fnv (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] x)))
+              num (fn [f] (try (number? (f)) (catch Throwable e (str "THROWS " (em e)))))]
+          ;; native hashes by pointer: parity is "hashes, stable" (D74), not the value
+          [["atom" (r (number? (hash (atom 1)))) (r (num #(H a)))]
+           ["volatile" (r (number? (hash (volatile! 1)))) (r (num #(H (c/volatile! (sq/box-int 1)))))]
+           ["fn" (r (number? (hash inc))) (r (num #(H fnv)))]
+           ["[atom]" (r (number? (hash [(atom 1)]))) (r (num #(H (c/conj (pv/empty-vec) a))))]
+           ["#{atom}" (r (count (conj #{} (atom 1)))) (r (sq/count (c/conj (hs/empty-set) a)))]
+           ["atom hash stable across reset!" (r (let [x (atom 1) h (hash x)] (reset! x 2) (= h (hash x))))
+            (r (let [h (H a)] (c/reset! a (sq/box-int 2)) (= h (H a))))]
+           ["ex-info" (r (hash (ex-info "a" {}))) (r (H (c/ex-info (st "a") (m/empty-map))))]])
+   "11" (let [nt (type 1) wt (c/type-of (sq/box-int 1))
+              ns (transient #{1}) ws (c/transient (c/conj (hs/empty-set) (sq/box-int 1)))
+              nv (transient [1]) wvv (c/transient (c/conj (pv/empty-vec) (sq/box-int 1)))
+              idf (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] x)))
+              wconj (sq/mk-fn2 (wasm/funcref sq/Code2 (fn [_ a b] (c/conj a b))))]
+          (vec (concat
+                (for [[l n w] [["type" nt wt] ["transient set" ns ws] ["transient vector" nv wvv]]
+                      [op nf wf] [["first" first sq/first] ["rest" rest sq/rest] ["next" next sq/next] ["seq" seq sq/seq]
+                                  ["second" second sq/second] ["cons" #(cons 1 %) #(sq/cons (sq/box-int 1) %)]
+                                  ["reduce" #(reduce conj [] %) #(sq/reduce wconj (pv/empty-vec) %)]
+                                  ["map" #(doall (map identity %)) #(sq/map* idf %)]
+                                  ["some" #(some identity %) #(sq/some idf %)]
+                                  ["chunked-seq?" chunked-seq? sq/chunked-seq?]
+                                  ["nth-nf" #(nth % 5 :nf) #(c/nth % (sq/box-int 5) (kw "nf"))]
+                                  ["nth" #(nth % 5) #(c/nth % (sq/box-int 5))]
+                                  ["vec" vec sq/vec]]]
+                  [(str op " of " l) (r (nf n)) (r (wf w))])
+;; the repro's apply line compares core.lg's apply (which seqs first: "seq
+                ;; expected Seqable") with the apply* twin; the twin's oracle is apply*
+                [["(apply* identity 5)" (r (apply* identity 5)) (r (c/apply* idf (sq/box-int 5)))]
+                 ["(apply* identity (type 1))" (r (apply* identity (type 1))) (r (c/apply* idf wt))]
+                 ["(apply* identity transient map)" (r (apply* vector (transient {:a 1}))) (r (c/apply* (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] (c/conj (pv/empty-vec) x)))) (c/transient (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)))))]])))
+   "12" [["upper é" (r (upper-case "é")) (r (R (s/upper-case (st "é"))))]
+         ["lower ÉA" (r (lower-case "ÉA")) (r (R (s/lower-case (st "ÉA"))))]
+         ["upper 日本" (r (upper-case "日本")) (r (R (s/upper-case (st "日本"))))]
+         ["upper ßµÿ×" (r (upper-case "ßµÿ× x")) (r (R (s/upper-case (st "ßµÿ× x"))))]
+         ["lower ÀÞ÷→😀" (r (lower-case "ÀÞ÷→😀 X")) (r (R (s/lower-case (st "ÀÞ÷→😀 X"))))]
+         ["(int ##NaN) is a named limit" "lower-wasm" (let [m (r (s/int (s/box-float ##NaN)))] (if (string/includes? m "TRAP lower-wasm:") "lower-wasm" m))]
+         ["Greek is a named limit" "lower-wasm" (let [m (r (R (s/upper-case (st "αβ"))))] (if (string/includes? m "TRAP lower-wasm:") "lower-wasm" m))]]
+   "13" [["(type (type (repeat 2 1)))" (r (str (type (type (repeat 2 1))))) (r (R (s/str (c/type-of (c/type-of (sq/repeat (sq/box-int 2) (sq/box-int 1)))))))]
+         ["(type (type 1))" (r (str (type (type 1)))) (r (R (s/str (c/type-of (c/type-of (sq/box-int 1))))))]
+         ["(= (type (type (repeat 2 1))) (type (repeat 3 1)))" (r (= (type (type (repeat 2 1))) (type (repeat 3 1))))
+          (r (sq/equals (c/type-of (c/type-of (sq/repeat (sq/box-int 2) (sq/box-int 1)))) (c/type-of (sq/repeat (sq/box-int 3) (sq/box-int 1)))))]]
+   "14" (let [inc-fn (sq/mk-fn1 (wasm/funcref sq/Code1 (fn [_ x] (sq/box-int (inc (sq/unbox-int x))))))]
+          [["sort repeat" (r (sort (repeat 3 2))) (r (c/sort (sq/repeat (sq/box-int 3) (sq/box-int 2))))]
+           ["sort chunked" (r (sort (seq (map inc (range 3))))) (r (c/sort (sq/seq (sq/map* inc-fn (sq/range (sq/box-int 3))))))]
+           ["sort range" (r (sort (range 3))) (r (c/sort (sq/range (sq/box-int 3))))]
+           ["sort (range)" (r (sort (range))) (r (c/sort (sq/range)))]
+           ["sort (seq [3 1])" (r (sort (seq [3 1]))) (r (c/sort (sq/seq (sq/vec (wv [3 1])))))]
+           ["sort (seq v33)" (r (sort (seq (reduce conj [] (range 33))))) (r (c/sort (sq/seq (wv (range 33)))))]
+           ["sort transient map" (r (sort (transient {:a 1}))) (r (c/sort (c/transient (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)))))]])
+   "15" (let [wk (c/assoc (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)) (kw "b") (sq/box-int 2))]
+          [["assoc [] map-key" (r (assoc [] {:a 1 :b 2} 1)) (r (c/assoc (pv/empty-vec) wk (sq/box-int 1)))]
+           ["assoc [] string-key" (r (assoc [] "s" 1)) (r (c/assoc (pv/empty-vec) (st "s") (sq/box-int 1)))]])
+   "16" (let [inf (s/box-float ##Inf)]
+          [["(hash ##NaN)" (r (hash ##NaN)) (r (H (s/box-float ##NaN)))]
+           ["(hash (- ##Inf ##Inf))" (r (hash (- ##Inf ##Inf))) (r (H (c/sub inf inf)))]])})
+
+(doseq [[bug rows] (sort checks)]
+  (let [bad (remove (fn [[_ n w]] (= n w)) rows)]
+    (println (str "bug-" bug " " (if (empty? bad) "MATCH" "MISMATCH") " (" (count rows) " checks)"))
+    (doseq [[l n w] bad] (println (str "    " l "\n      native : " n "\n      runtime: " w)))))

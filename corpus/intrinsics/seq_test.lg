@@ -58,7 +58,7 @@
           :else (<-w r))))
 
 (defn wl [xs] (reduce (fn [l x] (sq/conj l (->w x))) (sq/list) (reverse xs)))   ; lg seq -> wasm List
-(defn wv [xs] (reduce (fn [v x] (pv/vconj v (->w x))) (pv/empty-vec) xs))       ; lg seq -> wasm pvec
+(defn wv [xs] (pv/vretag (reduce (fn [v x] (pv/vconj v (->w x))) (pv/empty-vec) xs) 1 (wasm/null))) ; lg seq -> a PersistentVector, as pvec
 (defn pvec [xs] (with-meta (vec xs) {:pv true}))                                  ; native PersistentVector
 (defn w [n] (sq/box-int n))
 
@@ -431,7 +431,7 @@
   '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
      bit-shift-left bit-shift-right unsigned-bit-shift-right
      unchecked-add unchecked-subtract unchecked-multiply quot})
-(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote throw})
 
 (defn- var-refs [form bound]
   (cond
@@ -440,6 +440,9 @@
     (let [[head & more] form]
       (cond
         (= 'quote head) []
+        ;; (catch Throwable e body...) inside try: D31's one catch class; e is a local
+        (= 'catch head) (let [[cls sym & body] more]
+                          (if (= 'Throwable cls) (mapcat #(var-refs % (conj bound sym)) body) [form]))
         (= 'fn* head)
         (let [more (if (symbol? (first more)) (rest more) more)
               arities (if (vector? (first more)) [more] more)]

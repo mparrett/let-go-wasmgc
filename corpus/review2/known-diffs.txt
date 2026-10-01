@@ -1,0 +1,13 @@
+# Allowlist for checks/run-review2.sh. One entry per line: a key, a tab, the
+# justification. A key is a repro (bug-NN: its selfcheck may MISMATCH) or a
+# fuzz signature [op field native-class runtime-class] (it may appear in a
+# FUZZ_NOFOUND=1 run). Anything else that mismatches or appears fails the check.
+#
+# Not listed because they never surface as a FAIL signature: fuzz.lg tallies
+# R5 (ordered map/set seq hash), R8 (stamped {:line :column} empty-list meta),
+# D47 (static type in a message), static traps for catchable errors and named
+# limits as SOFT; fuzz-check.lg tallies R8 flowing into later values, the
+# identity hash of atoms/volatiles/fns (D74) and the bridge's opaque values.
+# D69's vector-type tallies are gone: the runtime records the kind (D73).
+bug-16	reference stand-in: float-bits cannot see NaN payloads, so a NaN from arithmetic (hardware default 0x7FF8000000000000) hashes like ##NaN (Go math.NaN(), 0x7FF8000000000001); the f64-bits intrinsic (D28, P2.2-wasm) closes it
+[:apply :errmsg :err :err]	harness: fuzz.lg's :apply compares core.lg's apply, which seqs its argument first ("seq expected Seqable"), with the apply* twin; native apply* says "apply expected Seq" exactly as c/apply* (selfcheck bug-11, core_test calls-gensym-sort-host)

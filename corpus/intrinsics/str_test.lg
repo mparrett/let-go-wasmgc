@@ -42,7 +42,9 @@
         (keyword? x) (s/kw-of-bytes (wasm/bytes-of-string (subs (str x) 1)))
         (symbol? x) (s/sym-of-bytes (wasm/bytes-of-string (str x)))
         (float? x) (s/box-float x)
-        (vector? x) (reduce (fn [v e] (pv/vconj v (->w e))) (pv/empty-vec) x)
+        ;; the Go type native holds (D73): a meta'd/conj-grown PersistentVector or an ArrayVector
+        (vector? x) (pv/vretag (reduce (fn [v e] (pv/vconj v (->w e))) (pv/empty-vec) x)
+                               (if (= (type x) (type (with-meta [] {}))) 1 0) (wasm/null))
         (fn? x) (clo x)
         (seq? x) (reduce (fn [l e] (sq/conj l (->w e))) (sq/list) (reverse x))
         :else (throw (ex-info (str "->w: no wasm form for " (pr-str x)) {}))))
@@ -359,7 +361,8 @@
                  [[1.0] [1]] [[-0.0] [0.0]] [[:a/b] ['a/b]] [[\a] [97]]]]
     (same (= a b) (sq/equals (->w a) (->w b))))
   (doseq [x [["a" :b \c 1.5 'd] [] ["héllo" ["x"]]]]
-    (same (hash (pvec x)) (sq/hash (->w x)))
+    (same (hash (pvec x)) (sq/hash (->w (pvec x))))
+    (same (hash (vec x)) (sq/hash (->w (vec x))))
     (same (hash (apply list x)) (sq/hash (->w (apply list x)))))
   (same (count "héllo") (sq/count (->w "héllo")))
   (same (seq "日本") (sq/seq (->w "日本")))

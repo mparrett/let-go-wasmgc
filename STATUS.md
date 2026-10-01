@@ -22,6 +22,7 @@
 | P2.1-backend | done 2026-10-01 | opus | runtime compiles through the backend; rt_wasm.lg MATCH; fib 1.33×; P2.1 bar redefined (D75) |
 | review-1 | done 2026-10-01 | opus | 148 probes: 78 match, 11 bugs (5 silent), 2 gaps → P1.7 |
 | review-2 | done 2026-10-01 | opus | 2300 seeds; 16 runtime bugs (8 silent) → P2.10 |
-| P2.10 | running | opus | runtime review fixes (API-stable) |
+| P2.10 | done 2026-10-01 | opus | 15/16 fixed, 1 deferred; vkind_test; 89 tests; verified |
 | P1.7 | running | opus | Phase 1 review fixes |
 | P2.1-corpus | running | opus | corpus/wasm oracle programs |
+| P3.1-runtime | running | opus | xsofy-only natives in the dialect (arrays, math, xxh3, nanotime) |

@@ -1,0 +1,60 @@
+;; corpus/review2/fuzz-check.lg: fuzz.lg's seed loop for checks/run-review2.sh,
+;; loaded through fuzz.lg's own --eval hook so fuzz.lg itself is unchanged:
+;;
+;;   FUZZ_FROM=1000 FUZZ_TO=1075 FUZZ_NOFOUND=1 \
+;;     lg -source-paths rt corpus/review2/fuzz.lg --eval corpus/review2/fuzz-check.lg
+;;
+;; One addition to the harness: the bridge's <-w had no inverse for a type
+;; value nested in a collection (it returned [:opaque 35], never = the native
+;; type). Before P2.10 a type value never reached the pool, because hashing it
+;; trapped (bug-06); now that it hashes, every collection holding one would
+;; fail the bridge on the harness's account. Types map back by name to the
+;; native type of a sample value; an unknown name stays opaque (and fails).
+
+(def native-types
+  (into {} (map (juxt #(str (type %)) type))
+        [1 1.5 "s" \a :k 'k true [] (with-meta [] {}) '(1) (seq [1]) (seq (with-meta [1] {})) (range 3) (range)
+         (repeat 2 1) {} #{} (atom 1) (volatile! 1) inc (transient {}) (transient #{}) (transient []) (type 1)
+         (ex-info "x" {}) (reduced 1) (first {:a 1})]))
+
+(def base<-w <-w)
+(defn <-w [r]
+  (if (= 35 (c/ckind r))
+    (get native-types (wasm/string-of-bytes (wasm/get c/TypeVal 0 r)) [:opaque 35])
+    (base<-w r)))
+
+;; Three more classes are declared or harness differences, now reachable
+;; because the P2.10 fixes let these values into the pool (they used to trap
+;; on hash or print, and a failing step pushes nothing). Each is decided on the
+;; native value, so a real bug in the same op still fails:
+;; - :declared/identity-hash: a hash over a value holding an atom, volatile or
+;;   fn: native hashes those by pointer, the runtime by a per-kind constant
+;;   (D74, rt/wasm/README.md "Hashing values with no value hash").
+;; - :harness/bridge-opaque: the bridge cannot rebuild an atom, volatile, fn,
+;;   transient, exception or reduced value, and a meta'd keyword/symbol is =
+;;   only to itself natively (README "Harness artifacts").
+;; - :R8-propagated: R8's stamped {:line :column} empty-list meta, already
+;;   tallied by fuzz.lg, flowing on into a later step's value.
+(defn- native-nodes [nv]
+  (try (doall (take 5000 (tree-seq #(and (coll? %) (not (string? %))) seq nv))) (catch Throwable e [])))
+(defn- holds? [pred nv] (boolean (some pred (native-nodes nv))))
+(defn- pointer-hashed? [x] (boolean (re-find #"Atom|Volatile|Fn|Func|Native|Closure" (str (type x)))))
+(defn- bridge-opaque? [x]
+  (or (pointer-hashed? x) (boolean (re-find #"Transient|Exception|Reduced" (str (type x))))
+      (and (or (keyword? x) (symbol? x)) (some? (meta x)))))
+
+(def base-known* known*)
+(defn known* [field a b nv wv]
+  (or (base-known* field a b nv wv)
+      (let [pnv (try (pr-str nv) (catch Throwable e ""))
+            pwv (try (if (wasm/null? wv) "nil" (rs* (s/pr-str wv))) (catch Throwable e ""))]
+        (cond (and (= field :hash) (holds? pointer-hashed? nv)) [:declared/identity-hash]
+              (and (= field :bridge) (holds? bridge-opaque? nv)) [:harness/bridge-opaque]
+              (and (re-find #":line|:column" pnv) (not (re-find #":line|:column" pwv))) [:R8-propagated]
+              :else nil))))
+
+(let [from (parse-long (os/getenv "FUZZ_FROM")) to (parse-long (os/getenv "FUZZ_TO"))
+      seen (atom #{}) t0 (System/currentTimeMillis)]
+  (doseq [sd (range from to)] (run-seed sd 40 seen))
+  (println (str "DONE seeds=" (- to from) " [" from "," to ") ms=" (- (System/currentTimeMillis) t0) " sigs=" (count @seen)))
+  (println (str "SOFT " (pr-str (into (sorted-map) @soft)))))

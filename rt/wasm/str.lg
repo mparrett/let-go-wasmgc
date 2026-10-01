@@ -536,8 +536,14 @@
           (= k 20) (do (buf-byte! b 58) (write-named b x))
           (= k 21) (write-named b x)
           (= k 22) (write-float-bits! b (sq/float-bits (unbox-float x)))
+          ;; A PersistentVector, its seq and a Repeat print their elements through
+          ;; Value.String() in every mode (no print-method of their own); the seq
+          ;; of a PersistentVector prints the whole vector (persistent_vector.go:748)
+          (if (= k 10) (= 1 (pv/vpkind (wasm/get sq/PVecSeq 0 x))) false)
+          (do (buf-bytes! b (wasm/bytes-of-string "(seq ")) (write-pvec b (wasm/get sq/PVecSeq 0 x) 0) (buf-byte! b 41))
+          (= k 9) (write-seq b x 0)
           (if (>= k 2) (<= k 10) false) (write-seq b x mode)
-          (= k 11) (write-pvec b x mode)
+          (= k 11) (write-pvec b x (if (= 1 (pv/vpkind x)) 0 mode))
           (= k 23) (write-pvec b (sq/entry-vec x) mode)       ; MapEntry.String(): [k v]
           ;; foreign kinds and the P2.7 boxes (atom, volatile, exception) print through wasm.core
           (if (= k 18) true (>= k 24)) (let [h (wasm/get Globals 2 globals)]
@@ -725,7 +731,7 @@
           (= k 22) (let [f (unbox-float x)]
                      (cond (if (< f -2147483648.0) true (> f 2147483647.0)) (wasm/trap "can't be coerced to int")
                            (if (< f 0.0) false (if (>= f 0.0) false true))
-                           (wasm/trap "wasm.str: (int ##NaN) is platform-defined in Go; not reproduced")
+                           (wasm/trap "lower-wasm: (int ##NaN) is platform-defined in Go (0 on arm64, MinInt64 on amd64); not reproduced")
                            :else (sq/box-int (wasm/f64-to-i64 f))))   ; truncates, as math.Trunc
           (= k 19) (sq/box-int (char-val x))
           (= k 15) (sq/box-int (wasm/get sq/Bool 0 x))
@@ -907,15 +913,59 @@
       (mk-str (slice bs 0 stop)))
     (wasm/trap "trimr expected String")))
 
-(defn- map-ascii [s lo hi delta]                         ; ASCII case mapping; Go's ToUpper/ToLower are Unicode
-  (let [bs (str-bytes s) n (wasm/alen bs) out (wasm/bytes-new n)]
+(defn- caseless? [r]                                     ; no simple case mapping in Go's unicode tables
+  (cond (< r 0x0590) false
+        (< r 0x1000) true                                ; Hebrew, Arabic ... Indic, Thai, Lao, Tibetan
+        (< r 0x2000) false
+        (< r 0x2100) true                                ; punctuation, super/subscripts, currency, combining
+        (< r 0x2190) false                               ; letterlike symbols and number forms carry case (Ω K Å Ⅰ)
+        (if (>= r 0x24B6) (<= r 0x24E9) false) false     ; circled letters
+        (< r 0x2C00) true                                ; arrows ... dingbats, braille, misc symbols
+        (< r 0x2E00) false
+        (< r 0xA000) true                                ; CJK punctuation, kana, bopomofo, CJK ideographs
+        (< r 0xAC00) false
+        (< r 0xFB00) true                                ; Hangul, private use, CJK compatibility
+        (< r 0xFF21) (>= r 0xFE30)                       ; CJK compatibility forms, fullwidth punctuation/digits
+        (< r 0xFF3B) false                               ; fullwidth A-Z
+        (< r 0xFF41) true
+        (< r 0xFF5B) false                               ; fullwidth a-z
+        (< r 0x10000) true                               ; halfwidth forms, specials (incl. U+FFFD)
+        (< r 0x1F000) false
+        (< r 0x1F100) true                               ; mahjong, domino, playing cards
+        (< r 0x1F300) false
+        (< r 0x1FB00) true                               ; pictographs, emoticons, symbols
+        :else (if (>= r 0x20000) (< r 0x40000) false)))  ; CJK extensions
+
+(defn- case-rune                                         ; unicode.ToUpper/ToLower on Latin-1 and caseless runes; -1 = not ported
+  [r up]
+  (cond (< r 0x80) (if up (if (if (>= r 97) (<= r 122) false) (- r 32) r) (if (if (>= r 65) (<= r 90) false) (+ r 32) r))
+        (< r 0x100) (if up
+                      (cond (= r 0xB5) 0x39C (= r 0xFF) 0x178 (= r 0xF7) r
+                            (if (>= r 0xE0) (<= r 0xFE) false) (- r 32) :else r)
+                      (if (if (>= r 0xC0) (if (<= r 0xDE) (if (= r 0xD7) false true) false) false) (+ r 32) r))
+        (caseless? r) r
+        :else -1))
+
+(defn- map-runes [bs n up]                               ; strings.Map: an invalid byte becomes U+FFFD
+  (let [b (buf-new)]
     (loop [i 0]
       (when (< i n)
-        (let [c (wasm/bget bs i)]
-          (when (>= c 0x80) (wasm/trap "wasm.str: case mapping of non-ASCII text is not implemented"))
-          (wasm/bset! out i (if (if (>= c lo) (<= c hi) false) (+ c delta) c))
-          (recur (inc i)))))
-    (mk-str out)))
+        (let [p (sq/decode-at bs i n) r (case-rune (unsigned-bit-shift-right p 3) up)]
+          (when (< r 0) (wasm/trap "lower-wasm: upper-case/lower-case of cased non-ASCII text outside Latin-1 (Unicode case tables are not ported)"))
+          (encode-rune! b r)
+          (recur (+ i (bit-and p 7))))))
+    (buf-done b)))
+
+(defn- map-ascii [s lo hi delta]                         ; strings.ToUpper/ToLower: byte-wise when all ASCII, else per rune
+  (let [bs (str-bytes s) n (wasm/alen bs) out (wasm/bytes-new n)]
+    (if (loop [i 0] (if (< i n) (if (>= (wasm/bget bs i) 0x80) false (recur (inc i))) true))
+      (do (loop [i 0]
+            (when (< i n)
+              (let [c (wasm/bget bs i)]
+                (wasm/bset! out i (if (if (>= c lo) (<= c hi) false) (+ c delta) c))
+                (recur (inc i)))))
+          (mk-str out))
+      (map-runes bs n (< delta 0)))))
 
 (defn ^{:twin "core/upper-case"} upper-case [s] (if (= 17 (sq/kind s)) (map-ascii s 97 122 -32) (wasm/trap "upper-case expected String")))
 (defn ^{:twin "core/lower-case"} lower-case [s] (if (= 17 (sq/kind s)) (map-ascii s 65 90 32) (wasm/trap "lower-case expected String")))

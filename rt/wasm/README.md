@@ -23,7 +23,10 @@ has no cycle: anything that must dispatch on a box lives in seq.lg, and the
 collections reach seq.lg's generic natives through hooks. The link step is
 one call, `(wasm.core/install!)`: maps (slot 0) and sets (slot 1) through
 `wasm.phs/install-hooks!`, wasm.core's own foreign values (transients, types,
-meta'd keywords/symbols) in the generic slot 2, the printer wasm.str uses for
+meta'd keywords/symbols) in the generic slot 2, which foreign values are
+seqable (`wasm.seq/set-seqable-hook!`: maps, sets, transient maps; for the
+others first/rest/seq/reduce/map raise their own message), the printer
+wasm.str uses for
 foreign values (`set-print-hook!`, called with a mode: 0 `Value.String()`,
 1 `pr-str`, 2 `print-str`; a map's String() has no commas, its pr-str does),
 and the printer seq.lg hashes Range/Repeat/PVecSeq elements with
@@ -48,8 +51,8 @@ interned types).
 | 7 | Range | `Range` |
 | 8 | InfiniteRange | `InfiniteRange` |
 | 9 | Repeat | `Repeat` |
-| 10 | PVecSeq | `PVecSeq` |
-| 11 | PVec | `wasm.pvec/PVec` |
+| 10 | PVecSeq | `PVecSeq` (vec, i, chunk length): PersistentVectorSeq or ArrayVectorSeq, by the vector's pkind |
+| 11 | PVec | `wasm.pvec/PVec` (pkind 0 ArrayVector, 1 PersistentVector, D73) |
 | 12 | ArrayChunk | `ArrayChunk` |
 | 13 | ChunkBuffer | `ChunkBuffer` |
 | 14 | Reduced | `Reduced` |
@@ -73,6 +76,62 @@ wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 Equality and hash of every kind follow corpus/hash/SPEC.md (D19). Kind 18
 dispatches through per-kind Handlers, slot 0 maps, 1 sets, 2 a generic
 fallback (SEQ.md, "Composition hooks").
+
+## Vector kinds (D73)
+
+A `PVec` records which Go type native lg would hold. Measured against
+`lg-4e76921230`; `corpus/intrinsics/vkind_test.lg` checks every row's type,
+hash, printed forms and seq view at sizes 0, 1, 31, 32, 33 (and 1057: four
+producers by default, all under `SLOW=1`):
+
+| producer | native type |
+|---|---|
+| literal, `vector`, `(conj)`, `vec` of anything, `subvec`, `read-string`, `assoc`/`pop` of an ArrayVector | ArrayVector at any size |
+| `conj` (and `assoc` at the end) onto an ArrayVector | ArrayVector while the result has <= 32 elements, then PersistentVector |
+| `conj`/`assoc`/`pop` of a PersistentVector (down to empty) | PersistentVector, meta kept |
+| `with-meta` (meta nil included) | PersistentVector |
+| `persistent!` (so `into []`, `mapv`, `filterv`, even `into` onto a meta'd vector) | ArrayVector up to 32, else PersistentVector, never meta |
+| `sort`, `reverse`, `keys`, `vals`, `rseq` | lists |
+
+What follows from the kind: an empty ArrayVector hashes mixFinish(1)
+(1364076727), an empty PersistentVector as `()` (H1); a PersistentVector,
+its seq and a Repeat print their elements through `Value.String()` in every
+mode; the seq of a PersistentVector is `Sequence`, prints and hashes as
+`(seq [whole vector])` and chunks by 32-wide leaf, while the seq of an
+ArrayVector is `PersistentList`, prints from i and chunks 1, 2, 4, ...;
+`type` and the messages that name a type follow.
+
+`wasm.pvec/varray` turns a trie built by `vconj` into an ArrayVector of any
+size. **Backend note:** vector constants and `vector` calls are built as a
+`vconj` chain from `empty-vec` (src/lower_wasm.lg:637, :665, :2107); past 32
+elements that is now a PersistentVector, where native's literal is an
+ArrayVector. Wrapping the chain in `wasm.pvec/varray` restores parity.
+
+## Hashing values with no value hash
+
+Atoms, volatiles and fns hash by pointer natively (a volatile by FNV of a
+String() that embeds its address). The runtime has no address and no
+per-object id slot (the `$Atom` and `$Fn` layouts are the backend's, D52/D53),
+so each of the three kinds hashes to one constant: consistent with identity
+equality and stable within a run, but not distinct between objects (a set of
+atoms degrades to one collision node). Exceptions, type values, transients
+and meta'd keywords/symbols are not Hashable natively either; they hash by
+FNV-1a of their String(), here as there.
+
+## Declared differences (P2.10)
+
+- `(hash x)` of a NaN produced by arithmetic: native sees the hardware's
+  default NaN (0x7FF8000000000000) while `##NaN` is Go's `math.NaN()`
+  (0x7FF8000000000001). The reference `float-bits` cannot see NaN payloads
+  and gives every NaN the latter; the real `f64-bits` intrinsic (D28) gives
+  the engine's bits, and the backend then has to emit `##NaN` as
+  `nan:0x8000000000001`.
+- `upper-case`/`lower-case` map ASCII and Latin-1 and pass caseless scripts
+  through (CJK, kana, Hangul, Indic, Hebrew/Arabic, symbols, emoji); other
+  cased text is a `lower-wasm:` named limit (Unicode case tables not ported).
+  `(int ##NaN)` is a named limit (Go leaves it platform-defined).
+- The Repeat type's own type is the Repeat type natively
+  (`(type (type (repeat 1 1)))`): mirrored, like H1/M1.
 
 ## Twin markers
 
