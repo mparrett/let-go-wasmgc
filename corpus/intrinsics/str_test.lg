@@ -27,7 +27,7 @@
             (wasm/funcref sq/Code0 (fn [_] (->w (f))))
             (wasm/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
             (wasm/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
-            (wasm/null)))
+            (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
 
 (def ^:private array-type (type (object-array 0)))
 (defn- wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
@@ -48,7 +48,7 @@
         :else (throw (ex-info (str "->w: no wasm form for " (pr-str x)) {}))))
 
 (defn <-w [r]
-  (let [k (s/vkind r)]
+  (let [k (sq/kind r)]
     (cond (= k 0) nil
           (= k 1) (sq/unbox-int r)
           (= k 15) (= 1 (wasm/get sq/Bool 0 r))
@@ -158,13 +158,13 @@
     (same (hash x) (s/hash (->w x)))))
 
 (deftest float-bits-landmarks
-  (is (= 0 (s/float-bits 0.0)))
-  (is (= -9223372036854775808 (s/float-bits -0.0)))
-  (is (= 1 (s/float-bits 5e-324)))
-  (is (= 4607182418800017408 (s/float-bits 1.0)))                 ; 0x3FF0000000000000
-  (is (= 9218868437227405311 (s/float-bits 1.7976931348623157e308)))
-  (is (= 4503599627370495 (s/float-bits 2.225073858507201e-308)))  ; largest subnormal
-  (is (= 9221120237041090561 (s/float-bits ##NaN))))               ; Go math.NaN()
+  (is (= 0 (sq/float-bits 0.0)))
+  (is (= -9223372036854775808 (sq/float-bits -0.0)))
+  (is (= 1 (sq/float-bits 5e-324)))
+  (is (= 4607182418800017408 (sq/float-bits 1.0)))                 ; 0x3FF0000000000000
+  (is (= 9218868437227405311 (sq/float-bits 1.7976931348623157e308)))
+  (is (= 4503599627370495 (sq/float-bits 2.225073858507201e-308)))  ; largest subnormal
+  (is (= 9221120237041090561 (sq/float-bits ##NaN))))               ; Go math.NaN()
 
 ;; ---------------------------------------------------------------------------
 ;; Strings as collections. count/seq/first/rest/next walk runes; nth is
@@ -349,29 +349,27 @@
       (same (= a b) (s/equals (->w a) (->w b)))))
   (let [nan (->w ##NaN)] (same (let [x ##NaN] (= x x)) (s/equals nan nan)))
   (testing "string hash is cached"
-    (let [x (->w "cache me")] (s/hash x) (is (= (hash "cache me") (wasm/get s/Str 1 x))))))
+    (let [x (->w "cache me")] (s/hash x) (is (= (hash "cache me") (wasm/get sq/Str 1 x))))))
 
 (deftest nested-through-seq-hooks
-  ;; strings inside wasm.seq collections reach seq.lg's foreign-kind hooks
-  ;; until the seq.lg patch in STR.md; installed here, reset after
-  (let [f1 (fn [code] (wasm/new sq/Fn (wasm/null) (wasm/funcref sq/Code1 code) (wasm/null) (wasm/null)))]
-    (try
-      (sq/set-hooks! (f1 (fn [_ x] (throw (ex-info "test: seq hook" {}))))
-                     (f1 (fn [_ x] (throw (ex-info "test: count hook" {}))))
-                     (wasm/new sq/Fn (wasm/null) (wasm/null) (wasm/funcref sq/Code2 (fn [_ a b] (s/equals a b))) (wasm/null))
-                     (f1 (fn [_ x] (s/hash x))))
-      (doseq [[a b] [[["a" \b :c] ["a" \b :c]] [["a"] ["b"]] [["a" 1.5] ["a" 1.5]] ['("x" y) '("x" y)] [["a"] '("a")]]]
-        (same (= a b) (s/equals (->w a) (->w b))))
-      (doseq [x [["a" :b \c 1.5 'd] [] ["héllo" ["x"]]]]
-        (same (hash (pvec x)) (s/hash (->w x)))
-        (same (hash (apply list x)) (s/hash (->w (apply list x)))))
-      (finally (sq/set-hooks! (wasm/null) (wasm/null) (wasm/null) (wasm/null))))))
+  ;; strings, chars, keywords, symbols and floats inside wasm.seq collections:
+  ;; until P2.9 they reached seq.lg's foreign-kind hook; now seq.lg's own
+  ;; equiv?/hash cover them, with no hook installed for them
+  (doseq [[a b] [[["a" \b :c] ["a" \b :c]] [["a"] ["b"]] [["a" 1.5] ["a" 1.5]] ['("x" y) '("x" y)] [["a"] '("a")]
+                 [[1.0] [1]] [[-0.0] [0.0]] [[:a/b] ['a/b]] [[\a] [97]]]]
+    (same (= a b) (sq/equals (->w a) (->w b))))
+  (doseq [x [["a" :b \c 1.5 'd] [] ["héllo" ["x"]]]]
+    (same (hash (pvec x)) (sq/hash (->w x)))
+    (same (hash (apply list x)) (sq/hash (->w (apply list x)))))
+  (same (count "héllo") (sq/count (->w "héllo")))
+  (same (seq "日本") (sq/seq (->w "日本")))
+  (same (nth "héllo" 5) (sq/nth (->w "héllo") (->w 5))))
 
 ;; ---------------------------------------------------------------------------
 ;; The dialect claim, as pvec_test/seq_test check theirs: every var a defn
 ;; body references is a wasm.str/wasm.seq/wasm.pvec fn, an intrinsic or
-;; declaration, or a core fn the IR lowers to an op. The one exception is the
-;; float division in float-bits (the -0.0 test), pending P2.2's f64-bits.
+;; declaration, or a core fn the IR lowers to an op. (float-bits, with its one
+;; float division, moved to wasm.seq at P2.9 and is whitelisted there.)
 
 (def ^:private ir-op-fns
   '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
@@ -436,8 +434,7 @@
                              (string/starts-with? vname "#'wasm.pvec/")
                              (and (string/starts-with? vname "#'wasm.intrinsics/")
                                   (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
-                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))
-                             (and (= nm 'float-bits) (= vname "#'core//"))))]
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
           [nm sym])]
     (is (< 80 (count defns)))
     (is (= '[globals] (mapv second globals)) "one runtime global: intern table + print hook")

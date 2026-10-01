@@ -24,7 +24,7 @@
 ;;    exists (P2.7).
 ;;
 ;; Natives here take and return refs per D37 only at the seq.lg hook boundary
-;; (wasm.phs/install-hooks!); the map API itself takes :int/:bool where Go's
+;; (install-hooks! below, slot 0); the map API itself takes :int/:bool where Go's
 ;; does (mcount, mcontains?), which the backend boxes at a call site.
 ;;
 ;; seq: `entries` returns a fresh HSlots array [k0 v0 k1 v1 ...] in seq order,
@@ -75,7 +75,7 @@
 ;; 1257683291). The ref-eq is valueEquiv's identity fast path (:165-168).
 (defn- khash [k] (sq/unbox-int (sq/hash k)))
 (defn- kequiv [a b]
-  (cond (wasm/ref-eq a b) true
+  (cond (wasm/ref-eq a b) (if (= 22 (sq/kind a)) (sq/equiv? a b) true) ; Go's a == b is false for one NaN
         ;; equiv? says nil equals only nil, so a null side decides here
         (wasm/null? a) (= 2 (sq/kind b))
         (wasm/null? b) (= 2 (sq/kind a))
@@ -474,6 +474,27 @@
                 (if (kequiv (sget e (inc i)) ov) (recur (+ i 2)) false)))
             true))))
     false))
+
+;; ---------------------------------------------------------------------------
+;; seq.lg hooks for maps (kind 18 = foreign, slot 0; SEQ.md "Composition
+;; hooks"). Each takes the closure first (D36) and returns refs (D37). A map
+;; equals only a map (PersistentMap.Equals :1028).
+
+(defn- map-pred [self x] (sq/bool (wasm/is? HMap x)))
+(defn map-seq-hook [self x] (entry-seq x))
+(defn map-count-hook [self x] (sq/box-int (mcount x)))
+(defn map-equiv-hook [self a b]
+  (sq/bool (if (if (wasm/is? HMap a) (wasm/is? HMap b) false) (mequiv a b) false)))
+(defn map-hash-hook [self x] (sq/box-int (mhash x)))
+
+(defn install-hooks!
+  "Link-time step: register maps in seq.lg's slot 0."
+  []
+  (sq/set-kind-hooks! 0 (sq/mk-fn1 (wasm/funcref sq/Code1 map-pred))
+                      (sq/mk-fn1 (wasm/funcref sq/Code1 map-seq-hook))
+                      (sq/mk-fn1 (wasm/funcref sq/Code1 map-count-hook))
+                      (sq/mk-fn2 (wasm/funcref sq/Code2 map-equiv-hook))
+                      (sq/mk-fn1 (wasm/funcref sq/Code1 map-hash-hook))))
 
 ;; ---------------------------------------------------------------------------
 ;; TransientMap (transient.go:13-276)

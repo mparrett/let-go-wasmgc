@@ -22,14 +22,9 @@
             [wasm.seq :as sq]))
 
 ;; ---------------------------------------------------------------------------
-;; Value boxes (D38). They belong next to seq.lg's Int/Bool so `kind` can
-;; see them; until that move (STR.md "seq.lg patch") `vkind` extends
-;; sq/kind here, mapping seq.lg's foreign kind 18 onto them.
-(wasm/defstruct Str [:ref [:mut :i64]])     ; UTF-8 bytes, cached hash (-1 = not computed)
-(wasm/defstruct Char [:i32])                ; rune; any value 0..0x10FFFF, surrogates included (lang.go:6665)
-(wasm/defstruct Kw [:ref :ref :i64])        ; ns bytes or null, name bytes, hash; interned
-(wasm/defstruct Sym [:ref :ref :i64])       ; same layout, symbol hash; interned
-(wasm/defstruct Float [:f64])
+;; The value boxes (Str Char Kw Sym Float) live in wasm.seq beside Int/Bool,
+;; so its `kind` (17 Str, 19 Char, 20 Kw, 21 Sym, 22 Float) is the one
+;; dispatch point and its equiv?/hash cover them (D38, D48).
 ;; Working storage, never a value.
 (wasm/defstruct Buf [[:mut :ref] [:mut :i64]])                ; bytes, length
 (wasm/defstruct Dec [:ref [:mut :i64] [:mut :i64] [:mut :i64]]) ; strconv decimal: digits 0..9, nd, dp, trunc
@@ -39,34 +34,15 @@
 (wasm/defstruct Globals [[:mut :ref] [:mut :i64] [:mut :ref]])
 (def globals (wasm/new Globals (wasm/array-new pv/Node 64 (wasm/null)) 0 (wasm/null)))
 
-;; Kinds: seq.lg's 0..16 and 18, plus 17 Str (replacing raw Bytes),
-;; 19 Char, 20 Kw, 21 Sym, 22 Float.
-(defn vkind [x]
-  (let [k (sq/kind x)]
-    (cond (= k 18) (cond (wasm/is? Str x) 17
-                         (wasm/is? Char x) 19
-                         (wasm/is? Kw x) 20
-                         (wasm/is? Sym x) 21
-                         (wasm/is? Float x) 22
-                         :else 18)
-          (= k 17) (wasm/trap "wasm.str: raw Bytes is not a value (D38: strings are Str)")
-          :else k)))
-
-(defn mk-str [bs] (wasm/new Str bs -1))
-(defn str-bytes [s] (wasm/get Str 0 s))
-(defn mk-char [r] (wasm/new Char r))
-(defn char-val [c] (wasm/get Char 0 c))
-(defn box-float [f] (wasm/new Float f))
-(defn unbox-float [x] (wasm/get Float 0 x))
+(defn mk-str [bs] (wasm/new sq/Str bs -1))
+(defn str-bytes [s] (wasm/get sq/Str 0 s))
+(defn mk-char [r] (wasm/new sq/Char r))
+(defn char-val [c] (wasm/get sq/Char 0 c))
+(defn box-float [f] (wasm/new sq/Float f))
+(defn unbox-float [x] (wasm/get sq/Float 0 x))
 
 ;; ---------------------------------------------------------------------------
 ;; Bytes
-
-(defn- bytes-eq? [a b]
-  (let [n (wasm/alen a)]
-    (if (= n (wasm/alen b))
-      (loop [i 0] (if (< i n) (if (= (wasm/bget a i) (wasm/bget b i)) (recur (inc i)) false) true))
-      false)))
 
 (defn- range-eq? [a ai b bi n]                           ; a[ai,ai+n) = b[bi,bi+n)
   (loop [k 0] (if (< k n) (if (= (wasm/bget a (+ ai k)) (wasm/bget b (+ bi k))) (recur (inc k)) false) true)))
@@ -92,44 +68,14 @@
             :else (recur (inc i))))))
 
 ;; ---------------------------------------------------------------------------
-;; UTF-8 (Go unicode/utf8). decode-at returns rune*8 + size; an invalid or
-;; truncated sequence decodes as U+FFFD of size 1, exactly as DecodeRune.
-
-(defn- cont? [c] (if (>= c 0x80) (<= c 0xBF) false))
-
-(defn decode-at [bs i n]
-  (let [b0 (wasm/bget bs i)]
-    (if (< b0 0x80)
-      (+ (* b0 8) 1)
-      (let [len (cond (< b0 0xC2) 0 (< b0 0xE0) 2 (< b0 0xF0) 3 (< b0 0xF5) 4 :else 0)
-            lo (cond (= b0 0xE0) 0xA0 (= b0 0xF0) 0x90 :else 0x80)
-            hi (cond (= b0 0xED) 0x9F (= b0 0xF4) 0x8F :else 0xBF)
-            bad (+ (* 0xFFFD 8) 1)]
-        (if (if (= len 0) true (> (+ i len) n))
-          bad
-          (let [b1 (wasm/bget bs (inc i))]
-            (cond (if (< b1 lo) true (> b1 hi)) bad
-                  (= len 2) (+ (* (+ (* (bit-and b0 0x1F) 64) (bit-and b1 0x3F)) 8) 2)
-                  (= len 3) (let [b2 (wasm/bget bs (+ i 2))]
-                              (if (cont? b2)
-                                (+ (* (+ (* (bit-and b0 0x0F) 4096) (+ (* (bit-and b1 0x3F) 64) (bit-and b2 0x3F))) 8) 3)
-                                bad))
-                  :else (let [b2 (wasm/bget bs (+ i 2)) b3 (wasm/bget bs (+ i 3))]
-                          (if (if (cont? b2) (cont? b3) false)
-                            (+ (* (+ (+ (* (bit-and b0 0x07) 262144) (* (bit-and b1 0x3F) 4096))
-                                     (+ (* (bit-and b2 0x3F) 64) (bit-and b3 0x3F))) 8) 4)
-                            bad)))))))))
-
-(defn- rune-count* [bs]
-  (let [n (wasm/alen bs)]
-    (loop [i 0 c 0] (if (< i n) (recur (+ i (bit-and (decode-at bs i n) 7)) (inc c)) c))))
+;; UTF-8: decode-at and rune-count* are wasm.seq's (strings as collections).
 
 (defn- byte-at-rune [bs ri]                              ; byte offset of rune index ri, -1 past the end (subs walk)
   (let [n (wasm/alen bs)]
     (loop [i 0 r 0]
       (cond (= r ri) i
             (>= i n) -1
-            :else (recur (+ i (bit-and (decode-at bs i n) 7)) (inc r))))))
+            :else (recur (+ i (bit-and (sq/decode-at bs i n) 7)) (inc r))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Byte buffer
@@ -219,28 +165,22 @@
               (if (= i n) (bit-xor h (mix-k1 (wasm/bget bs (dec i)))) h)))]
     (fmix h (bit-and (* 2 n) 0xffffffff))))
 
-(defn- fnv [bs]                                          ; hashString (hash.go:48)
-  (loop [i 0 h 2166136261]
-    (if (< i (wasm/alen bs))
-      (recur (inc i) (bit-and (wasm/i64-mul (bit-xor h (wasm/bget bs i)) 16777619) 0xffffffff))
-      h)))
-
 (defn- slash-of [full]                                   ; -1 when there is no namespace
   (let [n (wasm/alen full)]
     (if (if (= n 1) (= 47 (wasm/bget full 0)) false)
       -1
       (loop [i 0] (cond (>= i n) -1 (= 47 (wasm/bget full i)) i :else (recur (inc i)))))))
 
-(defn- named-ns [x] (if (wasm/is? Kw x) (wasm/get Kw 0 x) (wasm/get Sym 0 x)))
-(defn- named-name [x] (if (wasm/is? Kw x) (wasm/get Kw 1 x) (wasm/get Sym 1 x)))
-(defn- named-hash [x] (if (wasm/is? Kw x) (wasm/get Kw 2 x) (wasm/get Sym 2 x)))
+(defn- named-ns [x] (if (wasm/is? sq/Kw x) (wasm/get sq/Kw 0 x) (wasm/get sq/Sym 0 x)))
+(defn- named-name [x] (if (wasm/is? sq/Kw x) (wasm/get sq/Kw 1 x) (wasm/get sq/Sym 1 x)))
+(defn- named-hash [x] (if (wasm/is? sq/Kw x) (wasm/get sq/Kw 2 x) (wasm/get sq/Sym 2 x)))
 
 (defn- named-matches? [e kw? full slash h]
-  (if (if kw? (wasm/is? Kw e) (wasm/is? Sym e))
+  (if (if kw? (wasm/is? sq/Kw e) (wasm/is? sq/Sym e))
     (if (= h (named-hash e))
       (let [ns (named-ns e) nm (named-name e) n (wasm/alen full)]
         (if (< slash 0)
-          (if (wasm/null? ns) (bytes-eq? nm full) false)
+          (if (wasm/null? ns) (sq/bytes-eq? nm full) false)
           (if (wasm/null? ns)
             false
             (if (if (= slash (wasm/alen ns)) (= (- n (inc slash)) (wasm/alen nm)) false)
@@ -271,7 +211,7 @@
       (let [n (wasm/alen full)
             ns (if (< slash 0) (wasm/null) (slice full 0 slash))
             nm (if (< slash 0) (slice full 0 n) (slice full (inc slash) n))
-            e (if kw? (wasm/new Kw ns nm h) (wasm/new Sym ns nm h))
+            e (if kw? (wasm/new sq/Kw ns nm h) (wasm/new sq/Sym ns nm h))
             cnt (inc (wasm/get Globals 1 globals))]
         (when (> (* 2 cnt) (wasm/alen tab))           ; keep load <= 1/2: rehash into twice the slots
           (let [nt (wasm/array-new pv/Node (* 2 (wasm/alen tab)) (wasm/null))]
@@ -296,46 +236,6 @@
 (defn kw-of-bytes [full] (named-of true full))
 (defn sym-of-bytes [full] (named-of false full))
 
-
-;; ---------------------------------------------------------------------------
-;; Float bits. Stand-in for the f64-bits intrinsic D28 assigns to P2.2:
-;; exact for every double, built from multiplies by powers of two (exact
-;; while the operand stays normal) and one division, the only way to tell
-;; -0.0 from 0.0 without reinterpretation. Swap the body for
-;; (wasm/f64-bits x) when that intrinsic lands.
-
-(defn- binary-exponent [a]                               ; e with a * 2^-e in [2^52, 2^53); a finite, > 0
-  (loop [m a e 0]
-    (cond (>= m 1.6615349947311448e35) (recur (* m 5.421010862427522e-20) (+ e 64)) ; m >= 2^117: times 2^-64
-          (>= m 9007199254740992.0) (recur (* m 0.5) (inc e))
-          (< m 0.00048828125) (recur (* m 1.8446744073709552e19) (- e 64))          ; m < 2^-11: times 2^64
-          (< m 4503599627370496.0) (recur (* m 2.0) (dec e))
-          :else e)))
-
-(defn- scale-by [a e]                                    ; a * 2^-e by the same exact steps
-  (loop [m a e e]
-    (cond (>= e 64) (recur (* m 5.421010862427522e-20) (- e 64))
-          (> e 0) (recur (* m 0.5) (dec e))
-          (<= e -64) (recur (* m 1.8446744073709552e19) (+ e 64))
-          (< e 0) (recur (* m 2.0) (inc e))
-          :else m)))
-
-(defn float-bits [x]
-  (cond (if (< x 0.0) false (if (>= x 0.0) false true)) 0x7FF8000000000001 ; NaN: the pattern of Go's math.NaN()
-        (> x 1.7976931348623157e308) 0x7FF0000000000000
-        (< x -1.7976931348623157e308) -4503599627370496                    ; 0xFFF0000000000000
-        (if (< x 0.0) false (if (> x 0.0) false true))
-        (if (< (/ 1.0 x) 0.0) -9223372036854775808 0)
-        :else
-        (let [neg (< x 0.0)
-              a (if neg (- 0.0 x) x)
-              e (binary-exponent a)
-              mant (wasm/f64-to-i64 (scale-by a e))      ; an integer in [2^52, 2^53)
-              be (+ e 1075)                              ; biased exponent of mant * 2^e
-              mag (if (>= be 1)
-                    (bit-or (bit-shift-left be 52) (- mant 4503599627370496))
-                    (wasm/i64-shr-u mant (- 1 be)))]     ; subnormal: the bits shifted out are zero
-          (if neg (bit-or mag -9223372036854775808) mag))))
 
 ;; ---------------------------------------------------------------------------
 ;; strconv's multiprecision decimal (Go internal/strconv/decimal.go) with
@@ -555,7 +455,7 @@
                   (write-f b d (if (> nd dp) (- nd dp) 0))))))))))
 
 (defn float->str [x]
-  (let [b (buf-new)] (write-float-bits! b (float-bits (unbox-float x))) (buf-done b)))
+  (let [b (buf-new)] (write-float-bits! b (sq/float-bits (unbox-float x))) (buf-done b)))
 
 ;; ---------------------------------------------------------------------------
 ;; Printing. write-val is Value.String() for nested values (readably) and
@@ -573,7 +473,7 @@
     (buf-byte! b 34)
     (loop [i 0]
       (when (< i n)
-        (let [p (decode-at bs i n) r (unsigned-bit-shift-right p 3) sz (bit-and p 7)]
+        (let [p (sq/decode-at bs i n) r (unsigned-bit-shift-right p 3) sz (bit-and p 7)]
           (cond (= r 34) (do (buf-byte! b 92) (buf-byte! b 34))
                 (= r 92) (do (buf-byte! b 92) (buf-byte! b 92))
                 (= r 9) (do (buf-byte! b 92) (buf-byte! b 116))
@@ -623,7 +523,7 @@
   (buf-byte! b 93))
 
 (defn- write-val [b x readably]
-  (let [k (vkind x)]
+  (let [k (sq/kind x)]
     (cond (= k 0) (buf-bytes! b (wasm/bytes-of-string "nil"))
           (= k 1) (buf-int! b (sq/unbox-int x))
           (= k 15) (buf-bytes! b (if (= 1 (wasm/get sq/Bool 0 x)) (wasm/bytes-of-string "true") (wasm/bytes-of-string "false")))
@@ -631,7 +531,7 @@
           (= k 19) (if readably (write-char-name b (char-val x)) (encode-rune! b (char-val x)))
           (= k 20) (do (buf-byte! b 58) (write-named b x))
           (= k 21) (write-named b x)
-          (= k 22) (write-float-bits! b (float-bits (unbox-float x)))
+          (= k 22) (write-float-bits! b (sq/float-bits (unbox-float x)))
           (if (>= k 2) (<= k 10) false) (write-seq b x readably)
           (= k 11) (write-pvec b x readably)
           (= k 18) (let [h (wasm/get Globals 2 globals)]
@@ -641,14 +541,14 @@
           :else (wasm/trap "wasm.str: printing this kind is not implemented"))))
 
 (defn- write-str-val [b x]                               ; strValue (lang.go:5006)
-  (let [k (vkind x)]
+  (let [k (sq/kind x)]
     (cond (= k 0) nil
           (= k 17) (buf-bytes! b (str-bytes x))
           (= k 19) (encode-rune! b (char-val x))
           (= k 22) (let [f (unbox-float x)]
                      (cond (> f 1.7976931348623157e308) (buf-bytes! b (wasm/bytes-of-string "Infinity"))
                            (< f -1.7976931348623157e308) (buf-bytes! b (wasm/bytes-of-string "-Infinity"))
-                           :else (write-float-bits! b (float-bits f))))
+                           :else (write-float-bits! b (sq/float-bits f))))
           :else (write-val b x true))))
 
 ;; mode 0 = str, 1 = pr-str, 2 = print-str (prThroughToString: space-separated)
@@ -668,9 +568,9 @@
 
 ;; Fixed arities until the backend's variadic-native convention exists;
 ;; the -seq forms take the argument list (what apply passes).
-(defn str ([] (lit "")) ([a] (out1 0 a)) ([a b] (out2 0 a b)) ([a b c] (out3 0 a b c)))
-(defn pr-str ([] (lit "")) ([a] (out1 1 a)) ([a b] (out2 1 a b)) ([a b c] (out3 1 a b c)))
-(defn print-str ([] (lit "")) ([a] (out1 2 a)) ([a b] (out2 2 a b)) ([a b c] (out3 2 a b c)))
+(defn ^{:twin "core/str"} str ([] (lit "")) ([a] (out1 0 a)) ([a b] (out2 0 a b)) ([a b c] (out3 0 a b c)))
+(defn ^{:twin "core/pr-str"} pr-str ([] (lit "")) ([a] (out1 1 a)) ([a b] (out2 1 a b)) ([a b c] (out3 1 a b c)))
+(defn ^{:twin "core/print-str"} print-str ([] (lit "")) ([a] (out1 2 a)) ([a b] (out2 2 a b)) ([a b c] (out3 2 a b c)))
 (defn str-seq [xs] (out-seq 0 xs))
 (defn pr-str-seq [xs] (out-seq 1 xs))
 (defn print-str-seq [xs] (out-seq 2 xs))
@@ -678,66 +578,24 @@
 ;; ---------------------------------------------------------------------------
 ;; A string as a collection. Go's String is Indexed with RawCount = BYTE
 ;; length (string.go:46) while count, seq, nth and subs walk runes; see STR.md.
+;; The walks live in wasm.seq (decode-at, rune-count*, string-seq, string-nth).
 
-(defn- string-seq [s]                                    ; String.Seq() (string.go:259): a List of Chars, or null
-  (let [bs (str-bytes s) n (wasm/alen bs)]
-    (if (= n 0)
-      (wasm/null)
-      (let [cnt (rune-count* bs) runes (wasm/array-new pv/Node cnt (wasm/null))]
-        (loop [i 0 j 0]
-          (when (< i n)
-            (let [p (decode-at bs i n)]
-              (wasm/aset! pv/Node runes j (mk-char (unsigned-bit-shift-right p 3)))
-              (recur (+ i (bit-and p 7)) (inc j)))))
-        (loop [j (dec cnt) l (sq/empty-list)]
-          (if (< j 0) l (recur (dec j) (sq/conj l (wasm/aget pv/Node runes j)))))))))
-
-(defn- string-nth [s i has-nf nf]                        ; Nth/Nth3 through String.ValueAt (string.go:276)
-  (let [bs (str-bytes s) n (wasm/alen bs)]
-    (if (if (< i 0) true (>= i n))
-      (if has-nf nf (wasm/trap "nth index out of bounds"))
-      ;; in range by bytes but past the last rune: ValueAt's default, nil, even for nth3
-      (loop [b 0 r 0]
-        (cond (>= b n) (wasm/null)
-              (= r i) (mk-char (unsigned-bit-shift-right (decode-at bs b n) 3))
-              :else (recur (+ b (bit-and (decode-at bs b n) 7)) (inc r)))))))
-
-(defn count [x] (if (= 17 (vkind x)) (sq/box-int (rune-count* (str-bytes x))) (sq/count x)))
-(defn nth
-  ([coll i] (if (= 17 (vkind coll)) (string-nth coll (sq/unbox-int i) false (wasm/null)) (sq/nth coll i)))
-  ([coll i nf] (if (= 17 (vkind coll)) (string-nth coll (sq/unbox-int i) true nf) (sq/nth coll i nf))))
-(defn seq [x] (if (= 17 (vkind x)) (string-seq x) (sq/seq x)))
-(defn first [x] (if (= 17 (vkind x)) (sq/first (string-seq x)) (sq/first x)))
-(defn rest [x] (if (= 17 (vkind x)) (sq/rest (string-seq x)) (sq/rest x)))
-(defn next [x] (if (= 17 (vkind x)) (sq/next (string-seq x)) (sq/next x)))
+;; wasm.seq's natives are string-aware since P2.9; these names stay so
+;; callers written against wasm.str keep resolving.
+(defn count [x] (sq/count x))
+(defn nth ([coll i] (sq/nth coll i)) ([coll i nf] (sq/nth coll i nf)))
+(defn seq [x] (sq/seq x))
+(defn first [x] (sq/first x))
+(defn rest [x] (sq/rest x))
+(defn next [x] (sq/next x))
 
 ;; ---------------------------------------------------------------------------
-;; Equality and hash of the scalar boxes (corpus/hash/SPEC.md, valueEquals);
-;; everything else goes to wasm.seq.
+;; Equality and hash of every box are wasm.seq's (corpus/hash/SPEC.md,
+;; valueEquals); these names stay for callers written against wasm.str.
 
-(defn- scalar-kind? [k] (if (= k 17) true (if (>= k 19) (<= k 22) false)))
-
-(defn equiv? [a b]
-  (let [ka (vkind a) kb (vkind b)]
-    (cond (if (scalar-kind? ka) false (if (scalar-kind? kb) false true)) (sq/equiv? a b)
-          (if (= ka kb) false true) false
-          (= ka 17) (if (wasm/ref-eq a b) true (bytes-eq? (str-bytes a) (str-bytes b)))
-          (= ka 19) (= (char-val a) (char-val b))
-          (= ka 22) (let [x (unbox-float a) y (unbox-float b)] (if (< x y) false (if (> x y) false (>= x y)))) ; ==: NaN unequal, -0.0 = 0.0
-          :else (if (wasm/ref-eq a b) true
-                    (if (= (named-hash a) (named-hash b)) (bytes-eq? (full-text a) (full-text b)) false)))))
-
-(defn equals [a b] (sq/bool (equiv? a b)))
-
-(defn hash* [x]
-  (let [k (vkind x)]
-    (cond (= k 17) (let [c (wasm/get Str 1 x)]
-                     (if (>= c 0) c (let [h (fnv (str-bytes x))] (wasm/set! Str 1 x h) h)))
-          (= k 19) (sq/unbox-int (sq/hash (sq/box-int (char-val x))))          ; hashUint64(rune), as Int
-          (= k 22) (sq/unbox-int (sq/hash (sq/box-int (float-bits (unbox-float x))))) ; hashUint64(bits)
-          (if (= k 20) true (= k 21)) (named-hash x)
-          :else (sq/unbox-int (sq/hash x)))))
-
+(defn equiv? [a b] (sq/equiv? a b))
+(defn equals [a b] (sq/equals a b))
+(defn hash* [x] (sq/unbox-int (sq/hash x)))
 (defn hash [x] (sq/box-int (hash* x)))
 
 ;; ---------------------------------------------------------------------------
@@ -767,7 +625,7 @@
 (defn- num-kind? [k] (if (= k 1) true (= k 22)))
 
 (defn compare* [a b]
-  (let [ka (vkind a) kb (vkind b)]
+  (let [ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka 0) (= kb 0) false) 0
           (= ka 0) -1
           (= kb 0) 1
@@ -780,28 +638,28 @@
           (if (= ka 11) (= kb 11) false) (pvec-cmp a b)
           :else (wasm/trap "cannot compare these types"))))
 
-(defn compare [a b] (sq/box-int (compare* a b)))
+(defn ^{:twin "core/compare"} compare [a b] (sq/box-int (compare* a b)))
 
 ;; ---------------------------------------------------------------------------
 ;; Named values: name, namespace, keyword, symbol
 
 (defn- type-trap-keyword [x]
-  (let [k (vkind x)]
+  (let [k (sq/kind x)]
     (cond (= k 1) (wasm/trap "keyword expects keyword, symbol, or string, got let-go.lang.Int")
           (= k 22) (wasm/trap "keyword expects keyword, symbol, or string, got let-go.lang.Float")
           (= k 19) (wasm/trap "keyword expects keyword, symbol, or string, got let-go.lang.Character")
           (= k 15) (wasm/trap "keyword expects keyword, symbol, or string, got let-go.lang.Boolean")
           :else (wasm/trap "keyword expects keyword, symbol, or string"))))
 
-(defn name [x]                                           ; Name (native_prims.go:25)
-  (let [k (vkind x)]
+(defn ^{:twin "core/name"} name [x]                                           ; Name (native_prims.go:25)
+  (let [k (sq/kind x)]
     (cond (= k 0) (wasm/trap "name called on nil")
           (= k 17) x
           (if (= k 20) true (= k 21)) (mk-str (named-name x))
           :else (wasm/trap "name expected Symbol, Keyword or String"))))
 
-(defn namespace [x]                                      ; Namespace (native_prims.go:543)
-  (let [k (vkind x)]
+(defn ^{:twin "core/namespace"} namespace [x]                                      ; Namespace (native_prims.go:543)
+  (let [k (sq/kind x)]
     (if (if (= k 20) true (= k 21))
       (let [ns (named-ns x)] (if (wasm/null? ns) (wasm/null) (mk-str ns)))
       (wasm/trap "namespace expected Named"))))
@@ -813,45 +671,45 @@
       (buf-bytes! b (str-bytes ns)) (buf-byte! b 47) (buf-bytes! b (str-bytes nm))
       (slice (wasm/get Buf 0 b) 0 (wasm/get Buf 1 b)))))
 
-(defn keyword                                            ; CoreKeyword (lang.go:5823)
-  ([x] (let [k (vkind x)]
+(defn ^{:twin "core/keyword"} keyword                                            ; CoreKeyword (lang.go:5823)
+  ([x] (let [k (sq/kind x)]
          (cond (= k 0) (wasm/null)
                (= k 20) x
                (= k 21) (kw-of-bytes (full-text x))
                (= k 17) (kw-of-bytes (str-bytes x))
                :else (type-trap-keyword x))))
-  ([ns nm] (cond (if (wasm/null? ns) false (if (= 17 (vkind ns)) false true))
+  ([ns nm] (cond (if (wasm/null? ns) false (if (= 17 (sq/kind ns)) false true))
                  (wasm/trap "keyword namespace must be a string")
-                 (if (= 17 (vkind nm)) false true) (wasm/trap "keyword name must be a string")
+                 (if (= 17 (sq/kind nm)) false true) (wasm/trap "keyword name must be a string")
                  :else (kw-of-bytes (join-ns ns nm)))))
 
-(defn symbol                                             ; CoreSymbolf (lang.go:5866)
-  ([x] (let [k (vkind x)]
+(defn ^{:twin "core/symbol"} symbol                                             ; CoreSymbolf (lang.go:5866)
+  ([x] (let [k (sq/kind x)]
          (cond (= k 0) (wasm/trap "symbol expected String, Symbol, Keyword, or Var")
                (= k 21) x
                (= k 20) (sym-of-bytes (full-text x))
                (= k 17) (sym-of-bytes (str-bytes x))
                :else (wasm/trap "symbol expected String or Symbol"))))
-  ([ns nm] (cond (if (wasm/null? ns) false (if (= 17 (vkind ns)) false true)) (wasm/trap "symbol expected String namespace")
-                 (if (= 17 (vkind nm)) false true) (wasm/trap "symbol expected String name")
+  ([ns nm] (cond (if (wasm/null? ns) false (if (= 17 (sq/kind ns)) false true)) (wasm/trap "symbol expected String namespace")
+                 (if (= 17 (sq/kind nm)) false true) (wasm/trap "symbol expected String name")
                  :else (sym-of-bytes (join-ns ns nm)))))
 
 ;; ---------------------------------------------------------------------------
 ;; char, int
 
-(defn char [x]                                           ; CoreChar (lang.go:6660)
-  (let [k (vkind x)]
+(defn ^{:twin "core/char"} char [x]                                           ; CoreChar (lang.go:6660)
+  (let [k (sq/kind x)]
     (cond (= k 1) (let [n (sq/unbox-int x)]
                     (if (if (< n 0) true (> n 0x10FFFF)) (wasm/trap "value out of range for char") (mk-char n)))
           (= k 19) x
           (= k 17) (let [bs (str-bytes x) n (wasm/alen bs)]
-                     (if (if (> n 0) (= n (bit-and (decode-at bs 0 n) 7)) false)
-                       (mk-char (unsigned-bit-shift-right (decode-at bs 0 n) 3))
+                     (if (if (> n 0) (= n (bit-and (sq/decode-at bs 0 n) 7)) false)
+                       (mk-char (unsigned-bit-shift-right (sq/decode-at bs 0 n) 3))
                        (wasm/trap "can't be coerced to char")))
           :else (wasm/trap "can't be coerced to char"))))
 
-(defn int [x]                                            ; intf (lang.go:2994)
-  (let [k (vkind x)]
+(defn ^{:twin "core/int"} int [x]                                            ; intf (lang.go:2994)
+  (let [k (sq/kind x)]
     (cond (= k 1) (let [n (sq/unbox-int x)]
                     (if (if (< n -2147483648) true (> n 2147483647)) (wasm/trap "can't be coerced to int") x))
           (= k 22) (let [f (unbox-float x)]
@@ -866,17 +724,17 @@
 ;; ---------------------------------------------------------------------------
 ;; subs (lang.go:3165): rune indices mapped to byte offsets by walking.
 
-(defn subs
-  ([s start] (cond (if (= 17 (vkind s)) false true) (wasm/trap "subs expected String")
-                   (if (= 1 (vkind start)) false true) (wasm/trap "subs expected Int start")
+(defn ^{:twin "core/subs"} subs
+  ([s start] (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "subs expected String")
+                   (if (= 1 (sq/kind start)) false true) (wasm/trap "subs expected Int start")
                    :else (let [si (sq/unbox-int start) bs (str-bytes s)]
                            (if (< si 0) (wasm/trap "string index out of range")
                                (let [bo (byte-at-rune bs si)]
                                  (if (< bo 0) (wasm/trap "string index out of range")
                                      (mk-str (slice bs bo (wasm/alen bs)))))))))
-  ([s start end] (cond (if (= 17 (vkind s)) false true) (wasm/trap "subs expected String")
-                       (if (= 1 (vkind start)) false true) (wasm/trap "subs expected Int start")
-                       (if (= 1 (vkind end)) false true) (wasm/trap "subs expected Int end")
+  ([s start end] (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "subs expected String")
+                       (if (= 1 (sq/kind start)) false true) (wasm/trap "subs expected Int start")
+                       (if (= 1 (sq/kind end)) false true) (wasm/trap "subs expected Int end")
                        :else (let [si (sq/unbox-int start) ei (sq/unbox-int end) bs (str-bytes s)]
                                (cond (< si 0) (wasm/trap "string index out of range")
                                      (< ei si) (wasm/trap "string index out of range")
@@ -895,9 +753,9 @@
 (defn- frags->list [v] (loop [j (dec (pv/vcount v)) l (sq/empty-list)] (if (< j 0) l (recur (dec j) (sq/conj l (pv/vnth v j))))))
 
 (defn- explode [bs n]                                    ; strings.explode
-  (let [len (wasm/alen bs) l (rune-count* bs) n (if (if (< n 0) true (> n l)) l n)]
+  (let [len (wasm/alen bs) l (sq/rune-count* bs) n (if (if (< n 0) true (> n l)) l n)]
     (loop [i 0 at 0 v (pv/empty-vec)]
-      (cond (< i (dec n)) (let [sz (bit-and (decode-at bs at len) 7)]
+      (cond (< i (dec n)) (let [sz (bit-and (sq/decode-at bs at len) 7)]
                             (recur (inc i) (+ at sz) (pv/vconj v (mk-str (slice bs at (+ at sz))))))
             (> n 0) (pv/vconj v (mk-str (slice bs at len)))
             :else v))))
@@ -914,14 +772,14 @@
                       (pv/vconj v (mk-str (slice bs at len)))
                       (recur (inc i) (+ m (wasm/alen sep)) (pv/vconj v (mk-str (slice bs at m))))))))))
 
-(defn split
-  ([s] (if (= 17 (vkind s)) (frags->list (explode (str-bytes s) -1)) (wasm/trap "split expected String")))
-  ([s sep] (cond (if (= 17 (vkind s)) false true) (wasm/trap "split expected String")
-                 (if (= 17 (vkind sep)) false true) (wasm/trap "split expected String or Regex")
+(defn ^{:twin "core/split"} split
+  ([s] (if (= 17 (sq/kind s)) (frags->list (explode (str-bytes s) -1)) (wasm/trap "split expected String")))
+  ([s sep] (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "split expected String")
+                 (if (= 17 (sq/kind sep)) false true) (wasm/trap "split expected String or Regex")
                  :else (frags->list (split-n (str-bytes s) (str-bytes sep) -1))))
-  ([s sep limit] (cond (if (= 17 (vkind s)) false true) (wasm/trap "split expected String")
-                       (if (= 1 (vkind limit)) false true) (wasm/trap "split expected Int limit")
-                       (if (= 17 (vkind sep)) false true) (wasm/trap "split expected String or Regex")
+  ([s sep limit] (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "split expected String")
+                       (if (= 1 (sq/kind limit)) false true) (wasm/trap "split expected Int limit")
+                       (if (= 17 (sq/kind sep)) false true) (wasm/trap "split expected String or Regex")
                        :else (frags->list (split-n (str-bytes s) (str-bytes sep) (sq/unbox-int limit))))))
 
 ;; ---------------------------------------------------------------------------
@@ -931,28 +789,28 @@
 (defn- has-suffix? [s p]
   (let [n (wasm/alen s) m (wasm/alen p)] (if (<= m n) (range-eq? s (- n m) p 0 m) false)))
 
-(defn starts-with? [s p]
-  (cond (if (= 17 (vkind s)) false true) (wasm/trap "starts-with? expected String")
-        (if (= 17 (vkind p)) false true) (wasm/trap "starts-with? expected String prefix")
+(defn ^{:twin "core/starts-with?"} starts-with? [s p]
+  (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "starts-with? expected String")
+        (if (= 17 (sq/kind p)) false true) (wasm/trap "starts-with? expected String prefix")
         :else (sq/bool (has-prefix? (str-bytes s) (str-bytes p)))))
 
-(defn ends-with? [s p]
-  (cond (if (= 17 (vkind s)) false true) (wasm/trap "ends-with? expected String")
-        (if (= 17 (vkind p)) false true) (wasm/trap "ends-with? expected String suffix")
+(defn ^{:twin "core/ends-with?"} ends-with? [s p]
+  (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "ends-with? expected String")
+        (if (= 17 (sq/kind p)) false true) (wasm/trap "ends-with? expected String suffix")
         :else (sq/bool (has-suffix? (str-bytes s) (str-bytes p)))))
 
-(defn includes? [s p]                                    ; core/includes? = string/includes?
-  (cond (if (= 17 (vkind s)) false true) (wasm/trap "includes? expected String")
-        (if (= 17 (vkind p)) false true) (wasm/trap "includes? expected String substr")
+(defn ^{:twin "core/includes?"} includes? [s p]                                    ; core/includes? = string/includes?
+  (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "includes? expected String")
+        (if (= 17 (sq/kind p)) false true) (wasm/trap "includes? expected String substr")
         :else (sq/bool (>= (index-in (str-bytes s) (str-bytes p) 0) 0))))
 
 (wasm/defarray Runes :i64)
 
 (defn- runes-of [bs]                                     ; []rune(s)
-  (let [n (wasm/alen bs) out (wasm/array-new Runes (rune-count* bs) 0)]
+  (let [n (wasm/alen bs) out (wasm/array-new Runes (sq/rune-count* bs) 0)]
     (loop [i 0 j 0]
       (when (< i n)
-        (let [p (decode-at bs i n)]
+        (let [p (sq/decode-at bs i n)]
           (wasm/aset! Runes out j (unsigned-bit-shift-right p 3))
           (recur (+ i (bit-and p 7)) (inc j)))))
     out))
@@ -961,7 +819,7 @@
   (loop [j 0] (if (< j (wasm/alen needle)) (if (= (wasm/aget Runes hay (+ at j)) (wasm/aget Runes needle j)) (recur (inc j)) false) true)))
 
 (defn- needle-of [v who]                                 ; String or Char second argument, as runes
-  (let [k (vkind v)]
+  (let [k (sq/kind v)]
     (cond (= k 17) (runes-of (str-bytes v))
           (= k 19) (let [r (char-val v)
                          r (if (if (>= r 0xD800) (<= r 0xDFFF) false) 0xFFFD r)] ; string(rune) of a surrogate
@@ -978,10 +836,10 @@
                         (runes-match? hay i nd) (sq/box-int i)
                         :else (recur (inc i)))))))
 
-(defn index-of
-  ([s v] (if (= 17 (vkind s)) (index-of* s v 0) (wasm/trap "index-of expected String as first arg")))
-  ([s v from] (cond (if (= 17 (vkind s)) false true) (wasm/trap "index-of expected String as first arg")
-                    (if (= 1 (vkind from)) false true) (wasm/trap "index-of expected Int as third arg")
+(defn ^{:twin "core/index-of"} index-of
+  ([s v] (if (= 17 (sq/kind s)) (index-of* s v 0) (wasm/trap "index-of expected String as first arg")))
+  ([s v from] (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "index-of expected String as first arg")
+                    (if (= 1 (sq/kind from)) false true) (wasm/trap "index-of expected Int as third arg")
                     :else (index-of* s v (sq/unbox-int from)))))
 
 (defn- last-index-of* [s v end]                          ; last-index-of (lang.go:4143) + runeLastIndex (:4727)
@@ -995,10 +853,10 @@
                         (runes-match? hay i nd) (sq/box-int i)
                         :else (recur (dec i)))))))
 
-(defn last-index-of
-  ([s v] (if (= 17 (vkind s)) (last-index-of* s v 2147483647) (wasm/trap "last-index-of expected String as first arg")))
-  ([s v from] (cond (if (= 17 (vkind s)) false true) (wasm/trap "last-index-of expected String as first arg")
-                    (if (= 1 (vkind from)) false true) (wasm/trap "last-index-of expected Int as third arg")
+(defn ^{:twin "core/last-index-of"} last-index-of
+  ([s v] (if (= 17 (sq/kind s)) (last-index-of* s v 2147483647) (wasm/trap "last-index-of expected String as first arg")))
+  ([s v from] (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "last-index-of expected String as first arg")
+                    (if (= 1 (sq/kind from)) false true) (wasm/trap "last-index-of expected Int as third arg")
                     :else (last-index-of* s v (inc (sq/unbox-int from))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1011,13 +869,13 @@
         (if (= r 0x2028) true (if (= r 0x2029) true (if (= r 0x202F) true (if (= r 0x205F) true (= r 0x3000))))) true
         :else false))
 
-(defn trim [s]                                           ; strings.TrimSpace
-  (if (= 17 (vkind s))
+(defn ^{:twin "core/trim"} trim [s]                                           ; strings.TrimSpace
+  (if (= 17 (sq/kind s))
     (let [bs (str-bytes s) n (wasm/alen bs)
-          start (loop [i 0] (if (< i n) (let [p (decode-at bs i n)] (if (space-rune? (unsigned-bit-shift-right p 3)) (recur (+ i (bit-and p 7))) i)) n))
+          start (loop [i 0] (if (< i n) (let [p (sq/decode-at bs i n)] (if (space-rune? (unsigned-bit-shift-right p 3)) (recur (+ i (bit-and p 7))) i)) n))
           stop (loop [i start last start]                ; end of the last non-space rune
                  (if (< i n)
-                   (let [p (decode-at bs i n) j (+ i (bit-and p 7))]
+                   (let [p (sq/decode-at bs i n) j (+ i (bit-and p 7))]
                      (recur j (if (space-rune? (unsigned-bit-shift-right p 3)) last j)))
                    last))]
       (mk-str (slice bs start stop)))
@@ -1025,15 +883,15 @@
 
 (defn- cut-ascii? [c] (if (= c 32) true (if (= c 9) true (if (= c 10) true (= c 13)))))  ; cutset " \t\n\r"
 
-(defn triml [s]                                          ; strings.TrimLeft(s, " \t\n\r")
-  (if (= 17 (vkind s))
+(defn ^{:twin "core/triml"} triml [s]                                          ; strings.TrimLeft(s, " \t\n\r")
+  (if (= 17 (sq/kind s))
     (let [bs (str-bytes s) n (wasm/alen bs)
           start (loop [i 0] (if (if (< i n) (cut-ascii? (wasm/bget bs i)) false) (recur (inc i)) i))]
       (mk-str (slice bs start n)))
     (wasm/trap "triml expected String")))
 
-(defn trimr [s]                                          ; strings.TrimRight(s, " \t\n\r")
-  (if (= 17 (vkind s))
+(defn ^{:twin "core/trimr"} trimr [s]                                          ; strings.TrimRight(s, " \t\n\r")
+  (if (= 17 (sq/kind s))
     (let [bs (str-bytes s)
           stop (loop [i (wasm/alen bs)] (if (if (> i 0) (cut-ascii? (wasm/bget bs (dec i))) false) (recur (dec i)) i))]
       (mk-str (slice bs 0 stop)))
@@ -1049,20 +907,20 @@
           (recur (inc i)))))
     (mk-str out)))
 
-(defn upper-case [s] (if (= 17 (vkind s)) (map-ascii s 97 122 -32) (wasm/trap "upper-case expected String")))
-(defn lower-case [s] (if (= 17 (vkind s)) (map-ascii s 65 90 32) (wasm/trap "lower-case expected String")))
+(defn ^{:twin "core/upper-case"} upper-case [s] (if (= 17 (sq/kind s)) (map-ascii s 97 122 -32) (wasm/trap "upper-case expected String")))
+(defn ^{:twin "core/lower-case"} lower-case [s] (if (= 17 (sq/kind s)) (map-ascii s 65 90 32) (wasm/trap "lower-case expected String")))
 
-(defn string-upper-case [x]                              ; clojure.string/upper-case: UpperCase (native_prims.go:57)
+(defn ^{:twin "string/upper-case"} string-upper-case [x]                              ; clojure.string/upper-case: UpperCase (native_prims.go:57)
   (if (wasm/null? x) (wasm/trap "upper-case expected non-nil") (map-ascii (str x) 97 122 -32)))
 
 ;; ---------------------------------------------------------------------------
 ;; str-replace (lang.go:6509) with a literal match: strings.ReplaceAll, or
 ;; literalReplaceFn (lang.go:1308) when the replacement is a function.
 
-(defn str-replace [s m r]
-  (cond (if (= 17 (vkind s)) false true) (wasm/trap "str-replace expected String")
-        (if (= 17 (vkind m)) false true) (wasm/trap "str-replace expected String or Regex")
-        (= 16 (vkind r))
+(defn ^{:twin "core/str-replace"} str-replace [s m r]
+  (cond (if (= 17 (sq/kind s)) false true) (wasm/trap "str-replace expected String")
+        (if (= 17 (sq/kind m)) false true) (wasm/trap "str-replace expected String or Regex")
+        (= 16 (sq/kind r))
         (let [bs (str-bytes s) lit (str-bytes m) n (wasm/alen bs) ml (wasm/alen lit)]
           (if (= ml 0)
             s
@@ -1072,19 +930,19 @@
                   (if (< j 0)
                     (buf-range! b bs at n)
                     (let [rep (sq/invoke1 r m)]
-                      (when-not (= 17 (vkind rep)) (wasm/trap "str-replace replacement function must return a String"))
+                      (when-not (= 17 (sq/kind rep)) (wasm/trap "str-replace replacement function must return a String"))
                       (buf-range! b bs at j)
                       (buf-bytes! b (str-bytes rep))
                       (recur (+ j ml))))))
               (buf-done b))))
-        (if (= 17 (vkind r)) false true) (wasm/trap "str-replace expected String")
+        (if (= 17 (sq/kind r)) false true) (wasm/trap "str-replace expected String")
         :else
         (let [bs (str-bytes s) old (str-bytes m) new (str-bytes r) n (wasm/alen bs) ol (wasm/alen old) b (buf-new)]
           (if (= ol 0)
             (do (buf-bytes! b new)                       ; "" matches before every rune and at the end
                 (loop [at 0]
                   (when (< at n)
-                    (let [sz (bit-and (decode-at bs at n) 7)]
+                    (let [sz (bit-and (sq/decode-at bs at n) 7)]
                       (buf-range! b bs at (+ at sz))
                       (buf-bytes! b new)
                       (recur (+ at sz))))))
@@ -1098,8 +956,8 @@
 ;; ---------------------------------------------------------------------------
 ;; parse-long (lang.go:2827): strconv.ParseInt(s, 10, 64), nil on any error.
 
-(defn parse-long [s]
-  (if (= 17 (vkind s))
+(defn ^{:twin "core/parse-long"} parse-long [s]
+  (if (= 17 (sq/kind s))
     (let [bs (str-bytes s) n (wasm/alen bs)
           c0 (if (> n 0) (wasm/bget bs 0) 0)
           neg (= c0 45)

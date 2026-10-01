@@ -69,22 +69,28 @@
           (is (= (= nc n) ab (if (<= sz 100) (s/sequiv w wc) ab)) (str kind " n=" sz " = vs " path)))))))
 
 (def ^:private big-paths #{:conj :transient})
+(def ^:private mid-paths #{:conj :transient :disj-half})
+
+(defn- run-tiers [kind]                                     ; tiers as phm-test's (D51)
+  (run-kind kind #(< % 1000) any?)
+  (run-kind kind #{1000} (if (h/slow?) any? mid-paths))
+  (when (h/slow?) (run-kind kind #{10000} big-paths)))
 
 (deftest int-sets
-  (h/install-test-hooks!)
-  (run-kind :int #(< % 10000) any?) (run-kind :int #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :int))
 (deftest kw-sets
-  (h/install-test-hooks!)
-  (run-kind :kw #(< % 10000) any?) (run-kind :kw #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :kw))
 (deftest str-sets
-  (h/install-test-hooks!)
-  (run-kind :str #(< % 10000) any?) (run-kind :str #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :str))
 (deftest mixed-sets
-  (h/install-test-hooks!)
-  (run-kind :mixed #(< % 10000) any?) (run-kind :mixed #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :mixed))
 
 (deftest set-collisions
-  (h/install-test-hooks!)
+  (s/install-hooks!)
   (let [all (vec (apply concat h/collide-groups))]
     (doseq [[oi order] (map-indexed vector [all (vec (reverse all)) (h/shuffle-lcg all)])
             nfill [0 3 12]
@@ -106,7 +112,7 @@
       (check-set (str "bucket " (pr-str a) " " label) n w ks :mixed 3))))
 
 (deftest sets-are-never-ordered
-  (h/install-test-hooks!)
+  (s/install-hooks!)
   (testing "#{} of 3 keywords iterates in hash order, not insertion order"
     (let [ks [:z :y :x]
           [n w] (conj-all [#{} (s/empty-set)] ks)]
@@ -116,7 +122,7 @@
         (is (not (wasm/null? (wasm/get m/HMap 1 (wasm/get s/HSet 0 w0)))) "disj to empty stays HAMT")))))
 
 (deftest transient-sentinel-identity
-  (h/install-test-hooks!)
+  (s/install-hooks!)
   (testing "conj of a present element: same set after conj, new set after a transient (value is true)"
     (let [ks (h/gen-keys :kw 20 3)
           [n w] (conj-all [#{} (s/empty-set)] ks)
@@ -127,7 +133,7 @@
       (is (= (identical? nt (conj nt k)) (wasm/ref-eq wt (s/sconj wt (bx k))))))))
 
 (deftest dialect
-  (h/install-test-hooks!)
+  (s/install-hooks!)
   (let [[cnt offending] (h/dialect-offenders "rt/wasm/phs.lg" 'wasm.phs
                                              h/runtime-ns?)]
     (is (< 12 cnt))

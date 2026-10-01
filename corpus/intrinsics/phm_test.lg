@@ -2,10 +2,12 @@
 ;; construction path, the SAME op sequence is applied to a native map and to a
 ;; wasm.phm map, and the seq orders must agree entry by entry (key type, key,
 ;; value). get/contains?/count/hash/= are probed against native too.
-;; Values use wasm.seq's model (D38): nil = null, Int/i31, Bool, EmptyList,
-;; pvec for vectors. Kinds that model lacks so far (keywords, strings, chars,
-;; floats, bigints, symbols) ride in a TEST-ONLY HostVal box below, hashed and
-;; compared through seq.lg's foreign-kind hooks; the runtime files never see it.
+;; Values use the runtime's own model (D38): nil = null, Int/i31, Bool,
+;; EmptyList, pvec for vectors, and wasm.seq's Str/Char/Kw/Sym/Float boxes
+;; (keywords and symbols interned by wasm.str), so key hash and = are the
+;; runtime's: every order-parity assertion over keyword/string/char/float/
+;; symbol keys is also a check that those hashes match the Go side. Bigint
+;; keys stay out until the numeric tower (P2.7): the runtime has no bigint box.
 (ns phm-test
   (:require [test :refer [deftest is testing]]
             [wasm.intrinsics :as wasm]
@@ -13,15 +15,13 @@
             [wasm.phs :as s]
             [wasm.pvec :as pv]
             [wasm.seq :as sq]
+            [wasm.str :as st]
             [ir.passes.pipeline :as pipeline]
             [string]))
 
 ;; ---------------------------------------------------------------------------
-;; Test-only value bridge. HostVal = side-table id + the lg hash (cached).
+;; Boundary glue (test only): lg values to runtime refs and back, deep.
 
-(wasm/defstruct HostVal [:i64 :i64])
-(def ^:private host-table (atom []))
-(defn- host? [r] (wasm/is? HostVal r))
 (defn- arr->vec* [a] (mapv #(wasm/aget m/HSlots a %) (range (wasm/alen a))))
 
 (defn ->w "lg value -> wasm ref." [x]
@@ -29,10 +29,15 @@
         (int? x) (sq/box-int x)
         (boolean? x) (sq/bool x)
         (identical? x ()) (sq/empty-list)
+        (string? x) (st/mk-str (wasm/bytes-of-string x))
+        (keyword? x) (st/kw-of-bytes (wasm/bytes-of-string (subs (str x) 1)))
+        (symbol? x) (st/sym-of-bytes (wasm/bytes-of-string (str x)))
+        (char? x) (st/mk-char (int x))
+        (float? x) (st/box-float x)
         (vector? x) (reduce (fn [w e] (pv/vconj w (->w e))) (pv/empty-vec) x)
-        :else (let [id (count @host-table)]
-                (swap! host-table conj x)
-                (wasm/new HostVal id (hash x)))))
+        :else (throw (ex-info (str "->w: no runtime form for " (pr-str x)) {}))))
+
+(defn- bytes->str [b] (when-not (wasm/null? b) (wasm/string-of-bytes b)))
 
 (defn <-w "wasm ref -> lg value." [r]
   (case (sq/kind r)
@@ -41,37 +46,24 @@
     2 ()
     11 (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r)))
     15 (= 1 (wasm/get sq/Bool 0 r))
-    18 (cond (host? r) (nth @host-table (wasm/get HostVal 0 r))
-             (wasm/is? m/HMap r) (into {} (map (fn [[k v]] [(<-w k) (<-w v)]) (partition 2 (arr->vec* (m/entries r)))))
+    17 (wasm/string-of-bytes (wasm/get sq/Str 0 r))
+    19 (char (wasm/get sq/Char 0 r))
+    20 (keyword (bytes->str (wasm/get sq/Kw 0 r)) (bytes->str (wasm/get sq/Kw 1 r)))
+    21 (symbol (bytes->str (wasm/get sq/Sym 0 r)) (bytes->str (wasm/get sq/Sym 1 r)))
+    22 (wasm/get sq/Float 0 r)
+    18 (cond (wasm/is? m/HMap r) (into {} (map (fn [[k v]] [(<-w k) (<-w v)]) (partition 2 (arr->vec* (m/entries r)))))
              (wasm/is? s/HSet r) (set (map <-w (arr->vec* (s/sseq r))))
              :else (throw (ex-info "<-w: unknown foreign ref" {})))
     (throw (ex-info (str "<-w: kind " (sq/kind r)) {}))))
 
-(defn- wcoll? [r] (if (wasm/is? m/HMap r) true (wasm/is? s/HSet r)))
-(defn- lg-equiv [x y]                       ; valueEquiv on lg values: = plus nil ~ ()
-  (or (= x y) (and (nil? x) (identical? y ())) (and (identical? x ()) (nil? y))))
-
-(defn- t-seq [self x] (if (host? x) (throw (ex-info "test: seq of a HostVal" {})) (s/seq-hook self x)))
-(defn- t-count [self x] (if (host? x) (throw (ex-info "test: count of a HostVal" {})) (s/count-hook self x)))
-(defn- host-val [r] (nth @host-table (wasm/get HostVal 0 r)))
-(defn- t-equiv [self a b]
-  (let [ha (host? a) hb (host? b)]
-    (cond (and ha hb) (sq/bool (lg-equiv (host-val a) (host-val b)))   ; the hot case: skip <-w's kind dispatch
-          (or ha hb) (sq/bool (if (or (wcoll? a) (wcoll? b)) false (lg-equiv (<-w a) (<-w b))))
-          :else (s/equiv-hook self a b))))
-(defn- t-hash [self x] (if (host? x) (sq/box-int (wasm/get HostVal 1 x)) (s/hash-hook self x)))
-
-(defn install-test-hooks!
-  "seq.lg's hooks are global and seq-test resets them, so every deftest here
-   installs these first: phs's map/set hooks, extended with HostVal."
-  []
-  (let [f1 (fn [f] (wasm/new sq/Fn (wasm/null) (wasm/funcref sq/Code1 f) (wasm/null) (wasm/null)))]
-    (sq/set-hooks! (f1 t-seq) (f1 t-count)
-                   (wasm/new sq/Fn (wasm/null) (wasm/null) (wasm/funcref sq/Code2 t-equiv) (wasm/null))
-                   (f1 t-hash))))
-
 ;; ---------------------------------------------------------------------------
 ;; Shared with phs-test.
+
+;; The slow tier (D51): SLOW=1 adds the 10k-key builds here and in phs-test,
+;; and runs every construction path at 1000 keys. The default tier runs every
+;; path at sizes 0-100 and `mid-paths` at 1000 (a 3-level HAMT), so it stays
+;; under 90 s; measured 2026-10-01, the full 1000 tier alone is ~57 s.
+(defn slow? [] (= "1" (os/getenv "SLOW")))
 
 ;; Deterministic 31-bit LCG (the corpus/maporder generator's constants).
 (defn lcg [s] (bit-and (+ (* s 1103515245) 12345) 0x7fffffff))
@@ -82,7 +74,7 @@
 
 (defn gen-key
   "Key i of a kind from LCG draw r. Ranges are chosen so larger builds repeat
-   keys (re-assoc of an existing key) and cross the i31/HostVal boundary."
+   keys (re-assoc of an existing key) and cross the i31/Int box boundary."
   [kind i r]
   (case kind
     :int (case (mod i 3)
@@ -98,7 +90,7 @@
              3 (char (+ 33 (mod r 5000)))
              4 [(mod r 40) (mod (quot r 40) 40)]
              5 (/ (double (mod r 1000)) 8.0)
-             6 (bigint (- (mod r 2000) 1000))                ; = an int key: one key, not two
+             6 (- 0.0 (/ (double (mod r 1000)) 8.0))         ; -0.0 = 0.0 under =, hashes differ (D19)
              7 (if (zero? (mod r 2)) true false)
              8 (if (zero? (mod r 3)) nil (symbol (str "y" (mod r 500))))
              (* (bit-and r 0xffff) 4294967311))))
@@ -275,37 +267,44 @@
         (let [ab (m/mequiv wa wm)]              ; both directions only while cheap
           (is (= (= na nm) ab (if (<= n 100) (m/mequiv wm wa) ab)) (str kind " n=" n " = vs " path)))))))
 
-(def ^:private big-paths #{:assoc :transient})
+(def big-paths #{:assoc :transient})
+(def mid-paths #{:assoc :transient :dissoc-half})
+
+(defn- run-tiers [kind]
+  (run-kind kind #(< % 1000) any?)
+  (run-kind kind #{1000} (if (slow?) any? mid-paths))
+  (when (slow?) (run-kind kind #{10000} big-paths)))
 
 (deftest int-keys
-  (install-test-hooks!)
-  (run-kind :int #(< % 10000) any?) (run-kind :int #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :int))
 (deftest kw-keys
-  (install-test-hooks!)
-  (run-kind :kw #(< % 10000) any?) (run-kind :kw #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :kw))
 (deftest str-keys
-  (install-test-hooks!)
-  (run-kind :str #(< % 10000) any?) (run-kind :str #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :str))
 (deftest mixed-keys
-  (install-test-hooks!)
-  (run-kind :mixed #(< % 10000) any?) (run-kind :mixed #{10000} big-paths))
+  (s/install-hooks!)
+  (run-tiers :mixed))
 
 ;; Distinct, unequal keys with equal hashes (corpus/hash/SPEC.md surprise 4,
 ;; corpus/maporder/SPEC.md "Collision buckets"), plus pairs that are ONE key.
 (def collide-groups
   [[97 \a 4.8E-322 "xe2tiazy"] ["snpfo" "s6rja"] [:kby0z :kcxik] ['kby0z 'kcxik]
    [[97] [\a]] [4611686018427387904 2.0]])
-(def same-key-pairs [[1 1N] [nil ()] [0.0 -0.0]])
+;; [1 1N] is a same-key pair natively too; out until the runtime has a bigint box (P2.7).
+(def same-key-pairs [[nil ()] [0.0 -0.0]])
 (def fillers (mapv #(keyword (str "f" %)) (range 12)))
 
 (deftest collision-hashes-really-collide
-  (install-test-hooks!)
+  (s/install-hooks!)
   (doseq [g collide-groups]
     (is (apply = (map hash g)) (pr-str g))
     (is (= (count g) (count (set g))) (str "distinct: " (pr-str g)))))
 
 (deftest collisions
-  (install-test-hooks!)
+  (s/install-hooks!)
   (let [all (vec (apply concat collide-groups))
         orders [all (vec (reverse all)) (shuffle-lcg all)]]
     (doseq [[oi order] (map-indexed vector orders)
@@ -326,7 +325,7 @@
       (check-map (str "bucket " (pr-str gone) " " label) nm wm ks :mixed 3))))
 
 (deftest same-key-pairs-and-ordered-mode-equiv
-  (install-test-hooks!)
+  (s/install-hooks!)
   (doseq [[a b] same-key-pairs
           nfill [0 3 12]
           :let [ks (-> (vec (take nfill fillers)) (conj a) (into (take 2 fillers)) (conj b))]
@@ -334,7 +333,7 @@
     (check-map (str (pr-str a) "/" (pr-str b) " fill" nfill " " path) nm wm ks :mixed 5)))
 
 (deftest threshold-boundary
-  (install-test-hooks!)
+  (s/install-hooks!)
   (testing "ordered through 8, HAMT at 9, no demotion below 9, drain -> ordered"
     (let [ks (mapv #(keyword (str "z" (- 20 %))) (range 12))
           ordered? (fn [wm] (wasm/null? (wasm/get m/HMap 1 wm)))
@@ -347,7 +346,7 @@
         (is (ordered? (m/mdissoc w1 (bx (nth ks 8)))) "drained map is ordered")))))
 
 (deftest persistence-and-transient-ownership
-  (install-test-hooks!)
+  (s/install-hooks!)
   (let [ks (gen-keys :int 300 11)
         [_ w] (p-assoc {} (m/empty-map) ks 0)
         before (wasm-entries w)
@@ -362,9 +361,8 @@
           "assoc! after persistent! traps"))))
 
 (deftest seq-hooks-and-collection-keys
-  ;; Production hooks only (wasm.phs/install-hooks!): keys are maps and sets of
-  ;; ints, so key hash and = go through seq.lg's foreign-kind dispatch into
-  ;; phm/phs themselves. No HostVal in this test.
+  ;; Keys are maps and sets of ints, so key hash and = go through seq.lg's
+  ;; foreign-kind dispatch (slot 0 maps, slot 1 sets) into phm/phs themselves.
   (s/install-hooks!)
   (let [wmap (fn [kvs] (reduce (fn [w [k v]] (m/massoc w (sq/box-int k) (sq/box-int v))) (m/empty-map) kvs))
         wset (fn [xs] (reduce (fn [w x] (s/sconj w (sq/box-int x))) (s/empty-set) xs))
@@ -391,7 +389,7 @@
       (is (= (get nm (nat-key spec) ::nf) (<-w (m/mget wm (w-key spec) (->w ::nf)))) (str "get " (pr-str spec))))))
 
 (deftest dialect
-  (install-test-hooks!)
+  (s/install-hooks!)
   (let [[n offending] (dialect-offenders "rt/wasm/phm.lg" 'wasm.phm runtime-ns?)]
     (is (< 40 n))
     (is (empty? offending) (str "non-dialect references: " (pr-str offending)))))

@@ -22,7 +22,7 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 
 | name | arity | wasm | type | used by |
 |---|---|---|---|---|
-| `new` | 1–7 | struct.new | [decl fields…] → :any | P H C V |
+| `new` | 1–8 | struct.new | [decl fields…] → :any | P H C V |
 | `get` | 3 | ref.cast; struct.get (i32: extend_s) | [decl const :any] → field | P H C V |
 | `set!` | 4 | ref.cast; struct.set (mut fields only) | [decl const :any T] → nil | H (transient edit), V (hash cache) |
 | `is?` | 2 | ref.test | [decl :any] → :bool | H (node kind), V (type dispatch) |
@@ -49,6 +49,7 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `funcref` / `call-ref` | 2 / 2–6 | ref.func / call_ref $Sig | | C |
 
 42 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-09-30.
+`new` gained its 7-field arity on 2026-10-01 for D52's `$Fn`.
 
 **Reference semantics.** Wrapping arithmetic, shift counts mod 64, packed-i8
 truncation in `bset!`, and memmove `array-copy` match wasm exactly (measured on
@@ -77,4 +78,5 @@ insert/remove by allocate-and-copy-twice (`array-new`, `array-copy`); key compar
 the runtime's `=` with a `ref-eq` fast path; transient ownership by `ref-eq` on the edit token.
 Covered. **Gap for P2.2:** hashing a float needs its IEEE bits (`i64.reinterpret_f64`),
 which this set lacks and which native lg offers no non-interop way to compute; add
-`f64-bits` there, with its reference implementation, when P2.2 needs it.
+`f64-bits` there, with its reference implementation, when P2.2 needs it. Until then
+`wasm.seq/float-bits` computes the bits with float arithmetic (STR.md, Floats).

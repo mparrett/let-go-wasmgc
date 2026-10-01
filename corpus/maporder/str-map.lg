@@ -133,6 +133,11 @@
     (show "transient-dissoc" n (persistent! (reduce (fn [t [k _]] (dissoc! t k)) (transient by-assoc) evens)) idx)
     (show "merge" n (merge (assoc-all {} (take h ps)) (assoc-all {} (drop h ps))) idx)
     (show "drain-regrow" n (assoc-all (dissoc-all by-assoc ps) (reverse ps)) idx)
+    ;; D49: drained and regrown inside ONE transient; from n >= 9 the regrown
+    ;; <= 8 keys stay hash-ordered (t.hamt is never cleared)
+    (show "transient-drain-regrow" n (persistent! (reduce (fn [t [k x]] (assoc! t k x))
+                                                          (reduce (fn [t [k _]] (dissoc! t k)) (transient by-assoc) ps)
+                                                          (take 6 ps))) idx)
     ;; every read path must walk the same order; xsofy reads entities with
     ;; doseq/keys/vals/reduce-kv interchangeably.
     (let [a (atom [])]

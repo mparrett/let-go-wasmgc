@@ -47,7 +47,7 @@
             (wasm/funcref sq/Code0 (fn [_] (->w (f))))
             (wasm/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
             (wasm/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
-            (wasm/null)))
+            (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
 
 (defn deep
   "A wasm value as lg data: seq kinds realised to lg lists, a pvec to a vector."
@@ -318,12 +318,17 @@
     (same (deref (ensure-reduced (ensure-reduced 1))) (sq/unreduced (sq/ensure-reduced (sq/ensure-reduced (w 1)))))
     (same (reduced? (unreduced (ensure-reduced (reduced 1)))) (sq/reduced? (sq/unreduced (sq/ensure-reduced (sq/reduced (w 1))))))))
 
+;; The slow tier (D51): SLOW=1 runs reduce.clj at its real 1e6 size (~30 s
+;; under the reference intrinsics); the default tier runs the same program at 1e4.
+(defn- slow? [] (= "1" (os/getenv "SLOW")))
+
 (deftest gate-programs
   ;; let-go benchmark/{reduce,map-filter,transducers,persistent-map}.clj, each
   ;; computed natively and through wasm.seq on the same inputs.
   (testing "reduce.clj"
-    (is (= (reduce + 0 (range 1000000))
-           (<-w (sq/reduce (clo +) (w 0) (sq/range (w 1000000)))))))
+    (let [n (if (slow?) 1000000 10000)]
+      (is (= (reduce + 0 (range n))
+             (<-w (sq/reduce (clo +) (w 0) (sq/range (w n))))))))
   (testing "map-filter.clj"
     (is (= (reduce + 0 (take 100 (filter even? (map #(* % %) (range 10000)))))
            (<-w (sq/reduce (clo +) (w 0) (p-take 100 (p-filter (clo even?) (sq/map* (clo #(* % %)) (sq/range (w 10000))))))))))
@@ -398,11 +403,17 @@
         (is (= (hash '(3 4 5)) (<-w (sq/hash bag))))
         (finally (sq/set-hooks! (wasm/null) (wasm/null) (wasm/null) (wasm/null)))))))
 
+(defn- wstr [s] (wasm/new sq/Str (wasm/bytes-of-string s) -1))
+(defn- wchar->lg [r] (char (wasm/get sq/Char 0 r)))
+
 (deftest gaps-are-named
-  (testing "strings: let-go seqs them into chars, which the value model lacks"
-    (is (= '(\a \b) (seq "ab")))
-    (is (= [:err "wasm.seq: seq over a string yields chars; chars are not in the value model yet (P2.6)"]
-           (res #(sq/seq (wasm/bytes-of-string "ab"))))))
+  (testing "strings are seqable since P2.9: chars, rune-counted, byte-bounded nth (STR.md)"
+    (is (= (seq "héllo") (map wchar->lg (deep (sq/seq (wstr "héllo"))))))
+    (is (= (count "héllo") (<-w (sq/count (wstr "héllo")))))
+    (is (= (first "日本") (wchar->lg (sq/first (wstr "日本")))))
+    (is (= (nth "héllo" 5 :nf) (<-w (sq/nth (wstr "héllo") (w 5) (->w :nf)))))
+    (is (nil? (sq/seq (wstr ""))))
+    (is (= [:err "seq expected Seqable"] (res #(sq/seq (wasm/new sq/Kw (wasm/null) (wasm/bytes-of-string "a") 0))))))
   (testing "float range bounds need the float box"
     (is (= '(0 1 2) (range 2.5)))
     (is (= :err (first (res #(sq/range (->w 2.5))))))))
@@ -460,7 +471,9 @@
                              (string/starts-with? vname "#'wasm.pvec/")
                              (and (string/starts-with? vname "#'wasm.intrinsics/")
                                   (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
-                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))
+                             ;; the -0.0 test in float-bits, pending P2.2's f64-bits (moved from str.lg)
+                             (and (= (second d) 'float-bits) (= vname "#'core//"))))]
           [(second d) sym])]
     (is (< 40 (count defns)))
     (is (= '[hooks] (mapv second globals)) "one runtime global: the foreign-kind hook table")

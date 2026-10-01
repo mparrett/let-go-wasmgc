@@ -40,9 +40,13 @@ in its own `seq` order (persistent_map.go:833-850, core.lg:1553-1560).
 `count < 8` on insert (:96-99), `forceHAMT` on the 9th distinct key
 (:45-63, okvs pushed in insertion order), `dissoc!` in ordered mode keeps
 order (:123-128), no demotion, and `persistent!` of an ordered transient hands
-over the slice unchanged (:198-201). A HAMT transient drained to 0 persists
-with `root == nil`, i.e. as the empty ordered map. Transient and persistent
-paths produce identical order (corpus rows `transient`, `transient-dissoc`).
+over the slice unchanged (:198-201). A HAMT transient drained to 0 keeps
+`t.hamt` set (`Dissoc`, :119-140, never clears it). `persistent!` right after
+the drain yields `root == nil`, i.e. the empty ordered map; but keys `assoc!`ed
+into the same transient after the drain go into a fresh HAMT root (:103-111),
+so the result stays hash-ordered even at 8 keys or fewer (D49; corpus row
+`transient-drain-regrow`). Otherwise transient and persistent paths produce
+identical order (corpus rows `transient`, `transient-dissoc`).
 
 ## Sets are always hash-ordered
 
@@ -153,8 +157,8 @@ not by hash or insertion; `seq` at :495. Not covered here.
 
 1. **Hashes** (D19). Order above 8 entries, and for every set, is a pure
    function of the 32-bit hashes except in collision buckets.
-2. **The mode boundary**: 8, the no-demotion rule, drain-to-empty → ordered,
-   sets never ordered. A port that copies Clojure (sets ordered? no; hash-map
+2. **The mode boundary**: 8, the no-demotion rule, drain-to-empty → ordered
+   (but not inside one transient, D49), sets never ordered. A port that copies Clojure (sets ordered? no; hash-map
    always hashed) or JS `Map` (insertion order always) diverges at size 9 or
    at size 1 for sets.
 3. **Collision-bucket history** and the shift-0 rebuild. "Sort by `rk(h)`"
@@ -184,7 +188,8 @@ driven by `s' = (1103515245·s + 12345) mod 2³¹`, seed `n + 7`.
 Map paths: `literal` (quoted constant), `literal-dyn` (runtime values, so
 the compiler's `array-map` call), `assoc`, `into`, `zipmap`, `transient`,
 `hash-map`, `array-map`, `update` (re-assoc every key), `dissoc-half`,
-`assoc-back`, `transient-dissoc`, `merge` (two halves), `drain-regrow`, plus
+`assoc-back`, `transient-dissoc`, `merge` (two halves), `drain-regrow`,
+`transient-drain-regrow` (drain and regrow 6 keys inside one transient), plus
 `views`. Set paths: `literal`, `literal-dyn`, `conj`, `set`, `into`,
 `hash-set`, `transient`, `disj-half`, `conj-back`, `transient-disj`,
 `drain-regrow`, `map-keys`.

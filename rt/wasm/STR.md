@@ -1,4 +1,4 @@
-# wasm.str (P2.6 runtime half, 2026-10-01)
+# wasm.str (P2.6 runtime half, integrated at P2.9, 2026-10-01)
 
 Strings, chars, keywords, symbols and floats as values, `str`/`pr-str`/
 `print-str`, float formatting and the string natives, in the runtime dialect
@@ -18,8 +18,13 @@ truth: let-go 4e769212 built with go1.27.1. Paths are under
 | `Sym` | same layout, symbol hash | interned in the same table, distinct from a keyword of the same text |
 | `Float` | `:f64` | |
 
-`vkind` extends `sq/kind`: 17 Str (replacing raw Bytes, which is no longer a
-value and traps), 19 Char, 20 Kw, 21 Sym, 22 Float. One runtime global
+The five structs are declared in wasm.seq beside `Int`/`Bool` (D38, D48),
+and `sq/kind` numbers them: 17 Str, 19 Char, 20 Kw, 21 Sym, 22 Float (raw
+`wasm/Bytes` is not a value; it falls to kind 18 and traps without a hook).
+wasm.seq also owns their equality and hash, the UTF-8 walks (`decode-at`,
+`rune-count*`), strings as collections, and `float-bits`; wasm.str builds
+the boxes (`mk-str`, `mk-char`, `box-float`, `kw-of-bytes`, `sym-of-bytes`)
+and owns interning, printing and the string natives. One runtime global
 (`globals`, D39): the intern table (open addressing over `pv/Node`, load at
 most 1/2), its count, and the print hook for foreign values.
 
@@ -95,8 +100,9 @@ using the `leftcheats` table.
 scales `|x|` by exact powers of two into `[2^52, 2^53)`, reads the mantissa
 with `f64-to-i64`, and rebuilds the exponent field (subnormals included). The
 one thing float arithmetic cannot see is the sign of zero, so `float-bits`
-uses one division, `(/ 1.0 x)`: the only non-dialect reference in `str.lg`,
-whitelisted by name in the dialect test. NaN maps to Go's `math.NaN()` bit
+uses one division, `(/ 1.0 x)`: the only non-dialect reference in the
+runtime, whitelisted by name in seq_test's dialect test (`float-bits` moved
+to `seq.lg` at P2.9, because Float hashing needs it there). NaN maps to Go's `math.NaN()` bit
 pattern `0x7FF8000000000001` (`(hash ##NaN)` agrees).
 
 Proven coverage:
@@ -130,8 +136,9 @@ argument list, until the backend's variadic convention), `float->str`,
 `trimr` (cutset ` \t\n\r`) `upper-case` `lower-case` `string-upper-case`
 (clojure.string/upper-case: coerces with `str`) `str-replace` (literal
 match, string or fn replacement; `""` matches before each rune and at the end)
-`parse-long`. Collection views of strings: `count` `nth` `seq` `first`
-`rest` `next`, which delegate every other kind to wasm.seq.
+`parse-long`. `count` `nth` `seq` `first` `rest` `next` `equiv?` `equals`
+`hash` remain as names here but are wasm.seq's own natives, which have been
+string-aware since P2.9.
 
 lg-defined fns that reach these through the backend for free:
 `clojure.string/join`, `split`, `split-lines`, `blank?`, `capitalize`,
@@ -150,24 +157,12 @@ lg-defined fns that reach these through the backend for free:
 - `(int ##NaN)` traps: Go's `int(math.Trunc(NaN))` is platform-defined.
   `(last-index-of s x -5)` traps where native lg panics.
 - `str-replace-first`, `format`, `println`/`pr` output, `re-*` not done.
-- Strings inside wasm.seq collections reach seq.lg's single foreign hook slot
-  (kind 18), which phs owns; `nested-through-seq-hooks` installs a test hook.
-  Fixed by the seq.lg patch below.
 
-## seq.lg patch (proposed, not applied)
+## seq.lg patch (applied at P2.9)
 
-1. Move the `Str Char Kw Sym Float` defstructs from `str.lg` into seq.lg's
-   value-model block next to `Int`/`Bool`.
-2. In `kind`, replace `(wasm/is? wasm/Bytes x) 17` with `(wasm/is? Str x) 17`
-   and add `Char` 19, `Kw` 20, `Sym` 21, `Float` 22 before `:else 18`;
-   `str.lg`'s `vkind` then becomes `sq/kind`.
-3. Move `decode-at`, `rune-count*`, `string-seq`, `string-nth` (≈45 lines,
-   intrinsics + `List` only) into seq.lg and call them where seq.lg now calls
-   `string-seq-gap`: `seq-view` (k 17 → `string-seq`), `count*` (rune count),
-   `nth*` (k 17 → `string-nth`, before the Indexed branch).
-4. In `equiv?`, before the type-group test: Str by bytes, Char by rune, Float
-   by `==`, Kw/Sym by text; in `hash*`: Str FNV (seq.lg's `fnv-bytes`), Char
-   `hash-u64`, Kw/Sym their stored hash, Float `hash-u64` of `f64-bits` (needs
-   the P2.2 intrinsic or `float-bits` moved too).
-5. `fnv-elem` (hash of Range/Repeat/PVecSeq over non-int elements) still
-   needs printing; leave the trap or give seq.lg a print hook.
+Steps 1-4 of the proposal are in: the structs, the `kind` numbers, the
+string walks (`string-seq`, `string-nth`, `decode-at`, `rune-count*`) and
+the scalar cases of `equiv?`/`hash*` live in seq.lg, and `float-bits` moved
+with them so seq.lg never requires wasm.str. Step 5 stands: `fnv-elem` (the
+hash of a Range/Repeat/PVecSeq over non-int elements) still needs printing
+and traps (SEQ.md, Gaps).
