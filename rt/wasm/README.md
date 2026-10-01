@@ -22,6 +22,7 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 11 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
 | 12 | `host.lg` | `wasm.host` | 1 3 4 7 8 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
 | 13 | `lang.lg` | `wasm.lang` | 1-4 8 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
+| 14 | `term.lg` | `wasm.term` | 1-4 8 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the

@@ -1,0 +1,204 @@
+;; wasm.term — P4.1 (runtime half): the term/* natives as let-go's js/wasm
+;; build defines them (pkg/rt/term_wasm.go at 4e769212), in the runtime
+;; dialect of seq.lg. Output is ANSI text on fd 1 through wasm/host-write
+;; (D88: colour and cursor are escapes on the text stream, as term_wasm.go's
+;; WriteToOut does); input and geometry come from three new host intrinsics
+;; defined at the bottom of this file, each naming the D88 import it lowers
+;; to. The backend must learn them (they are not in wasm.intrinsics, which is
+;; shared): until it does, `src/lw_rt.lg`'s `intrinsic?` sees them as plain
+;; defns.
+;;
+;; Ground truth, term_wasm.go line by line: raw-mode!/restore-mode! :50-60
+;; (TRUE, no-ops: xterm.js is always raw); read-key :65-75 (the raw key
+;; string, nil at end of input; unlike native term.go:397 there is NO SGR
+;; mouse decode into a map on wasm); key-pending? :79-85; size :88-104 (a
+;; PersistentVector [cols rows], 0 read as 80/24, never nil); the output fns
+;; :111-286 (escape bytes identical to native term.go:495-686); flush
+;; :293-305 (Sync on *out*, then the JS transport flush). env.write is
+;; unbuffered on every lower-wasm host (host/ABI.md), so flush has nothing
+;; to do here.
+;;
+;; Divergences, all outside what xsofy calls: (binding [*keys* …]) and
+;; (binding [*out* …]) are not honoured (keys come from the host, output goes
+;; to fd 1, as wasm.host's printing does); the escape-only fns take no
+;; arguments, where Go's ignore any they are given.
+(ns wasm.term
+  (:refer-clojure :exclude [flush])
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.seq :as sq]
+            [wasm.pvec :as pv]
+            [wasm.str :as s]
+            [wasm.core :as c]))
+
+(declare term-read-key term-key-pending term-size)
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- out! [st] (wasm/host-write 1 (s/str-bytes st)) (wasm/null))
+(defn- int-val? [x] (= 1 (sq/kind x)))
+(defn- string-of [x] (if (= 17 (sq/kind x)) x (s/value-string x))) ; Go: a String verbatim, else Value.String()
+
+;; ---------------------------------------------------------------------------
+;; Modes: no-ops returning true (term_wasm.go:50-60).
+
+(defn ^{:twin "term/raw-mode!"} raw-mode! ([] (sq/bool true)) ([h] (sq/bool true)))
+(defn ^{:twin "term/restore-mode!"} restore-mode! ([] (sq/bool true)) ([h st] (sq/bool true)))
+
+;; ---------------------------------------------------------------------------
+;; Input (term_wasm.go:65-85). The host blocks until a key arrives and hands
+;; over its UTF-8 bytes; an empty answer is end of input, which read-key
+;; reports as nil, as KeySource's "" contract does.
+
+(defn ^{:twin "term/read-key"} read-key []
+  (let [bs (term-read-key)]
+    (if (wasm/null? bs) (wasm/null) (s/mk-str bs))))
+
+(defn ^{:twin "term/key-pending?"} key-pending? [] (sq/bool (term-key-pending)))
+
+;; size: a PersistentVector (NewPersistentVector builds that type at any
+;; length, persistent_vector.go:690), so pkind 1 (D73). A zero dimension
+;; reads as the default, as term_wasm.go:96-101 does with an unset SAB slot.
+(defn ^{:twin "term/size"} size []
+  (let [p (term-size)
+        cols (unsigned-bit-shift-right p 32)
+        rows (bit-and p 0xFFFFFFFF)]
+    (pv/vretag (pv/vconj (pv/vconj (pv/empty-vec) (sq/box-int (if (= cols 0) 80 cols)))
+                         (sq/box-int (if (= rows 0) 24 rows)))
+               1 (wasm/null))))
+
+;; ---------------------------------------------------------------------------
+;; Output. Every escape is the literal term_wasm.go writes; CSI = ESC [.
+
+(defn- csi [] (lit (wasm/bytes-of-string "\u001b[")))
+
+(defn- move-seq [col row]                                  ; "\033[%d;%dH", row first (:120)
+  (s/str (s/str (csi) row (lit (wasm/bytes-of-string ";"))) col (lit (wasm/bytes-of-string "H"))))
+
+(defn ^{:twin "term/move-cursor"} move-cursor
+  ([] (c/raise (wasm/bytes-of-string "move-cursor expects 2 args (col row)")))
+  ([a] (c/raise (wasm/bytes-of-string "move-cursor expects 2 args (col row)")))
+  ([col row] (if (if (int-val? col) (int-val? row) false)
+               (out! (move-seq col row))
+               (c/raise (wasm/bytes-of-string "move-cursor expects integers"))))
+  ([a b x] (c/raise (wasm/bytes-of-string "move-cursor expects 2 args (col row)"))))
+
+(defn ^{:twin "term/clear"} clear [] (out! (lit (wasm/bytes-of-string "\u001b[2J"))))
+(defn ^{:twin "term/clear-line"} clear-line [] (out! (lit (wasm/bytes-of-string "\u001b[2K"))))
+(defn ^{:twin "term/hide-cursor"} hide-cursor [] (out! (lit (wasm/bytes-of-string "\u001b[?25l"))))
+(defn ^{:twin "term/show-cursor"} show-cursor [] (out! (lit (wasm/bytes-of-string "\u001b[?25h"))))
+(defn ^{:twin "term/reset-style"} reset-style [] (out! (lit (wasm/bytes-of-string "\u001b[0m"))))
+(defn ^{:twin "term/bold"} bold [] (out! (lit (wasm/bytes-of-string "\u001b[1m"))))
+(defn ^{:twin "term/underline"} underline [] (out! (lit (wasm/bytes-of-string "\u001b[4m"))))
+(defn ^{:twin "term/inverse"} inverse [] (out! (lit (wasm/bytes-of-string "\u001b[7m"))))
+(defn ^{:twin "term/alternate-screen"} alternate-screen [] (out! (lit (wasm/bytes-of-string "\u001b[?1049h"))))
+(defn ^{:twin "term/main-screen"} main-screen [] (out! (lit (wasm/bytes-of-string "\u001b[?1049l"))))
+(defn ^{:twin "term/enable-mouse"} enable-mouse [] (out! (lit (wasm/bytes-of-string "\u001b[?1000;1006h"))))
+(defn ^{:twin "term/disable-mouse"} disable-mouse [] (out! (lit (wasm/bytes-of-string "\u001b[?1000;1006l"))))
+
+;; set-fg/set-bg (:144-190): "\033[38;5;%dm" for a 256-colour code,
+;; "\033[38;2;%d;%d;%dm" for r g b; 48 instead of 38 for the background.
+;; Only the message text differs between the two, so they share a body.
+(defn- rgb-seq [lead r g b]                                ; lead = "38;2;" or "48;2;"
+  (let [semi (lit (wasm/bytes-of-string ";"))]
+    (s/str (s/str (csi) (lit lead) r) (s/str semi g semi) (s/str b (lit (wasm/bytes-of-string "m"))))))
+
+(defn- colour1 [lead msg code]
+  (if (int-val? code)
+    (out! (s/str (s/str (csi) (lit lead) code) (lit (wasm/bytes-of-string "m"))))
+    (c/raise msg)))
+
+(defn- colour3 [lead msg r g b]
+  (if (if (int-val? r) (if (int-val? g) (int-val? b) false) false)
+    (out! (rgb-seq lead r g b))
+    (c/raise msg)))
+
+(defn ^{:twin "term/set-fg"} set-fg
+  ([] (c/raise (wasm/bytes-of-string "set-fg expects 1 or 3 args")))
+  ([code] (colour1 (wasm/bytes-of-string "38;5;") (wasm/bytes-of-string "set-fg expects integer color code") code))
+  ([a b] (c/raise (wasm/bytes-of-string "set-fg expects 1 or 3 args")))
+  ([r g b] (colour3 (wasm/bytes-of-string "38;2;") (wasm/bytes-of-string "set-fg expects 3 integers (r g b)") r g b))
+  ([a b x y] (c/raise (wasm/bytes-of-string "set-fg expects 1 or 3 args"))))
+
+(defn ^{:twin "term/set-bg"} set-bg
+  ([] (c/raise (wasm/bytes-of-string "set-bg expects 1 or 3 args")))
+  ([code] (colour1 (wasm/bytes-of-string "48;5;") (wasm/bytes-of-string "set-bg expects integer color code") code))
+  ([a b] (c/raise (wasm/bytes-of-string "set-bg expects 1 or 3 args")))
+  ([r g b] (colour3 (wasm/bytes-of-string "48;2;") (wasm/bytes-of-string "set-bg expects 3 integers (r g b)") r g b))
+  ([a b x y] (c/raise (wasm/bytes-of-string "set-bg expects 1 or 3 args"))))
+
+(defn ^{:twin "term/write"} write
+  ([] (c/raise (wasm/bytes-of-string "write expects 1 arg")))
+  ([x] (out! (string-of x)))
+  ([a b] (c/raise (wasm/bytes-of-string "write expects 1 arg"))))
+
+(defn ^{:twin "term/write-at"} write-at                   ; "\033[%d;%dH%s" (:241)
+  ([] (c/raise (wasm/bytes-of-string "write-at expects 3 args (col row str)")))
+  ([a] (c/raise (wasm/bytes-of-string "write-at expects 3 args (col row str)")))
+  ([a b] (c/raise (wasm/bytes-of-string "write-at expects 3 args (col row str)")))
+  ([col row x] (if (if (int-val? col) (int-val? row) false)
+                 (out! (s/str (move-seq col row) (string-of x)))
+                 (c/raise (wasm/bytes-of-string "write-at expects integers for col and row"))))
+  ([a b x y] (c/raise (wasm/bytes-of-string "write-at expects 3 args (col row str)"))))
+
+;; char-width (:245-259): 0 when the first rune decodes as utf8.RuneError,
+;; which includes "" and a literal U+FFFD; 1 otherwise (no wide-char table).
+(defn ^{:twin "term/char-width"} char-width
+  ([] (c/raise (wasm/bytes-of-string "char-width expects 1 arg")))
+  ([x] (if (= 17 (sq/kind x))
+         (let [bs (s/str-bytes x) n (wasm/alen bs)]
+           (sq/box-int (if (= n 0) 0 (if (= 0xFFFD (unsigned-bit-shift-right (sq/decode-at bs 0 n) 3)) 0 1))))
+         (c/raise (wasm/bytes-of-string "char-width expects string"))))
+  ([a b] (c/raise (wasm/bytes-of-string "char-width expects 1 arg"))))
+
+(defn ^{:twin "term/flush"} flush ([] (wasm/null)) ([a] (wasm/null)) ([a b] (wasm/null)))
+
+;; ---------------------------------------------------------------------------
+;; Host intrinsics for the term ABI (D88, host/ABI.md). Same metadata shape as
+;; wasm.intrinsics (D24); the bodies are the reference implementation, never
+;; lowered: the backend replaces each call with the expansion in :wasm.
+;; Like the other host intrinsics (D27) the reference is deterministic: keys
+;; come from *term-input* (nil, or an atom holding a vector of key strings;
+;; nil or an empty queue = end of input), the window from *term-size* (nil =
+;; the host default 80x24, else [cols rows]). Both default to nil so the
+;; defs are trivial globals if the backend lowers this file before it learns
+;; the intrinsics.
+
+(def ^:dynamic *term-input* nil)
+(def ^:dynamic *term-size* nil)
+
+;; read_key follows let-go's HostKeySource.ReadKey
+;; (keysource_js_wasm.go:54-127): a key outside 1..16 bytes is drained and
+;; reads as end of input; consecutive identical queued keys are drained in
+;; one read (the "lazy coalesce": a held key that outruns the game loop is
+;; one turn, not a backlog). The JS host (host/lg-wasm-host.js) does not
+;; coalesce yet; it must, to match let-go.
+(defn ^{:intrinsic true
+        :wasm "call $term.read_key(buf=32, cap=16) (JSPI-suspending, D88); n=0 -> ref.null, else array.new_default $Bytes n + copy [32, 32+n) from memory (the reverse of rt_host_write)"
+        :type "[] -> :any"}
+  term-read-key
+  "Wait for the next key; its UTF-8 Bytes, or null at end of input."
+  []
+  (let [q *term-input*
+        ks (if (nil? q) [] @q)]
+    (if (empty? ks)
+      nil
+      (let [k (first ks)
+            b (wasm/bytes-of-string k)
+            n (wasm/alen b)
+            more (loop [r (rest ks)] (if (= k (first r)) (recur (rest r)) r))]
+        (reset! q (vec more))
+        (if (and (<= 1 n) (<= n 16)) b nil)))))
+
+(defn ^{:intrinsic true :wasm "call $term.key_pending (i32 -> :bool)" :type "[] -> :bool"}
+  term-key-pending
+  "True when a key is queued (non-consuming)."
+  []
+  (let [q *term-input*] (boolean (and q (seq @q)))))
+
+(defn ^{:intrinsic true
+        :wasm "call $term.size -> (cols i32, rows i32); (i64.extend_i32_u cols) << 32 | (i64.extend_i32_u rows)"
+        :type "[] -> :int"}
+  term-size
+  "The window as one int: cols in the high 32 bits, rows in the low 32."
+  []
+  (let [[cols rows] (or *term-size* [80 24])]
+    (bit-or (bit-shift-left cols 32) rows)))

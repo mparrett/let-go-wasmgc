@@ -1,0 +1,50 @@
+instrumented fn bodies: 605
+wait     seeds=20 turns<=200  max depth per seed: min 16  median 18  max 19 (seed 16, 79 turns)
+autoex   seeds=20 turns<=200  max depth per seed: min 16  median 18  max 20 (seed 16, 79 turns)
+descend  seeds=20 turns<=200  max depth per seed: min 16  median 18  max 19 (seed 16, 80 turns)
+
+deepest overall: 20 frames (autoex, seed 16); the chain, outermost first:
+       1  xsofy.world/update-world
+       1  xsofy.world/autoexplore-step
+       1  xsofy.world/player-move
+       1  xsofy.world/update-fov
+       1  xsofy.fov/compute-fov
+      12  xsofy.fov/cast-octant
+       1  xsofy.fov/blocked?
+       1  xsofy.terrain/transparent?
+       1  xsofy.terrain/in-grid?
+
+top 20 fn bodies by deepest stack position reached (all runs):
+     20  xsofy.terrain/in-grid?
+     20  xsofy.terrain/tget
+     19  xsofy.hash/valid-codepoint!
+     19  xsofy.terrain/transparent?
+     18  xsofy.fov/blocked?
+     18  xsofy.fov/cast-octant
+     18  xsofy.hash/conj-codepoint->utf8
+     17  xsofy.hash/conj-utf8-char
+     17  xsofy.hash/u64-shr
+     16  xsofy.hash/conj-int->8-be
+     16  xsofy.hash/conj-utf8
+     15  xsofy.hash/encode-salt-into
+     13  xsofy.hash/encode-salt
+     13  xsofy.hash/xxh3-64
+     12  xsofy.entities/equipped
+     12  xsofy.hash/combine
+     11  xsofy.det/advance
+     11  xsofy.entities/get-armor
+     10  xsofy.det/int-in
+     10  xsofy.det/with-context
+
+render errors (headless): 0
+
+self-nesting: most simultaneous live frames of one fn body (>1 = recursion through the stack):
+     13  xsofy.fov/cast-octant
+      2  xsofy.entities/(fn#2 ([m [k v]] (if (and (map? (get m k)) (ma)
+      2  xsofy.entities/ai
+      2  xsofy.entities/damage-entity
+      2  xsofy.entities/deep-merge
+      2  xsofy.hash/encode-salt-into
+real 692.30
+user 756.79
+sys 8.97

@@ -28,3 +28,4 @@
 | P3.1 | done 2026-10-01 | opus | xsofy MISSING 0/135; xxh3 200 vectors; 106 tests; verified |
 | P4.0 | done 2026-10-01 | opus | host glue + ABI; hello MATCH in Chromium/node/wasmtime; no COI needed; JSPI depth risk D89 |
 | P2.11 | running | opus | backend oracle fixes F1–F9 + D87 |
+| P4.1-runtime | done 2026-10-01 | opus | 24 term twins; xsofy MISSING 0/143; depth max 20 (D89 closed) |

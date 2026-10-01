@@ -1,0 +1,220 @@
+;; corpus/depth/measure.lg — D89: how deep does xsofy's call stack get?
+;;
+;;   lg -source-paths <xsofy-root> corpus/depth/measure.lg depth [seeds] [turns]
+;;   lg -source-paths <xsofy-root> corpus/depth/measure.lg load <file> args...
+;;
+;; `depth` runs `seeds` worlds (make-world 79 30 seed, seeds 0..n-1) through
+;; three key fixtures of `turns` turns each (bench/native.lg's :wait, :autoex
+;; and :descend shapes) and prints the deepest stack of lg fn frames seen,
+;; per fixture and per fn. `load` installs the same instrumentation and then
+;; loads <file> (corpus/dump-world.lg) so its output can be diffed against an
+;; uninstrumented run: the instrumentation must not change the world.
+;;
+;; Method: before xsofy loads, core's `fn` macro is wrapped so every fn* it
+;; produces counts a frame on entry and uncounts it on exit (try/finally),
+;; and `defn`/`defn-` pass the var's name down as the frame's label. Because
+;; it is the macro, not the vars, that is instrumented, the count includes
+;; what a var proxy would miss: anonymous fns, named-fn self-recursion
+;; (`(fn walk [..] (walk ..))` binds walk locally), letfn, and the thunks of
+;; lazy-seq / for, so lazy realisation chains built from xsofy code show up
+;; as depth too. Not counted: frames inside let-go natives and core fns
+;; compiled before this file (map, reduce, update, swap!, sort-by, ...);
+;; README.md accounts for them as a per-user-frame multiplier.
+;;
+;; An arity body (after the original macro's destructuring, so its params
+;; are plain symbols) becomes
+;;   ([p..] (enter! id) (try (loop* [p p ..] body) (finally (exit!))))
+;; so a fn-level recur targets the loop and stays a loop (not a frame).
+;; No (ns ...) form: lg evaluates a namespaced script twice (bench/native.lg
+;; has the same note), which would install and run everything twice.
+(require '[clojure.string :as str])
+(def this-ns (str (ns-name *ns*)))
+(defn- here [nm] (symbol this-ns nm))
+
+;; ---------------------------------------------------------------------------
+;; Counters. Fixed-size arrays indexed by label id; the stack holds the id of
+;; every live frame so the deepest chain can be printed.
+
+(def cap 65536)
+(def labels (atom []))                     ; id -> label string
+(def depth (volatile! 0))
+(def max-depth (volatile! 0))
+(def stack (int-array cap))
+(def deepest (atom []))                    ; ids of the deepest chain seen
+(def active (int-array cap))               ; live frames per id
+(def max-active (int-array cap))           ; most simultaneous frames per id = self-nesting
+(def max-at (int-array cap))               ; deepest stack position per id
+(def calls (atom 0))
+
+(defn new-label! [s] (let [id (count @labels)] (swap! labels conj s) id))
+
+(defn enter! [id]
+  (let [d (vswap! depth inc)]
+    (when (< d cap) (aset stack d id))
+    (let [a (inc (aget active id))]
+      (aset active id a)
+      (when (> a (aget max-active id)) (aset max-active id a)))
+    (when (> d (aget max-at id)) (aset max-at id d))
+    (when (> d @max-depth)
+      (vreset! max-depth d)
+      (reset! deepest (mapv #(aget stack %) (range 1 (inc (min d (dec cap))))))))
+  nil)
+
+(defn exit! [id]
+  (vswap! depth dec)
+  (aset active id (dec (aget active id)))
+  nil)
+
+(defn reset-run! []
+  (vreset! depth 0)
+  (vreset! max-depth 0)
+  (reset! deepest []))
+
+;; ---------------------------------------------------------------------------
+;; Rewriting the fn macro's output.
+
+(defn- params-of [pv] (vec (remove #{'&} pv)))
+
+(defn- wrap-arity [id [pv & body]]
+  (let [ps (params-of pv)]
+    (list pv
+          (list (here "enter!") id)
+          (list 'try
+                (list* 'loop* (vec (mapcat (fn* [p] [p p]) ps)) body)
+                (list 'finally (list (here "exit!") id))))))
+
+(defn- rewrite
+  "Rewrite every fn* in the macro's expansion (not inside arity bodies)."
+  [form id]
+  (cond
+    (and (seq? form) (= 'fn* (first form)))
+    (let [[_ & more] form
+          nm (when (symbol? (first more)) (first more))
+          more (if nm (rest more) more)
+          arities (if (vector? (first more)) [more] more)]
+      (concat ['fn*] (when nm [nm]) (map #(wrap-arity id %) arities)))
+    (seq? form) (apply list (map #(rewrite % id) form))
+    (vector? form) (mapv #(rewrite % id) form)
+    :else form))
+
+(def orig-fn @#'core/fn)
+(def orig-defn @#'core/defn)
+(def orig-defn- @#'core/defn-)
+(def anon-count (atom 0))
+
+(defn- anon-label [args]
+  (let [nm (when (symbol? (first args)) (first args))]
+    (str (ns-name *ns*) "/" (or nm (str "(fn#" (swap! anon-count inc) " " (subs (let [s (pr-str (take 2 args))] s) 0 (min 40 (count (pr-str (take 2 args))))) ")")))))
+
+(defn labelled-fn-expand [label args]
+  (rewrite (apply orig-fn args) (new-label! label)))
+
+(defn- defn-name [nm] (if (seq? nm) (second nm) nm))
+
+(defn- relabel-def
+  "defn's expansion is (def name (core/fn ...)); point it at labelled-fn."
+  [expansion label]
+  (let [[d nm init] expansion]
+    (if (and (seq? init) (#{'core/fn 'fn} (first init)))
+      (list d nm (list* (here "labelled-fn") label (rest init)))
+      expansion)))
+
+(def installed (atom false))
+
+(defn install! []
+  (when-not @installed
+    (reset! installed true)
+    (alter-var-root #'core/fn (constantly (fn* [& args] (labelled-fn-expand (anon-label args) args))))
+    (alter-var-root #'core/defn
+                    (constantly (fn* [nm & body]
+                                  (relabel-def (apply orig-defn nm body) (str (ns-name *ns*) "/" (defn-name nm))))))
+    (alter-var-root #'core/defn-
+                    (constantly (fn* [nm & body]
+                                  (relabel-def (apply orig-defn- nm body) (str (ns-name *ns*) "/" (defn-name nm))))))))
+
+(defmacro labelled-fn [label & args] (labelled-fn-expand label args))
+
+;; ---------------------------------------------------------------------------
+;; Driver.
+
+(def args (vec (rest (drop-while #(not (str/ends-with? % "measure.lg")) os/args))))
+(def mode (nth args 0 "depth"))
+
+(defn- label-of [id] (nth @labels id))
+
+(defn- top-by-depth [n]
+  (->> (range (count @labels))
+       (filter #(pos? (aget max-at %)))
+       (sort-by (fn* [id] [(- (aget max-at id)) (label-of id)]))
+       (take n)))
+
+(defn- self-nesting [n]
+  (->> (range (count @labels))
+       (filter #(> (aget max-active %) 1))
+       (sort-by (fn* [id] [(- (aget max-active id)) (label-of id)]))
+       (take n)))
+
+;; The browser also renders every turn, so the render path's depth counts:
+;; render-full and render-dirty run on each new world, output discarded.
+;; term/size is nil headless, so it is pinned to a 100x36 window (the size
+;; xsofy's title screen falls back to).
+(def render-errors (atom 0))
+(defn- render! [w prev]
+  (try (with-out-str ((resolve 'xsofy.render/render-full) w) ((resolve 'xsofy.render/render-dirty) w prev))
+       (catch Throwable e (swap! render-errors inc))))
+
+(defn- run-fixture [world input fixture key-fn seeds turns]
+  (let [per (vec (for [seed (range seeds)]
+                   (do (reset-run!)
+                       (let [n (loop [w ((resolve 'xsofy.world/make-world) 79 30 seed) i 0]
+                                 (if (or (= i turns) (nil? (get-in w [:entities :player])))
+                                   i
+                                   (let [w' ((resolve 'xsofy.world/update-world) w ((resolve 'xsofy.input/parse-key) (key-fn i)))]
+                                     (render! w' w)
+                                     (recur w' (inc i)))))]
+                         {:seed seed :turns n :max @max-depth :chain @deepest}))))
+        worst (last (sort-by :max per))]
+    (println (format "%-8s seeds=%d turns<=%d  max depth per seed: min %d  median %d  max %d (seed %d, %d turns)"
+                     (name fixture) seeds turns
+                     (apply min (map :max per)) (nth (sort (map :max per)) (quot (count per) 2))
+                     (:max worst) (:seed worst) (:turns worst)))
+    worst))
+
+(defn- print-chain [chain]
+  ;; collapse runs of the same label: "label xN"
+  (doseq [[id run] (map (fn* [g] [(first g) (count g)]) (partition-by identity chain))]
+    (println (format "    %4d  %s" run (label-of id)))))
+
+(case mode
+  "load"
+  (do (install!)
+      (load-string (slurp (nth args 1)))
+      (binding [*out* *err*]
+        (println "instrumented max depth" @max-depth "over" (count @labels) "fn bodies; deepest chain:")
+        (print-chain @deepest)))
+
+  "depth"
+  (let [seeds (read-string (nth args 1 "20"))
+        turns (read-string (nth args 2 "200"))]
+    (install!)
+    (alter-var-root (resolve 'term/size) (constantly (fn* [& _] [100 36])))
+    (require 'xsofy.world 'xsofy.input 'xsofy.render)
+    (println (format "instrumented fn bodies: %d" (count @labels)))
+    (let [fixtures [[:wait (fn* [_] ".")]
+                    [:autoex (fn* [n] (if (zero? n) "x" "."))]
+                    [:descend (fn* [n] (if (zero? n) ">" "."))]]
+          worsts (mapv (fn* [kf] [(first kf) (run-fixture nil nil (first kf) (second kf) seeds turns)]) fixtures)
+          [wk w] (last (sort-by #(:max (second %)) worsts))]
+      (println)
+      (println (format "deepest overall: %d frames (%s, seed %d); the chain, outermost first:" (:max w) (name wk) (:seed w)))
+      (print-chain (:chain w))
+      (println)
+      (println "top 20 fn bodies by deepest stack position reached (all runs):")
+      (doseq [id (top-by-depth 20)]
+        (println (format "  %5d  %s" (aget max-at id) (label-of id))))
+      (println)
+      (println (format "render errors (headless): %d" @render-errors))
+      (println)
+      (println "self-nesting: most simultaneous live frames of one fn body (>1 = recursion through the stack):")
+      (doseq [id (self-nesting 20)]
+        (println (format "  %5d  %s" (aget max-active id) (label-of id)))))))
