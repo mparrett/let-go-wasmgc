@@ -1,0 +1,136 @@
+;; wasm.lang — P3.1: the remaining language natives xsofy reaches: iterate,
+;; transformer-seq* (what `sequence` with a transducer calls), and
+;; ->AssertionError (what `assert` throws). In the runtime dialect of
+;; seq.lg. Ground truth is let-go 4e769212: pkg/rt/lang.go (CoreIterate
+;; :6779, transformerSeq :3496) and pkg/rt/exceptions.go
+;; (exceptionConstructor :107, core.lg:2105 for assert).
+;;
+;; Closures are seq.lg Fns (D52) whose env is a struct of this namespace.
+(ns wasm.lang
+  (:refer-clojure :exclude [iterate transformer-seq*])
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.core :as c]))
+
+(wasm/defstruct IterEnv [:ref :ref])             ; iterate's thunk: f, the current value
+;; transformer-seq*'s shared state (tstate): src seq, pending outputs (a
+;; vector) and the read position in it, the xform'd step fn, done, stopped.
+(wasm/defstruct TState [[:mut :ref] [:mut :ref] [:mut :i64] [:mut :ref] [:mut :i32] [:mut :i32]])
+(wasm/defstruct TEnv [:ref])                     ; a closure over one TState
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- raise-str [st] (c/raise (s/str-bytes st)))
+(defn- raise-arity [n] (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+(defn- env [self] (wasm/get sq/Fn 3 self))
+(defn- thunk [code e]                                    ; a 0-arity closure
+  (wasm/new sq/Fn code (wasm/null) (wasm/null) e (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 0 (wasm/null))))
+
+;; ---------------------------------------------------------------------------
+;; iterate: x, then (f x), ... with each f call made when that cell is
+;; realised. Native builds an Iterate, which `type` reports as
+;; let-go.lang.Iterate; here it is a Cons over a LazySeq (PersistentList).
+
+(declare iterate)
+(defn- iter-step [self]
+  (let [e (env self) f (wasm/get IterEnv 0 e)]
+    (iterate f (c/invoke-args f 1 (wasm/get IterEnv 1 e) (wasm/null) (wasm/null) (wasm/null)))))
+
+(defn ^{:twin "core/iterate"} iterate
+  ([] (raise-arity 0))
+  ([f] (raise-arity 1))
+  ([f x] (if (c/callable? f)
+           (sq/cons x (sq/lazy-seq* (thunk (wasm/funcref sq/Code0 iter-step) (wasm/new IterEnv f x))))
+           (c/raise (wasm/bytes-of-string "iterate expected a function"))))
+  ([f x y] (raise-arity 3)))
+
+;; ---------------------------------------------------------------------------
+;; transformer-seq*: pull source elements through the xform into a buffer,
+;; lazily. An error in the step fn ends the seq silently (native sets
+;; stopped and returns before the completion call); reduced ends it after
+;; the completion call, which may still flush outputs.
+
+(defn- buf-rf0 [self] (wasm/null))
+(defn- buf-rf1 [self acc] acc)
+(defn- buf-rf2 [self acc x]
+  (let [st (wasm/get TEnv 0 (env self))]
+    (wasm/set! TState 1 st (pv/vconj (wasm/get TState 1 st) x))
+    acc))
+
+(defn- buffered? [st] (< (wasm/get TState 2 st) (pv/vcount (wasm/get TState 1 st))))
+
+(defn- fill! [st]
+  (let [xf (wasm/get TState 3 st)
+        ok (loop []
+             (if (if (buffered? st) false (if (wasm/null? (wasm/get TState 0 st)) false (= 0 (wasm/get TState 5 st))))
+               (let [src (wasm/get TState 0 st)
+                     item (sq/first src)
+                     _ (wasm/set! TState 0 st (sq/next src))
+                     r (try (c/invoke-args xf 2 (wasm/null) item (wasm/null) (wasm/null))
+                            (catch Throwable e (wasm/new TEnv e)))]
+                 (cond (if (wasm/null? r) false (wasm/is? TEnv r)) (do (wasm/set! TState 5 st 1) false)
+                       (= 14 (sq/kind r)) (do (wasm/set! TState 5 st 1) (wasm/set! TState 0 st (wasm/null)) (recur))
+                       :else (recur)))
+               true))]
+    (when ok
+      (when (if (if (wasm/null? (wasm/get TState 0 st)) true (= 1 (wasm/get TState 5 st))) (= 0 (wasm/get TState 4 st)) false)
+        (wasm/set! TState 4 st 1)
+        (c/invoke-args xf 1 (wasm/null) (wasm/null) (wasm/null) (wasm/null))))
+    nil))
+
+(declare tseq)
+(defn- take-buffered [st]                                ; the next buffered output, as a Cons onto the rest
+  (let [i (wasm/get TState 2 st) b (wasm/get TState 1 st) item (pv/vnth b i)]
+    (if (= (inc i) (pv/vcount b))
+      (do (wasm/set! TState 1 st (pv/empty-vec)) (wasm/set! TState 2 st 0))
+      (wasm/set! TState 2 st (inc i)))
+    (sq/cons item (tseq st))))
+
+(defn- tseq-step [self]
+  (let [st (wasm/get TEnv 0 (env self))]
+    (if (buffered? st)
+      (take-buffered st)
+      (do (fill! st) (if (buffered? st) (take-buffered st) (wasm/null))))))
+
+(defn- tseq [st] (sq/lazy-seq* (thunk (wasm/funcref sq/Code0 tseq-step) (wasm/new TEnv st))))
+
+(defn ^{:twin "core/transformer-seq*"} transformer-seq*
+  ([] (c/raise (wasm/bytes-of-string "transformer-seq* expects 2 args")))
+  ([a] (c/raise (wasm/bytes-of-string "transformer-seq* expects 2 args")))
+  ([xform coll]
+   (if (c/callable? xform)
+     (let [src (sq/seq coll)]
+       (if (wasm/null? src)
+         (sq/list)
+         (let [st (wasm/new TState src (pv/empty-vec) 0 (wasm/null) 0 0)
+               rf (wasm/new sq/Fn (wasm/funcref sq/Code0 buf-rf0) (wasm/funcref sq/Code1 buf-rf1) (wasm/funcref sq/Code2 buf-rf2)
+                            (wasm/new TEnv st) (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 -1 (wasm/null)))
+               xf (c/invoke-args xform 1 rf (wasm/null) (wasm/null) (wasm/null))]
+           (if (c/callable? xf)
+             (do (wasm/set! TState 3 st xf) (tseq st))
+             (c/raise (wasm/bytes-of-string "xform did not return a function"))))))
+     (c/raise (wasm/bytes-of-string "transformer-seq* expected xform Fn"))))
+  ([a b x] (c/raise (wasm/bytes-of-string "transformer-seq* expects 2 args"))))
+
+;; ---------------------------------------------------------------------------
+;; ->AssertionError: an exception carrying the message (0 to 2 args; a
+;; cause is kept only if it is an exception). Raised as wasm.core's raw
+;; error (kind 1), so the uncaught text and ex-message match native; its
+;; class is not modelled: native prints it as #error {:type
+;; java.lang.AssertionError ...}, reports that type, and is not caught by
+;; (catch Exception ...), which here it is.
+
+(defn- assertion [given msg cause]                      ; given: a message argument was passed (nil included)
+  (cond (if given false true) (wasm/new sq/Err 1 (wasm/bytes-of-string "") (wasm/bytes-of-string "") (wasm/null) (wasm/null))
+        (= 17 (sq/kind msg))
+        (wasm/new sq/Err 1 (s/str-bytes msg) (s/str-bytes msg) (wasm/null)
+                  (if (wasm/null? cause) (wasm/null) (if (= 26 (sq/kind cause)) cause (wasm/null))))
+        :else (raise-str (s/str (lit (wasm/bytes-of-string "java.lang.AssertionError. expected a String message, got "))
+                                (s/mk-str (c/type-name msg))))))
+
+(defn ^{:twin "core/->AssertionError"} assertion-error
+  ([] (assertion false (wasm/null) (wasm/null)))
+  ([msg] (assertion true msg (wasm/null)))
+  ([msg cause] (assertion true msg cause))
+  ([a b x] (c/raise (wasm/bytes-of-string "java.lang.AssertionError. expects 0 to 2 args, got 3"))))

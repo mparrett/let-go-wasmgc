@@ -1,0 +1,162 @@
+;; wasm.host — P3.1: the natives xsofy reaches that talk to the outside:
+;; printing (println print pr prn), IO handles (write! flush! close!), the
+;; clocks (System/nanoTime, System/currentTimeMillis), sleeping through a
+;; timeout channel (async/timeout, async/<!!), the browser seam (js/emit,
+;; js/url-param), and let-go.core/now as a named limit. In the runtime
+;; dialect of seq.lg; everything leaves through wasm/host-write,
+;; wasm/host-sleep and wasm/host-nanotime (D6, D27: deterministic virtual
+;; clock in the reference).
+;;
+;; Ground truth is let-go 4e769212: pkg/rt/lang.go (println :3670, print
+;; :3652, pr :3661, prn :3300; text from prThroughToString,
+;; print_method.go:12: the args' print-str/pr-str forms joined by one
+;; space), pkg/rt/iort.go (close! :203, write! :260, flush! :282, *out*
+;; and *err* :356), pkg/rt/system.go:148-155, pkg/rt/async.go (timeout,
+;; <!! = <!), pkg/rt/js.go:66-100.
+;;
+;; *out*/*err* are values, not natives: `out-handle`/`err-handle` return
+;; the runtime's two handles (fd 1, fd 2), which the backend binds those
+;; vars to. Natively *out* is rebindable (with-out-str); here printing
+;; always goes to fd 1, and the reference's host-write prints to the lg
+;; *out*, so with-out-str still captures it in tests. Channels: only the
+;; timeout channel exists (xsofy sleeps with (<!! (timeout ms))); chan, go
+;; and >! are Phase 5.
+(ns wasm.host
+  (:refer-clojure :exclude [println print pr prn write! flush! close!])
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.core :as c]
+            [wasm.arrays :as arr]))
+
+(wasm/defstruct Handle [:i64 :ref [:mut :i32]])  ; fd, name bytes (/dev/stdout), closed (1/0)
+(wasm/defstruct Chan [:i64 [:mut :i32]])         ; a timeout: deadline (host ns), closed (1/0)
+;; The one runtime global (D39): the two standard handles.
+(wasm/defstruct HGlobals [:ref :ref])
+(def globals (wasm/new HGlobals (wasm/new Handle 1 (wasm/bytes-of-string "/dev/stdout") 0)
+                       (wasm/new Handle 2 (wasm/bytes-of-string "/dev/stderr") 0)))
+
+(defn out-handle "The value of *out*." [] (wasm/get HGlobals 0 globals))
+(defn err-handle "The value of *err*." [] (wasm/get HGlobals 1 globals))
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- raise-str [st] (c/raise (s/str-bytes st)))
+(defn- tn [x] (s/mk-str (c/type-name x)))
+(defn- raise-arity [n] (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+(defn- handle? [x] (if (wasm/null? x) false (wasm/is? Handle x)))
+(defn- chan? [x] (if (wasm/null? x) false (wasm/is? Chan x)))
+
+;; ---------------------------------------------------------------------------
+;; Printing: one host-write of the whole line, as WriteToOut does.
+
+(defn- emit-out [st] (wasm/host-write 1 (s/str-bytes st)) (wasm/null))
+(defn- nl [] (lit (wasm/bytes-of-string "\n")))
+
+(defn print-seq "(apply print xs)" [xs] (emit-out (s/print-str-seq xs)))
+(defn println-seq "(apply println xs)" [xs] (emit-out (s/str (s/print-str-seq xs) (nl))))
+(defn pr-seq "(apply pr xs)" [xs] (emit-out (s/pr-str-seq xs)))
+(defn prn-seq "(apply prn xs)" [xs] (emit-out (s/str (s/pr-str-seq xs) (nl))))
+
+(defn ^{:twin "core/println"} println
+  ([] (println-seq (wasm/null))) ([a] (println-seq (sq/list a))) ([a b] (println-seq (sq/list a b)))
+  ([a b x] (println-seq (sq/list a b x))) ([a b x y] (println-seq (sq/cons a (sq/list b x y)))))
+(defn ^{:twin "core/print"} print
+  ([] (print-seq (wasm/null))) ([a] (print-seq (sq/list a))) ([a b] (print-seq (sq/list a b)))
+  ([a b x] (print-seq (sq/list a b x))) ([a b x y] (print-seq (sq/cons a (sq/list b x y)))))
+(defn ^{:twin "core/pr"} pr
+  ([] (pr-seq (wasm/null))) ([a] (pr-seq (sq/list a))) ([a b] (pr-seq (sq/list a b)))
+  ([a b x] (pr-seq (sq/list a b x))) ([a b x y] (pr-seq (sq/cons a (sq/list b x y)))))
+(defn ^{:twin "core/prn"} prn
+  ([] (prn-seq (wasm/null))) ([a] (prn-seq (sq/list a))) ([a b] (prn-seq (sq/list a b)))
+  ([a b x] (prn-seq (sq/list a b x))) ([a b x y] (prn-seq (sq/cons a (sq/list b x y)))))
+
+;; ---------------------------------------------------------------------------
+;; IO handles. A closed standard handle fails like the closed *os.File it
+;; wraps: "<op> /dev/stderr: file already closed".
+
+(defn- check-handle [h]
+  (if (handle? h) h (raise-str (s/str (lit (wasm/bytes-of-string "expected IOHandle, got ")) (tn h)))))
+
+(defn- closed-error [op h]
+  (raise-str (s/str (s/str (lit op) (lit (wasm/get Handle 1 h))) (lit (wasm/bytes-of-string ": file already closed")))))
+
+;; write!: a String verbatim, a byte-array's raw bytes, anything else its
+;; String() form.
+(defn ^{:twin "core/write!"} write!
+  ([] (c/raise (wasm/bytes-of-string "write! expects 2 args")))
+  ([h] (c/raise (wasm/bytes-of-string "write! expects 2 args")))
+  ([h x]
+   (check-handle h)
+   (if (= 1 (wasm/get Handle 2 h))
+     (closed-error (wasm/bytes-of-string "write ") h)
+     (let [k (sq/kind x)
+           bs (cond (= k 17) (s/str-bytes x)
+                    (wasm/null? (arr/byte-data x)) (s/str-bytes (s/value-string x))
+                    :else (arr/byte-data x))]
+       (wasm/host-write (wasm/get Handle 0 h) bs)
+       (wasm/null))))
+  ([h x y] (c/raise (wasm/bytes-of-string "write! expects 2 args"))))
+
+(defn ^{:twin "core/flush!"} flush!
+  ([] (c/raise (wasm/bytes-of-string "flush! expects 1 arg")))
+  ([h] (check-handle h)
+       (if (= 1 (wasm/get Handle 2 h)) (closed-error (wasm/bytes-of-string "sync ") h) (wasm/null)))
+  ([h x] (c/raise (wasm/bytes-of-string "flush! expects 1 arg"))))
+
+(defn ^{:twin "core/close!"} close!                       ; IO handles and channels
+  ([] (c/raise (wasm/bytes-of-string "close! expects 1 arg")))
+  ([h] (cond (chan? h) (do (wasm/set! Chan 1 h 1) (wasm/null))
+             (= 1 (wasm/get Handle 2 (check-handle h))) (closed-error (wasm/bytes-of-string "close ") h)
+             :else (do (wasm/set! Handle 2 h 1) (wasm/null))))
+  ([h x] (c/raise (wasm/bytes-of-string "close! expects 1 arg"))))
+
+
+;; ---------------------------------------------------------------------------
+;; Clocks. The host's clock (virtual in the reference, D27): nanoTime is it
+;; directly; currentTimeMillis is it in ms (native: Unix epoch ms, so only
+;; differences are comparable).
+
+(defn ^{:twin "System/nanoTime"} nano-time [] (sq/box-int (wasm/host-nanotime)))
+(defn ^{:twin "System/currentTimeMillis"} current-time-millis [] (sq/box-int (quot (wasm/host-nanotime) 1000000)))
+(defn ^{:twin "let-go.core/now"} now []
+  (wasm/trap "lower-wasm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
+
+;; ---------------------------------------------------------------------------
+;; Timeout channels. (timeout ms) fixes a deadline now; the first take
+;; sleeps until it (time.After fires once), later takes return at once.
+;; A negative ms fires immediately.
+
+(defn ^{:twin "async/timeout"} timeout
+  ([] (raise-arity 0))
+  ([ms] (if (= 1 (sq/kind ms))
+          (let [n (sq/unbox-int ms)] (wasm/new Chan (+ (wasm/host-nanotime) (if (< n 0) 0 (* n 1000000))) 0))
+          (c/raise (wasm/bytes-of-string "timeout expected Int milliseconds"))))
+  ([ms x] (raise-arity 2)))
+
+(defn ^{:twin "async/<!!"} take!!
+  ([] (raise-arity 0))
+  ([ch] (if (chan? ch)
+          (do (when (= 0 (wasm/get Chan 1 ch))
+                (let [wait (- (wasm/get Chan 0 ch) (wasm/host-nanotime))]
+                  (when (> wait 0) (wasm/host-sleep (quot (+ wait 999999) 1000000))))
+                (wasm/set! Chan 1 ch 1))
+              (wasm/null))
+          (c/raise (wasm/bytes-of-string "<! expected Chan"))))
+  ([ch x] (raise-arity 2)))
+
+;; ---------------------------------------------------------------------------
+;; The browser seam. Native lg off the browser: emit validates its
+;; arguments and does nothing, url-param is nil. Both mirror that (the
+;; oracle is native lg); a browser host would route them through new host
+;; imports. emit's JSON conversion of data is not checked here.
+
+(defn ^{:twin "js/emit"} emit
+  ([] (c/raise (wasm/bytes-of-string "js/emit expects 2 args (event-name data), got 0")))
+  ([a] (c/raise (wasm/bytes-of-string "js/emit expects 2 args (event-name data), got 1")))
+  ([nm data] (let [k (sq/kind nm)]
+               (if (if (= k 20) true (if (= k 21) true (= k 17)))
+                 (wasm/null)
+                 (raise-str (s/str (lit (wasm/bytes-of-string "js/emit event-name must be keyword, symbol, or string; got ")) (tn nm))))))
+  ([a b x] (c/raise (wasm/bytes-of-string "js/emit expects 2 args (event-name data), got 3"))))
+
+(defn ^{:twin "js/url-param"} url-param ([] (wasm/null)) ([nm] (wasm/null)) ([nm x] (wasm/null)))

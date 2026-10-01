@@ -1,0 +1,211 @@
+;; wasm.arrays — P3.1: let-go's mutable typed arrays as the runtime sees them
+;; (int-array, byte-array, aget, aset, alength, aclone, bytes), in the
+;; runtime dialect of seq.lg (IR special forms, IR-op core fns on :int,
+;; wasm.intrinsics, and the runtime namespaces it requires). Ground truth is
+;; let-go 4e769212: pkg/vm/typed_array.go (TypedArray, TypedArraySeq) and
+;; pkg/rt/lang.go (buildArray :5046, CoreAgetf :9036, CoreAsetf :9074,
+;; CoreAlengthf :9098, CoreAclonef :9111, CoreBytesf :9124).
+;;
+;; An array is `Arr`: element kind (0 byte, 1 int: ArrayByte/ArrayInt) and
+;; the backing wasm array (wasm/Bytes, or I64s), mutable in place and never
+;; resized. Only the two kinds xsofy builds exist; double-array and
+;; object-array (and conj/empty, which make an object-array) are named
+;; limits. Loaded before wasm.core, which refines kind 18 to 37 for an Arr
+;; and routes type/count/seq/print/get/nth here; the messages that name an
+;; argument's type ("aget expects array, got let-go.lang.Int") need
+;; wasm.core's type-name, which this namespace reaches through the hook
+;; wasm.core/install! sets (it cannot require wasm.core: wasm.core requires
+;; it).
+;;
+;; Calling convention as seq.lg (D37); errors raise the backend's exception
+;; value as wasm.core does (D68), msg = cmsg (natives called as values).
+(ns wasm.arrays
+  (:refer-clojure :exclude [aget aset alength aclone bytes int-array byte-array])
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
+            [wasm.seq :as sq]
+            [wasm.str :as s]))
+
+(wasm/defarray I64s :i64)
+(wasm/defstruct Arr [:i32 :ref])                 ; element kind 0 byte / 1 int, backing array
+;; The one runtime global (D39): the Fn (f x) -> Str giving a value's type
+;; name, set by wasm.core/install!.
+(wasm/defstruct AGlobals [[:mut :ref]])
+(def globals (wasm/new AGlobals (wasm/null)))
+
+(defn set-type-name-hook! [f] (wasm/set! AGlobals 0 globals f))
+
+(defn arr? [x] (if (wasm/null? x) false (wasm/is? Arr x)))
+(defn akind [a] (wasm/get Arr 0 a))
+(defn adata [a] (wasm/get Arr 1 a))
+(defn alen* [a] (wasm/alen (adata a)))
+(defn aget* "Element i of Arr a as a boxed Int (TypedArray.Get)." [a i]
+  (if (= 0 (akind a)) (sq/box-int (wasm/bget (adata a) i)) (sq/box-int (wasm/aget I64s (adata a) i))))
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- raise [bs] (throw (wasm/new sq/Err 1 bs bs (wasm/null) (wasm/null))))
+(defn- raise-str [st] (raise (s/str-bytes st)))
+(defn- tn [x] (sq/invoke1 (wasm/get AGlobals 0 globals) x))
+(defn- raise-arity [n] (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+(defn- raise-got [prefix x] (raise-str (s/str (lit prefix) (tn x))))
+(defn- int-val? [x] (= 1 (sq/kind x)))
+
+;; ---------------------------------------------------------------------------
+;; Construction (buildArray)
+
+(defn- new-arr [k n] (wasm/new Arr k (if (= k 0) (wasm/bytes-new n) (wasm/array-new I64s n 0))))
+
+;; TypedArray.Set: a byte element keeps the low 8 bits (byte(n)).
+(defn- set-elem! [a i v]
+  (if (int-val? v)
+    (if (= 0 (akind a))
+      (wasm/bset! (adata a) i (sq/unbox-int v))
+      (wasm/aset! I64s (adata a) i (sq/unbox-int v)))
+    (raise-got (if (= 0 (akind a)) (wasm/bytes-of-string "byte-array expects Int, got ")
+                   (wasm/bytes-of-string "int-array expects Int, got "))
+               v)))
+
+(defn- build-sized [k n init fill?]
+  (if (< n 0)
+    (raise-str (s/str (lit (wasm/bytes-of-string "negative array size: ")) (sq/box-int n)))
+    (let [a (new-arr k n)]
+      (when fill? (loop [i 0] (when (< i n) (set-elem! a i init) (recur (inc i)))))
+      a)))
+
+(defn- build-seq [k coll]                                ; the whole seq first, then the element checks, as Go does
+  (let [v (if (= 11 (sq/kind coll))
+            coll
+            (loop [q (sq/seq coll) acc (pv/empty-vec)] (if (wasm/null? q) acc (recur (sq/next q) (pv/vconj acc (sq/first q))))))
+        n (pv/vcount v)
+        a (new-arr k n)]
+    (loop [i 0]
+      (if (< i n)
+        (let [x (pv/vnth v i)]
+          (if (int-val? x)
+            (if (= k 0) (wasm/bset! (adata a) i (sq/unbox-int x)) (wasm/aset! I64s (adata a) i (sq/unbox-int x)))
+            (raise-got (if (= k 0) (wasm/bytes-of-string "byte-array element must be Int, got ")
+                           (wasm/bytes-of-string "int-array element must be Int, got "))
+                       x))
+          (recur (inc i)))
+        a))))
+
+;; seqOf's message for the scalars (Bool, Fn, Char, Keyword, Symbol, Float,
+;; Reduced, Atom, Volatile, Err): seq.lg's own seq traps on them.
+(defn- scalar-kind? [k]
+  (cond (= k 15) true (= k 16) true (= k 14) true (if (>= k 19) (<= k 22) false) true (if (>= k 24) (<= k 26) false) true :else false))
+
+(defn- build [k x init fill?]
+  (cond (int-val? x) (build-sized k (sq/unbox-int x) init fill?)
+        (scalar-kind? (sq/kind x)) (raise-got (wasm/bytes-of-string "don't know how to create ISeq from ") x)
+        :else (build-seq k x)))
+
+(defn ^{:twin "core/int-array"} int-array
+  ([] (raise-arity 0))
+  ([x] (build 1 x (wasm/null) false))
+  ([x init] (build 1 x init true))
+  ([x init c] (raise-arity 3)))
+
+(defn ^{:twin "core/byte-array"} byte-array
+  ([] (raise-arity 0))
+  ([x] (build 0 x (wasm/null) false))
+  ([x init] (build 0 x init true))
+  ([x init c] (raise-arity 3)))
+
+;; ---------------------------------------------------------------------------
+;; Access
+
+(defn- checked-index [a idx]                             ; the index checks aget and aset share
+  (if (int-val? idx)
+    (let [i (sq/unbox-int idx) n (alen* a)]
+      (if (if (< i 0) true (>= i n))
+        (raise-str (s/str (s/str (lit (wasm/bytes-of-string "array index ")) idx)
+                          (lit (wasm/bytes-of-string " out of bounds for length ")) (sq/box-int n)))
+        i))
+    -1))
+
+(defn- aget1 [a idx]
+  (if (arr? a)
+    (let [i (checked-index a idx)]
+      (if (< i 0) (raise (wasm/bytes-of-string "aget index must be Int")) (aget* a i)))
+    (raise-got (wasm/bytes-of-string "aget expects array, got ") a)))
+
+;; Extra indices walk nested arrays; an int/byte array's elements are Ints,
+;; so a further index always fails on the element, before its own check.
+(defn- nested [v] (raise-got (wasm/bytes-of-string "aget nested: expected array, got ") v))
+
+(defn ^{:twin "core/aget"} aget
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a i] (aget1 a i))
+  ([a i j] (nested (aget1 a i)))
+  ([a i j k] (nested (aget1 a i))))
+
+(defn ^{:twin "core/aset"} aset
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a i] (raise-arity 2))
+  ([a idx v]
+   (if (arr? a)
+     (let [i (checked-index a idx)]
+       (if (< i 0) (raise (wasm/bytes-of-string "aset index must be Int")) (do (set-elem! a i v) v)))
+     (raise-got (wasm/bytes-of-string "aset expects array, got ") a)))
+  ([a i v w] (raise-arity 4)))
+
+(defn ^{:twin "core/alength"} alength
+  ([] (raise-arity 0))
+  ([a] (if (arr? a) (sq/box-int (alen* a)) (raise-got (wasm/bytes-of-string "alength expects array, got ") a)))
+  ([a b] (raise-arity 2)))
+
+(defn ^{:twin "core/aclone"} aclone                       ; TypedArray.Clone: a shallow copy, same kind
+  ([] (raise-arity 0))
+  ([a] (if (arr? a)
+         (let [n (alen* a) b (new-arr (akind a) n)]
+           (if (= 0 (akind a))
+             (wasm/array-copy wasm/Bytes (adata b) 0 (adata a) 0 n)
+             (wasm/array-copy I64s (adata b) 0 (adata a) 0 n))
+           b)
+         (raise-got (wasm/bytes-of-string "aclone expects array, got ") a)))
+  ([a b] (raise-arity 2)))
+
+;; bytes: a String's UTF-8 bytes copied into a new byte-array; a byte-array
+;; is returned itself (identical?).
+(defn ^{:twin "core/bytes"} bytes
+  ([] (raise-arity 0))
+  ([x] (cond (= 17 (sq/kind x))
+             (let [src (s/str-bytes x) n (wasm/alen src) b (wasm/bytes-new n)]
+               (wasm/array-copy wasm/Bytes b 0 src 0 n)
+               (wasm/new Arr 0 b))
+             (if (arr? x) (= 0 (akind x)) false) x
+             :else (raise-got (wasm/bytes-of-string "bytes expects String or byte-array, got ") x)))
+  ([x y] (raise-arity 2)))
+
+(defn byte-data
+  "The raw bytes of a byte-array (wasm/Bytes, shared, not copied), or null
+   for anything else: write! and xxh3 read a byte-array this way."
+  [x] (if (arr? x) (if (= 0 (akind x)) (adata x) (wasm/null)) (wasm/null)))
+
+;; ---------------------------------------------------------------------------
+;; The collection view wasm.core routes here (kind 37)
+
+(defn acount [a] (sq/box-int (alen* a)))
+
+;; TypedArray.Seq: null when empty. The seq is a List built now, so a later
+;; aset is not seen through it (native's TypedArraySeq reads the array as it
+;; walks); it prints, counts and types (PersistentList) the same.
+(defn aseq [a]
+  (loop [i (dec (alen* a)) acc (wasm/null)]
+    (if (< i 0) acc (recur (dec i) (wasm/new sq/Cons (aget* a i) acc)))))
+
+;; ValueAtOr: an Int key in range, else nf (get, and nth with a default).
+(defn aget-nf [a key nf]
+  (if (int-val? key)
+    (let [i (sq/unbox-int key)] (if (if (< i 0) true (>= i (alen* a))) nf (aget* a i)))
+    nf))
+
+;; String(): #int-array[0 7 0] / #byte-array[1 2]; the same in every mode.
+(defn print-arr [a]
+  (let [n (alen* a)]
+    (loop [i 0 acc (lit (if (= 0 (akind a)) (wasm/bytes-of-string "#byte-array[") (wasm/bytes-of-string "#int-array[")))]
+      (if (< i n)
+        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (wasm/bytes-of-string " "))) acc) (aget* a i)))
+        (s/str acc (lit (wasm/bytes-of-string "]")))))))

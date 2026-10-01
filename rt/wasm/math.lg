@@ -1,0 +1,404 @@
+;; wasm.math — P3.1: the numeric natives xsofy reaches that wasm.core does
+;; not provide: `/`, `rem`, the bit ops and unchecked arithmetic as values,
+;; `float`, `float?`, `int?`, `bigint?`, `rand-int`, and math/abs, sqrt,
+;; exp, pow. In the runtime dialect of seq.lg, plus float division (`/` on
+;; :float operands, which the backend lowers to f64.div; the dialect test
+;; whitelists it here as seq_test does for float-bits).
+;;
+;; Ground truth is let-go 4e769212 (pkg/rt/lang.go, pkg/rt/math.go,
+;; pkg/vm/numbers.go) and Go 1.27's math package. Floating point follows
+;; Go's PORTABLE algorithms (math/exp.go, log.go, pow.go, sqrt.go, mod.go,
+;; frexp.go, ldexp.go, floor.go), each operation rounded separately: that
+;; is exactly what lg computes when Go targets wasm (no FMA, no arch Exp),
+;; i.e. the shipping js/wasm build. Native lg on arm64 differs in the last
+;; place for some inputs: its math.Exp is assembly built on fused
+;; multiply-add (exp_arm64.s) and the compiler fuses x*y+z in log/pow.
+;; Integer-exponent pow and sqrt agree everywhere (measured; see the test).
+;;
+;; Ratios and bigints are not runtime values (D15): `/` of two Ints whose
+;; quotient is not an integer, and (/ MinInt64 -1), are named limits.
+;; `float` returns a Float holding float64(float32(x)): native's Float32 has
+;; the same type name, printed form, hash and =, but (compare (float 1) 1.0)
+;; throws natively and is 0 here.
+(ns wasm.math
+  (:refer-clojure :exclude [float float? int? rem rand-int abs])
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.core :as c]))
+
+;; The one runtime global (D39): rand-int's generator state.
+(wasm/defstruct MGlobals [[:mut :i64]])
+(def globals (wasm/new MGlobals 88172645463325252))
+
+(wasm/defstruct MPair [:f64 :i64])                 ; pow's (a1, ae) loop result
+(declare pow-general)
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- raise-str [st] (c/raise (s/str-bytes st)))
+(defn- tn [x] (s/mk-str (c/type-name x)))
+(defn- raise-arity [n] (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+(defn- raise-two [prefix a b] (raise-str (s/str (s/str (lit prefix) (tn a)) (lit (wasm/bytes-of-string " and ")) (tn b))))
+(defn- int-val? [x] (= 1 (sq/kind x)))
+(defn- num-k? [k] (if (= k 1) true (= k 22)))
+(defn- f64-of [x] (if (int-val? x) (wasm/i64-to-f64 (sq/unbox-int x)) (s/unbox-float x)))
+
+;; ---------------------------------------------------------------------------
+;; IEEE helpers: bits both ways, exact power-of-two scaling.
+
+(defn- inf [] (* 1.7976931348623157e308 2.0))
+(defn- nan [] (- (inf) (inf)))
+(defn nan? [x] (if (< x 0.0) false (if (>= x 0.0) false true)))
+(defn- inf? [x] (if (> x 1.7976931348623157e308) true (< x -1.7976931348623157e308)))
+(defn- bits [x] (sq/float-bits x))
+(defn- signbit? [x] (< (bits x) 0))
+(defn- same? [a b] (if a b (if b false true)))
+
+(defn scale2 "x * 2^e, exact whenever the result is representable." [x e]
+  (loop [m x e e]
+    (cond (>= e 64) (recur (* m 1.8446744073709552e19) (- e 64))
+          (>= e 8) (recur (* m 256.0) (- e 8))
+          (> e 0) (recur (* m 2.0) (dec e))
+          (<= e -64) (recur (* m 5.421010862427522e-20) (+ e 64))
+          (<= e -8) (recur (* m 0.00390625) (+ e 8))
+          (< e 0) (recur (* m 0.5) (inc e))
+          :else m)))
+
+(defn from-bits "Float64frombits." [b]
+  (let [e (bit-and (wasm/i64-shr-u b 52) 0x7FF)
+        m (bit-and b 0xFFFFFFFFFFFFF)
+        mag (cond (= e 0x7FF) (if (= m 0) (inf) (nan))
+                  (= e 0) (scale2 (wasm/i64-to-f64 m) -1074)
+                  :else (scale2 (wasm/i64-to-f64 (bit-or m 0x10000000000000)) (- e 1075)))]
+    (if (< b 0) (* -1.0 mag) mag)))
+
+(defn- fabs [x] (from-bits (bit-and-not (bits x) -9223372036854775808)))
+(defn- copysign [f sign] (from-bits (bit-or (bit-and-not (bits f) -9223372036854775808) (bit-and (bits sign) -9223372036854775808))))
+
+;; normalize/frexp/ldexp (bits.go, frexp.go, ldexp.go). Frexp returns two
+;; values in Go; here two fns.
+(defn- normal-f [x] (if (< (fabs x) 2.2250738585072014e-308) (* x 4503599627370496.0) x))
+(defn- normal-e [x] (if (< (fabs x) 2.2250738585072014e-308) -52 0))
+
+(defn- frexp-special? [f] (if (= f 0.0) true (if (inf? f) true (nan? f))))
+(defn frexp-frac [f]
+  (if (frexp-special? f) f
+      (from-bits (bit-or (bit-and-not (bits (normal-f f)) 9218868437227405312) 4602678819172646912)))) ; exp field := 1022
+(defn frexp-exp [f]
+  (if (frexp-special? f) 0
+      (+ (normal-e f) (- (bit-and (wasm/i64-shr-u (bits (normal-f f)) 52) 0x7FF) 1022))))
+
+(defn ldexp [frac exp]
+  (cond (= frac 0.0) frac
+        (if (inf? frac) true (nan? frac)) frac
+        :else
+        (let [x (bits (normal-f frac))
+              exp (+ (+ exp (normal-e frac)) (- (bit-and (wasm/i64-shr-u x 52) 0x7FF) 1023))]
+          (cond (< exp -1075) (copysign 0.0 frac)
+                (> exp 1023) (if (< frac 0.0) (* -1.0 (inf)) (inf))
+                :else
+                (let [sub (< exp -1022)
+                      exp (if sub (+ exp 53) exp)
+                      m (if sub 1.1102230246251565e-16 1.0)]  ; 2^-53
+                  (* m (from-bits (bit-or (bit-and-not x 9218868437227405312) (wasm/i64-shl (+ exp 1023) 52)))))))))
+
+(defn trunc [x]                                          ; floor.go trunc
+  (if (< (fabs x) 1.0)
+    (copysign 0.0 x)
+    (let [b (bits x) e (- (bit-and (wasm/i64-shr-u b 52) 0x7FF) 1023)]
+      (if (< e 52) (from-bits (bit-and-not b (- (wasm/i64-shl 1 (- 52 e)) 1))) x))))
+
+(defn- modf-frac [f] (copysign (- f (trunc f)) f))      ; Modf's second result; the first is trunc
+
+;; ---------------------------------------------------------------------------
+;; sqrt.go: bit by bit, correctly rounded, so equal to f64.sqrt and to
+;; arm64's FSQRT.
+
+(defn sqrt* [x]
+  (cond (if (= x 0.0) true (if (nan? x) true (> x 1.7976931348623157e308))) x
+        (< x 0.0) (nan)
+        :else
+        (let [ix (bits x)
+              e0 (bit-and (wasm/i64-shr-u ix 52) 0x7FF)
+              ;; subnormal: shift the mantissa up to bit 52, counting down the exponent
+              ix (if (= e0 0) (loop [ix ix] (if (= 0 (bit-and ix 0x10000000000000)) (recur (wasm/i64-shl ix 1)) ix)) ix)
+              e1 (if (= e0 0)
+                   (loop [m (bits x) e 0] (if (= 0 (bit-and m 0x10000000000000)) (recur (wasm/i64-shl m 1) (dec e)) (inc e)))
+                   e0)
+              e (- e1 1023)
+              ix (bit-or (bit-and-not ix 9218868437227405312) 0x10000000000000)
+              ix (if (= 1 (bit-and e 1)) (wasm/i64-shl ix 1) ix)
+              e (bit-shift-right e 1)
+              ix (wasm/i64-shl ix 1)]
+          (loop [ix ix q 0 sacc 0 r 0x20000000000000]    ; 1 << (shift + 1)
+            (if (= r 0)
+              (let [q (if (= ix 0) q (+ q (bit-and q 1)))]
+                (from-bits (+ (wasm/i64-shr-u q 1) (wasm/i64-shl (+ (- e 1) 1023) 52))))
+              (let [t (+ sacc r)]
+                (if (<= t ix)
+                  (recur (wasm/i64-shl (- ix t) 1) (+ q r) (+ t r) (wasm/i64-shr-u r 1))
+                  (recur (wasm/i64-shl ix 1) q sacc (wasm/i64-shr-u r 1)))))))))
+
+;; ---------------------------------------------------------------------------
+;; exp.go, log.go, pow.go (portable versions)
+
+(defn- expmulti [hi lo k]
+  (let [r (- hi lo)
+        t (* r r)
+        c (- r (* t (+ 1.66666666666666657415e-01
+                       (* t (+ -2.77777777770155933842e-03
+                               (* t (+ 6.61375632143793436117e-05
+                                       (* t (+ -1.65339022054652515390e-06 (* t 4.13813679705723846039e-08))))))))))
+        y (- 1.0 (- (- lo (/ (* r c) (- 2.0 c))) hi))]
+    (ldexp y k)))
+
+(defn exp* [x]
+  (cond (nan? x) x
+        (> x 7.09782712893383973096e+02) (inf)
+        (< x -7.45133219101941108420e+02) 0.0
+        (if (< -3.725290298461914e-09 x) (< x 3.725290298461914e-09) false) (+ 1.0 x)   ; |x| < 2^-28
+        :else
+        (let [k (cond (< x 0.0) (wasm/f64-to-i64 (- (* 1.44269504088896338700e+00 x) 0.5))
+                      (> x 0.0) (wasm/f64-to-i64 (+ (* 1.44269504088896338700e+00 x) 0.5))
+                      :else 0)
+              fk (wasm/i64-to-f64 k)]
+          (expmulti (- x (* fk 6.93147180369123816490e-01)) (* fk 1.90821492927058770002e-10) k))))
+
+(defn log* [x]
+  (cond (if (nan? x) true (> x 1.7976931348623157e308)) x
+        (< x 0.0) (nan)
+        (= x 0.0) (* -1.0 (inf))
+        :else
+        (let [f1 (frexp-frac x) ki (frexp-exp x)
+              small (< f1 0.7071067811865476)            ; Sqrt2/2
+              f1 (if small (* f1 2.0) f1)
+              ki (if small (dec ki) ki)
+              f (- f1 1.0)
+              k (wasm/i64-to-f64 ki)
+              s (/ f (+ 2.0 f))
+              s2 (* s s)
+              s4 (* s2 s2)
+              t1 (* s2 (+ 6.666666666666735130e-01 (* s4 (+ 2.857142874366239149e-01 (* s4 (+ 1.818357216161805012e-01 (* s4 1.479819860511658591e-01)))))))
+              t2 (* s4 (+ 3.999999999940941908e-01 (* s4 (+ 2.222219843214978396e-01 (* s4 1.531383769920937332e-01)))))
+              R (+ t1 t2)
+              hfsq (* (* 0.5 f) f)]
+          (- (* k 6.93147180369123816490e-01) (- (- hfsq (+ (* s (+ hfsq R)) (* k 1.90821492927058770002e-10))) f)))))
+
+(defn- odd-int? [x]                                      ; isOddInt
+  (if (>= (fabs x) 9007199254740992.0) false
+      (if (= 0.0 (modf-frac x)) (= 1 (bit-and (wasm/f64-to-i64 (trunc x)) 1)) false)))
+
+(defn pow* [x y]
+  (cond (if (= y 0.0) true (= x 1.0)) 1.0
+        (= y 1.0) x
+        (if (nan? x) true (nan? y)) (nan)
+        (= x 0.0) (cond (< y 0.0) (if (if (signbit? x) (odd-int? y) false) (* -1.0 (inf)) (inf))
+                        (> y 0.0) (if (if (signbit? x) (odd-int? y) false) x 0.0)
+                        :else (pow-general x y))   ; unreachable: y = 0 returned above
+        (inf? y) (cond (= x -1.0) 1.0
+                       (same? (< (fabs x) 1.0) (> y 0.0)) 0.0
+                       :else (inf))
+        (inf? x) (if (< x 0.0)
+                   (pow* (/ 1.0 x) (* -1.0 y))   ; Pow(-0, -y)
+                   (cond (< y 0.0) 0.0 (> y 0.0) (inf) :else (pow-general x y)))
+        (= y 0.5) (sqrt* x)
+        (= y -0.5) (/ 1.0 (sqrt* x))
+        :else (pow-general x y)))
+
+(defn- pow-general [x y]
+  (let [ay (fabs y) yi0 (trunc ay) yf0 (modf-frac ay)]
+    (cond (if (= yf0 0.0) false (< x 0.0)) (nan)
+          (>= yi0 9.223372036854775808e18)
+          (cond (= x -1.0) 1.0 (same? (< (fabs x) 1.0) (> y 0.0)) 0.0 :else (inf))
+          :else
+          (let [big (if (= yf0 0.0) false (> yf0 0.5))
+                yf (if big (- yf0 1.0) yf0)
+                yi (if big (+ yi0 1.0) yi0)
+                a1 (if (= yf0 0.0) 1.0 (exp* (* yf (log* x))))
+                x1 (frexp-frac x) xe (frexp-exp x)
+                a1ae (loop [i (wasm/f64-to-i64 yi) a1 a1 ae 0 x1 x1 xe xe]
+                       (if (= i 0)
+                         (wasm/new MPair a1 ae)
+                         (if (if (< xe -4096) true (< 4096 xe))
+                           (wasm/new MPair a1 (+ ae xe))
+                           (let [odd (= 1 (bit-and i 1))
+                                 a1 (if odd (* a1 x1) a1)
+                                 ae (if odd (+ ae xe) ae)
+                                 x1 (* x1 x1)
+                                 xe (wasm/i64-shl xe 1)
+                                 lowx (< x1 0.5)]
+                             (recur (bit-shift-right i 1) a1 ae (if lowx (+ x1 x1) x1) (if lowx (dec xe) xe))))))
+                a1 (wasm/get MPair 0 a1ae) ae (wasm/get MPair 1 a1ae)]
+            (if (< y 0.0) (ldexp (/ 1.0 a1) (- 0 ae)) (ldexp a1 ae))))))
+
+;; mod.go (math.Mod): exact.
+(defn fmod [x y]
+  (if (if (= y 0.0) true (if (inf? x) true (if (nan? x) true (nan? y))))
+    (nan)
+    (let [y (fabs y) yfr (frexp-frac y) yexp (frexp-exp y)
+          r (loop [r (if (< x 0.0) (* -1.0 x) x)]
+              (if (>= r y)
+                (let [rexp (if (< (frexp-frac r) yfr) (dec (frexp-exp r)) (frexp-exp r))]
+                  (recur (- r (ldexp y (- rexp yexp)))))
+                r))]
+      (if (< x 0.0) (* -1.0 r) r))))
+
+;; ---------------------------------------------------------------------------
+;; The natives
+
+(defn- to-double [x]                                     ; toDouble (math.go:16)
+  (if (num-k? (sq/kind x)) (f64-of x)
+      (raise-str (s/str (lit (wasm/bytes-of-string "expected numeric value, got ")) (tn x)))))
+
+(defn ^{:twin "math/sqrt"} sqrt
+  ([] (raise-arity 0)) ([x] (s/box-float (sqrt* (to-double x)))) ([x y] (raise-arity 2)))
+(defn ^{:twin "math/exp"} exp
+  ([] (raise-arity 0)) ([x] (s/box-float (exp* (to-double x)))) ([x y] (raise-arity 2)))
+(defn ^{:twin "math/pow"} pow
+  ([] (raise-arity 0)) ([x] (raise-arity 1))
+  ([x y] (let [a (to-double x)] (s/box-float (pow* a (to-double y)))))
+  ([x y z] (raise-arity 3)))
+
+(defn ^{:twin "math/abs"} abs                             ; same type back; (abs MinInt64) wraps to itself
+  ([] (raise-arity 0))
+  ([x] (let [k (sq/kind x)]
+         (cond (= k 1) (let [n (sq/unbox-int x)] (if (< n 0) (sq/box-int (wasm/i64-sub 0 n)) x))
+               (= k 22) (s/box-float (fabs (s/unbox-float x)))
+               :else (raise-str (s/str (lit (wasm/bytes-of-string "expected numeric value, got ")) (tn x))))))
+  ([x y] (raise-arity 2)))
+
+;; float (lang.go:6594): ToFloat, then float32(f); an infinite input or a
+;; float32 overflow is "<String()> can't be coerced to float".
+(defn- f32-round [x]                                     ; float64(float32(x)), round half to even
+  (let [b (bits x) e (bit-and (wasm/i64-shr-u b 52) 0x7FF)]
+    (if (if (= x 0.0) true (if (nan? x) true (= e 0)))  ; zero, NaN, an f64 subnormal (rounds to a signed zero)
+      (if (nan? x) x (copysign 0.0 x))
+      (let [m (bit-or (bit-and b 0xFFFFFFFFFFFFF) 0x10000000000000)
+            E (- e 1023)
+            drop (if (>= E -126) 29 (+ 29 (- -126 E)))]  ; f32 keeps 24 bits, fewer when subnormal
+        (if (> drop 54)
+          (copysign 0.0 x)
+          (let [q (wasm/i64-shr-u m drop)
+                rm (bit-and m (- (wasm/i64-shl 1 drop) 1))
+                half (wasm/i64-shl 1 (- drop 1))
+                q (if (if (> rm half) true (if (= rm half) (= 1 (bit-and q 1)) false)) (+ q 1) q)]
+            (copysign (scale2 (wasm/i64-to-f64 q) (+ (- E 52) drop)) x)))))))
+
+(defn- float-bad [x] (raise-str (s/str (s/value-string x) (lit (wasm/bytes-of-string " can't be coerced to float")))))
+
+(defn ^{:twin "core/float"} float
+  ([] (raise-arity 0))
+  ([x] (if (num-k? (sq/kind x))
+         (let [f (f64-of x)]
+           (if (inf? f) (float-bad x)
+               (let [r (f32-round f)] (if (> (fabs r) 3.4028234663852886e38) (float-bad x) (s/box-float r)))))
+         (float-bad x)))
+  ([x y] (raise-arity 2)))
+
+(defn ^{:twin "core/float?"} float? ([] (raise-arity 0)) ([x] (sq/bool (= 22 (sq/kind x)))) ([x y] (raise-arity 2)))
+(defn ^{:twin "core/int?"} int? ([] (raise-arity 0)) ([x] (sq/bool (int-val? x))) ([x y] (raise-arity 2)))
+;; No BigInt in the runtime; any arity other than 1 is false natively too.
+(defn ^{:twin "let-go.types/bigint?"} bigint? ([] (sq/bool false)) ([x] (sq/bool false)) ([x y] (sq/bool false)))
+
+;; rem (NumRem): Go's truncated % on Ints (MinInt64 % -1 = 0), math.Mod
+;; when a Float is involved; a zero divisor is "divide by zero" either way.
+(defn- rem2 [a b]
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (num-k? ka) (num-k? kb) false)
+          (cond (if (= kb 1) (= 0 (sq/unbox-int b)) false) (c/raise (wasm/bytes-of-string "divide by zero"))
+                (if (= ka 1) (= kb 1) false)
+                (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+                  (sq/box-int (if (= y -1) 0 (wasm/i64-sub x (wasm/i64-mul y (quot x y))))))
+                :else                                    ; numRemFloat
+                (let [x (f64-of a) y (f64-of b)]
+                  (cond (if (= y 0.0) true (if (inf? x) true (if (nan? x) true (nan? y)))) (c/raise (wasm/bytes-of-string "divide by zero"))
+                        (inf? y) (s/box-float (nan))
+                        :else (s/box-float (fmod x y)))))
+          :else (raise-two (wasm/bytes-of-string "cannot rem ") a b))))
+
+(defn ^{:twin "core/rem"} rem ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (rem2 a b)) ([a b x] (raise-arity 3)))
+
+;; / (CoreDiv, NumDiv): Int/Int is exact or a named limit; a Float on
+;; either side divides in IEEE (Int/Int zero throws, a Float zero does not).
+(defn- div2 [a b]
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+            (cond (= y 0) (c/raise (wasm/bytes-of-string "divide by zero"))
+                  (if (= x -9223372036854775808) (= y -1) false) (wasm/trap "lower-wasm: (/ MinInt64 -1) is a BigInt (numeric tower, D15)")
+                  (= 0 (wasm/i64-sub x (wasm/i64-mul y (quot x y)))) (sq/box-int (quot x y))
+                  :else (wasm/trap "lower-wasm: / of two Ints yielding a Ratio (numeric tower, D15)")))
+          (if (num-k? ka) (num-k? kb) false) (s/box-float (/ (f64-of a) (f64-of b)))
+          :else (raise-two (wasm/bytes-of-string "cannot divide ") a b))))
+
+(defn ^{:twin "core//"} div
+  ([] (raise-arity 0)) ([a] (div2 (sq/box-int 1) a)) ([a b] (div2 a b)) ([a b x] (div2 (div2 a b) x))
+  ([a b x y] (div2 (div2 (div2 a b) x) y)))
+(defn div-seq "(apply / xs)" [xs]
+  (let [q (sq/seq xs)]
+    (cond (wasm/null? q) (raise-arity 0)
+          (wasm/null? (sq/next q)) (div2 (sq/box-int 1) (sq/first q))
+          :else (loop [acc (sq/first q) q (sq/next q)] (if (wasm/null? q) acc (recur (div2 acc (sq/first q)) (sq/next q)))))))
+
+;; The bit ops as values (CoreBitOr & co.): exactly 2 Ints. A shift count
+;; is uint(b): negative or >= 64 gives 0 (or -1 for >> of a negative).
+(defn- bit2 [op a b]
+  (if (if (int-val? a) (int-val? b) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b) in-range (if (>= y 0) (< y 64) false)]
+      (sq/box-int (cond (= op 0) (bit-or x y)
+                        (= op 1) (bit-xor x y)
+                        (= op 2) (if in-range (wasm/i64-shl x y) 0)
+                        (= op 3) (if in-range (wasm/i64-shr-s x y) (if (< x 0) -1 0))
+                        :else (if in-range (wasm/i64-shr-u x y) 0))))
+    (c/raise (cond (= op 0) (wasm/bytes-of-string "bit-or expected Int")
+                   (= op 1) (wasm/bytes-of-string "bit-xor expected Int")
+                   (= op 2) (wasm/bytes-of-string "bit-shift-left expected Int")
+                   (= op 3) (wasm/bytes-of-string "bit-shift-right expected Int")
+                   :else (wasm/bytes-of-string "unsigned-bit-shift-right expected Int")))))
+
+(defn- bit-arity [op]
+  (c/raise (cond (= op 0) (wasm/bytes-of-string "bit-or expects 2 args")
+                 (= op 1) (wasm/bytes-of-string "bit-xor expects 2 args")
+                 (= op 2) (wasm/bytes-of-string "bit-shift-left expects 2 args")
+                 (= op 3) (wasm/bytes-of-string "bit-shift-right expects 2 args")
+                 :else (wasm/bytes-of-string "unsigned-bit-shift-right expects 2 args"))))
+
+(defn ^{:twin "core/bit-or"} bit-or* ([] (bit-arity 0)) ([a] (bit-arity 0)) ([a b] (bit2 0 a b)) ([a b x] (bit-arity 0)))
+(defn ^{:twin "core/bit-xor"} bit-xor* ([] (bit-arity 1)) ([a] (bit-arity 1)) ([a b] (bit2 1 a b)) ([a b x] (bit-arity 1)))
+(defn ^{:twin "core/bit-shift-left"} shl ([] (bit-arity 2)) ([a] (bit-arity 2)) ([a b] (bit2 2 a b)) ([a b x] (bit-arity 2)))
+(defn ^{:twin "core/bit-shift-right"} shr ([] (bit-arity 3)) ([a] (bit-arity 3)) ([a b] (bit2 3 a b)) ([a b x] (bit-arity 3)))
+(defn ^{:twin "core/unsigned-bit-shift-right"} ushr ([] (bit-arity 4)) ([a] (bit-arity 4)) ([a b] (bit2 4 a b)) ([a b x] (bit-arity 4)))
+
+;; unchecked-add & co. (numUnchecked, numbers.go:1346): an Int pair wraps,
+;; anything else is the checked op's arithmetic and message.
+(defn- unchecked2 [op a b]
+  (if (if (int-val? a) (int-val? b) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+      (sq/box-int (cond (= op 0) (wasm/i64-add x y) (= op 1) (wasm/i64-sub x y) :else (wasm/i64-mul x y))))
+    (cond (= op 0) (c/add a b) (= op 1) (c/sub a b) :else (c/mul a b))))
+
+(defn ^{:twin "core/unchecked-add"} unchecked-add* ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (unchecked2 0 a b)) ([a b x] (raise-arity 3)))
+(defn ^{:twin "core/unchecked-subtract"} unchecked-sub* ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (unchecked2 1 a b)) ([a b x] (raise-arity 3)))
+(defn ^{:twin "core/unchecked-multiply"} unchecked-mul* ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (unchecked2 2 a b)) ([a b x] (raise-arity 3)))
+
+;; rand-int (lang.go:6944): Int only; n <= 0 gives 0. Native draws from
+;; math/rand/v2 seeded by the OS, so no sequence can match it; this one is
+;; xorshift64 from a fixed state, uniform by rejection.
+(defn- next-rand []
+  (let [x (wasm/get MGlobals 0 globals)
+        x (bit-xor x (wasm/i64-shl x 13))
+        x (bit-xor x (wasm/i64-shr-u x 7))
+        x (bit-xor x (wasm/i64-shl x 17))]
+    (wasm/set! MGlobals 0 globals x)
+    (wasm/i64-shr-u x 1)))                               ; 63 random bits, non-negative
+
+(defn ^{:twin "core/rand-int"} rand-int
+  ([] (raise-arity 0))
+  ([n] (if (int-val? n)
+         (let [m (sq/unbox-int n)]
+           (if (<= m 0)
+             (sq/box-int 0)
+             (let [lim (wasm/i64-mul m (quot 9223372036854775807 m))]    ; the largest multiple of m that fits
+               (loop [r (next-rand)] (if (< r lim) (sq/box-int (wasm/i64-sub r (wasm/i64-mul m (quot r m)))) (recur (next-rand)))))))
+         (c/raise (wasm/bytes-of-string "rand-int expected Int"))))
+  ([a b] (raise-arity 2)))

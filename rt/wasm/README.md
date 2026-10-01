@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Seven namespaces that load together under native lg as one runtime (P2.9),
+Thirteen namespaces that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go 4e769212. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -15,8 +15,13 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 4 | `str.lg` | `wasm.str` | 1 2 3 | building the scalar boxes, keyword/symbol interning, `str`/`pr-str`/`print-str`, float formatting, the string natives, `compare` (STR.md) |
 | 5 | `phm.lg` | `wasm.phm` | 1 2 3 | the persistent/transient map (array-map + HAMT), map hooks (slot 0) |
 | 6 | `phs.lg` | `wasm.phs` | 1 3 5 | the persistent/transient set, set hooks (slot 1) |
-| 7 | `core.lg` | `wasm.core` | 1-6 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
-| 8 | `reader.lg` | `wasm.reader` | 1-7 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
+| 7 | `arrays.lg` | `wasm.arrays` | 1-4 | let-go's typed arrays (`int-array` `byte-array` `aget` `aset` `alength` `aclone` `bytes`), the `Arr` struct, and the count/seq/print/get view wasm.core routes to it (kind 37) |
+| 8 | `core.lg` | `wasm.core` | 1-7 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
+| 9 | `reader.lg` | `wasm.reader` | 1-8 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
+| 10 | `math.lg` | `wasm.math` | 1 3 4 8 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `rand-int`, math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
+| 11 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
+| 12 | `host.lg` | `wasm.host` | 1 3 4 7 8 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
+| 13 | `lang.lg` | `wasm.lang` | 1-4 8 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the
@@ -30,12 +35,21 @@ wasm.str uses for
 foreign values (`set-print-hook!`, called with a mode: 0 `Value.String()`,
 1 `pr-str`, 2 `print-str`; a map's String() has no commas, its pr-str does),
 and the printer seq.lg hashes Range/Repeat/PVecSeq elements with
-(`wasm.seq/set-print-hook!`, given `wasm.str/value-string`).
+(`wasm.seq/set-print-hook!`, given `wasm.str/value-string`), and the type
+namer wasm.arrays uses in its messages (`wasm.arrays/set-type-name-hook!`:
+wasm.arrays loads before wasm.core, so it cannot call `type-name`).
+
+File names must match `[a-z_]+\.lg`: `src/lw_rt.lg` reads this table
+with that pattern, and a row it cannot match is silently not loaded by the
+backend (why the XXH3 file is `xxhash.lg`).
 
 Runtime globals (D39), one per namespace that has state: `wasm.seq/hooks`
 (three Handler slots and the hashing printer), `wasm.str/globals` (intern
-table, its count, the print hook) and `wasm.core/globals` (gensym counter,
-interned types).
+table, its count, the print hook), `wasm.core/globals` (gensym counter,
+interned types), `wasm.arrays/globals` (the type-name hook),
+`wasm.math/globals` (rand-int's xorshift state), `wasm.xxhash/globals` (the
+default secret, built on first use) and `wasm.host/globals` (the stdout and
+stderr handles).
 
 ## Kind table (`wasm.seq/kind`, the one dispatch point)
 
@@ -71,7 +85,10 @@ interned types).
 
 wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 (phm's `HTransient`), 33 TransientSet (`TSet`), 34 TransientVector (`TVec`),
-35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`).
+35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`),
+37 a typed array (`wasm.arrays/Arr`; also its `type` id). Values of the
+namespaces loaded after wasm.core stay plain kind 18 (wasm.host's `Handle`
+and `Chan`): they have no `type` name or printed form yet.
 
 Equality and hash of every kind follow corpus/hash/SPEC.md (D19). Kind 18
 dispatches through per-kind Handlers, slot 0 maps, 1 sets, 2 a generic
@@ -132,6 +149,42 @@ FNV-1a of their String(), here as there.
   `(int ##NaN)` is a named limit (Go leaves it platform-defined).
 - The Repeat type's own type is the Repeat type natively
   (`(type (type (repeat 1 1)))`): mirrored, like H1/M1.
+
+## Declared differences (P3.1)
+
+Measured against `lg-4e76921230`; `corpus/intrinsics/xsofy_natives_test.lg`
+checks everything else live.
+
+- Arrays: `(seq arr)` is built when called, so a later `aset` is not seen
+  through it (native's TypedArraySeq reads as it walks); only int and byte
+  arrays exist (`double-array`, `object-array`, and `conj`/`empty` on an
+  array, which make an object-array, are absent); calling an array as a fn
+  is not routed.
+- `float` is a Float holding float64(float32(x)): native's Float32 shares
+  its type name, printed form, hash and `=`, but `(compare (float 1) 1.0)`
+  throws natively.
+- `/` of two Ints with a non-integral quotient (a Ratio) and
+  `(/ MinInt64 -1)` (a BigInt) are named limits (D15).
+- math/exp and math/pow follow Go's portable algorithms, which is what lg
+  computes on wasm; native arm64 lg differs by 1 ulp on some inputs (fused
+  multiply-add in exp_arm64.s and in compiled log/pow). Integral-exponent
+  pow, sqrt, and xsofy's own exp inputs agree exactly.
+- `rand-int` is a fixed-seed xorshift (native is OS-seeded); the
+  `System/currentTimeMillis` origin is the host clock's, not the Unix epoch.
+- `iterate` is a Cons over a LazySeq: `type` says PersistentList where
+  native says Iterate.
+- `->AssertionError` is a raw error (kind 1): message and uncaught text
+  match; its class does not (native prints `#error {:type
+  java.lang.AssertionError ...}`, and `(catch Exception e)` does not catch
+  it natively).
+- `xxh3/HashSeed` takes a byte-array, a String (its Chars truncated to
+  bytes, as the reflection boundary converts it) or nil, with an Int or nil
+  seed; other reflection coercions are named limits.
+- IO: `flush!` is nil (native Syncs the fd, which fails on a pipe);
+  `js/emit` validates the event name but not the data's JSON conversion;
+  `js/url-param` is nil, as native off the browser; `let-go.core/now` is a
+  named limit. Handles and timeout channels have no `type` name or printed
+  form.
 
 ## Twin markers
 
