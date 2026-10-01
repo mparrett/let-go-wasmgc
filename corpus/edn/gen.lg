@@ -1,0 +1,91 @@
+;; corpus/edn/gen.lg — writes corpus/edn/cases.txt, the read-string corpus of
+;; P3.0 (corpus/intrinsics/reader_test.lg). One input per line, written as
+;; the body of a string literal (pr-str minus the quotes), so "\n" is a
+;; newline and "\\" a backslash; the test decodes a line with
+;; (read-string (str "\"" line "\"")). Expectations are never stored: the
+;; test computes them live from native read-string.
+;;   lg corpus/edn/gen.lg            (from dev/lower-wasm/)
+(def hand
+  [;; scalars
+   "nil" "true" "false" "  nil  " "nil," ",,1" "\t1\n" "1\r\n" "\u00a01" "\u20281" "\u3000:k" "\u00851"
+   "0" "-0" "+0" "1" "-1" "+5" "42" "007" "08" "018" "-08" "00" "0777" "-017"
+   "9223372036854775807" "-9223372036854775808" "9223372036854775808" "-9223372036854775809"
+   "99999999999999999999" "123456789012345678901234567890"
+   "0x1F" "0X1f" "-0x1F" "0x7FFFFFFFFFFFFFFF" "-0x8000000000000000" "0x8000000000000000" "0xFFFFFFFFFFFFFFFF"
+   "0x-5" "-0x-5" "0x+5" "+0x1F" "0x" "0xG" "0x1p-2" "-0x1.8p1" "0x1p" "0x_1p0"
+   "2r101" "36rZZ" "36rzz" "+2r101" "2r-101" "-2r-101" "2r" "2r2" "99r1" "1r0" "37r1" "16rFFFFFFFFFFFFFFFFF" "2r_1"
+   "1/2" "4/2" "-4/2" "4/-2" "+4/2" "0/5" "1/0" "-9223372036854775808/-1" "1/2/3" "a/2"
+   "1N" "-1N" "+1N" "1n" "1.5N" "0x10N" "N" "1M" "1.5M" "1e5M" "1p3M" ".5M" "1xM"
+   "1.5" "-0.25" "1e10" "1.5E-3" "1." "1.e5" "1e+5" "1E5" "-0.0" "+0.0" "0.0" "1e5.5" "1.5e" "1e+" "1e" "1.2.3"
+   "08.5" "1_000" "1_000.5" "1__0" "1_" "_1" "1e1_0" "1e_1"
+   "0e99999999" "1e-99999999999" "1e400" "-1e400" "1e-400" "1e309" "1e308" "1.7976931348623157e308"
+   "1.7976931348623158e308" "1.7976931348623159e308" "2.2250738585072011e-308" "2.2250738585072012e-308"
+   "4.9e-324" "2e-324" "2.4703282292062327e-324" "2.4703282292062328e-324" "3e-324" "5e-324"
+   "0.1000000000000000055511151231257827021181583404541015625" "0.30000000000000004" "9007199254740993.0"
+   "9007199254740993.000000000000000000000000000001" "123456789012345678901234567890.5"
+   "0.000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+   "3.141592653589793238462643383279502884197169399375105820974944592307816406286"
+   "##NaN" "##Inf" "##-Inf" "##x" "##" "## Inf" "[##Inf ##NaN]"
+   ".5" "-.5" "+.5" "+" "-" "--1" "-a" "+a" "1a" "1x" "1#" "1'" "\u0663" "\u0663\u0663" "1\u0663"
+   ;; strings and escapes
+   "\"\"" "\"abc\"" "\"a b\"" "\"a\\tb\"" "\"\\r\\n\\b\\f\"" "\"\\\\\"" "\"\\\"\"" "\"\\u0041\"" "\"\\u00e9\""
+   "\"\\u00E9\"" "\"\\u20AC\"" "\"\\uFFFF\"" "\"\\u0000\"" "\"\\u001f\"" "\"\\uD83D\\uDE00\"" "\"\\uD834\\uDD1E\""
+   "\"\\uD83Dx\"" "\"\\uD83D\\u0041\"" "\"\\uD83D\\\"\"" "\"\\uDC00\"" "\"\\uDFFF\"" "\"\\u00\"" "\"\\u00G0\"" "\"\\u\""
+   "\"\\u0\u0663\u0663\u0663\"" "\"\\u\u0663\u0663\u0663\u0663\"" "\"\\q\"" "\"\\a\"" "\"\\\"" "\"abc" "\"\\" "\"é\"" "\"😀\""
+   "\"a\nb\"" "\"\u0001\"" "\"tab\there\""
+   ;; characters
+   "\\a" "\\Z" "\\1" "\\newline" "\\space" "\\tab" "\\backspace" "\\formfeed" "\\return" "\\u0041" "\\u00e9"
+   "\\u0041zz" "\\u-041" "\\u+041" "\\u110000" "\\u100000041" "\\uFFFFFFFFFFFFFFFFFFFF" "\\uD800" "\\uDFFF" "\\uABC"
+   "\\u" "\\uzzzz" "\\o101" "\\o77" "\\o0" "\\o400" "\\o377" "\\o-1" "\\o18" "\\o8" "\\o" "\\x" "\\xyz" "\\("
+   "\\)" "\\ " "\\\\" "\\é" "\\😀" "\\" "[\\a \\b]" "\\a\\b" "\\space\\tab" "\\Space" "(\\))"
+   ;; keywords and symbols
+   ":a" ":ns/k" ":a.b/c-d" ":a/b/c" ":/" ":a/" ":/a" ":" "::" ":a:" ":a::b" "::auto" "::a/b" "::a/" ":a:b" ":1"
+   "a" "/" "clojure.core//" "a/b/c" "a/" "/a" "a:b" "a#b" "a'b" "a@b" "a~b" "a^b" "a\\b" "a;b" "a,b"
+   "é" "é)" "+foo" "-foo" "*x*" "<=" "->" "a.b" ".a" "a?" "nil?" "nilx" "truex" "false?"
+   ;; collections
+   "()" "( )" "(())" "(1 2)" "(1 (2 (3)))" "[]" "[ ]" "[1 2 3]" "[1 [2 [3]]]" "{}" "{ }" "{:a 1}"
+   "{:a 1 :b 2}" "{:a {:b {:c 1}}}" "#{}" "#{1}" "#{1 2 3}" "#{[1] #{2}}" "[(1) \n  (2 (3))]"
+   "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8}" "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}"
+   "{1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13 14 14 15 15 16 16 17 17}"
+   "#{1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}" "#{:a :b :c \"d\" \\e 1.5 nil}"
+   "{:a 1 :a 2}" "{\"a\" 1 \"a\" 2}" "{nil 1 nil 2}" "{[1] 1 (1) 2}" "{1 1.0}" "#{1 1}" "#{1 1.0}"
+   "#{\"x\" \"x\"}" "#{\\a \\a}" "#{[1] (1)}" "#{nil nil}" "{:a}" "{:a 1 :b}" "{##NaN 1 ##NaN 2}"
+   "(1" "[1 2" "{:a" "#{1" "(1]" "[1)" "{1 2]" "#{1)" ")" "]" "}" "(1))" "  \n\n  )" "\n(1\n2" "(é (1" "((((" "[[[[1]]]"
+   "(1 2) 3" "1 2" "a,b" "[1,2,3]" "{:a,1,:b,2}"
+   ;; comments, discard, whitespace
+   ";c" ";c\n1" "1 ;c" "(1 ;c\n 2)" "#_ 1" "#_ 1 2" "#_#_ 1 2 3" "[1 #_ 2 3]" "{:a #_ 1 1}" "{:a #_ 1}"
+   "#_" "#_ ;x\n 5" "#_)" "#_ 1a 5" "#_ (1 5" "(1 #_ )" "#_ {:a} 7" "[#_ \"\\q\" 1]" "#_[1 2] :k" "   " ""
+   ;; quote family, hash dispatch, meta
+   "'x" "' x" "'(1 2)" "''x" "'" "@x" "@" "~x" "~@x" "~" "#'x" "#'a/b" "#'1" "#'" "#'[x]"
+   "#" "#!" "#!x" "#?(:clj 1)" "#?(:lg 1 :clj 2)" "#inst \"2020-01-01\"" "#uuid \"00000000-0000-0000-0000-000000000000\""
+   "#foo 1" "#(inc %)" "#\"re\"" "`x" "`(a ~b)" "#=" "#<" "#1"
+   "^:k [1]" "^:k (1)" "^:k {:a 1}" "^:k #{1}" "^:k ()" "^:k x" "^:k :a" "^:k 1" "^:k \"s\"" "^:k nil" "^:k \\a" "^:k 'x"
+   "^T [1]" "^\"T\" [1]" "^[1] [1]" "^:a ^:b [1]" "^{:a 1} ^:b [1]" "^{:a 1 :b 2} {:c 3}" "^:a" "^" "^ :a [1]"
+   "^:a ;c\n [1]" "^1 [1]" "^:a ^:a [1]" "^{:a 1} ^{:a 2} [1]" "[^:m [1] ^:n (2)]" "^:a )" "^{:a} [1]" "^T x"
+   ;; xsofy: seed strings and console lines (xsofy/seed.lg:27, console.lg:94)
+   "12345" "  678  " "12.5" "foo" "-7" "0042" "(help)" "help" "(inspect :player)" "  (bench) " "(help" "(seed 42)"
+   "(give :potion 3)" "(teleport 10 -4)" "(say \"hi there\")" "(1 2 3" "]" ""])
+
+(def floats (string/split-lines (slurp "corpus/floats/pr-str.expected")))
+
+(defn nest [depth open close inner] (str (apply str (repeat depth open)) inner (apply str (repeat depth close))))
+
+(def generated
+  (concat
+   ;; every float the formatter corpus prints, read back
+   floats
+   ;; one string escape per ASCII control and every \uXXXX of a sample
+   (for [c (range 0 128)] (str "\"" (format "\\u%04X" c) "\""))
+   (for [c [0x80 0xe9 0x7ff 0x800 0x2028 0xfeff 0xfffd 0xffff]] (str "\"" (format "\\u%04x" c) "\""))
+   (for [c (range 33 127) :when (not (#{\( \) \[ \] \{ \} \" \; \@ \` \~ \^ \\} (char c)))] (str "\\" (char c)))
+   ["\"aé€😀\"" "\"𝄞𝄞\"" "[\\😀 \\𝄞 \"𐍈\"]" ":😀" "😀" "(é 𝄞 \"𐍈\")"]
+   ;; deep nesting, 200 levels
+   [(nest 200 "(" ")" "1") (nest 200 "[" "]" "") (nest 200 "{:a " "}" "1") (nest 200 "#{" "}" "") (nest 199 "[(" ")]" "x")
+    (nest 200 "(" "" "1")]
+   ;; a 50 KB vector
+   [(str "[" (string/join " " (map (fn [i] (cond (zero? (mod i 5)) (str "\"s" i "\"") (zero? (mod i 7)) (str ":k" i) :else (str i))) (range 8300))) "]")]))
+
+(def cases (vec (concat hand generated)))
+(spit "corpus/edn/cases.txt"
+      (str (string/join "\n" (map (fn [s] (let [p (pr-str s)] (subs p 1 (dec (count p))))) cases)) "\n"))
+(println (str "wrote corpus/edn/cases.txt: " (count cases) " cases (" (count hand) " hand, " (count generated) " generated)"))

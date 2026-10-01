@@ -42,3 +42,5 @@
 - R5. A map's or set's `seq` hashes over its printed form natively (450139980 vs the ordered-seq hash 21852162); the runtime still hashes it as an ordered seq. Open seam in phm.
 - R6. Native bug: `with-meta` on `'()` breaks the empty list: `(= (with-meta '() m) '())` is false and `(vec …)` gives `[nil]`. Not mirrored.
 - R7. Possible lg bug: an unclosed form makes `require` skip the rest of the file silently (9 deftests failed to register with no error).
+- R8. Native reader stamps `{:line :column}` meta on a process-global empty-list singleton, so `(meta '())` is whatever was read last. Upstream candidate.
+- R9. Native reader quirks reproduced: `0x-5` = -5, `018` = 18, `1_000` = 1000.0, `4/2` = Int 2, `\u-041` = rune -65, radix overflow is `invalid number` never BigInt.

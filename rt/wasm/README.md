@@ -16,6 +16,7 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 5 | `phm.lg` | `wasm.phm` | 1 2 3 | the persistent/transient map (array-map + HAMT), map hooks (slot 0) |
 | 6 | `phs.lg` | `wasm.phs` | 1 3 5 | the persistent/transient set, set hooks (slot 1) |
 | 7 | `core.lg` | `wasm.core` | 1-6 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
+| 8 | `reader.lg` | `wasm.reader` | 1-7 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the

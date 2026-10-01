@@ -18,6 +18,6 @@
 | P1.4-6 + P1.GATE | done 2026-10-01 | opus | 4/4 refused; census 0 op errors/0 goto; switch; GATE 1.385× verified |
 | P2.7 | done 2026-10-01 | opus | core.lg 1072 lines, 56 twins; shared MISSING 0/91; 80 tests/24.6k asserts; verified |
 | P2.1-backend | running | opus | emit intrinsics, compile rt/wasm through the backend, --both |
-| P3.0-reader | running | opus | EDN reader in the dialect (read-string for data) |
+| P3.0-reader | done 2026-10-01 | opus | 951 inputs 0 mismatch; Go-exact float parse; 7 tests |
 | P2.1-backend | running | opus | (unchanged) |
 | review-1 | done 2026-10-01 | opus | 148 probes: 78 match, 11 bugs (5 silent), 2 gaps → P1.7 |

@@ -1,0 +1,263 @@
+;; wasm.reader (rt/wasm/reader.lg) checked against native read-string on the
+;; same inputs. Every expectation is computed live from native lg; nothing
+;; about the answers is stored. The corpus is corpus/edn/cases.txt (written
+;; by corpus/edn/gen.lg: hand cases, every float of
+;; corpus/floats/pr-str.expected, the escape table, 4-byte UTF-8, 200-level
+;; nesting, a 50 KB vector, the error cases). A case MATCHes when both sides
+;; read and agree on pr-str (so on type, value, map/set order and float
+;; digits) and on the metadata of every nested collection, or both throw the
+;; same message. A runtime answer of "lower-wasm: read-string: ..." is a
+;; named limit (READER.md) and passes only when native's answer is what the
+;; limit names (a BigInt, a Ratio, a tagged literal in the input, ...).
+(ns reader-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.phm :as m]
+            [wasm.phs :as hs]
+            [wasm.core :as c]
+            [wasm.reader :as r]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; ---------------------------------------------------------------------------
+;; Boundary glue (test only)
+
+(def ^:private array-type (type (object-array 0)))
+(defn- wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
+(defn- bytes->str [b] (when-not (wasm/null? b) (wasm/string-of-bytes b)))
+(defn- W [x] (s/mk-str (wasm/bytes-of-string x)))
+
+(defn <-w [x]
+  (let [k (c/ckind x)
+        mt (when-not (wasm/null? (c/meta x)) (<-w (c/meta x)))
+        wm (fn [v] (if mt (with-meta v mt) v))]
+    (cond (= k 0) nil
+          (= k 1) (sq/unbox-int x)
+          (= k 15) (= 1 (wasm/get sq/Bool 0 x))
+          (= k 17) (wasm/string-of-bytes (s/str-bytes x))
+          (= k 19) (let [cv (s/char-val x)] (if (or (neg? cv) (> cv 0x10FFFF) (<= 0xD800 cv 0xDFFF)) [:char cv] (char cv)))
+          (= k 20) (keyword (bytes->str (wasm/get sq/Kw 0 x)) (bytes->str (wasm/get sq/Kw 1 x)))
+          (= k 21) (symbol (bytes->str (wasm/get sq/Sym 0 x)) (bytes->str (wasm/get sq/Sym 1 x)))
+          (= k 22) (s/unbox-float x)
+          (<= 2 k 10) (wm (loop [q (sq/seq x) out []] (if (wasm/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q)))))))
+          (= k 11) (wm (mapv #(<-w (pv/vnth x %)) (range (pv/vcount x))))
+          (= k 30) (wm (let [es (m/entries x)] (into {} (map (fn [[kk v]] [(<-w kk) (<-w v)]) (partition 2 (mapv #(wasm/aget m/HSlots es %) (range (wasm/alen es))))))))
+          (= k 31) (wm (let [es (hs/sseq x)] (set (map #(<-w (wasm/aget m/HSlots es %)) (range (wasm/alen es))))))
+          :else [:opaque k])))
+
+(defn- err-msg [e]
+  (cond (and (wref? e) (wasm/is? sq/Err e)) (bytes->str (wasm/get sq/Err 2 e))
+        (wref? e) (str "thrown ref " (pr-str (<-w e)))
+        :else (string/replace (ex-message e) "wasm trap: " "")))
+
+(defn- coll-meta
+  "Metadata of v and of every collection inside it, in a canonical order.
+   An empty list's reader position is dropped: native stamps it on the
+   process-global EmptyList singleton, last read wins (READER.md, Limits)."
+  [v]
+  (let [mt (meta v)
+        mt (if (and (seq? v) (empty? v) (map? mt)) (not-empty (dissoc mt :line :column)) mt)
+        kids (cond (map? v) (mapcat (fn [[k x]] [(coll-meta k) (coll-meta x)]) (sort-by (comp pr-str key) v))
+                   (set? v) (map coll-meta (sort-by pr-str v))
+                   (or (vector? v) (seq? v)) (map coll-meta v)
+                   :else nil)]
+    (if (or mt (some some? kids)) [mt (vec kids)] nil)))
+
+(defn native-read [in]
+  (try (let [v (read-string in)] [:ok (pr-str v) (coll-meta v) v])
+       (catch Exception e [:err (ex-message e)])))
+
+(defn mine-read [in]                                    ; callers run (c/install!) once first
+  (try (let [w (r/read-string (W in))]
+         [:ok (wasm/string-of-bytes (s/str-bytes (s/pr-str w))) (coll-meta (<-w w)) w])
+       (catch Throwable e [:err (err-msg e)])))
+
+(defn- has-type? [v tname]
+  (cond (= (str (type v)) tname) true
+        (map? v) (some #(or (has-type? (key %) tname) (has-type? (val %) tname)) v)
+        (coll? v) (some #(has-type? % tname) v)
+        :else false))
+
+(def ^:private limits
+  "Named limit (a substring of the runtime's message) -> does native's answer
+   on this input show the thing the limit names?"
+  [["BigInt literal" (fn [in [t _ _ v]] (and (= t :ok) (has-type? v "let-go.lang.BigInt")))]
+   ["BigDecimal literal" (fn [in [t _ _ v]] (and (= t :ok) (has-type? v "let-go.lang.BigDecimal")))]
+   ["Ratio literal" (fn [in [t _ _ v]] (and (= t :ok) (has-type? v "let-go.lang.Ratio")))]
+   ["hex float literal" (fn [in [t _ _ v]] (and (= t :ok) (has-type? v "let-go.lang.Float")))]
+   ["auto-resolved keyword" (fn [in _] (string/includes? in "::"))]
+   ["#tag tagged literal" (fn [in _] (some? (re-find #"#[a-zA-Z]" in)))]
+   ["#? reader conditional" (fn [in _] (string/includes? in "#?"))]
+   ["regex" (fn [in _] (string/includes? in "#\""))]
+   ["#( fn literal" (fn [in _] (string/includes? in "#("))]
+   ["syntax-quote" (fn [in _] (string/includes? in "`"))]
+   ["reads as nothing" (fn [in [t p]] (and (= t :ok) (or (string/includes? p "(with-meta  ") (string/includes? p " )"))))]])
+
+(defn classify
+  "[:match] | [:limit name] | [:mismatch native mine]"
+  [in]
+  (let [n (native-read in) w (mine-read in)]
+    (cond (= (pop n) (pop w)) [:match]
+          (and (= :err (first w)) (string/starts-with? (second w) "lower-wasm: read-string: "))
+          (if-let [[nm ok?] (first (filter #(string/includes? (second w) (first %)) limits))]
+            (if (ok? in n) [:limit nm] [:mismatch (pop n) (pop w)])
+            [:mismatch (pop n) (pop w)])
+          :else [:mismatch (pop n) (pop w)])))
+
+;; ---------------------------------------------------------------------------
+;; The corpus
+
+(def ^:private cases
+  (mapv #(read-string (str "\"" % "\"")) (string/split-lines (slurp "corpus/edn/cases.txt"))))
+
+(deftest edn-corpus
+  (c/install!)
+  (let [rs (mapv (fn [in] [in (classify in)]) cases)
+        bad (filter #(= :mismatch (first (second %))) rs)
+        lim (frequencies (keep #(when (= :limit (first (second %))) (second (second %))) rs))
+        errs (count (filter #(string/starts-with? (pr-str (try (read-string %) (catch Exception _ ::err))) ":reader-test/err") cases))]
+    (is (<= 300 (count cases)) "a 300+ input corpus")
+    (is (empty? bad) (str (count bad) " mismatches; first: " (pr-str (take 3 bad))))
+    (println (str "  reader corpus: " (count rs) " inputs, " (- (count rs) (count bad) (reduce + 0 (vals lim)))
+                  " match (" errs " native errors), named limits " (pr-str (into (sorted-map) lim))
+                  ", mismatches " (count bad)))
+    (is (< (reduce + 0 (vals lim)) 60) "named limits stay a small minority")))
+
+;; Every float of the formatter corpus reads back to the same double: equal
+;; IEEE bits (float-bits is proven against native hash in str_test).
+(deftest floats-round-trip-bits
+  (c/install!)
+  (let [lines (string/split-lines (slurp "corpus/floats/pr-str.expected"))
+        mine (fn [l] (let [w (r/read-string (W l))] (when (= 22 (sq/kind w)) (sq/float-bits (s/unbox-float w)))))
+        res (for [l lines :let [v (read-string l)] :when (float? v)] [l (sq/float-bits v) (mine l)])]
+    (is (= 278 (count res)) "281 lines; NaN +Inf -Inf read as symbols")
+    (is (empty? (remove (fn [[_ a b]] (= a b)) res)) (pr-str (take 3 (remove (fn [[_ a b]] (= a b)) res))))))
+
+;; A sweep of long decimal strings (not shortest forms: 17-25 digits, exponents
+;; across the whole range incl. subnormal and overflow), compared bit for bit.
+(deftest floats-decimal-sweep
+  (c/install!)
+  (let [n (if (= "1" (os/getenv "SLOW")) 1000 100)
+        lcg (fn [x] (bit-and (unchecked-add (unchecked-multiply x 6364136223846793005) 1442695040888963407) 0x7fffffffffffffff))
+        ins (loop [i 0 x 12345 out []]
+              (if (< i n)
+                (let [x1 (lcg x) x2 (lcg x1) x3 (lcg x2)
+                      digits (str (inc (mod x1 9)) (subs (str (+ 1000000000000000000 (mod x2 1000000000000000000))) 1)
+                                  (subs (str (+ 1000000 (mod x3 1000000))) (inc (mod x3 6))))
+                      e (- (mod (quot x3 7) 680) 345)]
+                  (recur (inc i) x3 (conj out (str (if (odd? x1) "-" "") (subs digits 0 1) "." (subs digits 1) "e" e))))
+                out))
+        res (for [in ins :let [nv (native-read in) w (mine-read in)]]
+              [in (if (= :ok (first nv)) (sq/float-bits (nth nv 3)) (vec (take 2 nv)))
+                  (if (and (= :ok (first w)) (= 22 (sq/kind (nth w 3)))) (sq/float-bits (s/unbox-float (nth w 3))) (vec (take 2 w)))])]
+    (is (empty? (remove (fn [[_ a b]] (= a b)) res)) (pr-str (take 3 (remove (fn [[_ a b]] (= a b)) res))))))
+
+;; ---------------------------------------------------------------------------
+;; Entry points
+
+(deftest argument-errors
+  (c/install!)
+  (doseq [x [nil 1 1.5 :k 'x \a true [1] '(1) () {:a 1} #{1}]]
+    (let [nat (try (read-string x) (catch Exception e (ex-message e)))
+          w (cond (vector? x) (pv/vconj (pv/empty-vec) (sq/box-int 1))
+                  (map? x) (m/massoc (m/empty-map) (s/kw-of-bytes (wasm/bytes-of-string "a")) (sq/box-int 1))
+                  (set? x) (hs/sconj (hs/empty-set) (sq/box-int 1))
+                  (seq? x) (if (empty? x) (sq/empty-list) (sq/conj (sq/empty-list) (sq/box-int 1)))
+                  (nil? x) (wasm/null) (int? x) (sq/box-int x) (float? x) (s/box-float x)
+                  (keyword? x) (s/kw-of-bytes (wasm/bytes-of-string "k")) (symbol? x) (s/sym-of-bytes (wasm/bytes-of-string "x"))
+                  (char? x) (s/mk-char 97) :else (sq/bool x))
+          mine (try (r/read-string w) (catch Throwable e (err-msg e)))]
+      (is (= nat mine) (pr-str x)))))
+
+;; read-string*: one form from a rune offset, and where it stopped. Chained
+;; over a console-style line it reproduces native reading of each suffix.
+(deftest read-string-star
+  (c/install!)
+  (doseq [line ["(help) 2 :k" "héllo (é 𝄞) \"x\"" "  1 2  " "[1 2]{:a 1}#{3}" ";c\n(a) b"]]
+    (loop [start 0 n 0]
+      (let [rest-s (subs line start)
+            nat (native-read rest-s)
+            w (try (let [v (r/read-string* (W line) (sq/box-int start))] [:ok (pv/vnth v 0) (sq/unbox-int (pv/vnth v 1))])
+                   (catch Throwable e [:err (err-msg e)]))]
+        (is (= (first nat) (first w)) (pr-str [line start]))
+        (when (= :ok (first nat) (first w))
+          (is (= (second nat) (wasm/string-of-bytes (s/str-bytes (s/pr-str (second w))))) (pr-str [line start]))
+          (when (< n 10) (recur (nth w 2) (inc n))))))))
+
+;; xsofy's two call sites: seed.lg:27 keeps an integer, console.lg:94 reads a
+;; command inside try and dispatches on (first form) / the bare symbol.
+(deftest xsofy-call-sites
+  (c/install!)
+  (doseq [sd ["12345" "  678  " "12.5" "foo" "-7" "0042" "0x10" "99999999999"]]
+    (let [nat (let [n (read-string sd)] (when (integer? n) n))
+          mine (let [w (r/read-string (W sd))] (when (= 1 (sq/kind w)) (sq/unbox-int w)))]
+      (is (= nat mine) sd)))
+  (doseq [line ["(help)" "help" "(inspect :player)" "  (bench) " "(help" ")" "(say \"hi\")" "" "{:a"]]
+    (let [nat (try (let [f (read-string line)] (if (seq? f) [:list (pr-str (first f)) (count f)] [:atom (pr-str f)]))
+                   (catch Exception e ::parse-error))
+          mine (try (let [f (r/read-string (W line))]
+                      (if (<= 2 (sq/kind f) 3)
+                        [:list (wasm/string-of-bytes (s/str-bytes (s/pr-str (sq/first f)))) (sq/unbox-int (sq/count f))]
+                        [:atom (wasm/string-of-bytes (s/str-bytes (s/pr-str f)))]))
+                    (catch Throwable e ::parse-error))]
+      (is (= nat mine) line))))
+
+;; ---------------------------------------------------------------------------
+;; The dialect claim, as in core_test: every var a defn body references after
+;; IR macroexpansion is a runtime var, an intrinsic or declaration, a core fn
+;; the IR lowers to an op, or core/throw.
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot throw})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/wasm/reader.lg") "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        globals (filter #(and (seq? %) (= 'def (first %))) forms)
+        in-ns* #(binding [*ns* (find-ns 'wasm.reader)] (%))
+        offending
+        (for [d defns
+              [params & body] (arities d)
+              sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
+              :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                    vname (str v)]
+              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["reader" "core" "seq" "pvec" "str" "phm" "phs"])
+                             (and (string/starts-with? vname "#'wasm.intrinsics/")
+                                  (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [(second d) sym])]
+    (is (< 60 (count defns)))
+    (is (empty? globals) "no runtime global: all state lives in the per-call reader")
+    (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))
