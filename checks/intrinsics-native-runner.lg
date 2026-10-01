@@ -3,10 +3,13 @@
 ;; deftest count, so a file that silently registers no tests fails the check.
 ;; Uses run-all-tests with a regex, never bare (run-tests): on let-go 1.13 that
 ;; tests only the CURRENT ns (here `user`) and reports 0 tests, exit 0.
-(require 'intrinsics-test 'pvec-test)
+;; The test namespaces arrive after the count, one per *_test.lg file, so a
+;; new file needs no edit here.
+(def ^:private test-nss (mapv symbol (rest *command-line-args*)))
+(apply require test-nss)
 
 (let [expected (parse-long (first *command-line-args*))
-      s (test/run-all-tests #"(intrinsics|pvec)-test")
+      s (test/run-all-tests (re-pattern (str "(" (apply str (interpose "|" test-nss)) ")")))
       ok (and (test/successful? s) (pos? (:test s)) (= expected (:test s)))]
   (println (str "intrinsics-native: tests=" (:test s) " (expected " expected ")"
                 " pass=" (:pass s) " fail=" (:fail s) " error=" (:error s)

@@ -8,6 +8,6 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
 expected=$(cat corpus/intrinsics/*_test.lg | grep -c '^(deftest ')
-"$LG" -source-paths rt:corpus/intrinsics checks/intrinsics-native-runner.lg "$expected" 2>&1 \
+"$LG" -source-paths rt:corpus/intrinsics checks/intrinsics-native-runner.lg "$expected" $(for f in corpus/intrinsics/*_test.lg; do b=${f##*/}; b=${b%.lg}; echo "${b//_/-}"; done) 2>&1 \
   | grep -v '^ir.form-heads catalog loaded'
 exit "${PIPESTATUS[0]}"

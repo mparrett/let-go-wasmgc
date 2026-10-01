@@ -1,0 +1,467 @@
+;; wasm.seq (rt/wasm/seq.lg) checked against native lg on the same inputs:
+;; element walks, laziness and chunk-wise realisation counts, reduce, the
+;; four P2.5 gate programs, equality and hash (SPEC H1), the foreign-kind
+;; hooks, and the dialect claim. Every expectation is computed live from
+;; native lg; nothing is a hard-coded snapshot.
+(ns seq-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
+            [wasm.seq :as sq]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; ---------------------------------------------------------------------------
+;; Boundary between lg values and wasm refs (test glue, not runtime dialect).
+;; Shallow conversions: seqs stay wasm refs; ints, booleans and nil cross;
+;; any other lg value (a map, a keyword) rides in an Opaque box.
+
+(def ^:private array-type (type (object-array 0)))
+(defn- wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
+
+(wasm/defstruct Opaque [:i64])
+(def ^:private opaque-table (atom []))
+
+(declare <-w)
+
+(defn ->w [x]
+  (cond (nil? x) (wasm/null)
+        (int? x) (sq/box-int x)
+        (boolean? x) (sq/bool x)
+        (reduced? x) (sq/reduced (->w @x))
+        (wref? x) x
+        :else (let [id (count @opaque-table)] (swap! opaque-table conj x) (wasm/new Opaque id))))
+
+(defn <-w [r]
+  (case (sq/kind r)
+    0 nil
+    1 (sq/unbox-int r)
+    15 (= 1 (wasm/get sq/Bool 0 r))
+    14 (reduced (<-w (sq/unreduced r)))
+    (if (wasm/is? Opaque r) (nth @opaque-table (wasm/get Opaque 0 r)) r)))
+
+(defn clo
+  "An lg fn as a runtime closure (sq/Fn), converting at the boundary."
+  [f]
+  (wasm/new sq/Fn
+            (wasm/funcref sq/Code0 (fn [_] (->w (f))))
+            (wasm/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
+            (wasm/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
+            (wasm/null)))
+
+(defn deep
+  "A wasm value as lg data: seq kinds realised to lg lists, a pvec to a vector."
+  [r]
+  (let [k (sq/kind r)]
+    (cond (<= 2 k 10) (loop [s (sq/seq r) out []] (if (wasm/null? s) (apply list out) (recur (sq/next s) (conj out (deep (sq/first s))))))
+          (= k 11) (mapv #(deep (pv/vnth r %)) (range (pv/vcount r)))
+          :else (<-w r))))
+
+(defn wl [xs] (reduce (fn [l x] (sq/conj l (->w x))) (sq/list) (reverse xs)))   ; lg seq -> wasm List
+(defn wv [xs] (reduce (fn [v x] (pv/vconj v (->w x))) (pv/empty-vec) xs))       ; lg seq -> wasm pvec
+(defn pvec [xs] (with-meta (vec xs) {:pv true}))                                  ; native PersistentVector
+(defn w [n] (sq/box-int n))
+
+(defn- res
+  "[:ok v] or [:err message]; a reference trap's 'wasm trap: ' prefix is
+   dropped so native exceptions and runtime traps compare by message."
+  [f]
+  (try [:ok (f)]
+       (catch Exception e [:err (string/replace (ex-message e) "wasm trap: " "")])))
+
+(defn- both [nf mf] [(res nf) (res #(deep (mf)))])
+(defmacro same [native mine] `(let [[a# b#] (both (fn [] ~native) (fn [] ~mine))] (is (= a# b#) (pr-str '~native))))
+
+;; ---------------------------------------------------------------------------
+;; Ports of the lg-defined core.lg fns the gates use (core.lg:523 filter,
+;; :574 take, :2748 dorun, :1485 completing, :1493 transduce, map/filter
+;; transducers): same structure, with each call that native lg sends to a Go
+;; native sent to wasm.seq instead. Closures handed to the runtime are clo'd.
+
+(defn p-filter [f xs]
+  (sq/lazy-seq*
+   (clo (fn []
+          (let [s (sq/seq xs)]
+            (when-not (wasm/null? s)
+              (if (sq/truthy? (sq/chunked-seq? s))
+                (let [c (sq/chunk-first s)
+                      size (<-w (sq/count c))
+                      b (sq/chunk-buffer (w size))]
+                  (loop [i 0]
+                    (when (< i size)
+                      (let [v (sq/nth c (w i))]
+                        (when (sq/truthy? (sq/invoke1 f v)) (sq/chunk-append b v)))
+                      (recur (inc i))))
+                  (sq/chunk-cons (sq/chunk b) (p-filter f (sq/chunk-rest s))))
+                (let [x (sq/first s) r (sq/next s)]
+                  (if (sq/truthy? (sq/invoke1 f x))
+                    (sq/cons x (p-filter f r))
+                    (p-filter f r))))))))))
+
+(defn p-take [n coll]
+  (sq/lazy-seq*
+   (clo (fn []
+          (when (pos? n)
+            (let [s (sq/seq coll)]
+              (when-not (wasm/null? s)
+                (if (sq/truthy? (sq/chunked-seq? s))
+                  (let [c (sq/chunk-first s) size (<-w (sq/count c))]
+                    (if (<= size n)
+                      (sq/chunk-cons c (p-take (- n size) (sq/chunk-rest s)))
+                      (sq/cons (sq/first s) (when (> n 1) (p-take (dec n) (sq/rest s))))))
+                  (sq/cons (sq/first s) (when (> n 1) (p-take (dec n) (sq/rest s))))))))))))
+
+(defn p-doall [coll]
+  (loop [s (sq/seq coll)]
+    (when-not (wasm/null? s)
+      (recur (if (sq/truthy? (sq/chunked-seq? s)) (sq/chunk-next s) (sq/next s)))))
+  coll)
+
+(defn p-transduce [xform f init coll]                     ; f is an lg fn; the fold is wasm.seq's reduce
+  (let [xf (xform f)] (xf (<-w (sq/reduce (clo xf) (->w init) coll)))))
+
+;; Native counterparts of the pipelines below call native lg directly.
+(defn- counting [] (let [n (atom 0)] [n (fn [x] (swap! n inc) x)]))
+
+;; ---------------------------------------------------------------------------
+
+(def ^:private inputs
+  "[label native-thunk wasm-thunk]: one of every seq kind, both chunk edges."
+  [["list" #(list 1 2 3) #(wl [1 2 3])]
+   ["empty list" #(list) #(sq/list)]
+   ["list of nil" #(list nil) #(wl [nil])]
+   ["cons on list" #(cons 0 '(1 2)) #(sq/cons (w 0) (wl [1 2]))]
+   ["cons on nil" #(cons 0 nil) #(sq/cons (w 0) (wasm/null))]
+   ["cons on empty lazy" #(cons 0 (lazy-seq nil)) #(sq/cons (w 0) (sq/lazy-seq* (clo (fn [] nil))))]
+   ["lazy of list" #(lazy-seq (list 4 5)) #(sq/lazy-seq* (clo (fn [] (wl [4 5]))))]
+   ["lazy of nil" #(lazy-seq nil) #(sq/lazy-seq* (clo (fn [] nil)))]
+   ["lazy of lazy" #(lazy-seq (lazy-seq (list 6))) #(sq/lazy-seq* (clo (fn [] (sq/lazy-seq* (clo (fn [] (wl [6])))))))]
+   ["lazy of pvec" #(lazy-seq (pvec [7 8])) #(sq/lazy-seq* (clo (fn [] (wv [7 8]))))]
+   ["range 5" #(range 5) #(sq/range (w 5))]
+   ["range 2 50 3" #(range 2 50 3) #(sq/range (w 2) (w 50) (w 3))]
+   ["range 10 0 -2" #(range 10 0 -2) #(sq/range (w 10) (w 0) (w -2))]
+   ["range 0" #(range 0) #(sq/range (w 0))]
+   ["range 5 5" #(range 5 5) #(sq/range (w 5) (w 5))]
+   ["range step 0" #(range 0 10 0) #(sq/range (w 0) (w 10) (w 0))]
+   ["range 32" #(range 32) #(sq/range (w 32))]
+   ["range 33" #(range 33) #(sq/range (w 33))]
+   ["range 70" #(range 70) #(sq/range (w 70))]
+   ["range big" #(range 2000000000 2000000040) #(sq/range (w 2000000000) (w 2000000040))]
+   ["repeat 3" #(repeat 3 7) #(sq/repeat (w 3) (w 7))]
+   ["repeat 0" #(repeat 0 7) #(sq/repeat (w 0) (w 7))]
+   ["repeat -2" #(repeat -2 7) #(sq/repeat (w -2) (w 7))]
+   ["pvec 70" #(pvec (range 70)) #(wv (range 70))]
+   ["pvec empty" #(pvec []) #(wv [])]
+   ["seq pvec 70" #(seq (pvec (range 70))) #(sq/seq (wv (range 70)))]
+   ["seq pvec 1100" #(seq (pvec (range 1100))) #(sq/seq (wv (range 1100)))]
+   ["map range 70" #(map inc (range 70)) #(sq/map* (clo inc) (sq/range (w 70)))]
+   ["seq map range 3" #(seq (map inc (range 3))) #(sq/seq (sq/map* (clo inc) (sq/range (w 3))))]
+   ["map list" #(map inc '(1 2 3)) #(sq/map* (clo inc) (wl [1 2 3]))]
+   ["map empty" #(map inc []) #(sq/map* (clo inc) (wv []))]
+   ["map pvec 70" #(map inc (pvec (range 70))) #(sq/map* (clo inc) (wv (range 70)))]
+   ["filter range 100" #(filter even? (range 100)) #(p-filter (clo even?) (sq/range (w 100)))]
+   ["take 40 range" #(take 40 (range)) #(p-take 40 (sq/range))]
+   ["nil" (constantly nil) #(wasm/null)]])
+
+(deftest element-walks
+  (doseq [[label nf mf] inputs]
+    (testing label
+      (same (nf) (mf))
+      (same (seq (nf)) (sq/seq (mf)))
+      (same (first (nf)) (sq/first (mf)))
+      (same (second (nf)) (sq/second (mf)))
+      (same (last (nf)) (sq/last (mf)))
+      (same (rest (nf)) (sq/rest (mf)))
+      (same (next (nf)) (sq/next (mf)))
+      (same (count (nf)) (sq/count (mf)))
+      (same (vec (nf)) (sq/vec (mf)))
+      (doseq [i [-1 0 1 2 31 32 33 69 70 1099 5000]]
+        (same (nth (nf) i :nf) (sq/nth (mf) (w i) (->w :nf)))
+        (same (nth (nf) i) (sq/nth (mf) (w i)))))))
+
+(deftest infinite-seqs
+  (testing "range, repeat and map over (range) walk without realising the tail"
+    (doseq [i [0 1 31 32 33 100 1000]]
+      (same (nth (range) i) (sq/nth (sq/range) (w i)))
+      (same (nth (repeat :x) i) (sq/nth (sq/repeat (->w :x)) (w i)))
+      (same (nth (map inc (range)) i) (sq/nth (sq/map* (clo inc) (sq/range)) (w i))))
+    (same (count (repeat :x)) (sq/count (sq/repeat (->w :x))))   ; -1, repeat.go:68
+    (same (count (range)) (sq/count (sq/range)))                  ; not Counted
+    (same (second (range)) (sq/second (sq/range)))
+    (same (first (rest (rest (repeat 9)))) (sq/first (sq/rest (sq/rest (sq/repeat (w 9))))))))
+
+(deftest list-stack-and-conj
+  (same (peek '(1 2)) (sq/peek (wl [1 2])))
+  (same (peek ()) (sq/peek (sq/list)))
+  (same (peek nil) (sq/peek (wasm/null)))
+  (same (peek (cons 1 nil)) (sq/peek (sq/cons (w 1) (wasm/null))))
+  (same (peek (range 3)) (sq/peek (sq/range (w 3))))
+  (same (peek (pvec [1 2])) (sq/peek (wv [1 2])))
+  (same (pop '(1 2)) (sq/pop (wl [1 2])))
+  (same (pop '(1)) (sq/pop (wl [1])))
+  (same (pop ()) (sq/pop (sq/list)))
+  (same (pop (cons 1 '(2))) (sq/pop (sq/cons (w 1) (wl [2]))))
+  (same (pop (range 3)) (sq/pop (sq/range (w 3))))
+  (same (pop (lazy-seq nil)) (sq/pop (sq/lazy-seq* (clo (fn [] nil)))))
+  (same (pop (pvec [1 2])) (sq/pop (wv [1 2])))
+  (same (pop (pvec [])) (sq/pop (wv [])))
+  (same (pop 5) (sq/pop (w 5)))
+  (same (conj '(1 2) 3) (sq/conj (wl [1 2]) (w 3)))
+  (same (conj '(1 2) 3 4) (sq/conj (wl [1 2]) (w 3) (w 4)))
+  (same (conj nil 3) (sq/conj (wasm/null) (w 3)))
+  (same (conj () 3) (sq/conj (sq/list) (w 3)))
+  (same (conj (range 2) 9) (sq/conj (sq/range (w 2)) (w 9)))
+  (same (conj (map inc [1]) 0) (sq/conj (sq/map* (clo inc) (wl [1])) (w 0)))
+  (same (conj (next (seq (pvec [1 2 3]))) 0) (sq/conj (sq/next (sq/seq (wv [1 2 3]))) (w 0)))
+  (same (conj (pvec [1]) 2) (sq/conj (wv [1]) (w 2)))
+  (same (count (conj '(1 2) 3)) (sq/count (sq/conj (wl [1 2]) (w 3))))
+  (same (cons 0 (pvec [1 2])) (sq/cons (w 0) (wv [1 2])))
+  (same (cons 0 5) (sq/cons (w 0) (w 5)))
+  (same (first 5) (sq/first (w 5)))
+  (same (seq 5) (sq/seq (w 5)))
+  (same (list) (sq/list))
+  (same (list 1 2 3) (sq/list (w 1) (w 2) (w 3))))
+
+(deftest chunk-natives
+  (doseq [[label nf mf] (filter #(#{"range 70" "range 33" "range 5" "seq pvec 70" "seq pvec 1100" "map range 70"
+                                     "list" "filter range 100" "lazy of pvec" "pvec 70" "nil" "range 0"} (first %)) inputs)]
+    (testing label
+      (same (chunked-seq? (nf)) (sq/chunked-seq? (mf)))
+      (same (count (chunk-first (nf))) (sq/count (sq/chunk-first (mf))))
+      (same (vec (chunk-first (nf))) (sq/vec (sq/chunk-first (mf))))  ; vec of a chunk: not seqable
+      (same (nth (chunk-first (nf)) 3 :nf) (sq/nth (sq/chunk-first (mf)) (w 3) (->w :nf)))
+      (same (chunk-rest (nf)) (sq/chunk-rest (mf)))
+      (same (chunk-next (nf)) (sq/chunk-next (mf)))
+      (same (count (chunk-first (rest (nf)))) (sq/count (sq/chunk-first (sq/rest (mf)))))))
+  (testing "buffer, chunk, chunk-cons"
+    (same (let [b (chunk-buffer 2)] (chunk-append b 1) (chunk-append b 2) (chunk-append b 3)
+            [(count b) (chunk-cons (chunk b) '(4)) (count b)])
+          (let [b (sq/chunk-buffer (w 2))] (sq/chunk-append b (w 1)) (sq/chunk-append b (w 2)) (sq/chunk-append b (w 3))
+            (wv [(<-w (sq/count b)) (sq/chunk-cons (sq/chunk b) (wl [4])) (<-w (sq/count b))])))
+    (same (chunk-cons (chunk (chunk-buffer 4)) nil) (sq/chunk-cons (sq/chunk (sq/chunk-buffer (w 4))) (wasm/null)))
+    (same (chunk-cons (chunk (chunk-buffer 4)) '(1)) (sq/chunk-cons (sq/chunk (sq/chunk-buffer (w 4))) (wl [1])))
+    (same (chunk-cons 5 nil) (sq/chunk-cons (w 5) (wasm/null)))
+    (same (chunk-buffer :x) (sq/chunk-buffer (->w :x)))
+    (same (count (chunk-cons (chunk-first (range 40)) (range 3))) (sq/count (sq/chunk-cons (sq/chunk-first (sq/range (w 40))) (sq/range (w 3)))))
+    (same (count (seq (chunk-cons (chunk-first (range 40)) nil))) (sq/count (sq/seq (sq/chunk-cons (sq/chunk-first (sq/range (w 40))) (wasm/null)))))))
+
+(deftest laziness
+  (testing "a thunk runs once, only when forced; realized? tracks it"
+    (let [run (fn [mk fst cnt sq rz]
+                (let [n (atom 0) l (mk #(do (swap! n inc) [1 2]))]
+                  [(rz l) @n (fst l) (fst l) (cnt l) (sq l) @n (rz l)]))]
+      (is (= (run #(lazy-seq (apply list (%))) first count #(vec (seq %)) realized?)
+             (run #(sq/lazy-seq* (clo (fn [] (wl (%))))) (comp <-w sq/first) (comp <-w sq/count)
+                  (comp deep sq/vec sq/seq) (comp <-w sq/realized?))))))
+  (testing "cons over a lazy tail: first and rest leave it alone, next forces it"
+    (let [run (fn [cons* lz fst rst nxt]
+                (let [n (atom 0) l (cons* 0 (lz #(do (swap! n inc) nil)))]
+                  [(fst l) @n (do (rst l) @n) (nxt l) @n]))]
+      (is (= (run cons #(lazy-seq (%)) first rest next)
+             (run #(sq/cons (w %1) %2) #(sq/lazy-seq* (clo %)) (comp <-w sq/first) sq/rest (comp <-w sq/next))))))
+  (same (realized? (range 3)) (sq/realized? (sq/range (w 3))))
+  (same (first (lazy-seq 5)) (sq/first (sq/lazy-seq* (clo (constantly 5)))))
+  (same (lazy-seq* 5) (sq/lazy-seq* (w 5)))
+  (testing "how many elements a pipeline realises (chunks of 32)"
+    (doseq [[label native mine]
+            [["doall take 3 map (range)" #(doall (take 3 (map % (range)))) #(p-doall (p-take 3 (sq/map* % (sq/range))))]
+             ["first map range 100" #(first (map % (range 100))) #(sq/first (sq/map* % (sq/range (w 100))))]
+             ["first map list" #(first (map % '(1 2 3))) #(sq/first (sq/map* % (wl [1 2 3])))]
+             ["first map pvec 70" #(first (map % (pvec (range 70)))) #(sq/first (sq/map* % (wv (range 70))))]
+             ["nth 40 map pvec 1100" #(nth (map % (pvec (range 1100))) 40) #(sq/nth (sq/map* % (wv (range 1100))) (w 40))]
+             ["count take 33 map (range)" #(count (take 33 (map % (range)))) #(sq/count (p-take 33 (sq/map* % (sq/range))))]
+             ["first filter range" #(first (filter % (range 100))) #(sq/first (p-filter % (sq/range (w 100))))]
+             ["seq map range" #(seq (map % (range 100))) #(sq/seq (sq/map* % (sq/range (w 100))))]
+             ["take 2 next map range" #(doall (take 2 (next (map % (range 100))))) #(p-doall (p-take 2 (sq/next (sq/map* % (sq/range (w 100))))))]
+             ["some over map range" #(some (fn [x] (when (> x 40) x)) (map % (range 100)))
+              #(sq/some (clo (fn [x] (when (> x 40) x))) (sq/map* % (sq/range (w 100))))]
+             ["reduced early over map range" #(reduce (fn [a x] (if (= x 5) (reduced a) (+ a x))) 0 (map % (range 100)))
+              #(sq/reduce (clo (fn [a x] (if (= x 5) (reduced a) (+ a x)))) (w 0) (sq/map* % (sq/range (w 100))))]
+             ["map-filter gate" #(reduce + 0 (take 100 (filter even? (map (comp % (fn [x] (* x x))) (range 10000)))))
+              #(sq/reduce (clo +) (w 0) (p-take 100 (p-filter (clo even?) (sq/map* (clo (comp % (fn [x] (* x x)))) (sq/range (w 10000))))))]]]
+      (testing label
+        (let [[nn nf] (counting) [mn mf] (counting)
+              nv (deep (->w (native nf)))
+              mv (deep (mine (if (= label "map-filter gate") mf (clo mf))))]
+          (is (= nv mv))
+          (is (= @nn @mn) (str "realised: native " @nn ", wasm.seq " @mn)))))))
+
+(deftest reduce-rules
+  (let [f0 (fn ([] :called) ([a b] b))]
+    (testing "empty colls: (f) with no init, init untouched with one"
+      (doseq [[label nf mf] (filter #(#{"empty list" "range 0" "repeat 0" "lazy of nil" "map empty" "pvec empty" "nil"} (first %)) inputs)]
+        (testing label
+          (same (reduce f0 (nf)) (sq/reduce (clo f0) (mf)))
+          (same (reduce f0 :init (nf)) (sq/reduce (clo f0) (->w :init) (mf))))))
+    (same (reduce f0 (filter neg? [1 2])) (sq/reduce (clo f0) (p-filter (clo neg?) (wl [1 2]))))
+    (same (reduce nil :init nil) (sq/reduce (wasm/null) (->w :init) (wasm/null)))  ; nil coll beats the Fn check
+    (same (reduce nil []) (sq/reduce (wasm/null) (wv [])))
+    (same (reduce + 5) (sq/reduce (clo +) (w 5)))
+    (testing "one element and no init: returned as is, f never called, even a reduced"
+      (same (reduce f0 '(7)) (sq/reduce (clo f0) (wl [7])))
+      (same (reduced? (reduce + (list (reduced 1)))) (sq/reduced? (sq/reduce (clo +) (sq/list (sq/reduced (w 1))))))))
+  (testing "reduced stops the fold at every position and chunk edge"
+    (doseq [[label nf mf] (filter #(#{"list" "cons on list" "range 70" "range 10 0 -2" "pvec 70" "seq pvec 1100"
+                                       "map range 70" "filter range 100" "repeat 3" "lazy of list" "take 40 range"} (first %)) inputs)
+            k [0 1 2 31 32 33 64 99]]
+      (let [stop (fn [acc x] (if (>= acc k) (reduced [:stopped acc x]) (inc acc)))
+            [nn nc] (counting) [mn mc] (counting)]
+        (testing (str label " k=" k)
+          (same (reduce (comp stop) 0 (nf)) (sq/reduce (clo stop) (w 0) (mf)))
+          (same (reduce (fn [a x] (nc x) (stop a x)) (nf)) (sq/reduce (clo (fn [a x] (mc x) (stop a x))) (mf)))
+          (is (= @nn @mn) "f called the same number of times")))))
+  (testing "reduced / reduced? / ensure-reduced / unreduced"
+    (same (reduced? (reduced 1)) (sq/reduced? (sq/reduced (w 1))))
+    (same (reduced? 1) (sq/reduced? (w 1)))
+    (same (unreduced (reduced 1)) (sq/unreduced (sq/reduced (w 1))))
+    (same (unreduced 1) (sq/unreduced (w 1)))
+    (same (deref (ensure-reduced (ensure-reduced 1))) (sq/unreduced (sq/ensure-reduced (sq/ensure-reduced (w 1)))))
+    (same (reduced? (unreduced (ensure-reduced (reduced 1)))) (sq/reduced? (sq/unreduced (sq/ensure-reduced (sq/reduced (w 1))))))))
+
+(deftest gate-programs
+  ;; let-go benchmark/{reduce,map-filter,transducers,persistent-map}.clj, each
+  ;; computed natively and through wasm.seq on the same inputs.
+  (testing "reduce.clj"
+    (is (= (reduce + 0 (range 1000000))
+           (<-w (sq/reduce (clo +) (w 0) (sq/range (w 1000000)))))))
+  (testing "map-filter.clj"
+    (is (= (reduce + 0 (take 100 (filter even? (map #(* % %) (range 10000)))))
+           (<-w (sq/reduce (clo +) (w 0) (p-take 100 (p-filter (clo even?) (sq/map* (clo #(* % %)) (sq/range (w 10000))))))))))
+  (testing "transducers.clj"
+    (is (= (transduce (comp (map #(* % %)) (filter even?)) + 0 (range 100000))
+           (p-transduce (comp (map #(* % %)) (filter even?)) + 0 (sq/range (w 100000))))))
+  (testing "persistent-map.clj (the map is an opaque lg value; phm owns assoc)"
+    (let [n (reduce (fn [m i] (assoc m i (* i i))) {} (range 10000))
+          m (<-w (sq/reduce (clo (fn [m i] (assoc m i (* i i)))) (->w {}) (sq/range (w 10000))))]
+      (is (= n m))
+      (is (= 10000 (count m))))))
+
+(deftest equality-and-hash
+  (testing "H1: (), (nil), [nil] and an empty PersistentVector hash alike"
+    (same (hash ()) (sq/hash (sq/list)))
+    (same (hash '(nil)) (sq/hash (wl [nil])))
+    (same (hash (pvec [nil])) (sq/hash (wv [nil])))
+    (same (hash (pvec [])) (sq/hash (wv [])))
+    (same (hash (lazy-seq nil)) (sq/hash (sq/lazy-seq* (clo (fn [] nil)))))
+    (is (= 1 (count (set [(hash ()) (hash '(nil)) (hash (pvec [nil])) (hash (pvec []))])))))
+  (testing "hash per kind, including the FNV-of-String() kinds"
+    (doseq [[label nf mf] inputs]
+      (testing label (same (hash (nf)) (sq/hash (mf)))))
+    (same (hash (next (seq (pvec [1 2 3])))) (sq/hash (sq/next (sq/seq (wv [1 2 3])))))   ; prints the whole vector
+    (same (hash (range)) (sq/hash (sq/range)))
+    (same (hash (repeat 5)) (sq/hash (sq/repeat (w 5))))
+    (same (hash (range -5 5)) (sq/hash (sq/range (w -5) (w 5))))
+    (same (hash (repeat 2 nil)) (sq/hash (sq/repeat (w 2) (wasm/null))))
+    (same (hash (list (list 1) (pvec [2 3]) nil 4)) (sq/hash (sq/cons (wl [1]) (sq/list (wv [2 3]) (wasm/null) (w 4)))))
+    (same (hash (list -9223372036854775808 9223372036854775807 0 -1)) (sq/hash (wl [-9223372036854775808 9223372036854775807 0 -1]))))
+  (testing "= across seq kinds and vectors"
+    (let [pairs [[#(list 1 2) #(wl [1 2]) #(pvec [1 2]) #(wv [1 2])]
+                 [#(range 3) #(sq/range (w 3)) #(list 0 1 2) #(wl [0 1 2])]
+                 [#(range 3) #(sq/range (w 3)) #(range 3) #(sq/range (w 3))]
+                 [#(range 3) #(sq/range (w 3)) #(range 4) #(sq/range (w 4))]
+                 [#(list) #(sq/list) #(pvec []) #(wv [])]
+                 [#(pvec []) #(wv []) #(list) #(sq/list)]
+                 [#(lazy-seq nil) #(sq/lazy-seq* (clo (fn [] nil))) #(list) #(sq/list)]
+                 [#(list) #(sq/list) #(lazy-seq nil) #(sq/lazy-seq* (clo (fn [] nil)))]
+                 [#(list nil) #(wl [nil]) #(lazy-seq nil) #(sq/lazy-seq* (clo (fn [] nil)))]   ; *List walk vs unresolved b
+                 [#(list nil) #(wl [nil]) #(list (list)) #(sq/list (sq/list))]
+                 [#(pvec [nil]) #(wv [nil]) #(pvec [()]) #(sq/conj (pv/empty-vec) (sq/list))]  ; nilListEquivalent
+                 [#(cons 1 nil) #(sq/cons (w 1) (wasm/null)) #(list 1) #(wl [1])]
+                 [#(list 1) #(wl [1]) #(cons 1 nil) #(sq/cons (w 1) (wasm/null))]
+                 [#(repeat 3 1) #(sq/repeat (w 3) (w 1)) #(list 1 1 1) #(wl [1 1 1])]
+                 [#(map inc (range 3)) #(sq/map* (clo inc) (sq/range (w 3))) #(list 1 2 3) #(wl [1 2 3])]
+                 [#(seq (pvec (range 40))) #(sq/seq (wv (range 40))) #(range 40) #(sq/range (w 40))]
+                 [#(list 1) #(wl [1]) (constantly 1) #(w 1)]
+                 [#(list) #(sq/list) (constantly nil) #(wasm/null)]
+                 [#(list 3000000000) #(wl [3000000000]) #(list 3000000000) #(wl [3000000000])]
+                 [#(pvec [1 2]) #(wv [1 2]) #(pvec [1 3]) #(wv [1 3])]]]
+      (doseq [[na ma nb mb] pairs]
+        (same (= (na) (nb)) (sq/equals (ma) (mb)))))))
+
+(wasm/defstruct Bag [:ref])                                ; stands in for a phm map: seq = its elements
+
+(deftest foreign-hooks
+  (testing "a foreign kind traps until a runtime installs its hooks, then composes"
+    (let [bag (wasm/new Bag (wl [3 4 5]))
+          inner #(wasm/get Bag 0 %)]
+      (is (= [:err "wasm.seq: foreign value and no hook installed (phm/phs not linked)"] (res #(sq/first bag))))
+      (try
+        (sq/set-hooks! (clo #(inner %)) (clo #(<-w (sq/count (inner %))))
+                       (clo #(and (wasm/is? Bag %1) (wasm/is? Bag %2) (sq/truthy? (sq/equals (inner %1) (inner %2)))))
+                       (clo #(<-w (sq/hash (inner %)))))
+        (is (= 3 (<-w (sq/first bag))))
+        (is (= 3 (<-w (sq/count bag))))
+        (is (= 12 (<-w (sq/reduce (clo +) bag))))
+        (is (= '(4 5) (deep (sq/rest bag))))
+        (is (true? (<-w (sq/equals bag (wasm/new Bag (wl [3 4 5]))))))
+        (is (false? (<-w (sq/equals bag (wl [3 4 5])))))
+        (is (= (hash '(3 4 5)) (<-w (sq/hash bag))))
+        (finally (sq/set-hooks! (wasm/null) (wasm/null) (wasm/null) (wasm/null)))))))
+
+(deftest gaps-are-named
+  (testing "strings: let-go seqs them into chars, which the value model lacks"
+    (is (= '(\a \b) (seq "ab")))
+    (is (= [:err "wasm.seq: seq over a string yields chars; chars are not in the value model yet (P2.6)"]
+           (res #(sq/seq (wasm/bytes-of-string "ab"))))))
+  (testing "float range bounds need the float box"
+    (is (= '(0 1 2) (range 2.5)))
+    (is (= :err (first (res #(sq/range (->w 2.5))))))))
+
+;; ---------------------------------------------------------------------------
+;; The dialect claim (as pvec_test's, extended to multi-arity defns and
+;; docstrings): every var a defn body references after IR macroexpansion is a
+;; wasm.seq or wasm.pvec var, an intrinsic, a declaration (wasm/Bytes), or a
+;; core fn the IR lowers to an op.
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/wasm/seq.lg") "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        globals (filter #(and (seq? %) (= 'def (first %))) forms)
+        in-ns* #(binding [*ns* (find-ns 'wasm.seq)] (%))
+        offending
+        (for [d defns
+              [params & body] (arities d)
+              sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
+              :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                    vname (str v)]
+              :when (not (or (string/starts-with? vname "#'wasm.seq/")
+                             (string/starts-with? vname "#'wasm.pvec/")
+                             (and (string/starts-with? vname "#'wasm.intrinsics/")
+                                  (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [(second d) sym])]
+    (is (< 40 (count defns)))
+    (is (= '[hooks] (mapv second globals)) "one runtime global: the foreign-kind hook table")
+    (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))

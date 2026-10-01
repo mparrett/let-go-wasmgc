@@ -31,3 +31,7 @@
 - I5. build.lg: unary comparison `(< x)` is treated as identity, so `(defn f [x] (< x))` returns x, not true. Silent.
 - I6. `ir/resolve-single-source` stops at a loop header param fed by the entry value and its own back-edge copy; the backend replaced it with a cycle-following `src-of`.
 - I7. structurize's `:fallbacks` counter counts `:multi`-exit loops although their trees are complete (no `:goto`); the 2a census's "3% fallback" is therefore an over-count of real gaps.
+
+## Seqs (rt/wasm/SEQ.md, 2026-10-01)
+- S1. Range, InfiniteRange, Repeat and the vector seq do not implement Hashable; `hash` falls back to FNV over the printed form, so `(hash (range 3))` ≠ `(hash '(0 1 2))` although they are `=`. Reproduced.
+- S2. `(count (seq (map inc (range 3))))` throws (ChunkedCons has no count); `(peek (cons 1 nil))` throws; a throwing lazy-seq thunk is NOT re-run natively (error cached). Reproduced except the last (needs ex-info, P2.7).
