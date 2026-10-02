@@ -64,7 +64,7 @@ done
 if [ $update -eq 1 ]; then
   for f in "${files[@]}"; do
     case $f in */opmatrix/*) ;; *) [ -e "$f.expected" ] || continue ;; esac
-    "$LG" "$f" >"$f.expected" 2>/dev/null || echo "warn: native lg exited $? on $f" >&2
+    "$LG" ${LG_ARGS:-} "$f" >"$f.expected" 2>/dev/null || echo "warn: native lg exited $? on $f" >&2
     echo "wrote $f.expected"
   done
   exit 0
@@ -107,7 +107,8 @@ one() {
   local i=$1 f=$2 out cls w ns n nrc brc o rc
   out=$t/$i.line; cls=$t/$i.cls; w=$t/$i.w; mkdir -p "$w"
   if [ -e "$f.expected" ]; then
-    "$LG" "$f" >"$w/native.out" 2>/dev/null
+    # LG_ARGS as oracle.sh passes it (a multi-namespace program's -source-paths)
+    "$LG" ${LG_ARGS:-} "$f" >"$w/native.out" 2>/dev/null
     if ! cmp -s "$f.expected" "$w/native.out"; then
       { echo "STALE-EXPECTED $f"; diff "$f.expected" "$w/native.out" | head -4 | sed 's/^/    /'; } >"$out"
       echo hard >"$cls"; : >"$t/$i.done"; return

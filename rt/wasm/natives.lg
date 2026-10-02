@@ -36,7 +36,9 @@
 ;; own meta (wasm.core owns meta); the program's own vars and namespaces
 ;; and a builtin namespace's publics are not in the table (ns-publics of
 ;; 'string is {} here, 21 vars natively; resolve and find-var of them are
-;; nil; all-ns lists no program namespace); an intern into a program
+;; nil; all-ns lists no program namespace), except that a program reaching
+;; eval installs wasm.eval's program table, whose vars resolve, find-var
+;; and ns-resolve see (P7); an intern into a program
 ;; namespace does not re-root the program's own def of that name.
 ;;
 ;; No file system (browser ABI): os/cwd is "" (an empty cwd), os/ls and
@@ -45,7 +47,7 @@
 (ns wasm.natives
   (:refer-clojure :exclude [format fn? identical? rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
-                            spit slurp make-array complement bound-fn* ns-resolve])
+                            spit slurp make-array complement bound-fn* ns-resolve future*])
   (:require [clojure.string :as string]
             [wasm.intrinsics :as wasm]
             [wasm.pvec :as pv]
@@ -317,9 +319,12 @@
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
 (defn- lookup
-  "The var named nm in namespace nsn (canonical): one intern made."
+  "The var named nm in namespace nsn (canonical): one intern (or a def in
+   evaluated code) made, else the program's own var from wasm.eval's
+   program table (P7: resolve/find-var of a program defn)."
   [nsn nm]
-  (:var (cell (str nsn "/" nm))))
+  (or (:var (cell (str nsn "/" nm)))
+      (get-in (table) [:program nsn :vars nm])))
 
 (defn ^{:twin "core/find-var"} find-var                   ; CoreFindVar (lang.go:7838)
   ([] (raise-arity 0))
@@ -344,8 +349,16 @@
   ([x] (if (= 21 (sq/kind x))
          (let [t (table) q (namespace x)]
            (if (nil? q)
-             (lookup (:cur t) (name x))
-             (let [nsn (or (get-in t [:aliases (:cur t) q]) (canon q))] (lookup nsn (name x)))))
+             (let [cur (:cur t) nm (name x)]
+               (or (lookup cur nm)
+                   ;; a referred var: (resolve 'vibe) in legmacs.main
+                   (when-let [r (or (get-in t [:refers cur nm]) (get-in t [:program cur :refers nm]))]
+                     (lookup r nm))
+                   ;; let-go.core is every ns's baseline refer: an intern
+                   ;; there (legmacs.vibe's `vibe`) resolves from any ns
+                   (lookup "let-go.core" nm)))
+             (let [nsn (or (get-in t [:aliases (:cur t) q]) (get-in t [:program (:cur t) :aliases q]) (canon q))]
+               (lookup nsn (name x)))))
          (raise-lit "resolve expected Symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
@@ -478,6 +491,24 @@
            k (name sym)]
        (or (:var (cell (str nm "/" k)))
            (get-in (table) [:program nm :vars k]))))))
+
+;; ---------------------------------------------------------------------------
+;; future* (lang.go:3688) on one thread (P7.1). Natively the thunk runs in a
+;; goroutine and the promise is returned pending; a module has no second
+;; thread, so the thunk runs to completion here, at the call, and the
+;; promise comes back delivered (nil when the thunk throws, as natively).
+;; Named limit (silent): a future is never pending, realized? is true at
+;; once and the caller waits for the body (legmacs' spawn-task jobs settle
+;; on the next drain; C-x C-e of (future (sleep n)) blocks n ms). go/go*
+;; and channels stay unsupported.
+
+(defn ^{:twin "core/future*"} future* [& args]
+  (cond (not= 1 (count args)) (raise-lit "future* expects 1 arg (thunk fn)")
+        (not (c/callable? (first args))) (raise-lit "future* expected Fn")
+        :else (let [p (promise)
+                    v (try ((first args)) (catch Exception e nil))]
+                (deliver p v)
+                p)))
 
 ;; ---------------------------------------------------------------------------
 ;; The file system of a module without one

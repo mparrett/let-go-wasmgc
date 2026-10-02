@@ -22,7 +22,8 @@
 ;;
 ;; Symbols resolve as the seam orders it: local, a cell of the current ns
 ;; (wasm.natives' registry), the program table's :vars then :refers of the
-;; current ns, the core table (unqualified); a/s through the registry aliases
+;; current ns, a cell interned into let-go.core (native's baseline refer;
+;; legmacs.vibe's `vibe`), the core table (unqualified); a/s through the registry aliases
 ;; of the current ns, the program table's :aliases, then a/s as a full ns
 ;; name (cells, program table, and for core/clojure.core/builtin namespaces
 ;; the core table). Not found: native's "CompileError: Can't resolve s in
@@ -154,6 +155,10 @@
     (if (nil? q)
       (or (lookup-in cur nm)
           (when-let [r (or (get-in (tbl) [:refers cur nm]) (get-in (prog cur) [:refers nm]))] (lookup-in r nm))
+          ;; let-go.core is a baseline refer of every ns (Lookup walks it), so
+          ;; a var interned there at run time resolves unqualified anywhere:
+          ;; legmacs.vibe interns `vibe` so (ns weather) (vibe ...) works
+          (lookup-in "let-go.core" nm)
           (when-let [v (get (core-table) nm)] {:kind :core :name nm :val v}))
       (let [nsn (resolve-alias q)]
         (or (lookup-in nsn nm)

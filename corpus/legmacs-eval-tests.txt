@@ -1,0 +1,19 @@
+# legmacs 187fea2, listed 2026-10-02 (P7.1): the eval-dependent files; file<TAB>deftests (files under ~/projects-new/3p/legmacs/test)
+#bar 28
+# bar history: 28 (2026-10-02 ~09:25 PDT, measured: repl_mode 7/7, letgo_mode 21/23; the row's target was 7 + 20 = 27).
+# Before P7.1's future* twin (rt/wasm/natives.lg) letgo_mode scored 0: eval-replace's spawn-task (compiled
+# legmacs.buffers) hit "lower-wasm: core/future* has no twin", the two eval-replace deftests errored out
+# 13 assertions early, and run-tests' assertion-count rule zeroed the file.
+# Failing deftests (letgo_mode_test.lg), each a named limit, not a gap:
+#   eval-buffer-scratch-resolves-lg-isms: (is (string/starts-with? (:message s) "=> ")) and 4 more; eval of
+#     (.Format (now) "15:04") says "Eval error: CompileError: compiling function position\n\tcaused by
+#     CompileError: Can't resolve .Format in this context". Host interop is not an evaluator form (D160), and
+#     let-go.core/now itself is a named-limit trap (a Go time.Time; rt/wasm/host.lg). The later
+#     (fn? @(resolve 'letgo-mode-test-clock)) fails because the defn never compiled.
+#   eval-last-sexp-does-not-wait-for-a-future: (is (string/includes? (:message s) "pending")) and the "chan"
+#     twin; eval of (future (sleep 3000)) / (go (sleep 3000)) says "Can't resolve future in this context" /
+#     "Can't resolve go ...". future and go are not evaluator macros: go needs channels (Phase 8), and the
+#     module's future* runs the body at the call (one thread), so an evaluated future could never be pending.
+#     The (< ms 500) assertions pass because the error is immediate.
+repl_mode_test.lg	7
+letgo_mode_test.lg	23
