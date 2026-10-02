@@ -16,6 +16,14 @@
 // P4.2 lane 5's gating walk (checks/lane5.sh): zz-determinism-probe.mjs's key
 // sequence, but settle-based instead of 400 ms apart, see settleWalk() below.
 //
+// checks/browser-boot.mjs --legmacs <base-url>
+// P6.4: legmacs in let-go's stock xterm shell on the lower-wasm host (or any
+// lane whose page is that shell, e.g. the stock `lg -w` bundle), see
+// legmacsBoot() below.
+//
+// checks/browser-boot.mjs --legmacs-time <base-url> <reps>
+// P6.5: navigation to legmacs' first frame, REPS fresh pages, medians.
+//
 // checks/browser-boot.mjs --xsofy-shell <base-url> <hello-expected-stdout-file>
 // Drives host/build-xsofy-serve.sh's page (the real xsofy-shell.html on
 // xsofy-shell-adapter.js) instead: see xsofyShell() below.
@@ -43,6 +51,14 @@ if (process.argv[2] === '--settle-walk') {
 }
 if (process.argv[2] === '--xsofy') {
   console.log(JSON.stringify(await xsofyGame(...process.argv.slice(3))));
+  process.exit(0);
+}
+if (process.argv[2] === '--legmacs') {
+  console.log(JSON.stringify(await legmacsBoot(...process.argv.slice(3))));
+  process.exit(0);
+}
+if (process.argv[2] === '--legmacs-time') {
+  console.log(JSON.stringify(await legmacsTime(...process.argv.slice(3))));
   process.exit(0);
 }
 if (process.argv[2] === '--xsofy-shell') {
@@ -379,6 +395,144 @@ async function settleWalk(base, seed, outFile) {
     out.failure = String((e && e.message) || e).split('\n')[0];
   }
   try { fs.writeFileSync(outFile + '.steps.json', JSON.stringify(steps)); } catch {}
+  await browser.close();
+  return out;
+}
+
+// ---- --legmacs -----------------------------------------------------------------
+// legmacs opens *scratch* (no file argument) and paints one full frame: the
+// buffer, then its mode line ("*scratch*" ... "Ln N, Col M") on the second
+// row from the bottom, then the echo row. The probe asserts, on xterm's own
+// rows (what the user sees, not the byte stream):
+//   boot     the mode line shows up, no page error, no failed fetch;
+//   echo     the characters of ECHO typed one keypress at a time each appear
+//            on buffer line 5 (the scratch banner's last line, where point
+//            starts) right after the gutter;
+//   resize   after the viewport shrinks, with no key pressed, xterm has fewer
+//            rows AND the mode line is redrawn on the new second-to-last row
+//            with the typed text still on line 5: legmacs re-measured
+//            term/size and painted a new frame. Without a wake on resize
+//            (lg-wasm-host.js WAKE_KEY) the program stays parked in read-key
+//            and the old frame sits clipped in the shrunken terminal.
+// Timings, page-relative ms from navigation: bootMs = first text in xterm,
+// firstFrameMs = mode line visible; echoMs = keypress to the char on screen
+// (median of ECHO's keys, all in echoAllMs); resizeMs = viewport change to
+// the redrawn mode line.
+// (function declarations, not consts: the argv dispatch at the top of this
+// file calls legmacsBoot before the module body below it has run)
+function lmModeline() { return /\*scratch\*.*Ln \d+, Col \d+/; }
+function lmProbe() {
+  const re = /\*scratch\*.*Ln \d+, Col \d+/;
+  const tick = () => {
+    const rs = [...document.querySelectorAll('.xterm-rows > div')].map((d) => d.textContent);
+    if (window.__tFirstText === undefined && rs.some((r) => r.trim())) window.__tFirstText = performance.now();
+    if (window.__tModeline === undefined && rs.some((r) => re.test(r))) { window.__tModeline = performance.now(); return; }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+async function lmOpen(browser, base) {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 640 } });
+  const errors = [], bad = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('response', (r) => { if (r.status() >= 400 && !r.url().endsWith('/build-info.json')) bad.push(`${r.status()} ${r.url()}`); });
+  const logs = [];   // let-go's stock page reports a VM error on console.log, not in xterm
+  page.on('console', (m) => {
+    if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text());
+    else logs.push(m.text());
+  });
+  await page.addInitScript(lmProbe);
+  await page.goto(`${base}/index.html`, { waitUntil: 'domcontentloaded' });
+  return { page, errors, bad, logs };
+}
+function lmRows(page) { return page.evaluate(() => [...document.querySelectorAll('.xterm-rows > div')].map((d) => d.textContent.replace(/\s+$/, ''))); }
+function median(a) { return a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : null; }
+
+async function legmacsBoot(base) {
+  const ECHO = process.env.LW_ECHO || 'lwecho';
+  const browser = await chromium.launch();
+  const out = { label: 'legmacs' };
+  const { page, errors, bad } = await lmOpen(browser, base);
+  try {
+    await page.waitForFunction(() => window.__tModeline !== undefined, null, { timeout: 60000 });
+    const t = await page.evaluate(() => ({ first: window.__tFirstText, mode: window.__tModeline, lgw: window.__lgw || null }));
+    out.bootMs = Math.round(t.first); out.firstFrameMs = Math.round(t.mode);
+    if (t.lgw) { out.readyMode = t.lgw.readyMode; out.jspi = t.lgw.jspi; out.coi = t.lgw.coi; out.hostSize = t.lgw.size; }
+    out.boot = { pass: !errors.length && !bad.length, errors: [...errors], bad: [...bad] };
+    // echo: one key at a time, each must land on line 5 after the gutter
+    const echoAll = [];
+    let typed = '';
+    for (const ch of ECHO) {
+      typed += ch;
+      const t0 = Date.now();
+      await page.keyboard.press(ch);
+      await page.waitForFunction((s) => [...document.querySelectorAll('.xterm-rows > div')]
+        .some((d) => new RegExp('^\\s*5 ' + s).test(d.textContent)), typed, { timeout: 5000 });
+      echoAll.push(Date.now() - t0);
+    }
+    out.echoMs = median(echoAll); out.echoAllMs = echoAll;
+    out.echo = { pass: true, typed };
+    // resize: shrink the viewport, press nothing
+    const before = await lmRows(page);
+    await page.waitForTimeout(300);
+    const t1 = Date.now();
+    await page.setViewportSize({ width: 760, height: 380 });
+    let redrawn = false, after = before;
+    try {
+      await page.waitForFunction(([n0, s]) => {
+        const rs = [...document.querySelectorAll('.xterm-rows > div')].map((d) => d.textContent);
+        return rs.length < n0 && /\*scratch\*.*Ln \d+, Col \d+/.test(rs[rs.length - 2] || '')
+          && rs.some((r) => new RegExp('^\\s*5 ' + s).test(r));
+      }, [before.length, typed], { timeout: 5000 });
+      redrawn = true;
+    } catch {}
+    out.resizeMs = redrawn ? Date.now() - t1 : null;
+    after = await lmRows(page);
+    out.resize = { pass: redrawn, rowsBefore: before.length, rowsAfter: after.length,
+      modelineRowAfter: after.findIndex((r) => lmModeline().test(r)) };
+    if (!redrawn) out.resize.screen = after.filter((r) => r).slice(-6);
+    out.boot.errors = errors; out.boot.bad = bad; out.boot.pass = !errors.length && !bad.length;
+    out.pass = out.boot.pass && out.echo.pass && out.resize.pass;
+  } catch (e) {
+    out.failure = String((e && e.message) || e).split('\n')[0];
+    out.pass = false;
+    try {
+      out.screen = (await lmRows(page)).filter((r) => r).slice(-8);
+      out.lgw = await page.evaluate(() => window.__lgw || null);
+      if (out.lgw) out.lgw = { code: out.lgw.code, error: out.lgw.error, done: out.lgw.done, stderr: (out.lgw.stderr || '').slice(-600), size: out.lgw.size };
+      out.errors = errors; out.bad = bad;
+    } catch {}
+  }
+  await browser.close();
+  return out;
+}
+
+async function legmacsTime(base, reps = '5') {
+  const browser = await chromium.launch();
+  const out = { label: 'legmacs-time', bootMs: [], firstFrameMs: [] };
+  try {
+    for (let i = 0; i < parseInt(reps, 10); i++) {
+      const { page, errors, bad, logs } = await lmOpen(browser, base);
+      // let-go's shell prints "[program exited]" when main returns (the stock
+      // lane does at boot: os/cwd); fail on it at once instead of timing out
+      await page.waitForFunction(() => window.__tModeline !== undefined
+        || [...document.querySelectorAll('.xterm-rows > div')].some((d) => /\[program exited\]|lower-wasm host error/.test(d.textContent))
+        || (window.__lgw && window.__lgw.done), null, { timeout: 120000 });
+      const t = await page.evaluate(() => ({ first: window.__tFirstText, mode: window.__tModeline }));
+      if (t.mode === undefined) {
+        const screen = (await lmRows(page)).filter((r) => r.trim());
+        const why = [...logs, ...screen].map((r) => r.replace(/\x1b\[[0-9;]*m/g, '')).find((r) => /error/i.test(r))
+          || screen.slice(-3).join(' / ');
+        throw new Error(`run ${i}: program ended before the first frame: ${why.replace(/\s+/g, ' ').slice(0, 200)}`);
+      }
+      if (errors.length || bad.length) throw new Error(`run ${i}: ${[...errors, ...bad].join('; ').slice(0, 300)}`);
+      out.bootMs.push(Math.round(t.first)); out.firstFrameMs.push(Math.round(t.mode));
+      await page.close();
+    }
+  } catch (e) {
+    out.failure = String((e && e.message) || e).split('\n')[0];
+  }
+  out.bootMedian = median(out.bootMs); out.firstFrameMedian = median(out.firstFrameMs);
   await browser.close();
   return out;
 }

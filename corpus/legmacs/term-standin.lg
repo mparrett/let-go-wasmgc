@@ -1,0 +1,50 @@
+;; A diagnostic stand-in for legmacs' main.lg, for exercising the browser
+;; host (P6.4) while main.lg does not compile under the backend (P6.1).
+;; NOT the P6.4 check: browser-boot.sh --legmacs compiles main.lg; this file
+;; is only used through LW_LEGMACS_MAIN=corpus/legmacs/term-standin.lg.
+;;
+;; It keeps the parts of main.lg the host sees: legmacs.keys/read-chord over
+;; term/read-key and term/key-pending?, legmacs.buffer for the text, term/size
+;; re-measured before every frame, raw-mode!/alternate-screen/clear/flush at
+;; start, and a full frame written with term/write: banner lines with a gutter,
+;; a "*scratch* ... Ln N, Col M" mode line on the second-to-last row, an echo
+;; row. Printable chords insert; C-g (also the resize wake) is a no-op that
+;; still triggers a redraw; C-x C-c or end of input quits.
+(require '[legmacs.buffer :as buf] '[legmacs.keys :as keys] '[term] '[clojure.string :as str])
+
+(def ESC (str (char 27)))
+(defn move-to [col row] (str ESC "[" row ";" col "H"))
+(defn pad [s n] (let [s (if (> (count s) n) (subs s 0 n) s)] (str s (apply str (repeat (- n (count s)) " ")))))
+
+(defn frame [s cols rows]
+  (let [text-rows (- rows 2)
+        lines (:lines s)]
+    (str ESC "[?25l"
+         (apply str (map (fn [i] (str (move-to 1 (inc i))
+                                      (pad (if (< i (count lines)) (str (pad (str "  " (inc i)) 3) " " (nth lines i)) "~") cols)))
+                         (range text-rows)))
+         (move-to 1 (dec rows)) ESC "[7m"
+         (pad (str " *scratch*  Ln " (inc (:cursor-row s)) ", Col " (inc (:cursor-col s)) "  (" (count lines) " lines)") cols)
+         ESC "[0m" (move-to 1 rows) (pad (or (:message s) "") cols)
+         (move-to (+ 5 (:cursor-col s)) (inc (:cursor-row s))) ESC "[?25h")))
+
+(def banner [";; *scratch* -- a let-go-mode buffer (stand-in)" ";; C-x C-c quits" "" "" ""])
+
+(term/raw-mode!)
+(term/alternate-screen)
+(term/clear)
+(term/flush)
+(loop [s (assoc (buf/new-state nil banner) :cursor-row 4) prefix nil]
+  (let [[cols rows] (or (term/size) [80 24])]
+    (term/write (frame s cols rows))
+    (term/flush)
+    (let [chord (keys/read-chord)]
+      (cond
+        (nil? chord) nil
+        (and (= prefix "C-x") (= chord "C-c")) nil
+        (= chord "C-x") (recur s "C-x")
+        (= chord "C-g") (recur (assoc s :message "Quit") nil)
+        (and (string? chord) (= 1 (count chord))) (recur (assoc (buf/insert-string s chord) :message nil) nil)
+        :else (recur (assoc s :message (str chord " is undefined")) nil)))))
+(term/main-screen)
+(term/restore-mode!)

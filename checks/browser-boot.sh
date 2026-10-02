@@ -38,15 +38,26 @@
 # detection of zz-boot-time-probe.mjs), with ?seed= honoured and the shell's
 # xsofy/startup + xsofy/stats events received. Prints time-to-title and
 # time-to-map. Exit 0 iff (1) and (2) hold. Env: LG, XSOFY, SEED (424242).
+#
+# checks/browser-boot.sh --legmacs — P6.4. legmacs' real main.lg compiled by
+# the backend (host/build-legmacs-module.sh, cached) served as module.wasm in
+# let-go's stock xterm shell on the lower-wasm host (host/build-legmacs-serve.sh,
+# plain http.server, no COI: D91), driven by checks/browser-boot.mjs --legmacs:
+# boots to the *scratch* mode line, echoes typed keys on buffer line 5, and
+# redraws the frame for a smaller viewport with no key pressed (the host's
+# wake on resize). Prints bootMs / firstFrameMs / echoMs / resizeMs. Exit 0
+# iff all hold; a module that does not compile is exit 1 with the driver's
+# first error. Env: LG, LEGMACS, LETGO, LW_LEGMACS_MAIN (build-legmacs-module.sh:
+# a diagnostic stand-in entry; the row never sets it).
 set -uo pipefail
 mode=default
-case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; --xsofy) mode=xsofy ;; "") ;; *) echo "usage: browser-boot.sh [--xsofy-shell|--xsofy]"; exit 2 ;; esac
+case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; --xsofy) mode=xsofy ;; --legmacs) mode=legmacs ;; "") ;; *) echo "usage: browser-boot.sh [--xsofy-shell|--xsofy|--legmacs]"; exit 2 ;; esac
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
 MERGE=/opt/homebrew/opt/binaryen/bin/wasm-merge
 t=$(mktemp -d); pids=()
-cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
+cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
@@ -83,6 +94,38 @@ EOF2
   [ $? = 0 ] || ok=0
   if [ "$ok" = 1 ]; then echo "PASS (xsofy: term-demo matches native; the emitted xsofy reaches the title and the map in the real shell)"; exit 0; fi
   echo "FAIL (xsofy)"; exit 1
+fi
+
+# ---- --legmacs -----------------------------------------------------------------
+if [ "$mode" = legmacs ]; then
+  [ -n "${LW_LEGMACS_MAIN:-}" ] && echo "NOTE: entry overridden by LW_LEGMACS_MAIN=$LW_LEGMACS_MAIN (diagnostic, not P6.4)"
+  if ! "$here/host/build-legmacs-module.sh" "$t/module.wasm" 2>"$t/mod.log"; then
+    echo "FAIL: legmacs main.lg did not compile (backend)"
+    sed -E 's/\x1b\[[0-9;]*m//g' "$t/mod.log" | grep -m1 -iE 'error|unsupported' | cut -c1-500 | sed 's/^/  /'
+    exit 1
+  fi
+  sed -n 's/^module: /module: /p' "$t/mod.log"
+  "$here/host/build-legmacs-serve.sh" "$t/lm" "$t/module.wasm" || { echo "FAIL: build-legmacs-serve.sh"; exit 1; }
+  px=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$t/lm" "$px" >"$t/lm.server.log" 2>&1 & pids+=($!)
+  for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
+  node "$here/checks/browser-boot.mjs" --legmacs "http://127.0.0.1:$px" >"$t/lm.json"
+  python3 - "$t/lm.json" <<'EOF3'
+import json, sys
+try: r = json.load(open(sys.argv[1]))
+except Exception as e: r = {'pass': False, 'failure': f'no result from browser-boot.mjs ({e})'}
+for k in ('boot', 'echo', 'resize'):
+    part = r.get(k) or {'pass': False, 'missing': True}
+    print(f"{k:<7}{'PASS' if part.get('pass') else 'FAIL'}  " + json.dumps({x: y for x, y in part.items() if x != 'pass'})[:400])
+for k in ('failure', 'screen', 'lgw', 'errors', 'bad'):
+    if r.get(k): print('   ', k, json.dumps(r[k])[:600])
+ms = lambda k: '-' if r.get(k) is None else f"{r[k]}"
+print(f"timing (ms from navigation): bootMs {ms('bootMs')}, firstFrameMs {ms('firstFrameMs')}; "
+      f"echoMs {ms('echoMs')} (median of {r.get('echoAllMs')}), resizeMs {ms('resizeMs')}; "
+      f"readyMode {r.get('readyMode')}, jspi {r.get('jspi')}, coi {r.get('coi')}, host size {r.get('hostSize')}")
+sys.exit(0 if r.get('pass') else 1)
+EOF3
+  if [ $? = 0 ]; then echo "PASS (legmacs: boots to the mode line, echoes keys, redraws on resize)"; exit 0; fi
+  echo "FAIL (legmacs)"; exit 1
 fi
 
 # ---- build -------------------------------------------------------------------

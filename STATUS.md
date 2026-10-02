@@ -81,3 +81,4 @@
 | P5.9 | done 2026-10-02 06:40 | opus | fix-meta 5/5; verified by rerun |
 | P5.4 | done 2026-10-02 07:20 | runner | first gate.sh 2 10m29s all 14 ok (P2.3 included); second run 1 s, 13 attested, same result |
 | GATE 2 | re-run 2026-10-02 07:15 | runner | 14/14 ok on af7e1d0, no named limit left (D127's P2.3 limit closed by P5.2) |
+| P6.3/P6.4/P6.5 | built 2026-10-02 08:10, red | opus | all stop at the P6.1 *err* binding blocker; host half proven on a stand-in (boot 310 ms, echo 19 ms) |

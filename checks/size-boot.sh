@@ -15,11 +15,12 @@
 # (run it first, or this script builds them the same way).
 # Writes the table to corpus/xsofy/size-boot.md and prints it.
 # Exit 0 iff both lanes boot to the map in every run and the table is written.
+#
+# checks/size-boot.sh --legmacs — P6.5: the same table for legmacs, in
+# checks/size-boot-legmacs.sh (corpus/legmacs/size-boot.md).
 set -uo pipefail
-# Flags: none implemented yet. P6.5 passes --legmacs; until that lane exists
-# the row must read "check not built" (exit 2), not a false green.
 for a in "$@"; do case "$a" in
-  --legmacs) echo "size-boot.sh: --legmacs not built yet (P6.5)" >&2; exit 2;;
+  --legmacs) exec "$(dirname "$0")/size-boot-legmacs.sh";;
   *) echo "size-boot.sh: unknown arg $a" >&2; exit 2;;
 esac; done
 here=$(cd "$(dirname "$0")/.." && pwd)

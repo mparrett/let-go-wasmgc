@@ -23,6 +23,16 @@ const enc = new TextEncoder();
 export const KEY_CAPACITY = 8;
 export const MAX_KEY_LEN = 16;
 
+// Native let-go wakes a parked read-key on SIGWINCH by returning BEL
+// (pkg/rt/keysource.go terminalWakeKey), so a program blocked on input can
+// re-measure term/size and redraw; legmacs relies on it (keys.lg maps it to
+// a harmless C-g). let-go's wasm ring has no wake (lg-host-core.js: "wake()
+// is intentionally NOT in this slice"), so a stock-Go page only redraws on
+// the next real key. wakeOnResize: true gives this host the native
+// behaviour; it is off by default so xsofy's lane stays identical to the
+// stock lane (lane5.sh compares them).
+export const WAKE_KEY = new Uint8Array([7]);
+
 export const hasJSPI = typeof WebAssembly !== 'undefined'
   && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
@@ -32,8 +42,9 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
 
 export class LgWasmHost {
   constructor({ onOutput = () => {}, env = {}, cols = 80, rows = 24, keyCapacity = KEY_CAPACITY, coalesceKeys = true,
-    onEmit = () => {}, urlParams = null, argv = ['lg'] } = {}) {
+    onEmit = () => {}, urlParams = null, argv = ['lg'], wakeOnResize = false } = {}) {
     this.argv = argv;              // os/args (D115): env.argc / env.arg
+    this.wakeOnResize = wakeOnResize;
     this.onOutput = onOutput;
     this.onEmit = onEmit;          // (name, dataJson) for js/emit
     this.urlParams = urlParams;    // URLSearchParams for js/url-param; null off-browser
@@ -67,7 +78,16 @@ export class LgWasmHost {
     return true;
   }
   wake() { if (this.keyWaiter) { const w = this.keyWaiter; this.keyWaiter = null; w(); } }
-  setSize(cols, rows) { this.cols = cols | 0; this.rows = rows | 0; }
+  setSize(cols, rows) {
+    const changed = (cols | 0) !== this.cols || (rows | 0) !== this.rows;
+    this.cols = cols | 0; this.rows = rows | 0;
+    // a wake is a key like any other: same capacity, same coalescing (two
+    // resizes before the program reads are one wake, as one SIGWINCH is)
+    if (changed && this.wakeOnResize && this.running && !this.inputClosed && this.keys.length < this.keyCapacity) {
+      this.keys.push(WAKE_KEY);
+      this.wake();
+    }
+  }
   closeInput() {
     this.inputClosed = true;
     this.wake();

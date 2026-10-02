@@ -9,7 +9,10 @@
 // pulled in with a dynamic import.
 //
 // ?module=<url> names the .wasm (default module.wasm). window.__lgw is what
-// checks/browser-boot.mjs reads back.
+// checks/browser-boot.mjs reads back. A page may set window.LW_HOST_OPTIONS
+// (extra LgWasmHost options, e.g. {wakeOnResize: true} on host/legmacs.html)
+// before this script; xsofy's page sets none. Despite the name nothing here
+// is xsofy-specific: host/legmacs.html runs let-go's stock xterm shell on it.
 (function () {
   let outputSink = null; const outputBuffer = [];
   let readyCb = null, readyMode = null;
@@ -49,6 +52,7 @@
       result.jspi = hasJSPI; result.coi = self.crossOriginIsolated === true;
       const bytes = await (await fetch(url)).arrayBuffer();
       host = new LgWasmHost({
+        ...(window.LW_HOST_OPTIONS || {}),
         urlParams: new URLSearchParams(location.search),
         // let-go's main-thread _lgEmit: parse the JSON, hand it to the sink,
         // which by default fires the window CustomEvent the shell listens for

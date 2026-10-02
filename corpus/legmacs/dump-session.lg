@@ -1,0 +1,180 @@
+;; Canonical headless legmacs session dump for the P6.3 differential oracle.
+;;
+;;   lg -source-paths <legmacs-root> dump-session.lg <script-index>
+;;
+;; legmacs' pipeline is pure (state -> state, state -> string); only main.lg
+;; touches the terminal. This program runs main.lg's loop without it: the
+;; same workspace (bufs/new-workspace + the :switch put-current main's
+;; build-workspace does), the same per-iteration order (drain-jobs, then
+;; render/prepare-workspace, then loop-wait), and dispatch/dispatch on the
+;; current window's flat view folded back with bufs/put-current, as
+;; main/handle-chord does. Keys are chord strings (what keys/read-chord
+;; returns), taken from `scripts` below, so no term/* native is reached.
+;;
+;; Output, all of which must be byte-identical under native lg and the
+;; backend:
+;;   one line per chord: index, chord, active window, cursor, line count,
+;;     echo message, pending prefix, active modes
+;;   the final buffers (name, every line pr-str'd, cursor, mark, clipboard)
+;;   the final window tree's leaf ids and the rendered frame twice: as a
+;;     COLSxROWS text grid (a minimal emulator applies CSI row;colH and
+;;     drops every other escape) and as the raw frame with ESC spelled \e,
+;;     so a styling divergence the grid hides still shows.
+;; Strings go through pr-str only when they hold printable text; the frame
+;; is spelled out by hand so control-character escaping never enters.
+(require '[legmacs.buffer :as buf]
+         '[legmacs.buffers :as bufs]
+         '[legmacs.windows :as win]
+         '[legmacs.dispatch :as dispatch]
+         '[legmacs.render :as render]
+         '[legmacs.bindings :as bindings]
+         '[legmacs.modes :as modes]
+         '[legmacs.modes.keycast]
+         '[legmacs.modes.crutch]
+         '[clojure.string :as str])
+
+(def cols 60)
+(def rows 16)
+
+(def initial-lines
+  ["The quick brown fox" "jumps over the lazy dog." "" "line four has words" "last line"])
+
+(defn chars* [s] (map str (seq s)))
+
+;; One deterministic key script per index. Each exercises a different part
+;; of the editor; together they cover typing, movement, kill/yank, undo and
+;; redo, incremental search, a mode command and window splits. (Comments sit
+;; outside the map: let-go 4e769212's reader counts a comment inside a map
+;; literal as a form and rejects the map as odd.)
+;;   1 typing and movement
+;;   2 kill, yank, region, undo, redo
+;;   3 swiper search, edit at the match, a cancelled search, goto-line
+;;   4 mode commands through M-x: keycast (minor, mode line), then CRUTCH (modal)
+;;   5 windows: split below, type, other-window, split right, delete
+;; The keyword :snap is not a chord: it prints the grid of the frame as it
+;; stands, so a layout the script later undoes (script 5's three windows)
+;; is still compared.
+(def scripts
+  {1 (concat ["M->"] (chars* "new text") ["RET"] (chars* "and more")
+             ["C-p" "C-a" "M-f" "C-f" "C-e" "M-<" "C-n" "C-n" "C-e" "M-b" "C-b" "DEL" "C-d"]
+             (chars* "X") ["M-}" "C-v" "M-v" "home" "end" "up" "left"])
+   2 (concat ["C-k" "C-k" "C-n" "C-y" "M-<" "M-d" "M-d" "C-e" "C-y"
+              "C-SPC" "C-n" "C-n" "C-w" "M->" "C-y"
+              "C-_" "C-_" "C-_" "M-_" "M-k" "C-x" "u"]
+             (chars* "ok"))
+   3 (concat ["C-s"] (chars* "lazy") ["RET"] (chars* "very ")
+             ["C-s"] (chars* "four") ["C-g"]
+             ["C-s"] (chars* "wor") ["C-n" "RET" "C-k"]
+             ["M-g" "g"] (chars* "2") ["RET"] (chars* "!"))
+   4 (concat ["M-x"] (chars* "keycast-mode") ["RET"]
+             (chars* "abc") ["C-a" "C-f"]
+             ["M-x"] (chars* "crutch-mode") ["RET"]
+             ["j" "j" "l" "w" "x" "d" "d" "p" "u" "i"] (chars* "zz") ["C-g" "ESC"])
+   5 (concat ["C-x" "2"] (chars* "top ") ["C-x" "o" "M->"] (chars* "bottom")
+             ["C-x" "3" "C-x" "o"] (chars* "R") [:snap "C-x" "o" "C-x" "o"]
+             ["C-x" "0"] (chars* "!") [:snap "C-x" "1" "C-n"] (chars* "one"))})
+
+;; --- frame rendering ----------------------------------------------------
+
+(def ESC (char 27))
+
+(defn spell
+  "The raw frame with ESC as \\e and any other control char as ^X."
+  [s]
+  (apply str (map (fn [c]
+                    (let [n (int c)]
+                      (cond (= c ESC) "\\e"
+                            (< n 32) (str "^" (char (+ n 64)))
+                            :else (str c))))
+                  (seq s))))
+
+(defn csi-end
+  "Index of the final byte of the CSI sequence starting at ESC index i."
+  [cs i]
+  (loop [j (+ i 2)]
+    (if (or (>= j (count cs)) (let [n (int (nth cs j))] (and (>= n 64) (<= n 126))))
+      j
+      (recur (inc j)))))
+
+(defn grid
+  "Apply the frame to a blank cols x rows grid: CSI <r>;<c>H moves, every
+   other escape is dropped, printable chars overwrite and advance."
+  [frame]
+  (let [cs (vec (seq frame))
+        n (count cs)
+        blank (vec (repeat rows (vec (repeat cols " "))))]
+    (loop [i 0 r 0 c 0 g blank]
+      (if (>= i n)
+        g
+        (let [ch (nth cs i)]
+          (if (= ch ESC)
+            (let [e (csi-end cs i)
+                  final (nth cs e nil)
+                  params (apply str (subvec cs (min n (+ i 2)) (min n e)))]
+              (if (= final \H)
+                (let [[pr pc] (str/split params #";")
+                      r2 (dec (read-string (if (seq pr) pr "1")))
+                      c2 (dec (read-string (if (seq pc) pc "1")))]
+                  (recur (inc e) r2 c2 g))
+                (recur (inc e) r c g)))
+            (recur (inc i) r (inc c)
+                   (if (and (< -1 r rows) (< -1 c cols)) (assoc-in g [r c] (str ch)) g))))))))
+
+(defn print-grid [frame]
+  (doseq [row (grid frame)] (println (str "|" (apply str row) "|"))))
+
+;; --- the loop main.lg runs, minus the terminal --------------------------
+
+(defn step-line [i chord ws]
+  (let [s (bufs/current ws)]
+    (str i " " (pr-str chord)
+         " win=" (:active-window ws)
+         " cur=" (:cursor-row s) ":" (:cursor-col s)
+         " lines=" (count (:lines s))
+         " msg=" (pr-str (:message s))
+         " prefix=" (pr-str (:pending-keys s))
+         " modes=" (pr-str (vec (modes/active-modes s))))))
+
+(defn run-script [keys*]
+  (let [state (buf/new-state "session.txt" initial-lines)
+        ws (bufs/new-workspace state)
+        ws (bufs/put-current ws (assoc (bufs/current ws) :buffer-command {:op :switch :id 0}))]
+    (loop [ws ws ks (seq keys*) i 0]
+      (let [ws (bufs/drain-jobs ws dispatch/run-after-commands)
+            ws (render/prepare-workspace ws cols rows)
+            wait (bufs/loop-wait ws)]
+        (cond
+          (= wait :quit) ws
+          (= wait :pending-task) (recur (bufs/run-pending-task ws dispatch/run-after-commands) ks i)
+          (nil? ks) ws
+          (= (first ks) :snap) (do (println "== snap" i)
+                                   (print-grid (render/workspace-frame ws cols rows))
+                                   (recur ws (next ks) i))
+          :else (let [chord (first ks)
+                      ws (bufs/put-current ws (dispatch/dispatch (bufs/current ws) chord))]
+                  (println (step-line i chord ws))
+                  (recur ws (next ks) (inc i))))))))
+
+(def args (vec (rest (drop-while #(not (str/ends-with? % "dump-session.lg")) os/args))))
+(def n (read-string (nth args 0 "1")))
+
+(bindings/install!)
+
+(let [keys* (get scripts n)
+      _ (when-not keys* (throw (ex-info (str "no script " n) {})))
+      ws (run-script keys*)
+      ws (render/prepare-workspace ws cols rows)
+      frame (render/workspace-frame ws cols rows)]
+  (println "== buffers")
+  (doseq [b (bufs/buffer-list ws)]
+    (println (pr-str b)))
+  (let [s (bufs/current ws)]
+    (println "== current" (pr-str (:filename s)) "cur" (:cursor-row s) (:cursor-col s)
+             "mark" (pr-str (:mark s)) "modified" (:modified? s))
+    (println "clipboard" (pr-str (:clipboard s)))
+    (doseq [l (:lines s)] (println (pr-str l))))
+  (println "== windows" (pr-str (win/leaf-ids (:windows ws))) "active" (:active-window ws))
+  (println "== grid")
+  (print-grid frame)
+  (println "== raw")
+  (println (spell frame)))

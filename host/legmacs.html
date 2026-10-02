@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- legmacs on the lower-wasm host (P6.4). The frame is let-go's own
+     pkg/rt/wasm/host.html at 4e769212 with the xterm CDN tags `lg -w`
+     substitutes for its markers, so legmacs runs in the same default shell a
+     stock `lg -w main.lg` bundle ships: let-go's lg-shell-xterm.js, copied
+     unchanged from that commit by host/build-legmacs-serve.sh. The one
+     difference is the host script: xsofy-shell-adapter.js (window.LetGoHost
+     on lg-wasm-host.js) in place of lg-host-core.js, with wakeOnResize so a
+     resize wakes legmacs' blocked read-key the way SIGWINCH does natively
+     (lg-wasm-host.js WAKE_KEY). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>legmacs (lower-wasm)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <style>.xterm{height:100%}</style>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{height:100%;height:100dvh;background:#0c0c0c;color:#e8e6df;overflow:hidden}
+    body{display:flex;flex-direction:column}
+    #app{flex:1;min-height:0}
+    #status{color:#5a584f;font-family:monospace;font-size:13px;padding:1rem;position:absolute;
+            top:50%;left:50%;transform:translate(-50%,-50%)}
+  </style>
+</head>
+<body>
+  <div id="status">loading...</div>
+  <div id="app"></div>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script>window.LW_HOST_OPTIONS = { wakeOnResize: true };</script>
+  <script src="xsofy-shell-adapter.js"></script>
+  <script src="lg-shell-xterm.js"></script>
+</body>
+</html>
