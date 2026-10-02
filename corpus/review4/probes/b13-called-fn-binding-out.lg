@@ -1,0 +1,6 @@
+;; D149/D115 named limit probe: print in a fn CALLED from a binding [*out* ...] body
+(defn say [x] (println "say" x))
+(def s (with-out-str (binding [*out* *err*] (say 1))))
+(println (pr-str s))
+(def s2 (with-out-str (binding [*err* *out*] (binding [*out* *err*] (say 2)))))
+(println (pr-str s2))

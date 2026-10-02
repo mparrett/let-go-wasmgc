@@ -1,0 +1,10 @@
+;; review4 bug-01: a defn with a fixed arity AND a variadic arity of more than
+;; 4 fixed params, used as a value (apply/map/local), silently loses the
+;; variadic arity: the module raises a catchable arity error instead of
+;; calling it. (A defn whose ONLY arity is such a variadic is refused by name.)
+;; native lg 4e769212 prints:
+;; [:v 6 nil] [:v 5 (6 7)]
+;; [:v 6 (7)]
+(defn m ([a] [:1 a]) ([a b c d e f & more] [:v f more]))
+(println (m 1 2 3 4 5 6) (apply m (range 8)))
+(let [g m] (println (g 1 2 3 4 5 6 7)))

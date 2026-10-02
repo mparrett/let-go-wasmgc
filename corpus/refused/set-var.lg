@@ -1,6 +1,0 @@
-;; refuse: unsupported op :set-var
-;; P1.4: `set!` on a var (the :set-var op). Neither target program does it;
-;; the var table (D54) has no set! path, so the backend names the op.
-(def ^:dynamic *depth* 0)
-(defn deeper [] (set! *depth* 1) *depth*)
-(println (deeper))

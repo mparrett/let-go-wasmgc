@@ -1,0 +1,6 @@
+;; let inside loop bodies shadowing loop vars; if joins
+(println (loop [i 0 acc []]
+  (let [i (* i 2) j (inc i)]
+    (if (> i 6) acc (recur (inc (quot i 2)) (conj acc [i j]))))))
+(defn f [n] (loop [n n out ()] (if (zero? n) out (let [n (dec n) m (if (even? n) :e :o)] (recur n (conj out m))))))
+(println (f 5))

@@ -1,0 +1,21 @@
+;; P5.12: closures capturing the enclosing local across a loop that shadows
+;; it, and closures made inside the loop capturing the loop var.
+(defn before-and-after [n]
+  (let [i :outer
+        f (fn [] i)]
+    (loop [i 0] (when (< i n) (recur (inc i))))
+    (let [g (fn [] i)]
+      [(f) (g) i])))
+(defn inside [n]
+  (let [i :outer]
+    (let [fs (loop [i 0 fs []]
+               (if (< i n) (recur (inc i) (conj fs (fn [] [i (str i)]))) fs))]
+      [(mapv #(%) fs) i])))
+(defn counter []
+  (let [c (atom 0) acc 5]
+    (loop [acc 0 k 3]
+      (when (pos? k) (swap! c + acc) (recur (+ acc k) (dec k))))
+    [@c acc ((fn [] acc))]))
+(println (before-and-after 3))
+(println (inside 3))
+(println (counter))

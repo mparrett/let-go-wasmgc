@@ -1,0 +1,5 @@
+;; RUN WITH LG_ARGS="-source-paths corpus/review4/lib"
+;; def order across two libraries, macro from lib a used in lib b, globals across
+(ns n10-two-libs (:require [r4lib.b :as b] [r4lib.a :as a]))
+(println @a/order)
+(println (b/g) (a/f) a/from-let b/rb a/ra)

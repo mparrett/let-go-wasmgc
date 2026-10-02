@@ -1,0 +1,5 @@
+;; closures capturing loop vars, called later
+(def fs (loop [i 0 acc []] (if (< i 4) (recur (inc i) (conj acc (fn [] (* i i)))) acc)))
+(println (map #(%) fs))
+(let [i :outer] (def gs (loop [i 0 acc []] (if (< i 2) (recur (inc i) (conj acc #(vector i))) acc))) (println i (map #(%) gs)))
+(println (for [i (range 3) :let [f (fn [] i)]] (f)))

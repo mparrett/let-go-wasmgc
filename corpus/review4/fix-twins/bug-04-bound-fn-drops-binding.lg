@@ -1,0 +1,12 @@
+;; review4 bug-04: bound-fn / bound-fn* silently return the fn unchanged
+;; (rt/wasm/core.lg:1035, written when the module had no binding frames).
+;; Since P6.1 binding works, so the conveyed value is silently lost: the
+;; fn reads the root.
+;; native lg 4e769212 prints:
+;; :bf
+;; [1 :star]
+(def ^:dynamic *v* :root)
+(def bf (binding [*v* :bf] (bound-fn [] *v*)))
+(println (bf))
+(def bf2 (binding [*v* :star] (bound-fn* (fn [x] [x *v*]))))
+(println (bf2 1))

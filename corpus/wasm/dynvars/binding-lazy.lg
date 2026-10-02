@@ -1,0 +1,8 @@
+;; P6.1(a): a lazy seq made inside a binding but realised outside sees the
+;; ROOT value (no binding conveyance), as natively; doall inside sees the
+;; bound one.
+(def ^:dynamic *k* 1)
+(def lazy-out (binding [*k* 10] (map (fn [x] (* x *k*)) [1 2 3])))
+(def eager-in (binding [*k* 10] (doall (map (fn [x] (* x *k*)) [1 2 3]))))
+(println lazy-out eager-in)
+(println (binding [*k* 5] (vec (for [x [1 2]] (+ x *k*)))))

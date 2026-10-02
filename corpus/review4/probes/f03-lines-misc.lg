@@ -1,0 +1,6 @@
+;; lines, fn?, identical?, rseq edge cases
+(println (pr-str (lines "a\nb\n")) (pr-str (lines "")) (pr-str (lines "x\r\ny")) (pr-str (lines "\n\n")))
+(println (fn? inc) (fn? :k) (fn? #{}) (fn? (fn [])) (fn? (partial +)) (fn? (comp inc)) (fn? nil))
+(println (identical? 1 1) (identical? "a" "a") (identical? :a :a) (identical? [] []) (identical? ##NaN ##NaN) (identical? 0.0 -0.0) (identical? 'a 'a) (identical? \a \a))
+(println (rseq [1 2 3]) (rseq []) (rseq (sorted-map 1 2 3 4)) (rseq (sorted-set 3 1 2)))
+(println (try (rseq '(1 2)) (catch Exception e (ex-message e))))

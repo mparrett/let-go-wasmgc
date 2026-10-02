@@ -1,0 +1,4 @@
+;; loop in a try, throw from inside loop, finally; recur in try is illegal so loop wraps try
+(println (try (loop [i 0] (if (= i 3) (throw (ex-info "at" {:i i})) (recur (inc i)))) (catch Exception e (ex-data e))))
+(println (loop [i 0 acc []] (if (< i 3) (recur (inc i) (conj acc (try (if (odd? i) (throw (ex-info "o" {})) i) (catch Exception e :odd) (finally nil)))) acc)))
+(let [i 9] (println (try (loop [i 0] (if (< i 5) (recur (inc i)) i)) (finally nil)) i))

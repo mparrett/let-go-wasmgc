@@ -1,0 +1,6 @@
+;; RUN WITH LG_ARGS="-source-paths corpus/review4/lib"
+;; library globals of every kind incl. D151's named limit (const through fn)
+(ns n11-lib-kinds (:require [r4lib.c :as c]))
+(println c/d c/n c/s (sort-by str (keys c/combined)))
+(println c/fl c/fl-calc c/ch c/nl c/kw c/big c/tru c/i-calc c/qs (sort c/st) c/nested-q)
+(println (type c/fl-calc) (type c/i-calc) (type c/ch))

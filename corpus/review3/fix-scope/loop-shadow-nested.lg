@@ -1,0 +1,34 @@
+;; P5.12: shadowing through nested loops and let inside loop bodies. Every
+;; enclosing local must read its own value after each loop exits.
+(defn nested [n]
+  (let [i 100 j 200]
+    (let [r (loop [i 0 acc []]
+              (if (< i n)
+                (recur (inc i)
+                       (conj acc (loop [j 0 s 0]
+                                   (if (< j i) (recur (inc j) (+ s j)) [i j s]))))
+                acc))]
+      [r i j])))
+(defn inner-shadows-outer-loop [n]
+  (loop [i 0 out []]
+    (if (< i n)
+      (let [k (loop [i (* 10 i)] (if (odd? i) i (recur (inc i))))]
+        (recur (inc i) (conj out [i k])))
+      [i out])))
+(defn let-in-body [xs]
+  (let [x :outer]
+    (loop [xs xs acc 0]
+      (if (seq xs)
+        (let [x (first xs)
+              acc (if (even? x) (+ acc x) acc)]
+          (recur (rest xs) acc))
+        [x acc]))))
+(defn unshadowed [n]
+  (let [z (loop [q 0] (if (< q n) (recur (inc q)) q))
+        q :free]
+    [z q]))
+(println (nested 3))
+(println (inner-shadows-outer-loop 3))
+(println (let-in-body [1 2 3 4 5 6]))
+(println (unshadowed 4))
+(println (let [i 1] (dotimes [i 3] nil) (doseq [i [7 8]] nil) i))

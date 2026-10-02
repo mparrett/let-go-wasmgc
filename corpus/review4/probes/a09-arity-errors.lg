@@ -1,0 +1,8 @@
+;; arity error messages at 5+ for defns, closures, multi, variadic
+(defn d5 [a b c d e] a)
+(defn dm ([a] a) ([a b c d e f g] g))
+(def cv (fn [a b c d & r] r))
+(def c6 (fn c6name [a b c d e f] f))
+(doseq [[nm f args] [["d5" d5 [1 2]] ["d5+" d5 (range 6)] ["dm" dm (range 5)] ["dm8" dm (range 8)] ["cv" cv [1 2 3]] ["c6" c6 (range 7)] ["c6-0" c6 []]]]
+  (println nm (try (apply f args) (catch Exception e (ex-message e)))))
+(println (try (d5 1 2 3 4) (catch Exception e (ex-message e))))

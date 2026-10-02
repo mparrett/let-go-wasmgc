@@ -1,0 +1,8 @@
+;; review4 bug-11 (P3, error text): encoding/json names the failing value's
+;; position in an out-of-range number error ("into .0 of type float64" for
+;; array index 0); the natives.lg read-json twin always says "into Go value".
+;; native lg 4e769212 prints:
+;; json: cannot unmarshal number 1e400 into .0 of type float64
+;; json: cannot unmarshal number 1e400 into Go value of type float64
+(println (try (json/read-json "[1e400]") (catch Exception e (ex-message e))))
+(println (try (json/read-json "1e400") (catch Exception e (ex-message e))))

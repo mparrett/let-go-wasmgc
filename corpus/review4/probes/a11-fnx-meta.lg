@@ -1,0 +1,6 @@
+;; with-meta on an arity-5+ fn keeps arities; fn? / ifn? / identity
+(def c6 (fn [a b c d e f] (+ a f)))
+(def m6 (with-meta c6 {:k 1}))
+(println (meta m6) (m6 1 2 3 4 5 6) (apply m6 (range 6)) (fn? m6))
+(def mv (with-meta (fn ([a] a) ([a b c d e] e) ([a b c d e f & r] r)) {:v 2}))
+(println (mv 1) (mv 1 2 3 4 5) (mv 1 2 3 4 5 6 7) (apply mv (range 5)) (apply mv (range 9)))

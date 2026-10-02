@@ -1,0 +1,6 @@
+;; natives legmacs reaches outside the P6.0 reach list: sleep (main.lg:143), promise/deliver/realized? (buffers.lg:461)
+(defn t [f] (println (try (f) (catch Exception e (str "E: " (ex-message e))))))
+(t (fn [] (sleep 1) :slept))
+(t (fn [] (let [p (promise)] [(realized? p) (do (deliver p 7) (realized? p)) @p])))
+(t (fn [] (realized? (delay 1))))
+(t (fn [] (realized? (lazy-seq [1]))))

@@ -1,0 +1,13 @@
+;; set! inside nested bindings: only the innermost changes; outer restored
+(def ^:dynamic *n* 0)
+(binding [*n* 1]
+  (binding [*n* 2]
+    (set! *n* 20)
+    (println :inner *n*))
+  (println :outer *n*)
+  (set! *n* 10)
+  (println :outer2 *n*))
+(println :root *n*)
+(def ^:dynamic *m* 0)
+(binding [*n* 1 *m* 2] (set! *m* (+ *n* *m*)) (set! *n* 99) (println *n* *m*))
+(println *n* *m*)

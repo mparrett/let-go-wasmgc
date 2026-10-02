@@ -1,0 +1,5 @@
+;; *out* rebound to a string writer-like via with-out-str inside a binding of another var
+(def ^:dynamic *p* "p")
+(println (pr-str (with-out-str (binding [*p* "q"] (print *p*) (pr *p*) (prn *p*) (printf "%s|" *p*)))))
+(println (pr-str (binding [*p* "r"] (with-out-str (print *p*)))))
+(println (pr-str (with-out-str (binding [*out* *err*] (print "to-err")) (print "to-out"))))

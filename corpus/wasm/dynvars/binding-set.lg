@@ -1,0 +1,8 @@
+;; P6.1(a): set! of a dynamic var inside its binding changes the bound
+;; value only; the root comes back on exit.
+(def ^:dynamic *n* 0)
+(defn bump! [] (set! *n* (inc *n*)))
+(binding [*n* 10]
+  (bump!) (bump!)
+  (println *n*))
+(println *n*)

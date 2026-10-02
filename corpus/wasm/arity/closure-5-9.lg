@@ -1,0 +1,19 @@
+;; P6.1(b): fixed-arity closures of 5..9 params, called directly through the
+;; value and via apply, with captures.
+(defn mk [base]
+  {5 (fn [a b c d e] [base a b c d e])
+   6 (fn [a b c d e f] (+ base a b c d e f))
+   7 (fn [a b c d e f g] (list base a b c d e f g))
+   8 (fn [a b c d e f g h] (str base a b c d e f g h))
+   9 (fn [a b c d e f g h i] (vector i h g f e d c b a base))})
+(let [fs (mk 100)]
+  (println ((fs 5) 1 2 3 4 5))
+  (println ((fs 6) 1 2 3 4 5 6))
+  (println ((fs 7) 1 2 3 4 5 6 7))
+  (println ((fs 8) 1 2 3 4 5 6 7 8))
+  (println ((fs 9) 1 2 3 4 5 6 7 8 9))
+  (doseq [n (range 5 10)]
+    (println n (apply (fs n) (range n)) (apply (fs n) 0 1 (range 2 n))))
+  (println (map (fs 5) [1 2] [3 4] [5 6] [7 8] [9 10])))
+(def five (fn [a b c d e] (* a b c d e)))
+(println (five 1 2 3 4 5) (apply five [2 2 2 2 2]) (apply five 1 [1 1 1 3]))

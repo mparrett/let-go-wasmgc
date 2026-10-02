@@ -1,0 +1,11 @@
+;; dynamic var read inside a closure created in a binding, called outside;
+;; bound-fn if present; future-free conveyance by capture
+(def ^:dynamic *v* :root)
+(def fs (binding [*v* :bound] [(fn [] *v*) (let [v *v*] (fn [] v))]))
+(println ((first fs)) ((second fs)))
+(def bf (binding [*v* :bf] (try (bound-fn [] *v*) (catch Exception e nil))))
+(println (when bf (bf)))
+(def lz (binding [*v* :lazy] (lazy-seq [*v*])))
+(println lz)
+(def dl (binding [*v* :delay] (delay *v*)))
+(println @dl)

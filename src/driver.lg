@@ -25,12 +25,47 @@
     [form]))
 
 (defn defn-form? [form] (and (seq? form) (= 'defn (first form))))
-
-(def expand lw/expand-form)
-
 (defn def-form? [form] (and (seq? form) (= 'def (first form))))
 (defn def-sym [form]
   (let [s (second form)] (if (and (seq? s) (= 'with-meta (first s))) (second s) s)))
+
+(def defining-heads '#{def defn defn- defonce declare defmacro})
+(def top-level-heads (into defining-heads '#{ns require use deftest defmulti deftype defprotocol defrecord do}))
+
+(defn macro-do-expansion
+  "P6.1: a top-level macro call that expands to a (do ..) defining a var at
+   its top (legmacs' defcommand: (do (defn f ..) (defcommand! :f ..))),
+   expanded; else nil. Native compiles a top-level do subform by subform, so
+   that defn is a top-level defn and is indexed as one (it was a :def inside
+   the _main/__lw_nsinit body, unsupported). Other do expansions stay whole:
+   binding-out reads a top-level binding's (do (push-binding! ..) ..) shape."
+  [form]
+  (loop [f form n 0]
+    (when (and (seq? f) (symbol? (first f)) (< n 32))
+      (cond (= 'do (first f))
+            (when (and (not (identical? f form))
+                       (some #(and (seq? %) (contains? defining-heads (first %))) (rest f)))
+              f)
+            (contains? top-level-heads (first f)) nil
+            :else (let [v (try (resolve (first f)) (catch e nil))]
+                    (when (and (var? v) (:macro (meta v)))
+                      (recur (macroexpand-1 f) (inc n))))))))
+
+(defn nested-def-syms
+  "P6.1: the names an (expanded) top-level form defs below its top, in a
+   let, when, if or do body but not inside a fn: native defines them when
+   the form runs, so they are var-table vars set where the def sits."
+  [form]
+  (cond (map? form) (mapcat nested-def-syms (mapcat identity form))
+        (vector? form) (mapcat nested-def-syms form)
+        (not (seq? form)) []
+        (#{'quote 'fn* 'fn 'letfn*} (first form)) []
+        (= 'def (first form)) (cons (def-sym form) (mapcat nested-def-syms (drop 2 form)))
+        :else (mapcat nested-def-syms form)))
+
+(def expand lw/expand-form)
+
+
 
 (defn name-fns
   "Native names fns compiled while a def's value compiles (compiler.go
@@ -390,28 +425,35 @@
   [ns-sym path var-globals]
   (binding [*ns* (the-ns ns-sym)]
     (let [forms (read-program path)
-          init-forms (atom [])]
-      (doseq [form forms]
-        (let [head (when (seq? form) (first form))]
-          (cond
-            (#{'ns 'defmacro 'declare} head) nil
-            (#{'defn 'defn-} head)
-            (let [[nm _] (lw-rt/strip-meta-name (second form))
-                  v (lw-rt/ns-var ns-sym nm)]
-              (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " did not load") {})))
-              (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name nm :lib true
-                                              :arities (lw-rt/arities (drop 2 form))}))
-            (#{'def 'defonce} head)
-            (let [form (strip-def-doc (apply list 'def (rest form)))
-                  [nm _] (lw-rt/strip-meta-name (second form))
-                  v (lw-rt/ns-var ns-sym nm)]
-              (swap! var-globals assoc v (str "$var_" (lw/munge-id (str ns-sym "/" nm))))
-              ;; the name's reader meta (^:private, ^:dynamic) has no run-time
-              ;; effect here, and ir.build would evaluate a (with-meta ..) name
-              (swap! init-forms conj (expand-top (list 'def nm (nth form 2)))))
-            (#{'defmulti 'deftype 'defprotocol 'defrecord} head)
-            (throw (ex-info (str "lower-wasm: unsupported top-level form " head " in " ns-sym) {:head head}))
-            :else (swap! init-forms conj (expand-top form)))))
+          init-forms (atom [])
+          global! (fn [nm] (swap! var-globals assoc (lw-rt/ns-var ns-sym nm)
+                                  (str "$var_" (lw/munge-id (str ns-sym "/" nm)))))
+          index!
+          (fn index! [form]
+            (let [head (when (seq? form) (first form))]
+              (cond
+                (#{'ns 'defmacro 'declare} head) nil
+                (#{'defn 'defn-} head)
+                (let [[nm _] (lw-rt/strip-meta-name (second form))
+                      v (lw-rt/ns-var ns-sym nm)]
+                  (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " did not load") {})))
+                  (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name nm :lib true
+                                                  :arities (lw-rt/arities (drop 2 form))}))
+                (#{'def 'defonce} head)
+                (let [form (strip-def-doc (apply list 'def (rest form)))
+                      [nm _] (lw-rt/strip-meta-name (second form))]
+                  (global! nm)
+                  ;; the name's reader meta (^:private, ^:dynamic) has no run-time
+                  ;; effect here, and ir.build would evaluate a (with-meta ..) name
+                  (swap! init-forms conj (expand-top (list 'def nm (nth form 2)))))
+                (#{'defmulti 'deftype 'defprotocol 'defrecord} head)
+                (throw (ex-info (str "lower-wasm: unsupported top-level form " head " in " ns-sym) {:head head}))
+                ;; P6.1: defcommand-style macros, subform by subform
+                (macro-do-expansion form) (doseq [f (rest (macro-do-expansion form))] (index! f))
+                :else (let [e (expand-top form)]
+                        (doseq [nm (nested-def-syms e)] (global! (first (lw-rt/strip-meta-name nm))))
+                        (swap! init-forms conj e)))))]
+      (doseq [form forms] (index! form))
       (let [init-sym '__lw_nsinit
             v (intern ns-sym init-sym (fn [] nil))]
         (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name init-sym :lib true :pre-expanded true
@@ -498,7 +540,13 @@
               (and (seq? form) (= 'defmacro (first form))) (native! form)
               (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
               (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
-              :else (do (compile-check! form) (swap! body conj form)))))
+              ;; P6.1: a def below the top of the form (in a let/when/if)
+              ;; is a var-table var, set where the def runs
+              :else (do (compile-check! form)
+                        (doseq [s (nested-def-syms (expand form))]
+                          (eval (list 'declare s))
+                          (swap! table conj s))
+                        (swap! body conj form)))))
         ;; P2.14: a var's :file/:line/:column meta, as native's load gives
         ;; it (a def is only interned here, a defn's file is <read-string>);
         ;; lower-wasm's var constants carry it
@@ -507,14 +555,18 @@
                    (let [v (try (resolve s) (catch e nil))]
                      (when (and (var? v) (= *ns* (:ns (meta v))))
                        (alter-meta! v merge (select-keys (meta form) [:line :column]) {:file in})))))
-        compile-error (reduce (fn [_ form]
-                                (try (process! form) (stamp! form) nil
-                                     (catch e (if-let [m (::native (ex-data e))]
-                                                (if (and test? (defn-form? form) (contains? (set @tests) (def-sym form)))
-                                                  (do (process! (stub-deftest (def-sym form))) nil)
-                                                  (reduced m))
-                                                (throw e)))))
-                              nil forms)]
+        step (fn step [_ form]
+               ;; P6.1: defcommand-style macros, subform by subform (expanded
+               ;; here, after the forms before it ran: it may use their requires)
+               (if-let [d (try (macro-do-expansion form) (catch e nil))]
+                 (when-let [m (reduce step nil (rest d))] (reduced m))
+                 (try (process! form) (stamp! form) nil
+                      (catch e (if-let [m (::native (ex-data e))]
+                                 (if (and test? (defn-form? form) (contains? (set @tests) (def-sym form)))
+                                   (do (process! (stub-deftest (def-sym form))) nil)
+                                   (reduced m))
+                                 (throw e))))))
+        compile-error (reduce step nil forms)]
     ;; native stops at the failing form: the forms before it run, then the error
     (when compile-error (swap! body conj (list 'throw (list 'ex-info compile-error {}))))
     (let [defn-names (set (map second @defns))

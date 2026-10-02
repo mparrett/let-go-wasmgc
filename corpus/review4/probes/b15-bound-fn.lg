@@ -1,0 +1,6 @@
+;; bound-fn conveys the binding in effect when it was made
+(def ^:dynamic *v* :root)
+(def bf (binding [*v* :bf] (bound-fn [] *v*)))
+(println (bf))
+(def bf2 (binding [*v* :star] (bound-fn* (fn [x] [x *v*]))))
+(println (bf2 1))

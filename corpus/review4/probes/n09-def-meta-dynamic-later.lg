@@ -1,0 +1,13 @@
+;; def order: a fn uses a global defined after the fn, defn reads var at call time
+(declare tbl)
+(defn get-tbl [] tbl)
+(def tbl {:k :v})
+(println (get-tbl))
+(def counter (atom 0))
+(defn tick! [] (swap! counter inc))
+(def first-tick (tick!))
+(def second-tick (tick!))
+(println first-tick second-tick @counter)
+(def fl-from-fn (/ (tick!) 2.0))
+(def i-from-fn (* 2 (tick!)))
+(println fl-from-fn i-from-fn)

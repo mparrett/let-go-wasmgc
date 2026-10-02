@@ -1,0 +1,12 @@
+== P4.2: zz-determinism-probe.mjs screen dump for the wasm lane is byte-identical to the stock-Go lane at seed 424242
+-- checks/lane5.sh
+warning: unknown name subsection with id 3 at 1838346
+built 17aab173a42077a6b92452622493c213
+module: 1907996 bytes raw, 427465 bytes served
+probe  IDENTICAL  4980 bytes, md5 7d6fe94ba01b34528a94b2a806c7a777
+held  IDENTICAL  4980 bytes, md5 74db4231994e3b39cc0a9846ca796830
+  probe stock turns l:0>1 l:1>2 j:2>3 j:3>4 h:4>5 k:5>6 l:6>7 j:7>8  ack ms [197, 288, 107, 190, 143, 94, 141, 122]
+  probe lw    turns l:0>1 l:1>2 j:2>3 j:3>4 h:4>5 k:5>6 l:6>7 j:7>8  ack ms [69, 68, 48, 52, 66, 69, 41, 70]
+walks: probe (gate) = l l j j h k l j, each after the game settled; held (informational) = lx5 jx4 hx6 kx3 lx6 jx5 (one task per burst)
+PASS (lane 5 probe walk byte-identical to the stock-Go lane at seed 424242)
+exit 0

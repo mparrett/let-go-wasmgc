@@ -1,0 +1,6 @@
+;; *err* bound to *out* inside with-out-str, prints from a called fn to *err*
+(defn warn [x] (binding [*out* *err*] (println "warn" x)))
+(def s (with-out-str (binding [*err* *out*] (warn 1) (println "o"))))
+(println (pr-str s))
+(defn warn2 [x] (.println *err* x))
+(println (pr-str (with-out-str (binding [*err* *out*] (println "x")))))

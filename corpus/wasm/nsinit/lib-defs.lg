@@ -1,0 +1,7 @@
+;; P6.1(c): run with LG_ARGS="-source-paths corpus/wasm/nsinit/lib" (the
+;; P6.1 row does): a library namespace's defcommand-style macro, nested defs
+;; and literal/unboxed global inits, read from the requiring program.
+(ns lib-defs (:require [nsilib.cmds :as c]))
+(println (c/forward {:pos 1}) (c/run :backward {:pos 1}) (sort (keys @c/registry)))
+(println c/min-window-rows c/n-cmds c/defaults c/names c/ratio c/half-rows c/offset c/both-registered)
+(println (fn? c/forward) (= c/forward (get @c/registry :forward)))

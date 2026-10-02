@@ -1,0 +1,10 @@
+;; pops must happen across throws, several vars, from a called fn, and re-thrown
+(def ^:dynamic *a* :a0)
+(def ^:dynamic *b* :b0)
+(defn boom [] (throw (ex-info "boom" {:a *a* :b *b*})))
+(defn f [] (binding [*a* :a1 *b* :b1] (binding [*a* :a2] (boom))))
+(println (try (f) (catch Exception e (ex-data e))) *a* *b*)
+(println (try (binding [*a* :x] (try (boom) (finally (println "fin" *a*)))) (catch Exception e (:a (ex-data e)))) *a*)
+(dotimes [i 3] (try (binding [*a* i] (when (odd? i) (throw (ex-info "o" {})))) (catch Exception e nil)))
+(println *a* *b*)
+(println (try (binding [*a* 1] (/ 1 0)) (catch Exception e (ex-message e))) *a*)

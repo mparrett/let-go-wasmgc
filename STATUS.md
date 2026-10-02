@@ -82,3 +82,7 @@
 | P5.4 | done 2026-10-02 07:20 | runner | first gate.sh 2 10m29s all 14 ok (P2.3 included); second run 1 s, 13 attested, same result |
 | GATE 2 | re-run 2026-10-02 07:15 | runner | 14/14 ok on af7e1d0, no named limit left (D127's P2.3 limit closed by P5.2) |
 | P6.3/P6.4/P6.5 | built 2026-10-02 08:10, red | opus | all stop at the P6.1 *err* binding blocker; host half proven on a stand-in (boot 310 ms, echo 19 ms) |
+| P5.12 | verifying 09:40 | opus+runner | ir.build/build-loop upstream bug worked around; diff applied |
+| P6.1 | verifying 09:40 | opus+runner | 816/816 in scratch; dynvars/arity/nsinit corpora; diff applied, run.sh P6.1 running |
+| P6.R | dispatched 09:45 | opus | read-only, corpus/review4, frozen copy incl. P6.1 |
+| P6.R | done 2026-10-02 10:50 | opus | review4: 11 bugs, rows P6.6-P6.8 filed; xsofy rows held |

@@ -1,0 +1,11 @@
+;; clojure.math tail with edge inputs
+(require '[clojure.math :as m])
+(defn t [f & xs] (println (pr-str (try (apply f xs) (catch Exception e (str "E: " (ex-message e)))))))
+(doseq [x [0.0 -0.0 1.0 -1.0 2.5 -2.5 3.5 ##Inf ##-Inf ##NaN 1e300 5 -7]]
+  (print (pr-str [(m/signum x) (m/rint x) (m/cbrt x) (m/log10 x) (m/to-degrees x)]) "\n"))
+(doseq [x [0.0 1e-10 1.0 3.141592653589793 1e10 1e22 -2.0 ##Inf ##NaN]]
+  (print (pr-str [(m/sin x) (m/cos x)]) "\n"))
+(t m/atan2 0.0 -0.0) (t m/atan2 -0.0 -0.0) (t m/atan2 1.0 0.0) (t m/atan2 ##Inf ##-Inf) (t m/atan2 ##NaN 1.0)
+(t m/hypot 3 4) (t m/hypot ##Inf ##NaN) (t m/hypot 1e308 1e308)
+(t m/floor-mod 7 -2) (t m/floor-mod -7 2) (t m/floor-mod 7 0) (t m/floor-mod 7.5 2)
+(t m/signum "x") (t m/cbrt nil) (t m/sin)

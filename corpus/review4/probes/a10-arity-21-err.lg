@@ -1,0 +1,5 @@
+;; calling a 20-ary fn with 21 args
+(def c20 (fn [a b c d e f g h i j k l m n o p q r s t] t))
+(println (try (apply c20 (range 21)) (catch Exception e (ex-message e))))
+(println (try (apply c20 (range 25)) (catch Exception e (ex-message e))))
+(println (apply c20 (range 20)))

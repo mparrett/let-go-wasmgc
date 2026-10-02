@@ -1,0 +1,17 @@
+;; P6.1(a): binding of program ^:dynamic vars: nesting, restore on exit and
+;; on a throw, several vars in one binding, a fn reading the var.
+(def ^:dynamic *ctx* :root)
+(def ^:dynamic *depth* 0)
+(defn ctx [] [*ctx* *depth*])
+(println (ctx))
+(binding [*ctx* :a]
+  (println (ctx))
+  (binding [*ctx* :b *depth* (inc *depth*)]
+    (println (ctx))
+    (binding [*depth* (inc *depth*)] (println (ctx))))
+  (println (ctx)))
+(println (ctx))
+(println (try (binding [*ctx* :boom] (throw (ex-info "x" {:in (ctx)})))
+              (catch Exception e [(ex-data e) (ctx)])))
+(defn walk [n] (if (zero? n) (ctx) (binding [*depth* n] (walk (dec n)))))
+(println (walk 3) (ctx))

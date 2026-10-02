@@ -1,0 +1,17 @@
+(ns nsilib.cmds)
+;; P6.1(c) library half: the same shapes at namespace init.
+(def registry (atom {}))
+(defn register! [k f] (swap! registry assoc k f) k)
+(defmacro defcmd [name doc args & body]
+  `(do (defn ~name ~doc ~args ~@body) (register! ~(keyword name) ~name)))
+(defcmd forward "forward one" [s] (update s :pos inc))
+(defcmd backward "back one" [s] (update s :pos dec))
+(def min-window-rows 2)
+(def n-cmds (count @registry))
+(def defaults {:pos 0 :rows [min-window-rows 3]})
+(def names '[forward backward])
+(def ratio 0.5)
+(def half-rows (* ratio min-window-rows))
+(let [base 10] (def offset (+ base min-window-rows)))
+(when (= 2 n-cmds) (def both-registered true))
+(defn run [k s] ((get @registry k) s))

@@ -1,0 +1,8 @@
+;; with-out-str capturing prints from called fns and every print fn
+(defn say [x] (println "say" x) (print "p") (pr :k) (prn [1 "s"]) (newline) (flush) (print "end"))
+(def s (with-out-str (say 1)))
+(println (pr-str s))
+(def s2 (with-out-str (binding [*out* *out*] (say 2))))
+(println (pr-str s2))
+(def s3 (with-out-str (println "a") (with-out-str (println "inner")) (println "b")))
+(println (pr-str s3))

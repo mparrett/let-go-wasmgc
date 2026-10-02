@@ -1,0 +1,8 @@
+;; bound values of every kind, and binding a var whose root is a fn
+(def ^:dynamic *x* nil)
+(def ^:dynamic *f* inc)
+(doseq [v [1 1.5 "s" \c :k 'sym [1] {:a 1} #{1} nil true 9007199254740993 (fn [] 1)]]
+  (binding [*x* v] (print (if (fn? *x*) :fn (pr-str *x*)) "")))
+(println)
+(println (binding [*f* dec] (*f* 10)) (*f* 10) (binding [*f* (fn [a b] (* a b))] (*f* 3 4)))
+(println (binding [*f* str] (apply *f* [1 2 3])) (map *f* [1 2]))

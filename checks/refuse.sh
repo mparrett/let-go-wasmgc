@@ -9,9 +9,10 @@
 # Prints one line per program (REFUSED / ACCEPTED / WRONG-ERROR / NO-HEADER)
 # and exits 0 iff every program was refused as documented.
 #
-# corpus/refused holds three (as of 2026-10-01): dot-interop (:dot), infn-def
-# (:def in a fn), set-var (:set-var). P1.4's fourth, the variadic `& args`
-# defn, compiles since P2.12 (D83) and moved to corpus/closure/variadic.lg.
+# corpus/refused holds two (as of 2026-10-02): dot-interop (:dot), infn-def
+# (:def in a fn). P1.4's fourth, the variadic `& args` defn, compiles since
+# P2.12 (D83) and moved to corpus/closure/variadic.lg; set-var (:set-var)
+# compiles since P6.1 and moved to corpus/wasm/dynvars/set-var.lg.
 #
 # A program may instead carry
 #   ;; refuse-runtime: <text>

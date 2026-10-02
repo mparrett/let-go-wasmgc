@@ -1,0 +1,13 @@
+;; P6.1(a): a closure reads the dynamic value at CALL time, not at creation;
+;; a value captured into a local inside the binding keeps it; bound-fn-style
+;; capture by hand.
+(def ^:dynamic *who* "root")
+(def greet (fn [] (str "hi " *who*)))
+(defn make [] (let [w *who*] (fn [] [w *who*])))
+(def made-inside (binding [*who* "inside"] (make)))
+(println (greet) (made-inside))
+(binding [*who* "outer"]
+  (println (greet) (made-inside) ((make)))
+  (let [fs (mapv (fn [i] (fn [] [i *who*])) (range 2))]
+    (binding [*who* "inner"] (println (mapv #(%) fs)))))
+(println (greet))

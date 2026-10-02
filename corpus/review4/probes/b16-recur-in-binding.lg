@@ -1,0 +1,4 @@
+;; recur from inside a binding body (native: try in the expansion; is recur allowed?)
+(def ^:dynamic *x* :root)
+(defn f [i] (binding [*x* i] (if (< i 3) (recur (inc i)) *x*)))
+(println (try (f 0) (catch Exception e (ex-message e))) *x*)

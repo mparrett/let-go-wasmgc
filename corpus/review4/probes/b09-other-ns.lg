@@ -1,0 +1,10 @@
+;; RUN WITH LG_ARGS="-source-paths corpus/review4/lib"
+;; binding of a var defined in another ns, both from the program and inside the lib
+(ns b09-other-ns (:require [r4lib.dyn :as d]))
+(println (d/level))
+(binding [d/*level* :debug] (println (d/level) d/*level*) (d/log 1))
+(println (d/level))
+(println (d/with-level :warn d/level) (d/with-level :warn (fn [] d/*level*)))
+(let [a (atom [])] (binding [d/*sink* a d/*level* :x] (d/log 2) (d/log 3)) (println @a))
+(binding [d/*level* :s] (set! d/*level* :t) (println (d/level)))
+(println (d/level))

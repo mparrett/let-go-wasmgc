@@ -1,0 +1,4 @@
+;; RUN WITH LG_ARGS="-source-paths corpus/review4/lib"
+;; library defs: does a lib-level binding at ns init work (r4lib.d binds at load)
+(ns n12-lib-dyn-binding (:require [r4lib.d :as d]))
+(println d/at-load d/after (d/cur))

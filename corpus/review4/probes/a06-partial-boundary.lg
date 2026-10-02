@@ -1,0 +1,6 @@
+;; partial across the 4/5 boundary
+(defn s6 [a b c d e f] (list a b c d e f))
+(def c7 (fn [a b c d e f g] (vector a g)))
+(println ((partial s6 1) 2 3 4 5 6) ((partial s6 1 2 3 4) 5 6) ((partial s6 1 2 3 4 5) 6) ((partial s6 1 2 3 4 5 6)))
+(println ((partial c7 1 2) 3 4 5 6 7) ((partial c7 1 2 3 4 5 6) 7) (apply (partial c7 1) (range 6)))
+(println ((comp first (partial s6 :a)) 1 2 3 4 5) ((juxt (partial s6 0)) 1 2 3 4 5))

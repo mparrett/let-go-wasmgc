@@ -1,0 +1,5 @@
+;; a def whose init calls a fn defined later: native?
+(declare f)
+(def x (try (f 1) (catch Exception e (str "caught " (ex-message e)))))
+(defn f [a] (inc a))
+(println x (f 1))

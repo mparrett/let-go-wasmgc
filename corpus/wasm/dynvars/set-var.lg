@@ -1,0 +1,8 @@
+;; P1.4 refused this (corpus/refused/set-var.lg, "unsupported op :set-var");
+;; P6.1 moved it here: set! of a var-table var sets its global (the root, or
+;; the innermost binding when bound) and returns the var.
+(def ^:dynamic *depth* 0)
+(defn deeper [] (set! *depth* 1) *depth*)
+(println (deeper))
+(println (binding [*depth* 5] [(deeper) *depth*]) *depth*)
+(println (= #'*depth* (set! *depth* 9)) *depth*)

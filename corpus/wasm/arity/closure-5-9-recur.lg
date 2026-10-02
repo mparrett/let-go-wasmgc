@@ -1,0 +1,15 @@
+;; P6.1(b): arity 5+ closures that recurse by name, loop with recur, tail
+;; call themselves deeply (native eliminates tail calls through fn values),
+;; and mix fixed arities above and below 4 in one multi-arity fn.
+(def sum5 (fn self [n acc a b c]
+            (if (zero? n) [acc a b c] (self (dec n) (+ acc a b c) a b c))))
+(println (sum5 100000 0 1 2 3))
+(def rec6 (fn [a b c d e f] (if (pos? a) (recur (dec a) (inc b) c d e (+ f a)) [a b c d e f])))
+(println (rec6 10 0 :c :d :e 0))
+(def multi (fn ([] :zero) ([a] [:one a]) ([a b c d e] [:five a e]) ([a b c d e f g h i] [:nine a i])))
+(println (multi) (multi 1) (multi 1 2 3 4 5) (multi 1 2 3 4 5 6 7 8 9))
+(println (apply multi (range 5)) (apply multi (range 9)))
+(def mv (fn ([a b c d e] [:five e]) ([a b & more] [:var a b more])))
+(println (mv 1 2 3 4 5) (mv 1 2) (mv 1 2 3) (mv 1 2 3 4 5 6) (apply mv (range 5)) (apply mv (range 7)))
+(defn outer [k] (let [g (fn [a b c d e] (+ k a b c d e))] (g 1 2 3 4 5)))
+(println (outer 10))

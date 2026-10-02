@@ -1,0 +1,49 @@
+
+Testing test.acme-extension-test
+
+FAIL in (look-opens-files-and-reuses-open-buffers) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:43)
+expected: (= :open-new (:op (:buffer-command opened)))
+  actual: (not (= :open-new nil))
+
+FAIL in (look-opens-files-and-reuses-open-buffers) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:44)
+expected: (= filename (:filename (:state (:buffer-command opened))))
+  actual: (not (= "/Users/matt/projects-new/3p/legmacs/test/legmacs/buffer.lg" nil))
+
+FAIL in (look-opens-files-and-reuses-open-buffers) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:45)
+expected: (= (path/directory-of filename) (:default-directory (:state (:buffer-command opened))))
+  actual: (not (= "/Users/matt/projects-new/3p/legmacs/test/legmacs" nil))
+
+FAIL in (look-opens-files-and-reuses-open-buffers) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:51)
+expected: (= {:op :switch, :id 7} (:buffer-command reused))
+  actual: (not (= {:op :switch, :id 7} nil))
+
+FAIL in (look-reuses-an-open-directory-buffer) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:78)
+expected: (= {:op :switch, :id 8} (:buffer-command looked))
+  actual: (not (= {:op :switch, :id 8} nil))
+
+FAIL in (look-opens-directories-as-plain-editable-text) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:61)
+expected: (= :open-new (:op (:buffer-command looked)))
+  actual: (not (= :open-new nil))
+
+FAIL in (look-opens-directories-as-plain-editable-text) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:63)
+expected: (= dir (:default-directory listing))
+  actual: (not (= "/Users/matt/projects-new/3p/legmacs/test/legmacs" nil))
+
+FAIL in (look-opens-directories-as-plain-editable-text) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:64)
+expected: (= (path/display-directory dir) (:buffer-name listing))
+  actual: (not (= "/Users/matt/projects-new/3p/legmacs/test/legmacs/" nil))
+
+FAIL in (look-opens-directories-as-plain-editable-text) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:65)
+expected: (some (fn* [%1] (= "buffer.lg" %1)) (:lines listing))
+  actual: (not (some <fn 0xcc5e3cd87c0> nil))
+
+FAIL in (look-opens-directories-as-plain-editable-text) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:66)
+expected: (some (fn* [%1] (= (str "modes" os/file-separator) %1)) (:lines listing))
+  actual: (not (some <fn 0xcc5e3ce6b80> nil))
+
+ERROR in (look-opens-directories-as-plain-editable-text) (/Users/matt/projects-new/3p/legmacs/test/acme_extension_test.lg:68)
+expected: (:modified? (buf/insert-string listing "note "))
+  actual: #error {:type java.lang.Exception, :message "expected int64, got nil", :data {:trace ("insert-string (<default>:68:21)" "native fn (/Users/matt/projects-new/3p/legmacs/legmacs/buffer.lg:143:14)")}}
+
+Ran 10 tests containing 38 assertions.
+10 failures, 1 errors.

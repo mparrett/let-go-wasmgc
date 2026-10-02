@@ -1,0 +1,7 @@
+;; binding inside loop/recur bodies and recur from inside a binding is illegal natively; binding returns from loop
+(def ^:dynamic *i* -1)
+(println (loop [i 0 acc []] (if (< i 3) (recur (inc i) (conj acc (binding [*i* i] (* 10 *i*)))) acc)) *i*)
+(println (reduce (fn [a x] (binding [*i* x] (+ a *i*))) 0 (range 5)) *i*)
+(println (mapv (fn [x] (binding [*i* x] (when (even? x) (str *i*)))) (range 4)))
+(defn early [x] (binding [*i* x] (if (pos? x) :pos (binding [*i* 0] :zero))))
+(println (early 1) (early 0) *i*)

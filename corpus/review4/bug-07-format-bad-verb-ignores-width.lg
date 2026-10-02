@@ -1,0 +1,8 @@
+;; review4 bug-07 (P3, error text): Go's fmt pads the value inside a bad-verb
+;; report with the directive's width and flags; the natives.lg format twin
+;; drops them (bad-verb, natives.lg:924).
+;; native lg 4e769212 prints:
+;; "%!b(bool=true  )"
+;; "%!$(string= a)s"
+(println (pr-str (format "%-6b" true)))
+(println (pr-str (format "%2$s" "a")))

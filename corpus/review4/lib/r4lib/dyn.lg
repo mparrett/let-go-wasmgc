@@ -1,0 +1,6 @@
+(ns r4lib.dyn)
+(def ^:dynamic *level* :info)
+(def ^:dynamic *sink* nil)
+(defn level [] *level*)
+(defn log [x] (if *sink* (swap! *sink* conj [*level* x]) (println "log" *level* x)))
+(defn with-level [l f] (binding [*level* l] (f)))

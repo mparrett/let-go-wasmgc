@@ -1,0 +1,6 @@
+;; defn with variadic arity of 5 fixed params, used as a value (variadic past max-var-fixed)
+(defn v5 [a b c d e & r] [e r])
+(println (v5 1 2 3 4 5) (v5 1 2 3 4 5 6 7))
+(println (apply v5 (range 5)) (apply v5 (range 8)))
+(let [g v5] (println (g 1 2 3 4 5 6)))
+(println (map v5 [1] [2] [3] [4] [5]))

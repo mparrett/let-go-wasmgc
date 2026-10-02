@@ -1,0 +1,5 @@
+;; set! of a dynamic var with no binding: Clojure refuses; what does let-go do?
+(def ^:dynamic *z* 1)
+(println (try (set! *z* 2) (catch Exception e (str "E " (ex-message e)))) *z*)
+(def plain 1)
+(println (try (set! plain 5) (catch Exception e (str "E " (ex-message e)))) plain)

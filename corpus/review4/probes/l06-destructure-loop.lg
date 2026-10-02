@@ -1,0 +1,5 @@
+;; destructuring in loop bindings (vector, map, nested), shadowing outer names
+(let [a :outer-a b :outer-b]
+  (println (loop [[a b & r] [1 2 3 4 5] acc []] (if a (recur r (conj acc [a b])) acc)) a b))
+(println (loop [{:keys [n acc]} {:n 3 :acc []}] (if (zero? n) acc (recur {:n (dec n) :acc (conj acc n)}))))
+(println (loop [[x [y z]] [1 [2 3]] k 0] (if (< k 2) (recur [(+ x y) [z x]] (inc k)) [x y z])))

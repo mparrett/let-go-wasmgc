@@ -1,0 +1,6 @@
+(ns r4lib.d)
+(def ^:dynamic *mode* :root)
+(defn cur [] *mode*)
+(def at-load (binding [*mode* :loading] (cur)))
+(binding [*mode* :x] (def inside-binding (cur)))
+(def after [(cur) inside-binding])

@@ -1,0 +1,5 @@
+;; binding inits: is the second init evaluated before the first push (Clojure: parallel)?
+(def ^:dynamic *a* :a-root)
+(def ^:dynamic *b* :b-root)
+(println (binding [*a* :a1 *b* *a*] [*a* *b*]))
+(println (binding [*a* (do (println "init a") 1) *b* (do (println "init b") 2)] (+ *a* *b*)))

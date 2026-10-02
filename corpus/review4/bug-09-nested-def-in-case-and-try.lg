@@ -1,0 +1,17 @@
+;; review4 bug-09: D151 lowers a def nested in a top-level let/when/if/cond/
+;; doseq, but two shapes still refuse the WHOLE program at compile time:
+;; a def in a `case` branch ("unsupported :def result used as a value") and
+;; a def in a top-level `try` or `binding` body (the try body is outlined to
+;; _main__tryN_body, so it is "unsupported op :def", the in-fn refusal).
+;; Not used by legmacs (no top-level try/binding/case defs, grep 2026-10-02).
+;; native lg 4e769212 prints:
+;; :two
+;; 3
+;; :b
+(case 2 1 (def k1 1) 2 (def k2 :two))
+(println k2)
+(try (def tr (/ 6 2)) (catch Exception e (def tr :err)))
+(println tr)
+(def ^:dynamic *m* :a)
+(binding [*m* :b] (def inside *m*))
+(println inside)

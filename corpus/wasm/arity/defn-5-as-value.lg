@@ -1,0 +1,8 @@
+;; P6.1(b): defns of 5..9 params used as values (map, apply, a local).
+(defn d5 [a b c d e] (+ a b c d e))
+(defn d7 [a b c d e f g] [a g])
+(defn dm ([a] a) ([a b c d e f] (* a f)))
+(let [g d5 h d7 k dm]
+  (println (g 1 2 3 4 5) (apply g (range 5)) (h 1 2 3 4 5 6 7) (apply h (range 7)) (k 3) (k 2 0 0 0 0 5)))
+(println (map d5 [1 2] [1 2] [1 2] [1 2] [1 2]))
+(println (apply dm (range 1 7)))

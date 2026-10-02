@@ -1,0 +1,23 @@
+;; P6.1(c): a top-level macro expanding to (do (defn ..) (register ..))
+;; (legmacs' defcommand), defs nested in let/when/if at top level, and
+;; globals initialised from an unboxed call, a float, a map and a quoted
+;; vector literal.
+(def registry (atom {}))
+(defn register! [k f] (swap! registry assoc k f) k)
+(defmacro defcmd [name doc args & body]
+  `(do (defn ~name ~doc ~args ~@body) (register! ~(keyword name) ~name)))
+(defcmd inc-it "inc" [x] (inc x))
+(defcmd twice "twice" [x] (* 2 (inc-it x)))
+(println (inc-it 1) (twice 3) (sort (keys @registry)) ((get @registry :twice) 10) (fn? twice))
+(let [k 5] (def from-let (* k k)))
+(when (pos? from-let) (def from-when [:w from-let]))
+(if (neg? from-let) (def not-taken 1) (def chosen :else))
+(println from-let from-when chosen)
+(def min-rows 2)
+(def n-items (count [1 2 3]))
+(def table {:a 1 :b [1 2]})
+(def qv '[x y z])
+(def fl 2.5)
+(def fl2 (* fl 2))
+(defn rows [] (+ min-rows n-items 1))
+(println (rows) table qv fl fl2 (+ fl n-items))

@@ -118,6 +118,14 @@
 ;; arity can accept them).
 (def max-var-fixed 4)
 (def max-invoke 32)
+;; P6.1: fixed arities 5..max-arity-x (Clojure's positional cap) live in a
+;; $FnX, a subtype of $FnV (rt/'s Fn has slots for 0-4 only): fields 10.. are
+;; the codes for arities 5, 6, .. (funcref of type $Code<n>, null when the fn
+;; has no such arity); its variadic slot is null and k is -1 unless the fn
+;; also has a variadic arity. $rt_invoke_var<n> and $rt_apply_vec try the
+;; $FnX slot before the variadic arity, as native prefers an exact arity.
+(def max-arity-x 20)
+(defn fnx-field [n] (+ 10 (- n 5)))
 ;; module-wide atom: the most args any call through a value passes; the
 ;; helpers emit $rt_invoke5..that many only (their text is O(n) each, and the
 ;; helper text is re-parsed on every shake)
@@ -962,6 +970,8 @@
    binding-out); never called natively."
   [h] nil)
 (defn pop-out! "Stand-in for (pop-binding! #'*out*)." [] nil)
+(defn push-err! "Stand-in for (push-binding! #'*err* h) (P6.1)." [h] nil)
+(defn pop-err! "Stand-in for (pop-binding! #'*err*)." [] nil)
 (defn push-var! "Stand-in for (push-binding! #'v x); k names v." [k x] nil)
 (defn pop-var! "Stand-in for (pop-binding! #'v)." [k] nil)
 
@@ -980,7 +990,8 @@
    (var *out*); a var constant would be a Phase-2 value (and a capture in the
    finally region), so the expanded form is rewritten to push-out!/pop-out!,
    which the backend lowers onto a stack of output fds that host-write's fd 1
-   follows. Binding any other dynamic var is refused by name."
+   follows; *err* likewise (push-err!/pop-err!, fd 2, P6.1). Any other var
+   becomes push-var!/pop-var!, checked at lowering (binding-call-wat)."
   [form]
   (cond
     (vector? form) (keep-meta form (mapv binding-out form))
@@ -1000,6 +1011,8 @@
             k (keyword (namespace (symbol vr)) (name (symbol vr)))]
         (cond (and push? (= vr #'*out*)) (list 'do (list 'lower-wasm/push-out! (binding-out (first more))) nil)
               (= vr #'*out*) (list 'do (list 'lower-wasm/pop-out!) nil)
+              (and push? (= vr #'*err*)) (list 'do (list 'lower-wasm/push-err! (binding-out (first more))) nil)
+              (= vr #'*err*) (list 'do (list 'lower-wasm/pop-err!) nil)
               push? (list 'do (list 'lower-wasm/push-var! k (binding-out (first more))) nil)
               :else (list 'do (list 'lower-wasm/pop-var! k) nil))))
     ;; the binding's body: the backend's own println (env.print_*) knows no
@@ -1021,24 +1034,65 @@
         (= 'quote (first form)) form
         :else (apply list (map print->rt form))))
 
+(defn dynamic-program-var?
+  "P6.1: a ^:dynamic var a program or library namespace defined with def
+   (it has source :line meta and is neither a runtime nor an lg-core var).
+   In a whole-program compile it is a var-table var; a unit compiled alone
+   (the census, lower-fn-only) reads it through its extern slot, so binding
+   it there saves and sets that same slot."
+  [v]
+  (and (var? v) (:dynamic (meta v)) (:line (meta v))
+       (not (lw-rt/source-defn v)) (not (lw-rt/runtime-var? v))
+       (not (contains? lw-rt/core-defns v))
+       (not (#{"clojure.core" "let-go.core" "core"} (namespace (symbol v))))))
+
+(defn bound-var-global
+  "The global binding/set! write for v: its var-table global, else (a
+   dynamic program var in a unit compiled alone) its extern slot."
+  [v]
+  (or (var-global v) (when (dynamic-program-var? v) (extern-global v))))
+
+(defn bind-stack-global
+  "P6.1: each bound var saves its values on its own stack, so binding's
+   pops (which run in push order, as the macro expands) restore each var
+   to its own value; one shared stack swapped them when one binding form
+   bound two vars."
+  [g]
+  (let [bs (str "$bs_" (subs g 1))]
+    (swap! *globals* conj (str "(global " bs " (mut (ref null eq)) (ref.null none))"))
+    bs))
+
 (defn binding-call-wat [nid v args]
   (let [bound-global
         (fn []
           (let [k (const-val (first args))
                 vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
-                g (when vr (var-global vr))]
+                g (when vr (bound-var-global vr))]
             (or g (fail (str "lower-wasm: binding of " (namespace k) "/" (name k)
                              " is not supported (not a var-table var)") {:var vr :fn *fname*}))))]
     (str (condp = v
            #'push-out! (str "(call $rt_push_out " (arg-as (first args) :box) ")")
            #'pop-out! "(call $rt_pop_out)"
-           #'push-var! (let [g (bound-global)]
-                         (str "(global.set $bind_stack (struct.new $List (global.get " g ") (global.get $bind_stack) (i64.const 1) (ref.null none)))"
+           #'push-err! (str "(call $rt_push_err " (arg-as (first args) :box) ")")
+           #'pop-err! "(call $rt_pop_err)"
+           #'push-var! (let [g (bound-global) bs (bind-stack-global g)]
+                         (str "(global.set " bs " (struct.new $List (global.get " g ") (global.get " bs ") (i64.const 1) (ref.null none)))"
                               " (global.set " g " " (arg-as (second args) :box) ")"))
-           #'pop-var! (let [g (bound-global)]
-                        (str "(global.set " g " (struct.get $List 0 (ref.cast (ref $List) (global.get $bind_stack))))"
-                             " (global.set $bind_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $bind_stack))))")))
+           #'pop-var! (let [g (bound-global) bs (bind-stack-global g)]
+                        (str "(global.set " g " (struct.get $List 0 (ref.cast (ref $List) (global.get " bs "))))"
+                             " (global.set " bs " (struct.get $List 1 (ref.cast (ref $List) (global.get " bs "))))")))
          " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))
+
+(defn set-var-wat
+  "P6.1: (set! v x) on a var the module holds: native sets the innermost
+   binding when v is bound and the root otherwise; both are the one global
+   here (binding saved the root on v's stack). The result is the var."
+  [nid]
+  (let [[vr val] (ir/refs nid *f*) v (const-val vr)
+        g (or (bound-var-global v)
+              (fail "unsupported op :set-var" {:op :set-var :var v :nid nid :fn *fname*}))]
+    (str "(global.set " g " " (arg-as val :box) ")"
+         (when-not (dead? nid) (str " (local.set $v" nid " " (arg-as vr (ty nid)) ")")))))
 
 ;; review3 bug-07 (P5.8): a call to a native the runtime has no twin for
 ;; went through its nil var-table slot and raised `TypeError: nil is not a
@@ -1064,7 +1118,7 @@
       (and *rt* (rt-overrides v)) ((rt-overrides v) nid args)
       ent (direct-call-wat nid ent args)
       (exn-call-wat nid v args) (exn-call-wat nid v args)
-      (#{#'push-out! #'pop-out! #'push-var! #'pop-var!} v) (binding-call-wat nid v args)
+      (#{#'push-out! #'pop-out! #'push-err! #'pop-err! #'push-var! #'pop-var!} v) (binding-call-wat nid v args)
       (atom-call-wat nid v args) (atom-call-wat nid v args)
       (= v core-println)
       (str (str/join " (call $rt_print_space) " (map print-wat args))
@@ -1453,12 +1507,17 @@
   "codes: arity -> code fn name, plus :v [k name] for a variadic arity with k
    fixed args (the value is then a $FnV)."
   [codes env info-g]
-  (let [[k vc] (:v codes) codes (dissoc codes :v)]
+  (let [[k vc] (:v codes) codes (dissoc codes :v)
+        x? (some #(> % max-arity) (keys codes))]
     (swap! *elem* into (cond-> (vals codes) vc (conj vc)))
-    (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))]
-      (str "(struct.new " (if vc "$FnV " "$Fn ") (slot 0) " " (slot 1) " " (slot 2) " " env " " (slot 3) " " (slot 4)
+    (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))
+          fslot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") "(ref.null func)"))]
+      (str "(struct.new " (cond x? "$FnX " vc "$FnV " :else "$Fn ") (slot 0) " " (slot 1) " " (slot 2) " " env " " (slot 3) " " (slot 4)
            " (global.get " info-g ") (i64.const 0)"
-           (when vc (str " (ref.func $" vc ") (i32.const " k ")")) ")"))))
+           (cond vc (str " (ref.func $" vc ") (i32.const " k ")")
+                 x? " (ref.null func) (i32.const -1)")
+           (when x? (apply str (for [a (range (inc max-arity) (inc max-arity-x))] (str " " (fslot a)))))
+           ")"))))
 
 (defn env-type [kinds]
   (or (get @*env-types* kinds)
@@ -1477,12 +1536,13 @@
 (defn defn-fn-global
   "A defn (program or runtime, multi-arity included) as a fn value: one
    wrapper code fn per arity that unboxes per the signature and calls it
-   directly. Arities past 4 have no $Fn slot (D52) and are left out."
+   directly. Arities 5..max-arity-x make it a $FnX (P6.1); past that they
+   are left out."
   [v]
   (let [ent (callee-sig v)]
     (when *abi-notes* (swap! *abi-notes* update :value (fnil conj #{}) v))
     (or (get @*fn-values* ent)
-        (let [ars (into (sorted-map) (filter #(<= (key %) max-arity) (:arities ent)))
+        (let [ars (into (sorted-map) (filter #(<= (key %) max-arity-x) (:arities ent)))
               vs (let [vs (:variadic ent)] (when (and vs (<= (:fixed vs) max-var-fixed)) vs))
               ;; P2.12: a native past its fixed arities, through its -seq form
               ad (when-not vs (seq-adapter ent))
@@ -1617,8 +1677,8 @@
         codes (into {} (for [{tfn :fn :keys [arity variadic?]} tpls]
                          (do (when (and variadic? (> (dec arity) max-var-fixed))
                                (fail "unsupported variadic closure with more than 4 fixed params" {:fn *fname* :arity arity}))
-                             (when (and (not variadic?) (> arity max-arity))
-                               (fail "unsupported closure arity > 4" {:fn *fname* :arity arity}))
+                             (when (and (not variadic?) (> arity max-arity-x))
+                               (fail (str "unsupported closure arity > " max-arity-x) {:fn *fname* :arity arity}))
                              (let [cname (str base "_" (if variadic? "v" arity))
                                    info (assoc (binding [*box-params* true] (analyze-ir cname tfn))
                                                :params (vec (repeat arity :box)) :ret :box :caps []
@@ -1681,7 +1741,7 @@
       (= op :tail-call) (fail "unsupported op :tail-call (not emitted by current ir.build)" {:nid nid :fn *fname*})
       ;; a stack-VM marker cleanup strips; nothing to emit if one survives
       (= op :pop) nil
-      (= op :set-var) (fail "unsupported op :set-var" {:op op :var (const-val (first refs)) :nid nid :fn *fname*})
+      (= op :set-var) (set-var-wat nid)
       ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
       (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
@@ -2437,20 +2497,32 @@
     (local.set $i (i32.add (local.get $i) (i32.const 1)))
     (br $l)))
   (call $host_write (local.get $fd) (i32.const 32) (local.get $n)))
-;; (binding [*out* h] ..) (P3.2): a stack of boxed fds; fd 1 follows its top
+;; (binding [*out* h] ..) (P3.2): a stack of boxed fds; fd 1 follows its top.
+;; (binding [*err* h] ..) (P6.1): the same for fd 2. A pushed handle's fd is
+;; resolved through both stacks at push time, as native binds the value
+;; *out*/*err* has then: (with-out-str (binding [*err* *out*] ..)) sends fd 2
+;; into the capture (-2), and a later rebinding does not redirect it.
 (global $out_stack (mut (ref null eq)) (ref.null none))
-;; saved values of bound var-table vars (P3.2), most recent first
-(global $bind_stack (mut (ref null eq)) (ref.null none))
+(global $err_stack (mut (ref null eq)) (ref.null none))
 (func $rt_out_fd (param $fd i32) (result i32)
   (if (i32.and (i32.eq (local.get $fd) (i32.const 1)) (i32.eqz (ref.is_null (global.get $out_stack))))
     (then (return (i32.wrap_i64 (call $rt_unbox_int (struct.get $List 0 (ref.cast (ref $List) (global.get $out_stack))))))))
+  (if (i32.and (i32.eq (local.get $fd) (i32.const 2)) (i32.eqz (ref.is_null (global.get $err_stack))))
+    (then (return (i32.wrap_i64 (call $rt_unbox_int (struct.get $List 0 (ref.cast (ref $List) (global.get $err_stack))))))))
   (local.get $fd))
+(func $rt_handle_fd (param $h (ref null eq)) (result (ref null eq))
+  (call $rt_box_int (i64.extend_i32_s (call $rt_out_fd (i32.wrap_i64
+    (struct.get $Handle 0 (ref.cast (ref $Handle) (local.get $h))))))))
 (func $rt_push_out (param $h (ref null eq))
-  (global.set $out_stack (struct.new $List
-    (call $rt_box_int (struct.get $Handle 0 (ref.cast (ref $Handle) (local.get $h))))
+  (global.set $out_stack (struct.new $List (call $rt_handle_fd (local.get $h))
     (global.get $out_stack) (i64.const 1) (ref.null none))))
 (func $rt_pop_out
   (global.set $out_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $out_stack)))))
+(func $rt_push_err (param $h (ref null eq))
+  (global.set $err_stack (struct.new $List (call $rt_handle_fd (local.get $h))
+    (global.get $err_stack) (i64.const 1) (ref.null none))))
+(func $rt_pop_err
+  (global.set $err_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $err_stack)))))
 ;; with-out-str (P2.14): fd -2 on the *out* stack routes fd 1 to the top of
 ;; a stack of byte buffers (a List of Bytes, the head replaced on append)
 (global $cap_stack (mut (ref null eq)) (ref.null none))
@@ -2624,8 +2696,13 @@
                    ;; n covers its fixed args; else native's arity error
                    "(func $rt_invoke_var" n " (param $fn (ref $Fn))"
                    (apply str (map #(str " (param $a" % " (ref null eq))") (range n)))
-                   " (result (ref null eq)) (local $v (ref null $FnV))
-  (if (ref.test (ref $FnV) (local.get $fn))
+                   " (result (ref null eq)) (local $v (ref null $FnV))\n"
+                   (when (<= (inc max-arity) n max-arity-x)
+                     (str "  (if (ref.test (ref $FnX) (local.get $fn))
+    (then (if (i32.eqz (ref.is_null (struct.get $FnX " (fnx-field n) " (ref.cast (ref $FnX) (local.get $fn)))))
+      (then (return_call_ref $Code" n " (local.get $fn)" args
+                          " (ref.cast (ref $Code" n ") (struct.get $FnX " (fnx-field n) " (ref.cast (ref $FnX) (local.get $fn)))))))))\n"))
+                   "  (if (ref.test (ref $FnV) (local.get $fn))
     (then (local.set $v (ref.cast (ref $FnV) (local.get $fn)))\n"
                    (apply str
                           (for [k (range (inc (min n max-var-fixed)))]
@@ -2671,6 +2748,16 @@
   (if (ref.test (ref $MetaEnv) (struct.get $Fn 3 (ref.cast (ref $Fn) (local.get $f))))
     (then (return_call $rt_apply_vec (struct.get $MetaEnv 0 (ref.cast (ref $MetaEnv) (struct.get $Fn 3 (ref.cast (ref $Fn) (local.get $f)))))
                        (local.get $v))))
+  (if (ref.test (ref $FnX) (local.get $f))
+    (then\n"
+            (apply str (for [n (range (inc max-arity) (inc max-arity-x))]
+                         (str "      (if (i32.and (i32.eq (local.get $n) (i32.const " n "))
+                   (i32.eqz (ref.is_null (struct.get $FnX " (fnx-field n) " (ref.cast (ref $FnX) (local.get $f))))))
+        (then (return_call_ref $Code" n " (local.get $f)"
+                              (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range n)))
+                              " (ref.cast (ref $Code" n ") (struct.get $FnX " (fnx-field n) " (ref.cast (ref $FnX) (local.get $f)))))))\n")))
+            "      (if (i32.lt_s (struct.get $FnV 9 (ref.cast (ref $FnV) (local.get $f))) (i32.const 0))
+        (then (call $rt_arity_error (ref.cast (ref $Fn) (local.get $f)) (local.get $n)) unreachable))))
   (if (i32.eqz (ref.test (ref $FnV) (local.get $f)))
     (then (call $rt_arity_error (ref.cast (ref $Fn) (local.get $f)) (local.get $n)) unreachable))
   (local.set $fv (ref.cast (ref $FnV) (local.get $f)))
@@ -3130,7 +3217,10 @@
   (binding [*ns* (the-ns ns)]
     (let [src (list 'defn '__init [] (expand-form form))]
       (analyze-deps! src)
-      (swap! *rt* update :pending conj (assoc (analyze-fn src wname true) :export? false)))))
+      ;; P6.1: the global is (ref null eq); typeinfer may type the init's
+      ;; result i64/f64 ((def n 2)), so its returns box (`return` coerces
+      ;; to :ret)
+      (swap! *rt* update :pending conj (assoc (analyze-fn src wname true) :export? false :ret :box)))))
 
 (defn rt-global!
   "The wasm global of a runtime top-level def (D39), its init fn analysed."
@@ -3180,6 +3270,38 @@
                         (let [m (merge (meta v) {:name (symbol (name sym))} before (def-form-meta form))]
                           (alter-meta! v (fn [_] m))))
                       r))))
+
+;; P5.12: ir.build/build-loop ends by re-binding, in the enclosing scope,
+;; every local its body rebound (an `if` join inside the body rebinds the
+;; loop's own vars to join block-args). It does not leave out the loop's
+;; own symbols, so a loop var that shadows an enclosing local of the same
+;; name overwrote that local for the code after the loop (`(let [i 10] (loop
+;; [i 0] ..) i)` read the loop's final i), and an unshadowed loop var leaked
+;; into the enclosing scope. The body can never see an enclosing binding of
+;; a loop symbol, so that rebind is always wrong: drop exactly those calls.
+;; They are told apart from every other bind-local! by being made while this
+;; loop's header is on :loop-headers (inits run before it is pushed) at the
+;; loop's entry scope depth (its body runs one frame deeper). Upstream
+;; ir.build finding; worked around here as build-def is above.
+(def ^:dynamic *loop-guard* nil)
+
+(alter-var-root #'ir.build/build-loop
+                (fn [orig]
+                  (fn [form ctx]
+                    (let [bs (second form)]
+                      (binding [*loop-guard* {:syms (set (take-nth 2 bs))
+                                              :depth (count (:locals @ctx))
+                                              :headers (inc (count (:loop-headers @ctx)))}]
+                        (orig form ctx))))))
+
+(alter-var-root #'ir.build/bind-local!
+                (fn [orig]
+                  (fn [ctx sym inst-id]
+                    (let [{:keys [syms depth headers]} *loop-guard*]
+                      (when-not (and syms (contains? syms sym)
+                                     (= depth (count (:locals @ctx)))
+                                     (= headers (count (:loop-headers @ctx))))
+                        (orig ctx sym inst-id))))))
 
 (def var-meta-tail
   "Native's order for the keys def adds, after the form's own (P5.9)."
@@ -3531,14 +3653,22 @@
     (if (:mut f) (str "(mut " t ")") t)))
 
 (defn fnv-types
-  "P2.12: $FnV (a $Fn plus its variadic code and fixed-arg count) and the
-   one code type rt/ lacks, $Code5 (a variadic arity with 4 fixed args)."
+  "P2.12: $FnV (a $Fn plus its variadic code and fixed-arg count); P6.1:
+   $FnX (a $FnV plus fixed arities 5..max-arity-x) and the code types rt/
+   lacks, $Code5.. (a variadic arity with 4 fixed args, fixed arities 5..)."
   []
   (let [fn-decl (:decl (first (filter #(= "$Fn" (lw-rt/type-name (:var %))) lw-rt/decls)))]
-    (str "  (type $FnV (sub final $Fn (struct"
+    (str "  (type $FnV (sub $Fn (struct"
          (apply str (map-indexed (fn [i f] (str " (field " (field-wt "$Fn" i f) ")")) (:fields fn-decl)))
          " (field funcref) (field i32))))\n"
-         "  (type $Code5 (func" (apply str (repeat 6 " (param (ref null eq))")) " (result (ref null eq))))\n")))
+         ;; P6.1: $FnX, fixed arities 5..max-arity-x (see max-arity-x)
+         "  (type $FnX (sub final $FnV (struct"
+         (apply str (map-indexed (fn [i f] (str " (field " (field-wt "$Fn" i f) ")")) (:fields fn-decl)))
+         " (field funcref) (field i32)"
+         (apply str (repeat (- max-arity-x max-arity) " (field funcref)"))
+         ")))\n"
+         (apply str (for [n (range (inc max-arity) (inc max-arity-x))]
+                      (str "  (type $Code" n " (func" (apply str (repeat (inc n) " (param (ref null eq))")) " (result (ref null eq))))\n"))))))
 
 (defn rec-group
   "ONE rec group (D25): every runtime declaration (lw-rt, source order),
@@ -3713,9 +3843,28 @@
     (let [st @*rt*
           order (into {} (map-indexed (fn [i g] [(:var g) i]) lw-rt/globals))
           gs (sort-by #(order (key %)) (filter #(live (:name (val %))) (:globals st)))
-          stmts (concat (for [[_ {:keys [name init]}] gs] (str "(global.set " name " (call $" init "))"))
+          consts (const-init-order live items)
+          const-set (set consts)
+          const-refs (fn [item] (filter const-set (refs-of (or (items item) ""))))
+          ;; P6.1: a global whose init reads a constant (a map, string or
+          ;; quoted-symbol literal: (def m {"a" 1})) came out with the
+          ;; constant's still-null global; those constants, and the ones they
+          ;; read, are built just before it. The rest keep their place after
+          ;; the link step.
+          needs (fn [init] (loop [todo (const-refs (str "$" init)) acc #{}]
+                             (if-let [c (first todo)]
+                               (if (acc c) (recur (rest todo) acc)
+                                   (recur (concat (rest todo) (const-refs (str "$" (subs c 1) "__init"))) (conj acc c)))
+                               acc)))
+          cinit (fn [g] (str "(global.set " g " (call $" (subs g 1) "__init))"))
+          [early done] (reduce (fn [[out done] [_ {:keys [name init]}]]
+                                 (let [pre (remove done (filter (needs init) consts))]
+                                   [(-> out (into (map cinit pre)) (conj (str "(global.set " name " (call $" init "))")))
+                                    (into done pre)]))
+                               [[] #{}] gs)
+          stmts (concat early
                         (when (live "$wasm.seq/hooks") ["(drop (call $wasm.core/install!))"])
-                        (for [g (const-init-order live items)] (str "(global.set " g " (call $" (subs g 1) "__init))")))]
+                        (map cinit (remove done consts)))]
       (when (seq stmts)
         (str "(func $_rt_init\n  " (str/join "\n  " stmts) ")\n(start $_rt_init)\n")))))
 

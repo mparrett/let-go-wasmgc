@@ -1,0 +1,6 @@
+;; RUN WITH LG_ARGS="-source-paths corpus/review4/lib"
+;; library defns of 5+ params used as values from the program
+(ns a14-lib-arity-values (:require [r4lib.ar :as ar]))
+(println (ar/six 1 2 3 4 5 6) (apply ar/six (range 6)) (map ar/six [1] [1] [1] [1] [1] [2]))
+(println (apply ar/multi (range 5)) (ar/multi 9) (let [m ar/multi] (m 1 2 3 4 5)))
+(println (apply ar/exported-priv (range 7)))

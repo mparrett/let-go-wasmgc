@@ -1,0 +1,14 @@
+;; review4 bug-05: natives legmacs reaches but corpus/natives/natives-legmacs.txt
+;; does not list, so P6.0's "MISSING 0" never saw them: core/sleep (main.lg:143,
+;; the job-poll loop), core/promise + core/deliver (buffers.lg jobs, tests),
+;; core/delay* (the delay macro). The module raises the named
+;; "lower-wasm: core/<x> has no twin" (D139 works), but legmacs' main loop
+;; dies on its first pending job.
+;; native lg 4e769212 prints:
+;; :slept
+;; [false true 7]
+;; false
+(defn t [f] (println (try (f) (catch Exception e (str "E: " (ex-message e))))))
+(t (fn [] (sleep 1) :slept))
+(t (fn [] (let [p (promise)] [(realized? p) (do (deliver p 7) (realized? p)) @p])))
+(t (fn [] (realized? (delay 1))))

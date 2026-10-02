@@ -1,0 +1,10 @@
+;; review4 bug-06: a second defonce of the same name re-runs its init and
+;; overwrites the var (silent). driver.lg treats defonce as def (library
+;; index! rewrites it to (def ..); the main program the same way). Neither
+;; legmacs nor xsofy uses defonce (grep 2026-10-02), so exposure is generic.
+;; native lg 4e769212 prints:
+;; once-init
+;; 1
+(defonce once (do (println "once-init") 1))
+(defonce once (do (println "second-init") 2))
+(println once)

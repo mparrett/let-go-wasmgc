@@ -1,0 +1,9 @@
+;; closures capturing 5+ locals with 5+ params, nested, returned
+(defn mk [p q r s t u]
+  (fn [a b c d e f] [(+ p a) (+ q b) (+ r c) (+ s d) (+ t e) (+ u f)]))
+(println ((mk 1 2 3 4 5 6) 10 20 30 40 50 60))
+(defn mk2 [p q r s t]
+  (fn [a b c d e] (fn [v w x y z] (+ p q r s t a b c d e v w x y z))))
+(println (((mk2 1 1 1 1 1) 2 2 2 2 2) 3 3 3 3 3))
+(let [x 1 y 2 z 3 w 4 v 5 u 6]
+  (println (mapv (fn [a b c d e] (+ a b c d e x y z w v u)) [1 2] [1 2] [1 2] [1 2] [1 2])))

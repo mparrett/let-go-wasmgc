@@ -1,0 +1,6 @@
+;; binding nested 12 deep through recursion and literally; same var twice in one form
+(def ^:dynamic *d* 0)
+(defn deep [n] (if (zero? n) *d* (binding [*d* (inc *d*)] (deep (dec n)))))
+(println (deep 12) *d*)
+(println (binding [*d* 1 *d* 2] *d*) *d*)
+(println (binding [*d* 1] (binding [*d* (* 10 *d*)] (binding [*d* (+ 5 *d*)] *d*))) *d*)

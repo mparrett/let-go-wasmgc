@@ -1,0 +1,13 @@
+;; native-returned fns (memoize, fnil, comp, complement, juxt, partial, every-pred, some-fn, constantly) called with 5..7 args
+(def f5 (fn [a b c d e] (+ a b c d e)))
+(defn t [nm f] (println nm (try (f) (catch Exception e (str "E: " (ex-message e))))))
+(t :memoize #((memoize f5) 1 2 3 4 5))
+(t :fnil #((fnil f5 10) nil 1 1 1 1))
+(t :comp #((comp inc f5) 1 1 1 1 1))
+(t :juxt #((juxt f5 f5) 1 1 1 1 1))
+(t :partial #((partial f5 1) 1 1 1 1))
+(t :every-pred #((every-pred pos?) 1 2 3 4 5))
+(t :some-fn #((some-fn neg?) 1 2 3 4 5))
+(t :constantly #((constantly 9) 1 2 3 4 5 6 7))
+(t :complement #((complement (fn [& xs] false)) 1 2 3 4 5))
+(t :identity-apply #(apply (complement f5) [1 2 3 4 5]))

@@ -1,0 +1,17 @@
+;; review4 bug-02: nth with a non-integer index (nil, String, Float) is an
+;; UNCATCHABLE wasm trap ("illegal cast") in the module; native raises a
+;; catchable "expected int64, got ..." error. This is the acme_extension_test
+;; trap (legmacs.buffer/insert-string on a nil state: (nth lines cursor-row)
+;; with both nil) and kills the whole test file / editor session.
+;; native lg 4e769212 prints:
+;; E: expected int64, got nil
+;; E: expected int64, got let-go.lang.String
+;; E: expected int64, got let-go.lang.Float
+;; E: expected int64, got nil
+;; done
+(defn t [f] (println (try (f) (catch Exception e (str "E: " (ex-message e))))))
+(t (fn [] (nth [1 2] nil)))
+(t (fn [] (nth [1 2] "a")))
+(t (fn [] (nth [1 2] 1.0)))
+(t (fn [] (let [{:keys [lines row]} nil] (nth lines row))))
+(println "done")

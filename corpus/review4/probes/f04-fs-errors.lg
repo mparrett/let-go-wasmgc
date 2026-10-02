@@ -1,0 +1,6 @@
+;; spit / os/* error texts on a nonexistent directory (the module has no FS)
+(println (try (spit "/nonexistent-dir-r4/x.txt" "a") (catch Exception e (ex-message e))))
+(println (try (os/ls "/nonexistent-dir-r4") (catch Exception e (ex-message e))))
+(println (os/stat "/nonexistent-dir-r4/y"))
+(println (try (slurp "/nonexistent-dir-r4/x.txt") (catch Exception e (ex-message e))))
+(println (try (spit "/nonexistent-dir-r4/x.txt" "a" :append true) (catch Exception e (ex-message e))))

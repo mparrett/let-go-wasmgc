@@ -1,0 +1,7 @@
+;; ^:dynamic def + binding in the same file at top level, set! at top of binding
+(def ^:dynamic *cfg* {:mode :default})
+(defn mode [] (:mode *cfg*))
+(def captured (binding [*cfg* {:mode :top}] (mode)))
+(println captured (mode))
+(binding [*cfg* (assoc *cfg* :mode :b)] (def inside (mode)))
+(println inside (mode))

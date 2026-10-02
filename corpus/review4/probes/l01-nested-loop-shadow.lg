@@ -1,0 +1,11 @@
+;; shadowing through nested loops, same-named locals at three depths
+(let [i 100]
+  (println (loop [i 0 acc []]
+             (if (< i 3)
+               (recur (inc i) (conj acc (loop [i (* i 10) n 0] (if (< n 2) (recur (inc i) (inc n)) i))))
+               acc))
+           i))
+(let [x 1]
+  (let [x (loop [x 2 k 0] (if (< k 3) (recur (* x 2) (inc k)) x))]
+    (println x (loop [x x] (if (> x 5) (recur (dec x)) x))))
+  (println x))

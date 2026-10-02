@@ -1,0 +1,6 @@
+;; an unshadowed loop var must not leak: a global of the same name after the loop
+(def i :global-i)
+(defn f [] (loop [i 0] (when (< i 3) (recur (inc i)))) i)
+(println (f))
+(defn g [] (let [r (loop [i 0] (if (< i 2) (recur (inc i)) i))] [r i]))
+(println (g))

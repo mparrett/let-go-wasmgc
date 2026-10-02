@@ -1,0 +1,17 @@
+;; P6.1(a): binding *err* (legmacs' capturing-out shape): inside
+;; with-out-str, (binding [*err* *out*] ..) makes *err* the capture, so
+;; output sent to *err* lands in the string. Prints sit lexically inside the
+;; binding bodies: a print in a fn CALLED from a binding body still goes to
+;; stdout under the backend (binding-out's named limit, D115).
+(defn capturing [k]
+  (let [result (atom nil)
+        s (with-out-str
+            (binding [*err* *out*]
+              (println "to out")
+              (binding [*out* *err*] (println "to err" k))
+              (reset! result (* 2 k))))]
+    [s @result]))
+(println (pr-str (capturing 21)))
+(println (pr-str (with-out-str (binding [*err* *out*] (binding [*err* *err*] (binding [*out* *err*] (print "nested")))))))
+(binding [*out* *err*] (print ""))
+(println "after")

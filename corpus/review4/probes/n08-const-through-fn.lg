@@ -1,0 +1,9 @@
+;; D151 named limit: a constant reached only through a fn the init calls
+(defn defaults [] {:a 1 "b" [1 2] :c #{3}})
+(defn names [] '[x y z])
+(defn msg [] "a string constant")
+(def d (defaults))
+(def n (names))
+(def s (msg))
+(def combined (merge (defaults) {:d (count (names))}))
+(println d n s (sort-by str (keys combined)))

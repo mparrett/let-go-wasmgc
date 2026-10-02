@@ -1,0 +1,8 @@
+;; recursion and tail calls at arity 6, defn and closure, mutual via letfn
+(defn r6 [n a b c d acc] (if (zero? n) acc (recur (dec n) b c d a (+ acc a))))
+(println (r6 1000000 1 2 3 4 0))
+(defn nr6 [n a b c d acc] (if (zero? n) acc (nr6 (dec n) b c d a (+ acc a))))
+(println (nr6 1000 1 2 3 4 0))
+(letfn [(ev [n a b c d e] (if (zero? n) [:even a e] (od (dec n) a b c d e)))
+        (od [n a b c d e] (if (zero? n) [:odd a e] (ev (dec n) a b c d e)))]
+  (println (ev 1001 1 2 3 4 5)))

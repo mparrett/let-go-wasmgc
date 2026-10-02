@@ -1,0 +1,7 @@
+;; recur in case/cond/condp branches
+(defn c [x acc] (case x 0 acc 1 (recur 0 (conj acc :one)) (recur (dec x) (conj acc x))))
+(println (c 4 []))
+(defn d [x] (loop [x x n 0] (cond (zero? x) n (even? x) (recur (quot x 2) (inc n)) :else (recur (dec x) (inc n)))))
+(println (d 27))
+(defn e [s] (loop [s s acc ""] (if-let [[ch & more] (seq s)] (case ch \a (recur more (str acc "A")) (recur more (str acc ch))) acc)))
+(println (e "banana"))

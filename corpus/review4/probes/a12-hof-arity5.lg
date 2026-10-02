@@ -1,0 +1,7 @@
+;; higher-order core fns over 5+ arity fns: memoize, fnil, comp, trampoline, some-fn, complement
+(def f5 (fn [a b c d e] (+ a b c d e)))
+(def mf (memoize f5))
+(println (mf 1 2 3 4 5) (mf 1 2 3 4 5) ((fnil f5 10) nil 1 1 1 1) ((comp inc f5) 1 1 1 1 1) ((complement (fn [a b c d e] false)) 1 2 3 4 5))
+(defn bounce [n a b c d] (if (zero? n) [a b c d] #(bounce (dec n) b c d a)))
+(println (trampoline bounce 5 1 2 3 4))
+(println (reduce-kv (fn [acc k v] (f5 acc k v 0 0)) 0 {1 2 3 4}))

@@ -1,0 +1,14 @@
+;; review4 bug-10: D139's guarantee (a native without a twin raises
+;; "lower-wasm: <ns/name> has no twin") does not cover a Java-style static
+;; symbol: Integer/parseInt calls through a nil slot and raises a catchable
+;; native-looking "TypeError: nil is not a function", review3 bug-07's
+;; class. Outside a try the same call raises the named "lower-wasm:
+;; Integer/parseInt has no twin" (line 2), so the named stub exists but the
+;; call inside the outlined try body takes another path (value call through
+;; the nil slot). Other untwinned natives inside try (core/delay*,
+;; core/promise in probes/f08) ARE named: the gap is the static-interop form.
+;; native lg 4e769212 prints:
+;; E: strconv.ParseInt: parsing "x": invalid syntax
+;; 42
+(println (try (Integer/parseInt "x") (catch Exception e (str "E: " (ex-message e)))))
+(println (Integer/parseInt "42"))

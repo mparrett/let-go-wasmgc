@@ -1,0 +1,17 @@
+;; defcommand-style macro: do with def + side effects (println at load), order of effects
+(def log (atom []))
+(defmacro defcmd [nm & body]
+  `(do (swap! log conj ~(str "pre-" nm))
+       (defn ~nm [] ~@body)
+       (println "registering" '~nm)
+       (def ~(symbol (str nm "-meta")) {:name ~(str nm)})
+       (swap! log conj ~(str "post-" nm))))
+(defcmd alpha :a)
+(defcmd beta (alpha))
+(println @log (alpha) (beta) alpha-meta beta-meta)
+(defmacro two-defs [] `(do (def ~'p1 1) (def ~'p2 (inc ~'p1))))
+(two-defs)
+(println p1 p2)
+(defmacro wrapped [] `(let [x# 5] (def ~'from-macro-let x#)))
+(wrapped)
+(println from-macro-let)

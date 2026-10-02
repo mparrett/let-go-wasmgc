@@ -1,0 +1,14 @@
+;; review4 bug-03: slurp is still the round-1 host-I/O stub, an UNCATCHABLE
+;; trap ("wasm trap: lower-wasm: slurp is host I/O (Phase 3/4)"), while D138
+;; gave spit/os/ls/os/stat native's no-such-file behaviour. legmacs loads
+;; every file through (try (slurp path) (catch e nil)) (commands.lg:483,
+;; main.lg's file argument and find-file; vibe.lg:531 read-config), so the
+;; first find-file in a browser session kills the module instead of opening
+;; a new buffer.
+;; native lg 4e769212 prints:
+;; slurp failed: open /nonexistent-dir-r4/x.txt: no such file or directory
+;; nil
+;; done
+(println (try (slurp "/nonexistent-dir-r4/x.txt") (catch Exception e (ex-message e))))
+(println (try (slurp "/nonexistent-dir-r4/x.txt") (catch e nil)))
+(println "done")

@@ -1,0 +1,11 @@
+;; review4 bug-08 (pre-existing twin, newly common now that 5+ arity fns
+;; lower): complement's twin (rt/wasm/core.lg:543) fills Fn slots 0..4 only
+;; and FnInfo k = -1, so a complemented fn called or applied with 5+ args
+;; raises an arity error whose text prints k as unsigned ("expected
+;; 4294967295 args"). Native's complemented-fn takes any arg count.
+;; Same shape to check: rt/wasm/lang.lg:108 (FnInfo 0 -1, null slots).
+;; native lg 4e769212 prints:
+;; true
+;; false
+(println ((complement (fn [& xs] false)) 1 2 3 4 5))
+(println (apply (complement (fn [a b c d e] true)) [1 2 3 4 5]))

@@ -1,0 +1,13 @@
+;; nested def in let/when/cond/do/try at top level
+(let [a 1 b 2] (def s (+ a b)) (def t (* s 10)))
+(println s t)
+(cond (> s 5) (def which :big) :else (def which :small))
+(println which)
+(do (def d1 1) (do (def d2 (inc d1))))
+(println d1 d2)
+(try (def tr (/ 6 2)) (catch Exception e (def tr :err)))
+(println tr)
+(when-let [x (get {:k 3} :k)] (def wl x))
+(println wl)
+(doseq [i [1]] (def from-doseq i))
+(println from-doseq)

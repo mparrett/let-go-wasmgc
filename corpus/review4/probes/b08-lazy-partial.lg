@@ -1,0 +1,6 @@
+;; lazy seq partially realised inside binding, rest outside (chunking!)
+(def ^:dynamic *k* 1)
+(def xs (binding [*k* 100] (let [s (map (fn [x] (* x *k*)) (range 40))] (first s) s)))
+(println (take 3 xs) (nth xs 35))
+(def ys (binding [*k* 7] (let [s (map (fn [x] (* x *k*)) (iterate inc 0))] (doall (take 2 s)) s)))
+(println (take 4 ys))

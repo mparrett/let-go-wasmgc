@@ -1,0 +1,9 @@
+;; with-meta on fixed-arity 5+ fns (closure and defn value), and on a FnX with a k<=4 variadic
+(def c6 (fn [a b c d e f] (+ a f)))
+(def m6 (with-meta c6 {:k 1}))
+(println (meta m6) (m6 1 2 3 4 5 6) (apply m6 (range 6)) (fn? m6) (try (m6 1) (catch Exception e :arity)))
+(defn d7 [a b c d e f g] g)
+(def md7 (vary-meta d7 assoc :z 2))
+(println (meta md7) (md7 1 2 3 4 5 6 7) (apply md7 (range 7)))
+(def mv (with-meta (fn ([a] a) ([a b c d e] e) ([a b c d & r] r)) {:v 2}))
+(println (mv 1) (mv 1 2 3 4 5) (mv 1 2 3 4 5 6 7) (apply mv (range 5)) (apply mv (range 9)))

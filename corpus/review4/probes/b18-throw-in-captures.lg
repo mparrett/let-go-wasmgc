@@ -1,0 +1,8 @@
+;; throws through with-out-str and *out*/*err* bindings must restore the fd stacks
+(println (pr-str (try (with-out-str (print "lost") (throw (ex-info "x" {}))) (catch Exception e :caught))))
+(println "after-1")
+(println (pr-str (try (with-out-str (binding [*out* *err*] (throw (ex-info "y" {})))) (catch Exception e :caught2))))
+(println "after-2")
+(println (pr-str (with-out-str (try (binding [*err* *out*] (binding [*out* *err*] (print "in") (throw (ex-info "z" {})))) (catch Exception e (print "c"))) (print "tail"))))
+(binding [*err* *out*] (binding [*out* *err*] (println "err-as-out")))
+(println "end")

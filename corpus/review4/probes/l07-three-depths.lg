@@ -1,0 +1,12 @@
+;; same-named local at fn param, let, loop, inner fn param; dotimes/doseq reuse names
+(defn f [v]
+  (let [v (inc v)]
+    (loop [v v acc []]
+      (if (< v 5)
+        (recur (inc v) (conj acc ((fn [v] (* v 10)) v)))
+        [acc v]))))
+(println (f 0))
+(let [i :i] (dotimes [i 2] (print i "")) (doseq [i [:a :b]] (print i "")) (println i))
+(let [n 5] (println (loop [n 0] (if (< n 2) (recur (inc n)) n)) n))
+(defn g [x] (when-let [x (seq x)] (loop [x x s 0] (if x (recur (next x) (+ s (first x))) s))))
+(println (g [1 2 3]) (g []))
