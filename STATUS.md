@@ -87,3 +87,5 @@
 | P6.R | dispatched 09:45 | opus | read-only, corpus/review4, frozen copy incl. P6.1 |
 | P6.R | done 2026-10-02 10:50 | opus | review4: 11 bugs, rows P6.6-P6.8 filed; xsofy rows held |
 | P6.2 | measured 2026-10-02 11:00 | runner | 252/373, 24/30 on 1f51b18; #bar 252; limit-adjusted ceiling 262 (eval + go/future/promise = Phase 7) |
+| P6.3 | done 2026-10-02 11:40 | opus | legmacs-parity 5/5 MATCH (legmacs 187fea2), module 1.23 MB raw / 343 KB opt |
+| P6.4/P6.5 | red 11:40 | — | boot dies at install-spawn-tracking! (alter-var-root of native #'future*); rt half → P6.7, src half → P6.8 (messaged) |
