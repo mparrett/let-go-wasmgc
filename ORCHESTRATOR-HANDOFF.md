@@ -65,6 +65,8 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   (GATE_END, GATE_SUMMARY, GATE_COMMITS) to fill from the gate result, then: previews/2026-10-02 (preview-diff 1fc6164~1..HEAD),
   campaign summary round-2 section, D-entry for the gates, STATUS cost line, memory, release pulse claim --outcome handoff.
 
+## NEXT (read first after compaction, 2026-10-02 morning): ROUND3.md. Track A = Phase 7 interpreter (`rt/wasm/eval.lg`), rows P7.0–P7.5/P7.R/P7.GATE to be appended to items.tsv BEFORE any dispatch; Matt test-drives via P7.5 (legmacs `C-x C-e` under node/browser). Track B (repo split, README, demo page, upstream issues) is HOLD: never start it from a loop tick; it needs Matt in the conversation. Not started yet: wait for Matt's go after compaction. Pulse claim released (#314 handoff); re-claim `task:letgo-emit-wasm-campaign` when round 3 starts. Playground: tmux `lw-play` (tui / web :8260 / legmacs :8261); node runs tested 2026-10-02 ~05:50 (legmacs echoes under node; xsofy renders the seeded title under node but does not exit on end of scripted input, a nit).
+
 ## ROUND 2 COMPLETE 2026-10-02 05:21 PDT (D158). Nothing in flight. Pulse claim released at wrap-up. Phase 7 (eval/go/regex flags) needs its own plan and Matt's decision; upstreaming held until Matt and I talk.
 
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
