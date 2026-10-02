@@ -1,0 +1,16 @@
+;; legmacs-twins (P5.8, review3 bug-07): re-pattern of a run-time String,
+;; and a native without a twin failing by name. commands.lg:276 compiles
+;; search input with (try (re-pattern input) (catch e nil)).
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(defn compile-search [input] (try (re-pattern input) (catch Exception e nil)))
+(t "search" #(let [p (compile-search "fo+")] [(some? p) (when p (re-find p "a foo b"))]))
+(t "search groups" #(re-find (re-pattern "(\\w+)@(\\w+)") "mail: me@host now"))
+(t "matches" #(re-matches (re-pattern "\\d+") "123"))
+(t "seq" #(re-seq (re-pattern "[a-c]") "abcxa"))
+(t "str" #(str (re-pattern "a+b")))
+(t "regex in" #(str (re-pattern #"x")))
+(t "split" #(clojure.string/split "a1b22c" (re-pattern "\\d+")))
+(t "replace" #(clojure.string/replace "a1b22c" (re-pattern "(\\d+)") "<$1>"))
+(t "not string" #(re-pattern 5))
+;; a malformed pattern is caught as native's is (the texts differ: named limit)
+(t "bad caught" #(compile-search "a("))

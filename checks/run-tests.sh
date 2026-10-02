@@ -26,15 +26,20 @@
 # then "pass/total". Exit 0 iff every file passes.
 #
 # --corpus <list>: lines `file<TAB>deftests` (# comments), files relative to
-# LETGO_TEST. Runs every file (P at a time, each under checks/sem.sh with a
-# 300 s timeout), regenerates corpus/core-tests-results.tsv, and prints
-# `files MATCH M/F` and `deftests N/T (skipped S, bar B)`. A deftest passes
-# when the backend run printed its summary and no FAIL/ERROR line names it (a
-# whole-program abort counts the file 0). A deftest named in run-tests.skip
+# LETGO_TEST, else to the list's dir, else to the cwd. Runs every file (P at
+# a time, each under checks/sem.sh with a 300 s timeout), regenerates
+# corpus/core-tests-results.tsv (for corpus/core-tests.txt only; other lists
+# write a scratch table), and prints `files MATCH M/F` and `deftests N/T
+# (skipped S, bar B)`. A deftest passes only where the backend agrees with
+# native (P5.11): the file's backend run printed its summary, native's
+# assertion count equals the backend's (otherwise none of the file's
+# deftests count), and the deftest is not in exactly one side's FAIL/ERROR
+# set. The rule that fired is in the table's `cause` column. A deftest named in run-tests.skip
 # (and defined in its file) is not run and is NOT a pass: it is counted in S.
 # --bar B (default ceil(90% of T), the P2.GATE bar, D112) is met when
 # N >= B - S, so each skip excuses exactly one deftest and is printed with its
 # reason; `--bar T` means every deftest not named in run-tests.skip passes.
+# A `#bar B` line in the list sets its default bar.
 #
 # Source paths: files under a let-go checkout's test/ dir get the checkout
 # root, test/ and scripts/ (what language_test.go's resolver searches:
@@ -76,35 +81,56 @@ if [ -n "$corpus" ]; then
   printf '(println 1)\n' >"$t/warm.lg"
   "$here/checks/sem.sh" "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$t/warm.lg" "$t/warm.wat" >"$t/warm.log" 2>&1 \
     || { echo "driver failed on a trivial program:"; tail -5 "$t/warm.log"; exit 1; }
-  cut -f1 "$t/list" | xargs -P "${P:-3}" -I{} \
-    "$here/checks/sem.sh" timeout -k 5 300 env KEEP= "$here/checks/run-tests.sh" --one "$t/{}.res" "$LETGO_TEST/{}" >/dev/null 2>&1
-  tsv=$here/corpus/core-tests-results.tsv
-  [ -n "$filter" ] && tsv=$t/results.tsv
+  # a list entry is relative to LETGO_TEST, else to the list's dir, else to
+  # the cwd; its result file is named after the entry with / flattened
+  cdir=$(dirname "$corpus")
+  src_of() { if [ -f "$LETGO_TEST/$1" ]; then echo "$LETGO_TEST/$1"; elif [ -f "$cdir/$1" ]; then echo "$cdir/$1"; else echo "$1"; fi; }
+  while IFS=$'\t' read -r f n; do printf '%s\t%s\n' "$t/$(printf '%s' "$f" | tr / _).res" "$(src_of "$f")"; done <"$t/list" \
+    | tr '\n' '\0' | xargs -0 -P "${P:-3}" -I{} bash -c 'IFS=$'"'"'\t'"'"' read -r res src <<<"$1"
+        exec "$2/checks/sem.sh" timeout -k 5 300 env KEEP= "$2/checks/run-tests.sh" --one "$res" "$src" >/dev/null 2>&1' _ {} "$here"
+  # only the core-test corpus owns the committed results table
+  tsv=$t/results.tsv
+  [ -z "$filter" ] && [ "$(basename "$corpus")" = core-tests.txt ] && tsv=$here/corpus/core-tests-results.tsv
   printf 'file\tdeftests\toracle\tbackend_passing_deftests\tnative_tests\tnative_assertions\tnative_failures\tnative_errors\tbackend_tests\tbackend_assertions\tbackend_failures\tbackend_errors\twall_s\texterns\tfailing_deftests\tfirst_failure\tcause\tskipped_deftests\n' >"$tsv"
   match=0 nfiles=0 ok=0 total=0 skipped=0; : >"$t/skipped"
   while IFS=$'\t' read -r f n; do
     nfiles=$((nfiles+1)); total=$((total+n))
-    r=$t/$f.res
+    r=$t/$(printf '%s' "$f" | tr / _).res; src=$(src_of "$f")
     # skips of this file's ns that name one of its deftests (a stale entry excuses nothing)
-    fns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$LETGO_TEST/$f" | head -1)
+    fns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$src" | head -1)
     sk=$(awk -v ns="$fns" '$1==ns{print $2}' "$here/checks/run-tests.skip" | while read -r d; do
-           awk -v d="$d" '$1=="(deftest" && $2==d {f=1} END {exit !f}' "$LETGO_TEST/$f" && echo "$d"; done | paste -sd, -)
+           awk -v d="$d" '$1=="(deftest" && $2==d {f=1} END {exit !f}' "$src" && echo "$d"; done | paste -sd, -)
     ns_sk=$(printf '%s' "$sk" | tr ',' '\n' | grep -c . || true)
     skipped=$((skipped+ns_sk))
     [ -n "$sk" ] && awk -v ns="$fns" '$1==ns' "$here/checks/run-tests.skip" >>"$t/skipped"
     [ -s "$r" ] || printf 'MISMATCH\tnone\t\t\t\t\t\t\t\t\t\t\t\ttimeout or crash (no result)\ttimeout or crash (no result)\n' >"$r"
-    oracle=$(cut -f1 "$r"); bt=$(cut -f2 "$r"); fails=$(cut -f3 "$r")
-    # passing = deftests minus distinct failing names; 0 without a backend summary
-    if [ "$bt" = none ]; then pd=0; else
-      nf=$(printf '%s' "$fails" | tr ',' '\n' | grep -c . || true)
+    oracle=$(cut -f1 "$r"); bt=$(cut -f2 "$r"); fails=$(cut -f3 "$r"); nfails=$(cut -f16 "$r")
+    na=$(cut -f5 "$r"); ba=$(cut -f9 "$r"); cause=$(cut -f15 "$r"); rule=""
+    # P5.11: a deftest passes only where the backend agrees with native. No
+    # backend summary: the file scores 0. Assertion counts differ (an
+    # assertion that never ran, or ran extra, names no test): the file
+    # scores 0. Otherwise the deftests in exactly one side's FAIL/ERROR set
+    # do not count; one failing on both sides agrees with native.
+    # (a load-only file has no summary on either side; MATCH says it agreed)
+    if [ "$bt" = none ]; then pd=0; [ "$oracle" = MATCH ] || rule="no backend summary"
+    elif [ "$na" != "$ba" ]; then pd=0; rule="assertion counts differ (native ${na:-none}, backend ${ba:-none}): file scores 0"
+    else
+      diff_names=$(comm -3 <(printf '%s' "$nfails" | tr ',' '\n' | grep . | sort -u) \
+                           <(printf '%s' "$fails" | tr ',' '\n' | grep . | sort -u) | tr -d '\t' | paste -sd, -)
+      nf=$(printf '%s' "$diff_names" | tr ',' '\n' | grep -c . || true)
       pd=$((n - nf - ns_sk)); [ $pd -lt 0 ] && pd=0
+      [ "$nf" -gt 0 ] && rule="FAIL/ERROR sets differ from native on: $diff_names"
     fi
+    [ -n "$rule" ] && cause="counter: $rule${cause:+; $cause}"
     [ "$oracle" = MATCH ] && match=$((match+1))
     ok=$((ok+pd))
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$f" "$n" "$oracle" "$pd" "$(cut -f4-13 "$r")" "$fails" "$(cut -f14-15 "$r")" "$sk" >>"$tsv"
-    printf '%-40s %-8s %3s/%-3s %s%s\n' "$f" "$oracle" "$pd" "$n" "${sk:+[skipped $sk] }" "$(cut -f15 "$r" | cut -c1-110)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$f" "$n" "$oracle" "$pd" "$(cut -f4-13 "$r")" "$fails" "$(cut -f14 "$r")" "$cause" "$sk" >>"$tsv"
+    printf '%-40s %-8s %3s/%-3s %s%s\n' "$f" "$oracle" "$pd" "$n" "${sk:+[skipped $sk] }" "$(printf '%s' "$cause" | cut -c1-140)"
   done <"$t/list"
-  bar=${bar_arg:-$(( (total * 9 + 9) / 10 ))}
+  # a list may declare its default bar on a `#bar B` line (counter.txt, the
+  # P5.11 self-test, expects 0 passing); --bar overrides it
+  list_bar=$(sed -nE 's/^#bar ([0-9]+)$/\1/p' "$corpus" | head -1)
+  bar=${bar_arg:-${list_bar:-$(( (total * 9 + 9) / 10 ))}}
   if [ -s "$t/skipped" ]; then echo "skipped (checks/run-tests.skip):"; sed 's/^/  /' "$t/skipped"; fi
   echo "files MATCH $match/$nfiles"
   echo "deftests $ok/$total (skipped $skipped, bar $bar: need $((bar - skipped)) passing)"
@@ -127,7 +153,7 @@ t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' E
 norm() {
   grep -E '^(Ran [0-9]+ tests containing [0-9]+ assertions\.|[0-9]+ failures, [0-9]+ errors\.|(FAIL|ERROR) in \()' \
     | sed -E 's/^((FAIL|ERROR) in \([^)]*\)).*/\1/' \
-    | awk '/^(FAIL|ERROR)/{print "1 " $0; next} {print "2 " $0}' | LC_ALL=C sort -s -k1,1 | cut -c3-
+    | awk '/^(FAIL|ERROR)/{print "1 " $0; next} {print "2 " $0}' | LC_ALL=C sort -s -k1,1 -k2 | cut -c3-
 }
 # "<tests>\t<assertions>\t<failures>\t<errors>" from a transcript, or 4 empty fields
 counts() {
@@ -141,12 +167,13 @@ strip() { sed -E 's/\x1b\[[0-9;]*m//g' | tr '\t' ' ' | cut -c1-200; }
 # names, then the TSV's columns 5-13 and 16-17
 record() {   # record <oracle> <first-failure> <cause>
   [ -n "$one" ] || return 0
-  local bt fails nc wc ext
+  local bt fails nfails nc wc ext
   bt=$(grep -m1 -E '^Ran [0-9]+ tests' "$t/$b.wasm.out" 2>/dev/null | sed -E 's/^Ran ([0-9]+) .*/\1/')
   fails=$(grep -E '^(FAIL|ERROR) in \(' "$t/$b.wasm.out" 2>/dev/null | sed -E 's/^(FAIL|ERROR) in \(([^)]*)\).*/\2/' | sort -u | paste -sd, -)
+  nfails=$(grep -E '^(FAIL|ERROR) in \(' "$t/$b.native" 2>/dev/null | sed -E 's/^(FAIL|ERROR) in \(([^)]*)\).*/\2/' | sort -u | paste -sd, -)
   nc=$(counts "$t/$b.native"); wc=$( [ -f "$t/$b.wasm.out" ] && counts "$t/$b.wasm.out" || printf '\t\t\t')
   ext=$(grep -oE '\(global \$ext_[^ ]+' "$t/$b.wat" 2>/dev/null | sed 's/(global \$ext_//' | sort -u | paste -sd, -)
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${bt:-none}" "$fails" "$nc" "$wc" "${secs:-}" "$ext" "$2" "$3" >"$one"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${bt:-none}" "$fails" "$nc" "$wc" "${secs:-}" "$ext" "$2" "$3" "$nfails" >"$one"
 }
 
 # source paths of test file f (see the header)
@@ -158,10 +185,14 @@ paths_of() {
   else echo "$d"; fi
 }
 
+# absolute paths up front: the loop cds into each file's dir, so a second
+# relative argument would no longer resolve
+for i in "${!files[@]}"; do
+  [ -f "${files[$i]}" ] && files[$i]=$(cd "$(dirname "${files[$i]}")" && pwd)/$(basename "${files[$i]}")
+done
 pass=0
 for f in "${files[@]}"; do
   [ -f "$f" ] || { echo "FAIL $f: no such file"; record MISMATCH "no such file" "no such file"; continue; }
-  f=$(cd "$(dirname "$f")" && pwd)/$(basename "$f")
   b=$(basename "$f" .lg)
   sp=$(paths_of "$f")
   ns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$f" | head -1)

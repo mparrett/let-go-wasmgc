@@ -277,11 +277,8 @@
 ;; Namespaces as values. The backend has no Namespace kind: a namespace is
 ;; stood in by the Symbol `<ns name>` (it prints as native's #<Namespace>
 ;; does, `<ns name>`, and compares by name, which is identity for interned
-;; namespaces). find-ns names any namespace, existing or not (named limit:
-;; native returns nil for an unknown one). A var's :ns meta (lower-wasm's
-;; var constants) uses the same stand-in.
-(defn find-ns-v [s]
-  (if (symbol? s) (symbol (str "<ns " s ">")) (raise-lit "find-ns expected Symbol")))
+;; namespaces). find-ns is rt/wasm/natives.lg's twin (P6.0). A var's :ns
+;; meta (lower-wasm's var constants) uses the same stand-in.
 
 (defn ns-name-v [n]
   (let [t (when (symbol? n) (str n))]
@@ -364,7 +361,8 @@
 ;; alternation, * + ? {n} {n,} {n,m} and their lazy forms, ^ $ \A \z \b \B.
 ;; Named limits (the constant stays a Phase-2 constant): flags (?i), named
 ;; groups, \p classes, \x escapes, lookahead.
-;; re-pattern on a runtime string is a named limit too.
+;; re-pattern of a run-time String compiles it with the same two fns at
+;; run time (re-pattern-v, P5.8).
 ;;
 (defn regex-source
   "The pattern text of a native Regex value, or nil (not a Regex). Its str
@@ -692,7 +690,8 @@
                      vis2 gen2))))))))
 
 (defn rx? "A regex stand-in (see above)." [x]
-  (if (symbol? x) (some? (:lw/regex (meta x))) false))
+  ;; P5.9: symbol? is false for a stand-in now (wasm.core/standin)
+  (= 1 (wasm.core/standin x)))
 
 (defn- rx-ast
   "The compiled pattern: {:prog :start :ngroups} (regex-compile + groups)."
@@ -783,6 +782,22 @@
                   (rx-value s (rx-ngroups re) m)
                   nil))))
 
+(defn re-pattern-v
+  "core/re-pattern (lang.go:6691): a regex comes back as is; a String is
+   parsed and compiled at run time (regex-parse, regex-compile, compiled
+   into the module) into the stand-in a regex constant is. A pattern
+   outside the engine's subset, or a malformed one, raises regex-parse's
+   catchable named limit (native's text for a malformed one is Go's `error
+   parsing regexp: ...`)."
+  [s]
+  (cond (rx? s) s
+        (string? s) (let [p (regex-parse s)]
+                      ;; the meta lower-wasm's regex-standin gives a constant
+                      ;; (less :lw/lit, which is only a fast path)
+                      (with-meta (symbol (str "#" (pr-str s)))
+                        {:lw/regex (assoc (regex-compile (:ast p)) :ngroups (:groups p)) :lw/groups (:groups p) :lw/src s}))
+        :else (raise-lit "regex expected String")))
+
 (defn re-seq-v
   "core/re-seq: every match as a list, or nil."
   [re s]
@@ -861,91 +876,6 @@
 
 (defn log-v "math/log: Go's math.Log (wasm.math's portable port)." [x]
   (wasm.str/box-float (wasm.math/log* (to-f x))))
-
-(defn- fixed-str
-  "x (a Float or Int) with exactly p decimals, as Go's %.<p>f. Rounds the
-   shortest decimal form of x half-to-even, which equals Go's rounding of the
-   exact binary value except when that form ends in a 5 exactly at the cut
-   and the binary value lies on the other side (named limit)."
-  [x p]
-  (let [t (str (if (int? x) (wasm.str/box-float (wasm.intrinsics/i64-to-f64 x)) x))
-        neg (clojure.string/starts-with? t "-")
-        t (if neg (subs t 1) t)
-        ei (clojure.string/index-of t "e")
-        mant (if ei (subs t 0 ei) t)
-        ex (if ei
-             (let [e (subs t (inc ei)) eneg (clojure.string/starts-with? e "-")
-                   e (if (or eneg (clojure.string/starts-with? e "+")) (subs e 1) e)
-                   v (reduce (fn [acc ch] (+ (* acc 10) (- (int ch) 48))) 0 e)]
-               (if eneg (- v) v))
-             0)
-        di (clojure.string/index-of mant ".")
-        digits (if di (str (subs mant 0 di) (subs mant (inc di))) mant)
-        point (+ ex (if di di (count mant)))      ; decimal point after this many digits
-        ;; pad so the point and p decimals exist
-        lead (if (< point 1) (- 1 point) 0)
-        digits (str (apply str (repeat lead "0")) digits)
-        point (+ point lead)
-        need (+ point p)
-        digits (if (< (count digits) (inc need)) (str digits (apply str (repeat (- (inc need) (count digits)) "0"))) digits)
-        keep (subs digits 0 need)
-        nextd (- (int (nth digits need)) 48)
-        rest-nonzero (some (fn [c] (not= c \0)) (subs digits (inc need)))
-        lastd (if (> need 0) (- (int (nth keep (dec need))) 48) 0)
-        ;; a shortest form ending in 5 right at the cut is a decimal tie,
-        ;; but the binary x is usually not: compare x*10^(p+1) with the
-        ;; tie K exactly (TwoProduct by Dekker's split, exact below 2^53)
-        tie-side (when (and (= nextd 5) (not rest-nonzero) (<= (inc p) 22) (<= (inc need) 15))
-                   (let [k (* 1.0 (reduce (fn [acc ch] (+ (* acc 10) (- (int ch) 48))) 0 (subs digits 0 (inc need))))
-                         f (if (int? x) (* 1.0 x) x) f (if neg (- f) f)
-                         pw (reduce (fn [acc _] (* acc 10.0)) 1.0 (range (inc p)))
-                         split (fn [a] (let [c (* 134217729.0 a) h (- c (- c a))] [h (- a h)]))
-                         hi (* f pw)
-                         [ah al] (split f) [bh bl] (split pw)
-                         lo (+ (+ (+ (- (* ah bh) hi) (* ah bl)) (* al bh)) (* al bl))
-                         d (+ (- hi k) lo)]
-                     (cond (> d 0.0) :up (< d 0.0) :down :else nil)))
-        up (cond (= tie-side :up) true
-                 (= tie-side :down) false
-                 :else (or (> nextd 5) (and (= nextd 5) (or rest-nonzero (odd? lastd)))))
-        ;; increment the kept digits as a decimal string
-        inc-str (fn [s] (loop [i (dec (count s)) s s]
-                          (if (< i 0)
-                            (str "1" s)
-                            (let [d (- (int (nth s i)) 48)]
-                              (if (= d 9)
-                                (recur (dec i) (str (subs s 0 i) "0" (subs s (inc i))))
-                                (str (subs s 0 i) (+ d 1) (subs s (inc i))))))))
-        r (if up (inc-str keep) keep)
-        point (+ point (- (count r) (count keep)))
-        ip (subs r 0 point)
-        fp (subs r point)
-        ip (let [s (loop [s ip] (if (and (> (count s) 1) (clojure.string/starts-with? s "0")) (recur (subs s 1)) s))] (if (= s "") "0" s))
-        body (if (= p 0) ip (str ip "." fp))]
-    (if neg (str "-" body) body)))
-
-(defn format-v
-  "core/format (Go's fmt.Sprintf) for the verbs %s %d %f %.Nf and %%; any
-   other verb is a named limit."
-  [fmt & args]
-  (let [n (count fmt)]
-    (loop [i 0 args args out ""]
-      (if (>= i n)
-        out
-        (let [c (nth fmt i)]
-          (if (not= c \%)
-            (recur (inc i) args (str out c))
-            (let [j (inc i)
-                  prec (when (and (< j n) (= \. (nth fmt j)))
-                         (loop [k (inc j) v 0] (if (and (< k n) (let [x (int (nth fmt k))] (and (>= x 48) (<= x 57)))) (recur (inc k) (+ (* v 10) (- (int (nth fmt k)) 48))) [k v])))
-                  vi (if prec (nth prec 0) j)
-                  verb (when (< vi n) (nth fmt vi))
-                  a (first args)]
-              (cond (= verb \%) (recur (inc vi) args (str out "%"))
-                    (= verb \s) (recur (inc vi) (rest args) (str out (if (nil? a) "%!s(<nil>)" (str a))))
-                    (= verb \d) (recur (inc vi) (rest args) (str out (str a)))
-                    (= verb \f) (recur (inc vi) (rest args) (str out (fixed-str a (if prec (nth prec 1) 6))))
-                    :else (raise-lit (str "lower-wasm: format verb %" verb " is not supported (named limit)"))))))))))
 
 (defn empty-v
   "core/empty: the empty collection of x's kind with x's meta (a vector,

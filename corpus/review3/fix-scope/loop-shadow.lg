@@ -1,0 +1,11 @@
+;; P5.12 (found by the P6.0 agent 2026-10-02): a loop binding that shadows a
+;; same-named let local must not clobber the outer local. Native prints 10 10 7.
+(defn f []
+  (let [i 10]
+    (loop [i 0] (when (< i 3) (recur (inc i))))
+    i))
+(defn g [x]
+  (let [acc 7]
+    (let [r (loop [acc 0 k x] (if (pos? k) (recur (+ acc k) (dec k)) acc))]
+      [r acc])))
+(println (f) (let [i 10] (loop [i 0 n 0] (if (< i 3) (recur (inc i) (+ n i)) n)) i) (second (g 4)))

@@ -1,0 +1,17 @@
+;; legmacs-twins (P6.0): natives the backend routes to its own fills
+;; (src/lw_rt.lg ext-twins / extra-twins, which tools/twin-manifest.lg counts
+;; as claims): with-out-str*, find-ns, ns-name, re-find, re-matches,
+;; ex-message, in legmacs' shapes. (format is rt/wasm/natives.lg's twin once
+;; the src patch drops the format-v route, and find-ns resolves clojure.*
+;; aliases once it drops find-ns-v's: corpus/natives/legmacs-twins-src.)
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(t "with-out-str" #(with-out-str (print "a") (pr "b") (prn :c) (print 1 2)))
+(t "with-out-str nil" #(with-out-str nil))
+(t "find-ns" #(vector (find-ns 'user) (str (find-ns 'core))))
+(t "find-ns bad" #(find-ns "user"))
+(t "ns-name" #(vector (ns-name (find-ns 'user)) (ns-name (find-ns 'core))))
+(t "ns-name bad" #(vector (try (ns-name 'user) (catch Exception e (ex-message e))) (try (ns-name "x") (catch Exception e (ex-message e)))))
+(t "re-find" #(vector (re-find #"f(o+)" "a foo b") (re-find #"\d+" "ab 123 c") (re-find #"z" "abc")))
+(t "re-matches" #(vector (re-matches #"\d+" "123") (re-matches #"\d+" "123a") (re-matches #"(a)(b)?" "a")))
+(t "re-find bad" #(re-find #"a" 5))
+(t "ex-message" #(vector (ex-message (ex-info "boom" {:a 1})) (ex-message (try (throw (ex-info "x" {})) (catch Exception e e)))))

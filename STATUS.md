@@ -70,3 +70,12 @@
 | P5.6 | done 2026-10-02 04:20 | opus | fix-regex 3/3: Go-compiled program + bit-state backtracker, POSIX classes, literal regex stays a regex; verified by rerun |
 | P5.7 | done 2026-10-02 04:20 | opus | fix-twins 3/3: saturating float→long, dissoc! variadic, array-map message; verified by rerun |
 | P5.10/P5.11 | dispatched 03:15 | opus | test shim + --corpus counter vs native |
+| P6.0 | verifying 05:40 | opus+runner | natives.lg 40+ twins, --skip; src patch applied; run.sh P6.0 running |
+| P5.8 | verifying 05:40 | opus+runner | named no-twin error + twins; run.sh P5.8 running |
+| P5.12 | filed 05:40 | — | loop-shadow miscompile repro (native 10 10 7) |
+| P5.9 | dispatched 04:40 | opus | reader meta, var/regex stand-ins (type, symbol?, var?, deref) |
+| P6.0 | done 2026-10-02 06:10 | opus | MISSING 0 / SKIPPED 6 / REACHED 146; legmacs-twins 10/10; verified by rerun |
+| P5.8 | done 2026-10-02 06:10 | opus | fix-natives 1/1; no-twin named error; verified by rerun |
+| P5.10 | done 2026-10-02 06:15 | opus | 3/3 PASS after P5.8's error landed; verified by rerun |
+| P5.11 | done 2026-10-02 06:15 | opus | counter vs native; core tests stay 271/273; verified by rerun |
+| P5.9 | done 2026-10-02 06:40 | opus | fix-meta 5/5; verified by rerun |

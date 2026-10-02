@@ -74,6 +74,28 @@
             :else 18)
       k)))
 
+;; P5.9: lower-wasm's two Symbol stand-ins (its const-form) are MetaNamed
+;; Symbols told apart by their text, which is what they print as: `#"..."` a
+;; Regex, `#'ns/name` a Var. 0 = any other value.
+(defn standin [x]                                         ; 1 Regex, 2 Var
+  (if (= 36 (ckind x))
+    (let [y (wasm/get MetaNamed 0 x)]
+      (if (= 21 (sq/kind y))
+        (let [ns (wasm/get sq/Sym 0 y) b (if (wasm/null? ns) (wasm/get sq/Sym 1 y) ns)]
+          (cond (< (wasm/alen b) 2) 0
+                (if (= 35 (wasm/bget b 0)) false true) 0
+                (= 34 (wasm/bget b 1)) 1
+                (= 39 (wasm/bget b 1)) 2
+                :else 0))
+        0))
+    0))
+
+;; A var stand-in's meta holds, under :lw/var, a 0-arg fn that reads the
+;; var's current value (lower-wasm's var-const-form; for a var the program
+;; does not define it raises that named limit). meta hides the key.
+(defn- lw-var-kw [] (s/kw-of-bytes (wasm/bytes-of-string "lw/var")))
+(defn var-value [v] (sq/invoke0 (m/mget (wasm/get MetaNamed 1 v) (lw-var-kw) (wasm/null))))
+
 (defn- lit [bs] (s/mk-str bs))
 (defn- int-key? [k] (= 1 (sq/kind k)))
 (defn- index-in? [key n]
@@ -93,9 +115,11 @@
 ;; the Repeat type (a let-go quirk, mirrored: (type (type (repeat 1 1)))).
 (defn- repeat-type? [x] (if (= 35 (ckind x)) (= 9 (wasm/get TypeVal 1 x)) false))
 (defn type-name [x]
-  (let [x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
+  (let [rx (= 1 (standin x))
+        x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
         k (ckind x)]
-    (cond (< k 30) (sq/kind-type-name x)                ; seq.lg's own kinds (and "let-go.lang.Unknown" for 18)
+    (cond rx (wasm/bytes-of-string "let-go.lang.Regex")
+          (< k 30) (sq/kind-type-name x)                ; seq.lg's own kinds (and "let-go.lang.Unknown" for 18)
           (= k 30) (wasm/bytes-of-string "let-go.lang.Map")
           (= k 31) (wasm/bytes-of-string "let-go.lang.Set")
           (= k 32) (wasm/bytes-of-string "let-go.lang.TransientMap")
@@ -123,9 +147,11 @@
 ;; as its name and is = only to itself.
 
 (defn- type-id [x]
-  (let [x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
+  (let [rx (= 1 (standin x))
+        x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
         k (ckind x)]
-    (cond (= k 11) (if (= 0 (pv/vpkind x)) 23 39)       ; ArrayVector shares MapEntry's id
+    (cond rx 36                                          ; Regex (a MetaNamed is typed as its Symbol, so 36 is free)
+          (= k 11) (if (= 0 (pv/vpkind x)) 23 39)       ; ArrayVector shares MapEntry's id
           (= k 10) (if (= 0 (pv/vpkind (wasm/get sq/PVecSeq 0 x))) 2 10) ; Sequence: id 10
           (= k 35) (if (repeat-type? x) 9 35)
           (= k 26) (if (= 0 (wasm/get sq/Err 0 x)) 26 38)
@@ -136,8 +162,10 @@
           :else k)))
 
 (defn ^{:twin "core/type"} type-of [x]
-  (if (wasm/null? x)
-    (wasm/null)
+  (cond
+    (wasm/null? x) (wasm/null)
+    (= 2 (standin x)) (type-of (var-value x))             ; native: a Var's type is its value's
+    :else
     (let [tab (wasm/get Globals 1 globals) id (type-id x) t (wasm/aget pv/Node tab id)]
       (if (wasm/null? t)
         (let [nt (wasm/new TypeVal (type-name x) id)] (wasm/aset! pv/Node tab id nt) nt)
@@ -172,11 +200,16 @@
 (defn callable? [x]                                       ; vm.AsFn
   (let [k (ckind x)]
     (cond (= k 16) true (= k 20) true (= k 21) true (= k 11) true (= k 30) true (= k 31) true
-          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true :else false)))          ; transients are IFns (transient.go)
+          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true
+          (= k 36) (= 2 (standin x))                      ; a Var (P5.9)
+          :else false)))          ; transients are IFns (transient.go)
+
+(declare invoke-args)
 
 (defn- invoke-ifn [f n a b]                               ; Keyword/Symbol/Map/Set/ArrayVector .Invoke
   (let [k (ckind f)]
-    (cond (if (= k 11) true (= k 31))                     ; a vector or set takes exactly one argument
+    (cond (= 2 (standin f)) (invoke-args (var-value f) n a b (wasm/null) (wasm/null)) ; a Var calls its value (P5.9)
+          (if (= k 11) true (= k 31))                     ; a vector or set takes exactly one argument
           (cond (if (= n 1) false true)
                 (if (if (= k 11) (= 1 (pv/vpkind f)) false)         ; PersistentVector.Invoke's own text
                   (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments: ")) (sq/box-int n)
@@ -217,7 +250,7 @@
               (= n 2) (sq/invoke2 f a b)
               (= n 3) (invoke3 f a b c)
               :else (invoke4 f a b c d))))
-    (invoke-ifn f n a b)))
+    (if (= 2 (standin f)) (invoke-args (var-value f) n a b c d) (invoke-ifn f n a b))))
 
 (defn- vec-arg [v i] (if (< i (pv/vcount v)) (pv/vnth v i) (wasm/null)))
 
@@ -490,7 +523,7 @@
 (defn string? [x] (sq/bool (= 17 (sq/kind x))))
 (defn- named-k [x] (if (= 36 (ckind x)) (sq/kind (wasm/get MetaNamed 0 x)) (sq/kind x)))
 (defn keyword? [x] (sq/bool (= 20 (named-k x))))
-(defn symbol? [x] (sq/bool (= 21 (named-k x))))
+(defn symbol? [x] (sq/bool (if (= 21 (named-k x)) (= 0 (standin x)) false))) ; P5.9: not a Regex/Var stand-in
 (defn fn? [x] (sq/bool (= 16 (sq/kind x))))
 (defn ^{:twin "core/list?"} list? [x] (let [k (sq/kind x)] (sq/bool (if (= k 2) true (= k 3)))))
 (defn coll? [x]
@@ -836,6 +869,7 @@
          (cond (= k 24) (wasm/get sq/Atom 0 r)
                (= k 25) (wasm/get sq/Volatile 0 r)
                (= k 14) (wasm/get sq/Reduced 0 r)            ; Reduced is an IDeref natively: @(reduced 2) = 2
+               (= 2 (standin r)) (var-value r)              ; P5.9
                :else (raise (wasm/bytes-of-string "deref expected Reference")))))
   ([r ms v] (raise (wasm/bytes-of-string "deref with timeout expects a blocking ref (promise or future)"))))
 
@@ -955,7 +989,7 @@
           (= k 39) (so/ssmeta x)
           (if (= k 2) true (= k 3)) (wasm/get sq/List 3 x)
           (= k 16) (if (meta-fn? x) (wasm/get MetaEnv 1 (wasm/get sq/Fn 3 x)) (wasm/null))
-          (= k 36) (wasm/get MetaNamed 1 x)
+          (= k 36) (if (= 2 (standin x)) (m/mdissoc (wasm/get MetaNamed 1 x) (lw-var-kw)) (wasm/get MetaNamed 1 x))
           :else (wasm/null))))
 
 ;; ---------------------------------------------------------------------------

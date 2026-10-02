@@ -1,0 +1,32 @@
+;; legmacs-twins (P5.8, review3 bug-07): the ten clojure.math fns that had no
+;; twin. Values print in full: the module follows Go's portable algorithms
+;; (D86), and these inputs agree with native arm64 to the last digit
+;; (arm64 fuses x*y+z, so some inputs differ in the last place).
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(def xs [0 1 2 -3 0.5 -0.0 1e-10 3.141592653589793 100 12345.678 -7.25])
+
+(t "signum" #(mapv clojure.math/signum [2.0 -3 0 -0.0 0.0 1e-300 ##Inf]))
+(t "signum nan" #(str (clojure.math/signum ##NaN)))
+;; not 7.5: native arm64 fuses log2's Log(frac)*(1/Ln2)+exp (0.8750612633917),
+;; the portable Go the module follows gives 0.8750612633917001 (D86's class)
+(t "log10" #(mapv clojure.math/log10 [1000 1 0.001 2 10 1e300 123456789]))
+(t "log10 edge" #(mapv str [(clojure.math/log10 0) (clojure.math/log10 -1) (clojure.math/log10 ##Inf)]))
+(t "sin" #(mapv clojure.math/sin xs))
+(t "cos" #(mapv clojure.math/cos xs))
+(t "sin edge" #(mapv str [(clojure.math/sin ##Inf) (clojure.math/cos ##NaN)]))
+(t "atan2" #(mapv (fn [[y x]] (clojure.math/atan2 y x)) [[1 2] [-1 2] [1 -2] [-1 -2] [0 1] [0 -1] [-0.0 -1] [1 0] [-1 0] [0.0 0.0] [-0.0 0.0] [0.0 -0.0]
+                                                         [##Inf 1] [1 ##Inf] [1 ##-Inf] [##Inf ##Inf] [##Inf ##-Inf] [3 4] [1e-300 1]]))
+(t "to-degrees" #(mapv clojure.math/to-degrees [1 0 -2.5 3.141592653589793 0.1]))
+(t "hypot" #(mapv (fn [[a b]] (clojure.math/hypot a b)) [[3 4] [0 0] [1 1] [-5 12] [1e200 1e200] [1e-200 3e-200] [2.5 0.1]]))
+(t "hypot edge" #(mapv str [(clojure.math/hypot ##Inf ##NaN) (clojure.math/hypot ##NaN 1)]))
+(t "rint" #(mapv clojure.math/rint [2.5 3.5 -2.5 0.5 -0.5 1.5 0.49999999999999994 2.4 -2.6 1e300 4503599627370497.0 0.7 -0.7 7]))
+(t "cbrt" #(mapv clojure.math/cbrt [27 -8 0 2 1e-310 0.001 1e300 3.375 10]))
+(t "floor-mod" #(mapv (fn [[a b]] (clojure.math/floor-mod a b)) [[7 -3] [-7 3] [7 3] [-7 -3] [7.5 2] [0 5] [6 3]]))
+(t "floor-mod 0" #(clojure.math/floor-mod 7 0))
+(t "errors" #(vector (try (clojure.math/signum "a") (catch Exception e (ex-message e)))
+                     (try (clojure.math/sin "a") (catch Exception e (ex-message e)))
+                     (try (clojure.math/hypot "a" 1) (catch Exception e (ex-message e)))
+                     (try (clojure.math/floor-mod :k 1) (catch Exception e (ex-message e)))
+                     (try (clojure.math/sin 1 2) (catch Exception e (ex-message e)))))
+;; review3 bug-07's own line
+(t "bug-07" #(clojure.math/signum 2.0))

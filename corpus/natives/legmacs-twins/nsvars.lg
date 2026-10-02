@@ -1,0 +1,101 @@
+;; legmacs-twins (P6.0, P5.8): the ns/var table: in-ns, alias, all-ns,
+;; intern, ns-publics, resolve, find-var, var?, var-get, alter-var-root,
+;; alter-meta!, push-binding!/pop-binding!, in the shapes legmacs uses
+;; (vibe.lg:596-614, 740-760, 1046; buffers.lg:530-541). Named limits (not
+;; here; see rt/wasm/natives.lg): the value of a PROGRAM var (var-get #'f),
+;; builtin namespaces' publics, find-ns of an unknown name (pending the src
+;; patch that drops lw-ext/find-ns-v).
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(defn ns-names [] (map (comp str ns-name) (all-ns)))
+(defn vibe [] :vibe)
+
+;; in-ns from a fn restores user, so later forms still compile in user
+(t "in-ns" #(let [r (in-ns 'brand.new)] (in-ns 'user) r))
+(t "in-ns sym" #(in-ns "x"))
+(t "alias" #(alias 'qq 'alias.target))
+(t "alias bad" #(alias 1 'a))
+(t "all-ns has" #(vec (filter #{"user" "core" "string" "brand.new" "alias.target"} (sort (ns-names)))))
+(t "all-ns type" #(type (all-ns)))
+;; vibe.lg:603's loaded-lib-names shape
+(t "loaded-lib-names" #(sort (filter (fn [nm] (and (<= 97 (int (nth nm 0)) 122)
+                                                  (not (clojure.string/starts-with? nm "clojure."))
+                                                  (not (clojure.string/starts-with? nm "java."))))
+                                     (ns-names))))
+(t "find-ns" #(vector (find-ns 'user) (find-ns 'brand.new)))
+(t "ns-name" #(ns-name (find-ns 'alias.target)))
+
+(t "intern" #(intern 'user 'zz 5))
+(t "intern meta" #(meta (intern 'user 'zz 6)))
+(t "intern twice" #(let [a (intern 'user 'zz3 1) b (intern 'user 'zz3 2)] [(= a b) (var-get a)]))
+(t "intern 2-arg" #(var-get (intern 'user 'unbound-one)))
+(t "intern alias ns" #(intern 'clojure.string 'zzz 1))
+(t "intern bad ns" #(intern 'nope.ns 'a 1))
+(t "intern bad ns arg" #(intern 5 'a 1))
+(t "intern bad name" #(intern 'user "a" 1))
+(t "intern arity" #(intern 'user))
+
+(t "ns-publics" #(do (intern 'alias.target 'v1 1) (intern 'alias.target 'v2 2) (sort (map str (keys (ns-publics 'alias.target))))))
+(t "ns-publics val" #(get (ns-publics 'alias.target) 'v1))
+(t "ns-publics nope" #(ns-publics 'nope.x))
+(t "ns-publics int" #(ns-publics 5))
+;; vibe.lg:595 format-var-names / 740 tool-ns-publics
+(t "format-var-names" #(clojure.string/join " " (sort (map str (keys (ns-publics (symbol "alias.target")))))))
+
+(t "resolve interned" #(resolve 'zz))
+(t "resolve qualified" #(resolve 'alias.target/v1))
+(t "resolve via alias" #(resolve 'qq/v2))
+(t "resolve nope" #(vector (resolve 'nope) (resolve 'nope.ns/x)))
+(t "resolve str" #(resolve "x"))
+(t "find-var" #(vector (find-var 'user/zz) (find-var 'user/nope) (find-var 'nope.ns/x) (find-var 'clojure.string/zzz)))
+(t "find-var unq" #(find-var 'zz))
+(t "find-var str" #(find-var "x"))
+
+(t "var?" #(vector (var? #'t) (var? (find-var 'user/zz)) (var? 'zz) (var? 1) (var? nil) (var?) (var? 1 2)))
+(t "var-get" #(var-get (find-var 'user/zz)))
+(t "var-get bad" #(vector (try (var-get 'x) (catch Exception e (ex-message e))) (try (var-get nil) (catch Exception e (ex-message e)))))
+(t "var-get arity" #(var-get))
+
+(t "alter-var-root" #(let [v (intern 'user 'cnt 1)] [(alter-var-root v inc) (alter-var-root v + 10 20) (var-get v)]))
+(t "alter-var-root unbound" #(alter-var-root (intern 'user 'zz5) (fn [x] (str "was " x))))
+;; buffers.lg:530's shape: re-point a var at a wrapper of its old value
+(t "replace-spawn-var" #(let [v (intern 'user 'spawn (fn [x] [:orig x]))
+                               orig (var-get v)]
+                           (alter-var-root v (constantly (fn [x] [:tracked (orig x)])))
+                           ((var-get v) 1)))
+(t "alter-var-root bad" #(alter-var-root 5 inc))
+(t "alter-var-root nofn" #(alter-var-root (intern 'user 'q2 1) 5))
+(t "alter-var-root kw" #(alter-var-root (intern 'user 'q3 {:a 1}) :a))
+(t "alter-var-root arity" #(alter-var-root (intern 'user 'q4 1)))
+
+(t "alter-meta!" #(alter-meta! (intern 'user 'm1 1) assoc :x 1))
+(t "alter-meta! again" #(alter-meta! (intern 'user 'm1 1) assoc :y 2))
+;; vibe.lg:1046's export-vibe-unqualified! shape
+(t "export-vibe" #(let [exported (intern 'let-go.core 'vibe vibe)
+                         m (alter-meta! exported merge (or (meta #'vibe) {}))]
+                     [exported (:name m) (str (:ns m)) ((var-get exported))]))
+(t "alter-meta! ns" #(:a (alter-meta! (find-ns 'alias.target) assoc :a 1)))
+(t "alter-meta! bad" #(alter-meta! 5 assoc :a 1))
+(t "alter-meta! nofn" #(alter-meta! (intern 'user 'm2 1) 5))
+(t "alter-meta! arity" #(alter-meta! 1))
+
+;; a direct (push-binding! ..) call is the backend's (binding-out rewrites
+;; it, and refuses any operand but a var-table var): the twin is what a
+;; value use reaches
+(t "push-binding!" #(let [v (intern 'user 'dyn 1)]
+                      (apply push-binding! [v 2])
+                      (let [a (var-get v)] (apply pop-binding! [v]) [a (var-get v)])))
+(t "pop empty" #(apply pop-binding! [(intern 'user 'zz4 1)]))
+(t "push bad" #(apply push-binding! [1 2]))
+(t "pop bad" #(apply pop-binding! [1]))
+
+;; review3 bug-07's other unbound ns natives: the-ns, ns-interns, bound?,
+;; and core.lg's ns-resolve over resolve
+(t "the-ns" #(vector (the-ns 'user) (the-ns 'alias.target) (the-ns (find-ns 'user))))
+(t "the-ns nope" #(the-ns 'nope.x))
+(t "the-ns int" #(the-ns 1))
+(t "ns-interns" #(sort (map str (keys (ns-interns 'alias.target)))))
+(t "ns-interns nope" #(ns-interns 'nope.x))
+(t "bound?" #(vector (bound? (intern 'user 'b1)) (bound? (intern 'user 'b2 1)) (bound? #'t)))
+(t "bound? bad" #(bound? 1))
+(t "bound? arity" #(bound?))
+(t "ns-resolve" #(vector (ns-resolve 'alias.target 'v1) (ns-resolve (find-ns 'alias.target) 'nope)))

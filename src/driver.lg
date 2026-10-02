@@ -166,22 +166,61 @@
 (def test-macros
   '[(defmacro is
       ([form]
-       (let [head (when (seq? form) (first form))]
+       (let [head (when (seq? form) (first form))
+             ;; P5.10: thrown?'s class is checked on the caught value, not
+             ;; as a catch class, so any class native knows lowers. Native
+             ;; classes (pkg/vm/exception_class.go): ex-info IS-A
+             ;; RuntimeException; a runtime error is a plain
+             ;; java.lang.Exception; no module value carries another class
+             ;; (ArithmeticException, Error, ...), so those never match,
+             ;; as a JVM-only class never matches natively. Built with
+             ;; list, not syntax-quote, which would qualify the class names.
+             e (gensym "e")
+             chk (fn [k] (case (get '{Throwable :all java.lang.Throwable :all
+                                      Exception :ex java.lang.Exception :ex
+                                      RuntimeException :ei java.lang.RuntimeException :ei
+                                      ExceptionInfo :ei clojure.lang.ExceptionInfo :ei
+                                      String :str java.lang.String :str} k)
+                           :all true
+                           :ex (list 'catch-matches? (list 'quote 'Exception) e)
+                           :ei (list 'catch-matches? (list 'quote 'ExceptionInfo) e)
+                           :str (list 'catch-matches? (list 'quote 'String) e)
+                           false))
+             ;; a stub's or named limit's throw means the backend did not run
+             ;; the body, so it never satisfies thrown?: reported as native
+             ;; reports a body that does not throw (bug-08)
+             caught (fn [k ok]
+                      `(if (__t-limit? ~e) (do (__t-report false) nil)
+                           (if ~(chk k) (do ~ok ~e) (do (__t-report :__t-error) nil))))]
          (cond
-           ;; native's assert-expr special forms; the class is a catch class
-           ;; native's is returns the caught exception (thrown_test's
-           ;; thrown-returns-the-exception reads it)
+           ;; native's assert-expr special forms. Native's is returns the
+           ;; form's value: the caught exception for thrown? and
+           ;; thrown-with-msg? (thrown_test's thrown-returns-the-exception
+           ;; reads it), nil when nothing is thrown or on an error
            (= head 'thrown?)
            `(try (do ~@(drop 2 form) (__t-report false) nil)
-                 (catch ~(second form) e# (__t-report true) e#)
-                 (catch Throwable e# (__t-report :__t-error) nil))
+                 (catch Throwable ~e ~(caught (second form) '(__t-report true))))
            (= head 'thrown-with-msg?)
-           `(__t-report (try (do ~@(drop 3 form) false)
-                             (catch ~(second form) e# (if (re-find ~(nth form 2) (ex-message e#)) true false))
-                             (catch Throwable e# :__t-error)))
-           :else `(__t-report (try (if ~form true false) (catch Throwable e# :__t-error))))))
+           `(try (do ~@(drop 3 form) (__t-report false) nil)
+                 (catch Throwable ~e
+                   ~(caught (second form) `(__t-report (if (re-find ~(nth form 2) (ex-message ~e)) true false)))))
+           :else `(try (let [v# ~form] (__t-report (if v# true false)) v#)
+                       (catch Throwable e# (__t-report :__t-error) nil)))))
       ([form msg] `(is ~form)))
     (defmacro testing [s & body] `(do ~@body))
+    ;; P5.10: native's are (pkg/rt/core/test.lg): one is per row of args
+    (defmacro are [argv expr & args]
+      (if (or (and (empty? argv) (empty? args))
+              (and (pos? (count argv)) (pos? (count args)) (zero? (mod (count args) (count argv)))))
+        (cons 'do (when (seq argv)
+                    (map (fn [a] (test/apply-template argv (list 'is expr) a)) (partition (count argv) args))))
+        (throw (ex-info "The number of args doesn't match are's argv." {:fn :are}))))
+    ;; P5.10: a second call of the same kind replaces the first, as native's
+    (defmacro use-fixtures [kind & fs]
+      (case kind
+        :each `(reset! __t-each [~@fs])
+        :once `(reset! __t-once [~@fs])
+        (throw (ex-info (str "lower-wasm --test: use-fixtures " (pr-str kind)) {}))))
     ;; P5.1: a set-test probe is registered by name; run-test-var of
     ;; (var name) runs it (testshim's __t-run-probe). Native keeps the body
     ;; as the var's :test meta; the shim has no test-var reflection, so a
@@ -205,11 +244,12 @@
    driver only interned): it reports one ERROR for that test, so one bad
    form costs one test instead of the file."
   [nm]
-  (list 'defn nm [] (list '__t-begin (str nm)) (list '__t-uncaught nil)))
+  (list 'defn nm [] (list '__t-begin (str nm)) (list '__t-uncaught nil) '(__t-end)))
 
 (defn deftest->defn [[_ nm & body]]
   (list 'defn nm [] (list '__t-begin (str nm))
-        (list 'try (apply list 'do body) (list 'catch 'Throwable 'e (list '__t-uncaught 'e)))))
+        (list 'try (apply list 'do body) (list 'catch 'Throwable 'e (list '__t-uncaught 'e)))
+        '(__t-end)))
 
 (defn decl-form?
   "A program-level (wasm/defstruct ..), defarray or deffunc: a type for the
@@ -430,7 +470,7 @@
             (cond
               (= form ::install-test-macros)
               (let [quiet? (try (= (resolve 'quiet) (resolve 'quiet-helper/quiet)) (catch e false))]
-                (doseq [s '[deftest is testing set-test run-test-var]] (ns-unmap *ns* s))
+                (doseq [s '[deftest is testing set-test run-test-var are use-fixtures]] (ns-unmap *ns* s))
                 (doseq [m test-macros] (eval m))
                 (when (and quiet? (some? (resolve 'quiet))) (ns-unmap *ns* 'quiet) (eval quiet-macro)))
               (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defns into (expand-defn form)))
@@ -487,7 +527,13 @@
                               [(resolve s) (str "$var_" (lw/munge-id s))]))
           body (if test?
                  (concat @body [(list 'println (str "\nTesting " (ns-name *ns*)))]
-                         (map list @tests) ['(__t-summary)])
+                         ;; P5.10: a redefined deftest runs once (its last
+                         ;; def wins, as native's var does); __t-run-all
+                         ;; applies the fixtures and turns a deftest that did
+                         ;; not lower (its stub throws) into one ERROR
+                         (let [ts (distinct @tests)]
+                           [(list '__t-run-all (vec (map str ts)) (vec ts))])
+                         ['(__t-summary)])
                  @body)
           main-src (apply list 'defn '_main [] (concat (map expand-top body) [nil]))
           ss (lw/new-session {} var-globals opts)]

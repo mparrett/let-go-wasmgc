@@ -17,8 +17,8 @@
 ;; (lower_wasm's `value-substs`). Those routes are claims too, read from the
 ;; same source the backend loads, and printed with the table they come from
 ;; in the file:line column (`src/lw_rt.lg:ext-twins`), so the report can
-;; tell a marker from a route. LW_SRC overrides the src dir (default the
-;; rt dir's ../../src).
+;; tell a marker from a route. LW_SRC overrides the src dir (default src/
+;; under the cwd, which checks/native-twins.sh sets to dev/lower-wasm).
 ;;
 ;;   lg tools/twin-manifest.lg --propose [rt-dir] [inventory.tsv]
 ;;       → TSV  twin  runtime-var  file:line  confidence  runtime-arities
@@ -71,10 +71,7 @@
 (defn claims [d]
   (let [t (:twin d)] (cond (nil? t) [] (string? t) [t] :else (vec t))))
 
-(def src-dir (let [d (os/getenv "LW_SRC")]
-              (cond (seq d) d
-                    (= rt-dir "rt/wasm") "src"
-                    :else (str rt-dir "/../../src"))))
+(def src-dir (let [d (os/getenv "LW_SRC")] (if (seq d) d "src")))   ; run from dev/lower-wasm
 
 (defn- qual
   "A var's name as the inventory spells it: unqualified means core."

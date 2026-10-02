@@ -1,0 +1,17 @@
+;; legmacs-twins (P5.8, review3 bug-07): make-array (lang.go:9003) over
+;; wasm.arrays, and object-array (wasm.arrays' twin, D86 arrays).
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(t "kw int" #(make-array :int 3))
+(t "kw long" #(make-array :long 2))
+(t "kw byte" #(make-array :byte 2))
+(t "kw object" #(make-array :object 2))
+(t "other type" #(make-array nil 3))
+(t "other type 2" #(make-array "String" 1))
+(t "type" #(str (type (make-array nil 1))))
+(t "unknown kw" #(make-array :x 2))
+(t "size" #(make-array :int "a"))
+(t "negative" #(make-array :int -1))
+(t "arity" #(make-array 3))
+(t "arity 0" #(make-array))
+(t "aset" #(let [a (make-array nil 2)] (aset a 1 :v) [(aget a 1) (alength a) (vec a)]))
+(t "object-array" #(vector (object-array 2) (object-array [1 :a "s"]) (object-array nil) (count (object-array [1 2]))))

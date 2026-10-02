@@ -1,0 +1,31 @@
+;; legmacs-twins (P6.0): spit, os/cwd, os/ls, os/stat. The module has no
+;; file system: these are the paths where native and module agree (a
+;; directory that does not exist), plus every argument check. What the
+;; module does on any other path: os/ls and spit raise native's
+;; no-such-file error, os/stat is nil, os/cwd is "".
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(def missing "/nonexistent-lw-dir/sub")
+
+(t "spit missing dir" #(spit (str missing "/x.txt") "a"))
+(t "spit bytes" #(spit (str missing "/x.bin") (byte-array [65 66])))
+(t "spit content" #(spit (str missing "/x") 5))
+(t "spit path" #(spit 5 "a"))
+(t "spit arity" #(spit "/x"))
+(t "spit append" #(spit (str missing "/x") "a" :append true))
+;; commands.lg:424's save shape, under try
+(t "save-buffer" #(try (spit (str missing "/f.txt") (clojure.string/join "\n" ["l1" "l2"])) :saved (catch Exception e (str "Save failed: " (ex-message e)))))
+
+(t "ls missing" #(os/ls missing))
+(t "ls arg" #(os/ls 5))
+(t "ls arity" #(os/ls))
+;; completion.lg:107's shape
+(t "list-dir" #(try (os/ls missing) (catch Exception e [])))
+
+(t "stat missing" #(os/stat missing))
+(t "stat arg" #(os/stat 5))
+(t "stat arity" #(os/stat "a" "b"))
+;; completion.lg:110 / acme.lg:58 shapes
+(t "dir?" #(boolean (try (:dir? (os/stat missing)) (catch Exception e false))))
+(t "info" #(try (os/stat missing) (catch Exception e nil)))
+
+(t "cwd" #(string? (os/cwd)))

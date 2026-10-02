@@ -20,10 +20,34 @@
 (def __t-error (atom 0))
 (def __t-tests (atom 0))
 (def __t-name (atom nil))
+;; the running deftests, outermost first: a deftest called from another
+;; reports as "(outer inner)", as native's *testing-vars* does
+(def __t-stack (atom []))
 
 (defn __t-begin [nm]
   (swap! __t-tests inc)
-  (reset! __t-name nm))
+  (swap! __t-stack conj nm)
+  (reset! __t-name (apply str (interpose " " @__t-stack))))
+
+(defn __t-end []
+  (swap! __t-stack pop)
+  (reset! __t-name (apply str (interpose " " @__t-stack))))
+
+;; P5.10 (bug-08): a throw that only means "the backend cannot run this" --
+;; a stub (lower-wasm/stub-fn) or a named limit -- carries a message that
+;; starts "lower-wasm: " (rt/wasm/core.lg's convention; a trap prefixes
+;; "wasm trap: ", and a trap without "lower-wasm: " is real semantics, which
+;; native's reference impl raises too); the is macro never
+;; lets one satisfy thrown?/thrown-with-msg?
+(defn __t-prefix? [m p]
+  (if (>= (count m) (count p)) (= p (subs m 0 (count p))) false))
+
+(defn __t-limit? [e]
+  (let [m (ex-message e)]
+    (if (string? m)
+      ;; a named-limit wasm/trap under --test throws "wasm trap: lower-wasm: .."
+      (if (__t-prefix? m "lower-wasm: ") true (__t-prefix? m "wasm trap: lower-wasm: "))
+      false)))
 
 ;; Reports print through the runtime's `print`, not an inline println: a
 ;; probe run under `quiet` (with-out-str*) must have them captured, and only
@@ -60,6 +84,26 @@
       (reset! __t-pass (nth saved 0)) (reset! __t-fail (nth saved 1)) (reset! __t-error (nth saved 2))
       (reset! __t-tests (nth saved 3)) (reset! __t-name (nth saved 4))
       r)))
+
+
+;; P5.10: use-fixtures (the driver's macro resets these) and the run of
+;; every deftest, wrapped as native's test-vars wraps them: the :once
+;; fixtures around the whole run, the :each ones around each test. A
+;; deftest whose defn did not lower is a stub that throws before
+;; __t-begin; that is one ERROR for that test, never an abort of the file.
+(def __t-each (atom []))
+(def __t-once (atom []))
+
+(defn __t-join [fs]
+  (reduce (fn [f1 f2] (fn [g] (f1 (fn [] (f2 g))))) (fn [g] (g)) fs))
+
+(defn __t-run-all [names fns]
+  ((__t-join @__t-once)
+   (fn []
+     (let [each (__t-join @__t-each)]
+       (dorun (map (fn [nm f]
+                     (each (fn [] (try (f) (catch Throwable e (__t-begin nm) (__t-uncaught e) (__t-end))))))
+                   names fns))))))
 
 (defn __t-summary []
   (println (str "\nRan " @__t-tests " tests containing " (+ (+ @__t-pass @__t-fail) @__t-error) " assertions."))

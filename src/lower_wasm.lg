@@ -965,6 +965,14 @@
 (defn push-var! "Stand-in for (push-binding! #'v x); k names v." [k x] nil)
 (defn pop-var! "Stand-in for (pop-binding! #'v)." [k] nil)
 
+(defn keep-meta
+  "P5.9 (review3 bug-05): out, a walker's rebuild of collection form, with
+   form's metadata. mapv/into drop it, and ir.build compiles a collection
+   literal's metadata (build-coll-const, with-meta-call), so ^{:built x} [x]
+   lost its meta in every pre-build rewrite below."
+  [form out]
+  (if-let [m (meta form)] (with-meta out m) out))
+
 (declare print->rt)
 
 (defn binding-out
@@ -975,8 +983,8 @@
    follows. Binding any other dynamic var is refused by name."
   [form]
   (cond
-    (vector? form) (mapv binding-out form)
-    (map? form) (into {} (map (fn [[k v]] [(binding-out k) (binding-out v)]) form))
+    (vector? form) (keep-meta form (mapv binding-out form))
+    (map? form) (keep-meta form (into {} (map (fn [[k v]] [(binding-out k) (binding-out v)]) form)))
     (not (seq? form)) form
     (= 'quote (first form)) form
     (and (symbol? (first form)) (#{#'push-binding! #'pop-binding!} (try (resolve (first form)) (catch e nil))))
@@ -1006,8 +1014,8 @@
 (def print-twins {#'println 'wasm.host/println #'print 'wasm.host/print #'prn 'wasm.host/prn #'pr 'wasm.host/pr})
 
 (defn print->rt [form]
-  (cond (vector? form) (mapv print->rt form)
-        (map? form) (into {} (map (fn [[k v]] [(print->rt k) (print->rt v)]) form))
+  (cond (vector? form) (keep-meta form (mapv print->rt form))
+        (map? form) (keep-meta form (into {} (map (fn [[k v]] [(print->rt k) (print->rt v)]) form)))
         (symbol? form) (or (print-twins (try (resolve form) (catch e nil))) form)
         (not (seq? form)) form
         (= 'quote (first form)) form
@@ -1032,6 +1040,23 @@
                              " (global.set $bind_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $bind_stack))))")))
          " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))
 
+;; review3 bug-07 (P5.8): a call to a native the runtime has no twin for
+;; went through its nil var-table slot and raised `TypeError: nil is not a
+;; function `, which reads as a native error and is swallowed by a
+;; (catch e nil) (legmacs' search: (try (re-pattern input) (catch e nil))).
+(defn no-twin-message
+  "The named error for calling v, when v is a Go native (a NativeFn with no
+   source meta: a program's (def f re-pattern) has :line) the runtime has
+   no twin for, or an lg core fn whose compile failed; else nil."
+  [v]
+  (when (var? v)
+    (let [x (try @v (catch e nil))]
+      (cond (and (= "let-go.lang.NativeFn" (str (type x))) (nil? (:line (meta v))))
+            (str "lower-wasm: " (subs (str v) 2) " has no twin")
+            (and (fn? x) (contains? lw-rt/core-defns v))
+            (str "lower-wasm: " (subs (str v) 2) " did not compile")
+            :else nil))))
+
 (defn call-wat [nid v args]
   (let [ent (get @*sigs* v)]
     (cond
@@ -1051,6 +1076,10 @@
       (str "(local.set $v" nid " " ((coll-ctors v) (map #(arg-as % :box) args)) (coerce :box (ty nid)) ")")
       ;; a runtime defn, a native the runtime twins (D58), or an lg core fn
       (and *rt* (rt-target v) (callee-sig v)) (direct-call-wat nid (callee-sig v) args)
+      ;; a native with no twin: evaluate the args, then fail by name
+      (and *rt* (no-twin-message v))
+      (str (apply str (map #(str "(drop " (arg-as % :box) ") ") args))
+           "(throw $lgex " (rt-error-wat (no-twin-message v) (no-twin-message v)) ")")
       ;; a var with no wasm definition: call through its (nil) var-table slot
       (<= (count args) max-invoke)
       (str "(local.set $v" nid " (call $rt_invoke" (invoke-n! (count args)) " (global.get " (extern-global v) ")"
@@ -2876,9 +2905,9 @@
             (= core-minus (resolve (first form))))
        (list 'lower-wasm/neg (rw (second form)))
        (seq? form) (apply list (map rw form))
-       (vector? form) (mapv rw form)
-       (map? form) (into {} (map (fn [[k v]] [(rw k) (rw v)]) form))
-       (set? form) (set (map rw form))
+       (vector? form) (keep-meta form (mapv rw form))
+       (map? form) (keep-meta form (into {} (map (fn [[k v]] [(rw k) (rw v)]) form)))
+       (set? form) (keep-meta form (set (map rw form)))
        :else form))))
 
 (defn bare-try->do
@@ -2893,8 +2922,8 @@
          (not-any? #(and (seq? %) (#{'catch 'finally} (first %))) (rest form)))
     (apply list 'do (map bare-try->do (rest form)))
     (seq? form) (apply list (map bare-try->do form))
-    (vector? form) (mapv bare-try->do form)
-    (map? form) (into {} (map (fn [[k v]] [(bare-try->do k) (bare-try->do v)]) form))
+    (vector? form) (keep-meta form (mapv bare-try->do form))
+    (map? form) (keep-meta form (into {} (map (fn [[k v]] [(bare-try->do k) (bare-try->do v)]) form)))
     :else form))
 
 (defn fold-literal-ifs
@@ -2912,8 +2941,8 @@
         (fold-literal-ifs (if (= 4 (count form)) (nth form 3) nil))
         (fold-literal-ifs (nth form 2))))
     (seq? form) (apply list (map fold-literal-ifs form))
-    (vector? form) (mapv fold-literal-ifs form)
-    (map? form) (into {} (map (fn [[k v]] [(fold-literal-ifs k) (fold-literal-ifs v)]) form))
+    (vector? form) (keep-meta form (mapv fold-literal-ifs form))
+    (map? form) (keep-meta form (into {} (map (fn [[k v]] [(fold-literal-ifs k) (fold-literal-ifs v)]) form)))
     :else form))
 
 (defn seq-loop-bindings
@@ -2937,13 +2966,49 @@
         (list 'let* bs' (apply list 'loop* (vec (mapcat (fn [n] [n n]) names)) body))
         (apply list 'loop* bs' body)))
     (seq? form) (apply list (map seq-loop-bindings form))
-    (vector? form) (mapv seq-loop-bindings form)
-    (map? form) (into {} (map (fn [[k v]] [(seq-loop-bindings k) (seq-loop-bindings v)]) form))
+    (vector? form) (keep-meta form (mapv seq-loop-bindings form))
+    (map? form) (keep-meta form (into {} (map (fn [[k v]] [(seq-loop-bindings k) (seq-loop-bindings v)]) form)))
     :else form))
+
+(defn- user-meta [form] (not-empty (dissoc (meta form) :line :column)))
+
+(defn lift-list-meta
+  "P5.9 (review3 bug-05): native's code reader reads ^m (f x) as
+   (with-meta (f x) m), so ^:k '(1 2) and ^:k (list 1 2) evaluate to a value
+   carrying {:k true}. The driver reads with read-string, which leaves m on
+   the list form, where ir.build ignores it; rewrite such a list (any meta
+   but the reader's :line/:column) as native's code reader would. Quoted
+   data is left alone, and an unchanged form is returned as is."
+  [form]
+  (let [wrap (fn [out] (if-let [m (user-meta out)]
+                         (list 'clojure.core/with-meta (with-meta out (select-keys (meta out) [:line :column]))
+                               (ir.forms/meta-source m))
+                         out))
+        same? (fn [xs ys] (every? true? (map identical? xs ys)))]
+    (cond
+      (and (seq? form) (= 'quote (first form))) (wrap form)
+      (seq? form) (let [xs (doall (map lift-list-meta form))]
+                    (wrap (if (same? xs form) form (keep-meta form (apply list xs)))))
+      (vector? form) (let [xs (mapv lift-list-meta form)] (if (same? xs form) form (keep-meta form xs)))
+      (map? form) (let [kvs (mapv (fn [[k v]] [(lift-list-meta k) (lift-list-meta v)]) form)]
+                    (if (same? (mapcat identity kvs) (mapcat identity form)) form (keep-meta form (into {} kvs))))
+      (set? form) (let [xs (mapv lift-list-meta form)] (if (same? xs (seq form)) form (keep-meta form (set xs))))
+      :else form)))
+
+(defn def-value-meta
+  "P5.9: (def v ^:k [1 2]): the driver's name-fns rebuilds a def's value with
+   mapv, which drops a literal's metadata, so a meta-bearing collection that
+   IS the value becomes the with-meta call ir.build would build for it
+   (ir.build/with-meta-form). Named limit: meta on a collection nested
+   inside a def's value is still lost there (driver.lg's name-fns)."
+  [form]
+  (if (and (seq? form) (= 'def (first form)) (= 3 (count form)) (ir.build/meta-bearing-coll? (nth form 2)))
+    (list 'def (second form) (ir.build/with-meta-form (nth form 2)))
+    form))
 
 (defn expand-form
   "Macroexpand one form as the driver does before ir.build (D23, D35)."
-  [form] (seq-loop-bindings (fold-literal-ifs (bare-try->do (unary-minus->unchecked (binding-out (p/expand-all form)))))))
+  [form] (def-value-meta (seq-loop-bindings (fold-literal-ifs (bare-try->do (unary-minus->unchecked (binding-out (p/expand-all (lift-list-meta form)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The runtime compiled through the backend (P2.1). Runtime defns are
@@ -3077,12 +3142,67 @@
         (rt-init-fn! (str (qual-name v) "__init") ns init)))
     g))
 
-(declare const-form)
+(declare const-form const-form*)
 
 (defn- plain-data? [x]
   (or (nil? x) (string? x) (number? x) (keyword? x) (symbol? x) (boolean? x)
       (and (or (vector? x) (seq? x) (set? x)) (every? plain-data? x))
       (and (map? x) (every? plain-data? (keys x)) (every? plain-data? (vals x)))))
+
+(defn def-form-meta
+  "P5.9 (review3 bug-06): the metadata a (def name ..) form gives its var:
+   the reader meta on name (a (with-meta s m) form after expansion; m may be
+   an ir.forms MapForm) plus a 3-arg def's docstring. Entries whose value is
+   not plain data are left out (named limit: computed var meta)."
+  [form]
+  (let [[_ raw & more] form
+        m (when (and (seq? raw) (= 'with-meta (first raw))) (nth raw 2))
+        m (if (ir.forms/map-form? m) (ir.forms/map-form-entries m) m)
+        m (into {} (for [[k x] m :when (plain-data? x)] [k x]))]
+    (cond-> m (and (= 2 (count more)) (string? (first more))) (assoc :doc (first more)))))
+
+;; P5.9 (review3 bug-06): ir.build's build-def replaces the var's meta with
+;; the def form's meta map as compiled (apply-def-meta!), which in this
+;; process left a bare {:ns ..}: the :name/:line/:file the driver stamped and
+;; the form's own :doc were gone by the time var-const-form read them (in a
+;; program with or without an ns form; a defn is eval'd natively, so its meta
+;; survived). The var keeps the driver's meta plus the form's literal meta.
+(alter-var-root #'ir.build/build-def
+                (fn [orig]
+                  (fn [form ctx]
+                    (let [raw (second form)
+                          sym (if (and (seq? raw) (= 'with-meta (first raw))) (second raw) raw)
+                          v0 (when (symbol? sym) (try (resolve sym) (catch e nil)))
+                          before (when (var? v0) (meta v0))
+                          r (orig form ctx)
+                          v (or v0 (when (symbol? sym) (try (resolve sym) (catch e nil))))]
+                      (when (var? v)
+                        (let [m (merge (meta v) {:name (symbol (name sym))} before (def-form-meta form))]
+                          (alter-meta! v (fn [_] m))))
+                      r))))
+
+(def var-meta-tail
+  "Native's order for the keys def adds, after the form's own (P5.9)."
+  [:line :column :file :name :ns])
+
+(defn program-var?
+  "P5.9: does the module hold v's value? A var-table var (a def, a library
+   global) or a program defn; not a runtime or core var."
+  [v]
+  (or (contains? *var-globals* v)
+      (and (contains? @*sigs* v) (nil? (rt-target v)))))
+
+(defn var-value-form
+  "P5.9: the 0-arg fn a var stand-in keeps under :lw/var (wasm.core/var-value
+   calls it for deref, a call of the var and type): reads v where the
+   program defines it, else raises the named limit."
+  [v]
+  (if (program-var? v)
+    (list 'fn* [] (symbol v))
+    (list 'fn* [] (list 'wasm.core/raise
+                        (list 'wasm.intrinsics/bytes-of-string
+                              (str "lower-wasm: the value of " (pr-str v) " is not reachable from its stand-in:"
+                                   " only a var the program defines has one (named limit)"))))))
 
 (defn var-const-form
   "P2.14 (D112): a var as a value, (var x) or #'x. The backend has no Var
@@ -3090,19 +3210,58 @@
    (it prints as the var does) carrying the var's metadata, so it is equal
    only to itself (D69: a meta'd symbol compares by identity) and (meta v)
    reads :name :ns :file :line etc. :ns is the namespace stand-in
-   lw-ext/find-ns-v returns (the Symbol `<ns name>`); meta values that are
-   not plain data (a :test fn) are left out. Deref, var-get and calling the
-   var are named limits: use the name, whose value the var table holds."
+   wasm.natives/find-ns returns (the Symbol `<ns name>`); meta values that are
+   not plain data (a :test fn) are left out. P5.9: wasm.core tells it from a
+   Symbol by its #' text (symbol? false, var? true) and its meta also holds
+   :lw/var, var-value-form's fn, so deref, calling the var and type reach
+   the value of a var the program defines; any other var's raises the named
+   limit. var-get and alter-var-root are wasm.natives' (still the limit)."
   [v]
   (let [m (meta v)
-        m (cond-> (into {} (for [[k x] (dissoc m :ns) :when (plain-data? x)] [k x]))
-            (:ns m) (assoc :ns (symbol (str "<ns " (ns-name (:ns m)) ">"))))]
+        ;; P5.9: the form's keys first, then var-meta-tail, as native prints
+        ks (concat (remove (set var-meta-tail) (keys m)) (filter #(contains? m %) var-meta-tail))
+        m (reduce (fn [acc k]
+                    (let [x (get m k)]
+                      (cond (= k :ns) (assoc acc :ns (symbol (str "<ns " (ns-name x) ">")))
+                            (plain-data? x) (assoc acc k x)
+                            :else acc)))
+                  {} ks)]
     (list 'wasm.core/with-meta
           (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (str "#'" (subs (str v) 2))))
-          (const-form m))))
+          (list 'wasm.core/assoc (const-form m) (const-form :lw/var) (var-value-form v)))))
+
+(defn const-user-meta
+  "P5.9 (review3 bug-05): the metadata a collection constant v carries into
+   the module: its own minus the reader's position keys on a list (native
+   reports those for a quoted list, the backend never has: named limit), or
+   nil."
+  [v]
+  (when (and (coll? v) (not (var? v)))
+    (let [m (cond-> (meta v) (seq? v) (dissoc :line :column :file))]
+      (when (seq m) m))))
+
+(defn const-meta-key
+  "The metadata of v and of every collection nested in it, for the constant
+   pool key (pr-str shows none of it), or nil when there is none, so a
+   meta-free constant keeps its key and global name."
+  [v]
+  (when (coll? v)
+    (let [own (const-user-meta v)
+          kids (if (map? v) (mapcat identity v) (seq v))
+          sub (map const-meta-key kids)]
+      (when (or own (some some? sub))
+        [own (vec sub)]))))
 
 (defn const-form
   "A form that builds constant v through the runtime's constructors."
+  [v]
+  (if-let [m (const-user-meta v)]
+    ;; P5.9: ir.build keeps a literal's literal metadata on the Const
+    ;; (build-coll-const), so ^:k {:a 1} arrives here meta'd
+    (list 'wasm.core/with-meta (const-form (with-meta v nil)) (const-form m))
+    (const-form* v)))
+
+(defn const-form*
   [v]
   (cond
     (var? v) (var-const-form v)
@@ -3128,7 +3287,9 @@
   "A runtime-built constant (keyword, symbol, vector, map, set, list): one
    global, built once by _rt_init (D63's placeholders made real)."
   [v]
-  (let [k [(const-kind v) (pr-str v)]]
+  (let [mk (const-meta-key v)
+        ;; P5.9: ^:a [1] and ^:b [1] print alike; the meta keeps them apart
+        k (cond-> [(const-kind v) (pr-str v)] mk (conj (pr-str mk)))]
     (or (get-in @*rt* [:consts k])
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)

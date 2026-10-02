@@ -24,6 +24,7 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 13 | `host.lg` | `wasm.host` | 1 3 4 7 9 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
 | 14 | `lang.lg` | `wasm.lang` | 1-4 9 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
 | 15 | `term.lg` | `wasm.term` | 1-4 9 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
+| 16 | `natives.lg` | `wasm.natives` | 1 3 4 7 9 10 11 | P6.0/P5.8, in PLAIN lg like `src/lw_ext.lg` (not seq.lg's dialect): `format`, the ns/var table (`all-ns` `in-ns` `alias` `intern` `ns-publics` `resolve` `find-var` `var?` `var-get` `alter-var-root` `alter-meta!` `push-binding!`/`pop-binding!`), `json/read-json` `write-json`, `spit` and `os/cwd` `ls` `stat` (no file system), `let-go.core/lines`, `fn?`, `identical?`, `rseq`, `make-array`, ten `clojure.math` fns |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the

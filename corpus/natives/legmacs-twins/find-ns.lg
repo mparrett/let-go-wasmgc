@@ -1,0 +1,9 @@
+;; legmacs-twins (P6.0): find-ns resolves the clojure.* aliases (nsAliases,
+;; lang.go:339), so (ns-name (find-ns 'clojure.string)) is string; vibe.lg's
+;; available-stdlib filters stdlib-libs this way. MATCHes once the src patch
+;; drops the find-ns-v route in favour of rt/wasm/natives.lg's twin.
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(t "aliases" #(mapv find-ns '[clojure.string clojure.set clojure.walk clojure.core user]))
+(t "ns-name" #(mapv (comp ns-name find-ns) '[clojure.string clojure.test clojure.edn]))
+(t "available-stdlib" #(vec (filter (fn [nm] (find-ns (symbol nm))) ["clojure.string" "clojure.set" "clojure.walk"])))
+(t "bad" #(find-ns "user"))

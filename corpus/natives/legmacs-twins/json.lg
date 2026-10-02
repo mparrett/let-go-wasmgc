@@ -1,0 +1,49 @@
+;; legmacs-twins (P6.0): json/read-json and json/write-json (vibe.lg:216,
+;; 328, 571, 794, 803). read-json builds objects in Go map order, which is
+;; random natively, so multi-key objects are compared with = or read by key,
+;; never printed whole.
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(defn rj [s] (json/read-json s))
+
+(t "scalars" #(mapv rj ["1" "-0" "2.5" "-1.5e2" "1e3" "1E2" "0.1" "true" "false" "null" "\"s\"" " 7 "]))
+(t "types" #(mapv (comp str type rj) ["1" "1.0" "1.5" "[1]" "{}" "\"s\"" "12345678901234567890"]))
+(t "big ints" #(mapv rj ["12345678901234567" "9007199254740993" "123456789012345678901234567890" "-9223372036854775808"]))
+(t "array" #(rj "[1, [2, [3]], \"x\", null, true]"))
+(t "object" #(= (rj "{\"a\": 1, \"b\": [1, 2], \"c\": {\"d\": null}}") {"a" 1 "b" [1 2] "c" {"d" nil}}))
+(t "object get" #(let [m (rj "{\"choices\":[{\"message\":{\"content\":\"hi\",\"tool_calls\":[]}}]}")]
+                   (get-in m ["choices" 0 "message" "content"])))
+(t "keywords" #(= (json/read-json "{\"a\": {\"b\": 1}, \"c/d\": 2}" {:keywords? true}) {:a {:b 1} :c/d 2}))
+(t "keywords false" #(json/read-json "{\"a\": 1}" {:keywords? false}))
+(t "dup key" #(rj "{\"a\": 1, \"a\": 2}"))
+(t "escapes" #(rj "\"q\\\" b\\\\ s\\/ \\b\\f\\n\\r\\t u\\u00e9 \\ud83d\\ude00 lone\\ud800 lo\\udc00x\""))
+(t "unicode raw" #(rj "\"héllo ☃\""))
+(t "empty" #(vector (rj "[]") (rj "{}") (rj "\"\"") (rj " [ ] ")))
+(doseq [s ["" " " "[1,]" "{\"a\" 1}" "{\"a\":1 \"b\":2}" "[1 2]" "tru" "trux" "nx" "fx" "falsy" "nul" "\"abc"
+           "\"a\\x\"" "\"\\u12g4\"" "\"\\u12" "01" "-01" "1." "1.x" "1e" "1ex" "1e+x" "-" "-x" "[-]" "[1.]"
+           "1.5x" "[1] 2" "{\"a\":1}x" "\"\t\"" "{,}" "{1:2}" "[1}" "'a'" "{\"a\":1,}" "[" "{" "{\"a\"" "{\"a\":"
+           "{\"a\"\"b\"}" "[\"a\":1]" "\"\\" "\u00e9" "\u0001" "\u007f" "1E400"]]
+  (t (str "err " (pr-str s)) #(rj s)))
+(t "arg" #(json/read-json 5))
+(t "opts" #(json/read-json "1" 5))
+(t "opts nil" #(json/read-json "1" nil))
+(t "opts vec" #(json/read-json "[1]" []))
+(t "arity" #(json/read-json))
+
+(t "write scalars" #(mapv json/write-json [1 -2 2.5 true false nil "s" :kw :a/b 'sym 'a/b]))
+(t "write floats" #(mapv json/write-json [1.0 0.1 1e21 1e20 1.2345678901234567e20 1e-7 1e-6 0.000001234 -0.0 0.0 1e100 5e-324
+                                          1.7976931348623157e308 100.0 1234567.0 0.30000000000000004 1e7 12345678.9 -2.5e-10
+                                          9007199254740993.0 1.5e300 123456.789e3 (float 0.1)]))
+(t "write nonfinite" #(vector (try (json/write-json ##NaN) (catch Exception e (ex-message e)))
+                              (try (json/write-json [##Inf]) (catch Exception e (ex-message e)))
+                              (try (json/write-json {:a ##-Inf}) (catch Exception e (ex-message e)))))
+(t "write string" #(json/write-json "q\" b\\ s/ \b\f\n\r\t <tag> & \u0001 \u001f \u007f é ☃ \u2028 \u2029 😀"))
+(t "write map" #(json/write-json {:model "m" :messages [{:role "user" :content "hi"}] :stream false :n 2}))
+(t "write keys" #(json/write-json {1 2 nil 3 :a/b 4 'c 5 [1] 6 "z" 7 "B" 8 "_" 9 "é" 10 true 11 1.5 12 \a 13}))
+(t "write dup keys" #(vector (json/write-json {:a 1 "a" 2}) (json/write-json {"a" 2 :a 1})))
+(t "write colls" #(json/write-json {:set (hash-set 3) :sset (sorted-set 2 1) :smap (sorted-map :b 1 :a 2) :list (list 1 2)
+                                     :range (range 3) :lazy (map inc [1 2]) :empty [[] {} () #{} (sorted-set) (sorted-map) (range 0) (filter odd? [2]) (map inc [])] :nested [[1 [2 {:x [3]}]]]}))
+(t "write char" #(json/write-json \a))
+(t "write arity" #(json/write-json))
+(t "round trip" #(let [v {"a" [1 2.5 "x\ny" nil true] "b" {"c" -3}}] (= v (json/read-json (json/write-json v)))))
+;; vibe.lg:216: tool-call arguments, (or (:args c) {})
+(t "args" #(json/write-json (or nil {})))

@@ -1,0 +1,35 @@
+;; legmacs-twins (P6.0): let-go.core/lines, fn?, identical?, hash-map (the
+;; odd-arg call the backend does not build inline), vector and hash-map as
+;; values, ex-message. Each line prints a value or the caught error text.
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(t "lines" #(let-go.core/lines "a\nb\n"))
+(t "lines one" #(let-go.core/lines "abc"))
+(t "lines empty" #(let-go.core/lines ""))
+(t "lines type" #(type (let-go.core/lines "a\nb")))
+(t "lines nonstr" #(let-go.core/lines 5))
+(t "fn?" #(mapv fn? [inc (fn [] 1) #(+ % 1) :k {} nil 'a [1] #{} "s" (with-meta inc {:a 1})]))
+(t "fn? key binding" #(let [km {:x inc}] (if (fn? (:x km)) ((:x km) 1) :no)))
+(t "identical? scalars" #(vector (identical? 1 1) (identical? "a" (str "a")) (identical? :a :a) (identical? 'a 'a)
+                                  (identical? nil nil) (identical? 1.5 1.5) (identical? 1 1.0) (identical? \a \a)
+                                  (identical? true true) (identical? 12345678901234 12345678901234)))
+(t "identical? floats" #(vector (identical? ##NaN ##NaN) (identical? 0.0 -0.0)))
+;; two equal map CONSTANTS are one interned value in the module (a backend
+;; constant-sharing difference, not identical?'s): compare built maps
+(t "identical? colls" #(let [v [1 2] m (assoc {} :a 1)] (vector (identical? v v) (identical? v (conj [1] 2)) (identical? m m) (identical? m (assoc {} :a 1)))))
+(t "identical? empties" #(vector (identical? [] []) (identical? {} {}) (identical? #{} #{}) (identical? () ()) (identical? {} #{})))
+(t "identical? fns" #(vector (identical? inc inc) (identical? inc dec)))
+(t "identical? arity" #(identical? 1))
+;; buffer.lg:441's shape: a cache hit iff the lines vector is the same object
+(t "identical? cache" #(let [lines ["a" "b"] cached {:lines lines}] (vector (identical? lines (:lines cached)) (identical? (conj lines "c") (:lines cached)))))
+(t "hash-map" #(hash-map :a 1 :b 2))
+(t "hash-map odd" #(hash-map :a))
+(t "apply hash-map" #(apply hash-map [:a 1 :b 2]))
+;; vibe.lg:622's shape
+(t "apply hash-map spec" #(let [spec '[foo :as f]] (:as (apply hash-map (rest spec)))))
+(t "vector" #(vector 1 2 3))
+(t "apply vector" #(apply vector (range 3)))
+(t "vector value" #(map vector [1 2] [3 4]))
+(t "ex-message" #(mapv ex-message [(ex-info "m" {}) 5 nil "s"]))
+;; rseq: lw-ext's regex-compile reaches it when re-pattern compiles at run time
+(t "rseq" #(vector (rseq [1 2 3]) (rseq []) (str (type (rseq [1 2]))) (rseq (sorted-map :a 1 :b 2)) (rseq (sorted-set 1 2))))
+(t "rseq bad" #(vector (try (rseq (list 1)) (catch Exception e (ex-message e))) (try (rseq nil) (catch Exception e (ex-message e))) (try (rseq {:a 1}) (catch Exception e (ex-message e)))))

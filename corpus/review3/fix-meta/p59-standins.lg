@@ -1,0 +1,18 @@
+;; P5.9: the var and regex stand-ins as values (review3 bugs 05/06), and
+;; reader meta on literal constants kept apart in the constant pool.
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(def ^:dynamic *d* 1)
+(def x 10)
+(defn f [a] (* 2 a))
+(defn h [] :v1)
+(def via #'h)
+(defn h [] :v2)
+(println (t #(symbol? #'x)) (t #(var? #'x)) (t #(symbol? #"a")) (t #(var? #"a")) (t #(symbol? 'x)))
+(println (t #(type #"a")) (t #(str #"a+")) (t #(pr-str #"a")) (t #(re-find #"a+" "baab")))
+(println (t #(type #'x)) (t #(type #'f)) (t #(deref #'x)) (t #(@#'f 4)) (t #(#'f 21)) (t #(apply #'f [5])))
+(println (t #(via)) (t #(binding [*d* 2] @#'*d*)) (t #(map deref [#'x #'*d*])))
+(println (t #(= #'x #'x)) (t #(= #'x #'f)) (t #(= (hash #'f) (hash #'f))) (t #(get {#'x 1 #'f 2} #'f)))
+(println (t #(sort (keys (meta #'x)))) (t #(:name (meta #'f))) (t #(contains? (meta #'x) :lw/var)))
+(println (meta ^:a [1]) (meta ^:b [1]) (meta ^:a {:k 1}) (meta ^:b {:k 1}) (meta ^:a #{1}) (meta ^:b #{1}))
+(println (meta (first [^:a [2] ^:b [2]])) (meta (second [^:a [2] ^:b [2]])) (= ^:a [1] ^:b [1]))
+(println (meta ^:k (list 1 2)) (meta ^{:n (inc 1)} (vector 1)) (meta ^:k []))

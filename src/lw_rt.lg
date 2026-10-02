@@ -269,14 +269,17 @@
    ;; reaches the runtime's split / str-replace
    #'core/re-matches #'lw-ext/re-matches-v #'core/re-seq #'lw-ext/re-seq-v
    #'core/split #'lw-ext/split-v #'core/str-replace #'lw-ext/str-replace-v
-   #'core/find-ns #'lw-ext/find-ns-v #'core/ns-name #'lw-ext/ns-name-v
+   #'core/ns-name #'lw-ext/ns-name-v
    #'math/round #'lw-ext/round-v #'clojure.math/round #'lw-ext/round-v
    #'clojure.math/floor #'lw-ext/floor-v #'clojure.math/ceil #'lw-ext/ceil-v
    #'clojure.math/floor-div #'lw-ext/floor-div-v
    #'clojure.math/sqrt #'wasm.math/sqrt #'clojure.math/pow #'wasm.math/pow
    #'clojure.math/exp #'wasm.math/exp #'clojure.math/abs #'wasm.math/abs
    #'core/with-out-str* #'lw-ext/with-out-str-v #'core/read-all-string #'lw-ext/read-all-string-v
-   #'core/double #'lw-ext/double-v #'core/format #'lw-ext/format-v #'math/log #'lw-ext/log-v
+   #'core/double #'lw-ext/double-v #'math/log #'lw-ext/log-v
+   ;; P5.8: re-pattern of a run-time String. (core/format and core/find-ns
+   ;; are rt/wasm/natives.lg's twins since P6.0.)
+   #'core/re-pattern #'lw-ext/re-pattern-v
    #'core/empty #'lw-ext/empty-v
    ;; P5.1: rt/wasm/sorted.lg (variadic constructors over its fixed-arity ops)
    #'core/sorted-map #'lw-ext/sorted-map-v #'core/sorted-set #'lw-ext/sorted-set-v}
