@@ -67,6 +67,7 @@ if cheap. Finish line: `checks/gate.sh 7` green with gates 1–6 still green (`L
 | P7.3 | eval-buffer of `legmacs/modes/comment.lg` in the module defines its commands (a mode installed at run time works) |
 | P7.4 | size/boot deltas recorded: the interpreter's cost in the module (expect +60–120 KB brotli) |
 | P7.5 | the interpreter is reachable from the node host and the browser host the same way (`(eval (read-string "..."))` from a program, and legmacs `C-x C-e`), so Matt can test-drive it in `lw-play` |
+| P7.6 | `LW_NO_EVAL=1`: a build flag that leaves the evaluator and program table out even when the program calls `eval` (Matt's ask 2026-10-02 after the 119→166 KB brotli number); size table records both; eval-free programs byte-identical either way |
 | P7.R | adversarial review of the evaluator (own corpus, read-only) |
 | P7.GATE | `checks/gate.sh 7 && gate.sh 1..6` with `LW_ATTEST=0` |
 

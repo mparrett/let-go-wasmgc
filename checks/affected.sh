@@ -87,6 +87,7 @@ P7.2	oracle checks/legmacs-parity.sh corpus/legmacs/ legmacs
 P7.3	oracle corpus/eval-buffer/ checks/run-corpus.sh legmacs
 P7.4	oracle host/ checks/size-boot.sh legmacs xsofy
 P7.5	oracle host/ checks/eval-hosts.sh checks/browser-boot.mjs legmacs
+P7.6	oracle src/ host/ checks/eval-optout.sh legmacs
 P7.R	corpus/review5/
 EOF
 }
