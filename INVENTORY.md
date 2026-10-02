@@ -34,6 +34,9 @@ host/build-legmacs-module.sh /tmp/lw-play/legmacs.wasm
 host/build-legmacs-serve.sh /tmp/lw-legmacs /tmp/lw-play/legmacs.wasm
 cp /tmp/lw-legmacs/legmacs.wasm /tmp/lw-legmacs/module.wasm
 python3 -m http.server 8261 -d /tmp/lw-legmacs
+# 4. test-drive the evaluator (round 3, P7.5): in *scratch* type a defn, C-x C-e, then a call, C-x C-e
+#    (echo area shows => #'legmacs.main/f, then => 42); C-x C-c quits. Same in the browser at :8261.
+node host/node-host.mjs /tmp/lw-play/legmacs.wasm
 # then open http://localhost:8261/index.html
 # 3. a plain program through the backend vs native lg
 WASM_RUN=checks/wasm-run.sh checks/oracle.sh corpus/wasm/maps.lg
