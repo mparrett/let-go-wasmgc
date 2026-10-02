@@ -38,6 +38,15 @@
     (wasm.core/raise (wasm.str/str-bytes (str "array-map requires an even number of arguments, got " (count kvs))))
     (apply hash-map-v kvs)))
 (defn hash-set-v [& xs] (into #{} xs))
+;; P7.9 (review5 bug-06): native's uncaught report puts a `calling <f>`
+;; layer over a CompileError that escapes a call made from top-level code
+;; (eval itself, or a program fn that evals); the driver wraps those calls
+;; and this rethrows. Any other error passes unchanged.
+(defn calling-throw [nm e]
+  (let [m (ex-message e)]
+    (throw (if (and (string? m) (>= (count m) 13) (= "CompileError:" (subs m 0 13)))
+             (ex-info (str "calling " nm) {} e)
+             e))))
 ;; P7: core/concat*, what the reader expands syntax-quote to ((apply concat*
 ;; [[(quote a)] [x] ys])): a program macro compiled for the program table
 ;; runs it. Native's always returns a PersistentList, () when empty.
@@ -76,7 +85,8 @@
         (char? x) (int x)
         (true? x) 1
         (false? x) 0
-        :else (wasm.core/raise (wasm.str/str-bytes (str x " can't be coerced to long")))))
+        ;; P7.9 (review5 bug-09): native names nil as "nil" (str gives "")
+        :else (wasm.core/raise (wasm.str/str-bytes (str (if (nil? x) "nil" x) " can't be coerced to long")))))
 
 (defn ints-v
   "core/ints, core/longs (lang.go:4322): an int-array as is, else a new one."

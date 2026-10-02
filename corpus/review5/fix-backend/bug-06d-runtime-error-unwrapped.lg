@@ -1,0 +1,4 @@
+;; native: a runtime error out of eval is NOT given a calling layer ("error: cannot add nil and let-go.lang.Int"); a caught compile error keeps native's ex-message
+(println (try (eval '(nope)) (catch e (ex-message e))))
+(defn h [] (eval '(inc nil)))
+(h)

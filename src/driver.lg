@@ -223,12 +223,20 @@
                        (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))
      :name nm :params (vec (repeat n :box)) :ret :box}))
 
+;; P7.9 (review5 bug-22): a defn made before the main file's (ns ..) form
+;; lives in the namespace it was defined in (user), so it is resolved and
+;; analysed there, not in the program's final namespace.
+(defn tag-ns [srcs] (mapv #(vary-meta % assoc ::ns (ns-name *ns*)) srcs))
+(defn src-ns [src] (the-ns (or (::ns (meta src)) (ns-name *ns*))))
+(defn defn-var [src] (binding [*ns* (src-ns src)] (resolve (second src))))
+
 (defn analyze-program!
   "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint)."
   [defns main-src boxed]
   (doall
    (for [src (conj defns main-src)]
-     (do ;; P2.14: in --test a library defn the test reaches that fails
+     (binding [*ns* (src-ns src)]
+       ;; P2.14: in --test a library defn the test reaches that fails
          ;; to compile stubs the test (below) instead of the whole file
          (if *stub-failures*
            (try (lw/analyze-deps! src) (catch e nil))
@@ -236,7 +244,7 @@
          (let [main? (= main-src src)
                multi? (::multi (meta src))
                argc (arity-key (nth src 2))
-               v (when-not main? (resolve (second src)))
+               v (when-not main? (defn-var src))
                [wname ename] (if main? ["_main" "lw main"] (wasm-name src))
                info (try (binding [lw/*box-params* (contains? boxed [v argc])]
                            (assoc (lw/analyze-fn src wname (boolean multi?)) :export-name ename))
@@ -676,6 +684,28 @@
                           :macros macros})]])]
     [nsn (list tab)]))
 
+(defn calling-wrap
+  "P7.9 (review5 bug-06): in an expanded top-level form, each call of a var
+   wrap? accepts (eval, a program fn) becomes
+   (try call (catch __lw_ce (lw-ext/calling-throw \"f\" __lw_ce))), so an
+   uncaught CompileError reports `error: calling f` first, as native's does.
+   fn bodies, quoted forms and try forms are left alone: native adds the
+   layer only to the uncaught report, never to a caught error."
+  [form wrap?]
+  (cond (map? form) (into {} (map (fn [[k v]] [(calling-wrap k wrap?) (calling-wrap v wrap?)]) form))
+        (vector? form) (mapv #(calling-wrap % wrap?) form)
+        (not (seq? form)) form
+        (empty? form) form
+        :else
+        (let [h (first form)]
+          (cond (contains? '#{quote fn* letfn* try var} h) form
+                (= 'def h) (apply list (concat (take 2 form) (map #(calling-wrap % wrap?) (drop 2 form))))
+                :else (let [form' (apply list (map #(calling-wrap % wrap?) form))
+                            v (when (symbol? h) (try (resolve h) (catch e nil)))]
+                        (if (and (var? v) (wrap? v))
+                          (list 'try form' (list 'catch '__lw_ce (list 'lw-ext/calling-throw (str h) '__lw_ce)))
+                          form'))))))
+
 (defn registry-boot-forms
   "The forms _main starts with (P7): the in-ns native's ns form leaves
    behind, and the program table when eval is reached and the runtime has
@@ -742,7 +772,7 @@
                 (doseq [s '[deftest is testing set-test run-test-var are use-fixtures]] (ns-unmap *ns* s))
                 (doseq [m test-macros] (eval m))
                 (when (and quiet? (some? (resolve 'quiet))) (ns-unmap *ns* 'quiet) (eval quiet-macro)))
-              (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defined conj (def-sym form)) (swap! defns into (expand-defn form)))
+              (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defined conj (def-sym form)) (swap! defns into (tag-ns (expand-defn form))))
               (decl-form? form) (do (native! form) (swap! decls conj (resolve (second form))))
               (and (seq? form) (= 'ns (first form)))
               (let [nss (ns-form-requires form)
@@ -757,7 +787,7 @@
               ;; declare only interns forward vars: a later defn binds by name
               ;; (direct calls), anything else lands in the var table.
               (and (seq? form) (= 'declare (first form))) (do (native! form) (swap! table into (rest form)))
-              (defn-form? form) (do (native! form) (swap! defined conj (def-sym form)) (swap! defns into (expand-defn form)))
+              (defn-form? form) (do (native! form) (swap! defined conj (def-sym form)) (swap! defns into (tag-ns (expand-defn form))))
               ;; intern only: the value is computed by _main at run time
               (def-form? form) (do (compile-check! form)
                                    (eval (list 'declare (def-sym form)))
@@ -830,8 +860,14 @@
           ;; P7: the registry boot (in-ns, program table) runs first; the
           ;; table's stand-ins read their vars only when eval derefs them
           boot (registry-boot-forms (ns-name *ns*) (conj (vec (sort @lib-loaded)) (ns-name *ns*))
-                                    var-globals (keep #(resolve (second %)) @defns))
-          main-src (apply list 'defn '_main [] (concat (map expand-top boot) (map expand-top body) [nil]))
+                                    var-globals (keep defn-var @defns))
+          ;; P7.9: top-level calls of eval and of program fns, when eval is reached
+          wrap-calls (if @eval-reached
+                       (let [fns (into (set (keep defn-var @defns)) (keys @lw-rt/lib-defns))
+                             wrap? #(or (= % #'eval) (contains? fns %))]
+                         #(calling-wrap % wrap?))
+                       identity)
+          main-src (apply list 'defn '_main [] (concat (map expand-top boot) (map (comp wrap-calls expand-top) body) [nil]))
           ss (lw/new-session {} var-globals opts)]
       (lw/with-session*
        ss
@@ -853,7 +889,7 @@
          ;; params, and the program is analysed and lowered again until
          ;; nothing new needs boxing (monotone, so it terminates). Usually
          ;; one round: fib's calls all pass ints.
-         (let [prog-vars (set (keep #(resolve (second %)) @defns))
+         (let [prog-vars (set (keep defn-var @defns))
                ;; a stub keeps the analysed name and signature: callers were
                ;; lowered against them
                lower-one #(cond (:stub %) (:stub %)
