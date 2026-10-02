@@ -128,3 +128,10 @@ TOTAL ≈ $1,227
 | P7.5 | green 2026-10-02 09:00 (on B's in-flight src) | runner | eval-hosts.sh PASS: node, Chromium, legmacs C-x C-e => 42; playground legmacs.wasm + :8261 refreshed for Matt's test drive |
 | P7.0 | done 2026-10-02 (D160) | opus A | corpus/eval 10/10, native tier 122 tests, P2.1/P4.2 green; program/ waits for B |
 | C: legmacs wiring | running | opus | P7.2 script 6, P7.1 ledger + bar, P7.3 prep, evaluator gaps in rt |
+| P7.1 | done 2026-10-02 (D162) | opus C | 28/30 (repl 7/7, letgo 21/23); whole suite 316/373, bar raised |
+| P7.2 | done 2026-10-02 (D162) | opus C | script 6 byte-identical |
+| P7.3 | done 2026-10-02 (D162) | opus C | comment.lg loaded by eval defines comment-dwim; defcommand expands in-module |
+| B: program table | done 2026-10-02 (D161) | opus B | table +24 KB brotli, eval.lg +23 KB; xsofy byte-identical |
+| P7.6 | done 2026-10-02 (D163) | opus B | LW_NO_EVAL=1: legmacs 166 KB -> 120 KB brotli, eval-free modules unchanged |
+| P7.4 | done 2026-10-02 11:30 | runner | legmacs bundle 173 KB brotli (round 2: 119 KB module, bundle not recorded with eval), boot median 378 ms at load ~20 (round 2: 264 ms); xsofy 430,781 opt / 115,109 brotli (round 2: 417 KB / 112 KB; inc/dec value fix), title 4571 ms |
+| P7.R | running | opus R | adversarial review, corpus/review5 |

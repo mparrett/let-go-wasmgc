@@ -6,11 +6,11 @@ from navigation: boot = first text in xterm, first frame = the *scratch* mode li
 
 | lane | bundle raw | brotli -q 11 | gzip -9 | boot | first frame |
 |---|---|---|---|---|---|
-| lower-wasm (emitted) | 479 KB | 126 KB | 150 KB | 151 ms | 151 ms |
+| lower-wasm (emitted) | 690 KB | 173 KB | 210 KB | 378 ms | 378 ms |
 | stock Go (lg -w, let-go 4e769212) | 9.04 MB | 6.60 MB | 6.70 MB | does not boot | does not boot |
 
-lower-wasm module alone: 1,604,157 B as emitted, 459,424 B after `wasm-opt -O3` (served), 119,059 B brotli, 141,938 B gzip.
-Runs (ms) lower-wasm: boot [151, 248, 134, 115, 174], first frame [151, 248, 134, 115, 174].
+lower-wasm module alone: 2,199,454 B as emitted, 671,302 B after `wasm-opt -O3` (served), 166,284 B brotli, 201,596 B gzip.
+Runs (ms) lower-wasm: boot [436, 378, 634, 330, 239], first frame [436, 378, 634, 330, 239].
 stock boot: run 0: program ended before the first frame: error: getwd: not implemented on js --> main.lg:85:35 stack trace: at cwd (main.lg:85:35) at load-file-or-scratch (main.lg:156:45) at build-workspace (main.lg:168:19) at main (main.lg:179:27) 
 
 The stock lane builds but does not boot legmacs: under js/wasm let-go's `os/cwd` raises "getwd: not implemented on js",
