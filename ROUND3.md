@@ -37,6 +37,23 @@ A-iii. **Host-side eval**: ship the stock lg VM wasm (7 MB) beside the module
 and route `eval` to it. Defeats the size story and splits state between two
 heaps. No.
 
+**Evaluator shape inside A-i (decided at dispatch, not before; recorded here
+so the implementer and Matt see the same options).** Three ways to build the
+same semantics: (1) a plain tree-walker that re-dispatches on the form at
+every evaluation; (2) a closure-compiling evaluator ("compile to closures"):
+one pre-pass turns each form into a dialect `Fn` that takes an environment, so
+the dispatch on syntax happens once per form instead of once per evaluation;
+2–4× faster than (1) for the same code size, still simple, and it maps onto
+what the module already has (every closure is an `Fn`, calls go through the
+existing invoke ABI); (3) a CEK machine (explicit continuation, no host-stack
+recursion, free tail calls, cheap try/throw), which Matt's `let-rs` and
+`wallisp` siblings have; wallisp measured bytecode 2.3–3.9× over a tree-walker
+and CEK between them. Plan: (2) first, with tail calls trampolined so a `loop`
+or self-recursion in evaluated code does not grow the wasm stack; move to a
+CEK (3) only if deep recursion in evaluated code becomes a real limit for
+legmacs' eval-buffer. Bytecode in the dialect is out: it is a second VM.
+Working comes first, speed second; `P7.4` records the cost either way.
+
 **Recommendation: A-i**, scoped to what legmacs' REPL/eval-last-sexp/
 eval-buffer use, with `go`/`future`/`promise` kept as Phase 8 (a scheduler on
 JSPI is a separate design) and regex flags folded into A-i's reader work only
