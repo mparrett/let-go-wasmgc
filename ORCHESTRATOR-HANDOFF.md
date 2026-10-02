@@ -45,6 +45,14 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   the twins agent); then P5.GATE (LW_ATTEST=0, gates 5,1,2,3,4); then P6.1.
   Struct change to tell every new agent: `wasm/new Fn` 8 fields, Atom/Volatile 2 (trailing 0) since eeca0fd.
 
+- 07:00 state (HEAD af7e1d0, tree clean): Phase 5 rows P5.0-P5.3, P5.5-P5.11, P5.R DONE (D128-D144). Left: P5.12 (loop-shadow
+  miscompile), P5.4's own check (needs two gate.sh 2 runs on an unchanged tree; run #1 running in the live tree now, attested),
+  P5.GATE (`LW_ATTEST=0`). In flight: P6.1 + P5.12 (opus, in a SCRATCH COPY, hands back a diff vs af7e1d0) agent `a19bbe60cdc639605`;
+  P6.3+P6.4+P6.5 legmacs host checks (opus, live tree, checks/ host/ corpus/legmacs/ only) agent `acf431c7f86089d13`.
+  After P6.1's diff lands: rerun P6.2 (`env LETGO_TEST=... SRC_PATHS=... checks/run-tests.sh --corpus corpus/legmacs-tests.txt`,
+  set its `#bar` from the measured run), P6.R reviewer dispatch, then P5.GATE and P6.GATE. Cost line per gate: sum message.usage over
+  the session JSONL + subagents/ (see the summary doc's method).
+
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
 
 ## (historical) In flight at 13:05
