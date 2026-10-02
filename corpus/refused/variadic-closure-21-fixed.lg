@@ -1,0 +1,5 @@
+;; refuse: unsupported variadic closure with more than 20 fixed params
+;; P6.8: a variadic arity takes up to 20 fixed params ($Code21); native lg
+;; compiles 21 (and then binds the rest wrongly, dropping the 21st arg).
+(def c21 (fn [a b c d e f g h i j k l m n o p q r s t u & z] [t z]))
+(println (apply c21 (range 23)))

@@ -1,0 +1,28 @@
+;; P6.7 (review4 bug-07 audit): fmt's badVerb prints the operand with %v
+;; under the directive's width, flags and precision; a nil operand is a
+;; bare <nil>; a bad verb character ($, !) is still a verb.
+;; native lg 4e769212 prints:
+;; "%!b(bool=true  )"
+;; "%!$(string= a)s"
+;; "%!d(string=    x)"
+;; "%!d(string=x    )|"
+;; "%!s(float64=001.5)"
+;; "%!d(string=s)"
+;; "%!t(float64=    2.25)"
+;; "%!q(bool=true)"
+;; "%!x(bool=true)"
+;; "%!c(string= ab)"
+;; "%!z(int=7   )"
+;; "%!z(int32=   97)"
+;; "%!z(float64=3)"
+;; "%!z(float64=-0002.5)"
+;; "%!z(<nil>)"
+;; "%!z(<nil>)"
+;; "%!!(int=1)"
+;; "%!z(int=255)"
+;; "%!z(int= 5)"
+;; "%!z(string=hel       )"
+(doseq [[f & args] [["%-6b" true] ["%2$s" "a"] ["%5d" "x"] ["%-5d|" "x"] ["%05s" 1.5] ["%+d" "s"] ["%8.3t" 2.25]
+                    ["%q" true] ["%x" true] ["%3c" "ab"] ["%-4z" 7] ["%5z" \a] ["%.1z" 3.14159] ["%07.2z" -2.5]
+                    ["%z" nil] ["%5z" nil] ["%!" 1] ["%#z" 255] ["% z" 5] ["%-10.3z" "hello"]]]
+  (println (pr-str (try (apply format f args) (catch Exception e (str "E: " (ex-message e)))))))

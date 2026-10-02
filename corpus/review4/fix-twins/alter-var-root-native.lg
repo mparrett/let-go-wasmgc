@@ -1,0 +1,41 @@
+;; P6.7 (coordinator addition): alter-var-root on a NATIVE var. legmacs'
+;; buffers/install-spawn-tracking! does (alter-var-root #'future* (constantly
+;; wrapper)), then the same for #'go* and (find-var 'async/go*); natively
+;; that works, the module raised "alter-var-root of #'core/future*: a
+;; program var's value is not reachable from its stand-in". The new root
+;; lives in wasm.core's var roots (Globals field 2): var-get, deref and a call through the
+;; var read it; the old root passed to f is the stand-in's value when the
+;; module has one, else a fn raising that named limit (inc's second wrap
+;; calls the first wrapper). A direct call (future* x) seeing the new root
+;; is the backend half (P6.8), not tested here.
+;; native lg 4e769212 prints:
+;; true
+;; true
+;; true
+;; true
+;; "#'async/go*"
+;; true
+;; true
+;; nil
+;; true
+;; 40
+;; 50
+;; 60
+;; true
+;; [:twice 70]
+(defn t [f] (println (try (pr-str (f)) (catch Exception e (str "E: " (ex-message e))))))
+(def wrapper (fn [thunk] [:wrapped thunk]))
+(t (fn [] (fn? (alter-var-root #'future* (constantly wrapper)))))
+(t (fn [] (= wrapper (var-get #'future*))))
+(t (fn [] (= wrapper @#'future*)))
+(t (fn [] (some? (find-var 'async/go*))))
+(t (fn [] (str (find-var 'async/go*))))
+(t (fn [] (fn? (alter-var-root (find-var 'async/go*) (constantly wrapper)))))
+(t (fn [] (= wrapper (var-get (find-var 'async/go*)))))
+(t (fn [] (find-var 'nosuchns/x)))
+(t (fn [] (fn? (alter-var-root #'inc (fn [old] (fn [x] (* 10 x)))))))
+(t (fn [] ((var-get #'inc) 4)))
+(t (fn [] (#'inc 5)))
+(t (fn [] (@#'inc 6)))
+(t (fn [] (fn? (alter-var-root #'inc (fn [old] (fn [x] [:twice (old x)]))))))
+(t (fn [] ((var-get #'inc) 7)))

@@ -40,12 +40,12 @@
 ;; namespace does not re-root the program's own def of that name.
 ;;
 ;; No file system (browser ABI): os/cwd is "" (an empty cwd), os/ls and
-;; spit fail as native does on a path whose directory does not exist, and
+;; spit and slurp fail as native does on a path whose directory does not exist, and
 ;; os/stat answers nil (native's not-found).
 (ns wasm.natives
   (:refer-clojure :exclude [format fn? identical? rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
-                            spit make-array])
+                            spit slurp make-array complement bound-fn*])
   (:require [clojure.string :as string]
             [wasm.intrinsics :as wasm]
             [wasm.pvec :as pv]
@@ -104,6 +104,37 @@
            (empty-literal? a) (empty-literal? b)
            :else (wasm/ref-eq a b))))
   ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+;; CoreComplement (lang.go:5522): a fn of ANY arity, so it is plain lg here
+;; (a variadic closure gets the backend's variadic slot; a runtime-dialect
+;; Fn has slots for 0..4 args only, review4 bug-08). f is any vm.AsFn.
+(defn ^{:twin "core/complement"} complement [& args]
+  (if (not= 1 (count args))
+    (raise-arity (count args))
+    (let [f (first args)]
+      (if (c/callable? f)
+        (fn complemented-fn [& xs] (not (apply f xs)))
+        (raise-lit "complement expected Fn")))))
+
+;; bound-fn* (lang.go:3388): capture the dynamic bindings in effect at
+;; creation and, around each call, overlay them on the caller's (a var not
+;; captured keeps the caller's binding); f itself when nothing is bound.
+;; Each captured var is pushed as binding pushes it, so a set! inside the
+;; call or a throw out of it leaves the caller's values as they were.
+;; Named limit: *out*/*err* bindings are not captured (their fd stacks
+;; are not var-table vars).
+(defn ^{:twin "core/bound-fn*"} bound-fn* [& args]
+  (if (not= 1 (count args))
+    (raise-lit "bound-fn* expects 1 arg")
+    (let [f (first args)]
+      (if (c/callable? f)
+        (let [fr (c/binding-frame)]
+          (if (nil? fr)
+            f
+            (fn [& xs]
+              (c/frame-push! fr)
+              (try (apply f xs) (finally (c/frame-pop! fr))))))
+        (raise-lit "bound-fn* expected Fn")))))
 
 ;; CoreRseqf (lang.go:8706): a vector or sorted collection reversed, nil
 ;; when empty. lw-ext's regex-compile (re-pattern at run time) reaches it.
@@ -201,6 +232,17 @@
 
 (defn- cell [key] (get (:cells (table)) key))
 
+(defn- native-var?
+  "A stand-in of a var of a builtin namespace (a Go native's or an lg core
+   fn's; \"user\" holds the program's own) that intern did not make:
+   alter-var-root keeps its root in wasm.core's var roots (Globals field 2), which var-get,
+   deref and calls through the var read."
+  [v key]
+  (and (= 36 (c/ckind v))
+       (let [i (string/index-of key "/") nsn (when (and i (pos? i)) (subs key 0 i))]   ; a native's stand-in has no :ns meta
+         (and nsn (not= nsn "user") (some #{nsn} (builtin-nss))))
+       (not (contains? (cell key) :val))))
+
 (defn- program-var-limit [what v]
   (limit (str what " of " v ": a program var's value is not reachable from its stand-in")))
 
@@ -285,7 +327,15 @@
          (let [q (namespace x)]
            (if (nil? q)
              (raise-lit (str "find-var expects a fully-qualified symbol: " x))
-             (let [nsn (canon q)] (when (ns-exists? nsn) (lookup nsn (name x))))))
+             (let [nsn (canon q)]
+               (when (ns-exists? nsn)
+                 (or (lookup nsn (name x))
+                     ;; a builtin namespace's var: a stand-in (its value
+                     ;; is wasm.core/var-value's; alter-var-root works).
+                     ;; Named limit: a name the namespace lacks natively
+                     ;; still finds one here (natively nil)
+                     (when (and (not= nsn "user") (some #{nsn} (builtin-nss)))   ; "user" holds the program's vars
+                       (with-meta (symbol (str "#'" nsn "/" (name x))) {:ns (ns-of nsn) :name (symbol (name x))})))))))
          (raise-lit "find-var expected a symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
@@ -307,6 +357,7 @@
     (let [v (first args) key (cell-key v)]
       (cond (nil? key) (raise-lit "var-get expects a Var")
             (contains? (cell key) :val) (cell-value (cell key))
+            (native-var? v key) (c/var-value v)          ; its altered root, or the stand-in's value (or limit)
             :else (program-var-limit "var-get" v)))))
 
 ;; CoreBoundQ (lang.go:9177). Named limit: a declared program var that is
@@ -326,6 +377,16 @@
             (let [nv (apply f (:val (cell key)) more)]
               (swap! registry assoc-in [:cells key :val] nv)
               nv)
+            ;; a native's var (legmacs wraps #'future* and #'go*): the old
+            ;; root is the stand-in's value when the module has one, else a
+            ;; fn raising that named limit when called, so (constantly w)
+            ;; and wrappers that never call the original still work
+            (native-var? v key)
+            (let [old (if (c/var-root-set? v)
+                        (c/var-value v)
+                        (try (c/var-value v) (catch Exception e (fn [& _] (throw e)))))
+                  nv (apply f old more)]
+              (c/set-var-root! v nv))
             :else (program-var-limit "alter-var-root" v)))))
 
 (defn ^{:twin "core/alter-meta!"} alter-meta! [& args]     ; alterMeta (lang.go:3721)
@@ -362,6 +423,28 @@
           (and (cell key) (contains? (cell key) :val)) (do (swap! registry update-in [:cells key :stack] rest) nil)
           :else (program-var-limit "pop-binding!" v))))
 
+;; CoreRequire (lang.go:7575) at run time. The program's namespaces were
+;; compiled in from their ns forms; a run-time require is a no-op for a
+;; namespace this table knows (native's builtins, in-ns'd and aliased ones)
+;; and native's load failure otherwise, which legmacs' (try (require
+;; 'legmacs-init) (catch e nil)) expects for a missing user config. Named
+;; limit: a run-time require of one of the program's own namespaces fails
+;; (they are not in the table).
+(defn- require-one [spec]
+  (let [sym (if (vector? spec) (first spec) spec)]
+    (cond (not (symbol? sym)) (raise-lit (str "require expected Symbol or Vector, got " (tname spec)))
+          (ns-exists? (canon (str sym))) nil
+          :else (raise-lit (str "unable to load namespace " sym)))))
+
+;; Not named require: a later runtime file's ns form must not resolve to it
+;; (in-ns* has the same reason).
+(defn ^{:twin "core/require"} require* [& specs]
+  (doseq [x specs]
+    (if (or (symbol? x) (vector? x))
+      (require-one x)
+      (raise-lit (str "require expected Symbol or Vector, got " (tname x)))))
+  nil)
+
 ;; ---------------------------------------------------------------------------
 ;; The file system of a module without one
 
@@ -376,6 +459,11 @@
             (raise-lit "spit expected String or byte-array")
             :else (raise-lit (str "spit failed: " (enoent "open" path)))))))
 
+(defn ^{:twin "core/slurp"} slurp [& args]                ; CoreSlurp (lang.go:6286): legmacs reads every file in a try
+  (cond (not= 1 (count args)) (raise-arity (count args))
+        (not (string? (first args))) (raise-lit "slurp expected String")
+        :else (raise-lit (str "slurp failed: " (enoent "open" (first args))))))
+
 (defn ^{:twin "os/cwd"} cwd [& _] "")                      ; os.go: Getwd, any arg count
 
 (defn ^{:twin "os/ls"} ls [& args]                        ; os.go: ReadDir
@@ -387,6 +475,15 @@
   (cond (not= 1 (count args)) (raise-lit "os/stat expects 1 arg")
         (not (string? (first args))) (raise-lit "os/stat expected String path")
         :else nil))
+
+;; os/exit (os.go:246): the host ABI has no exit import, so a module cannot
+;; end with a chosen status; it stops with a named trap (uncatchable, as an
+;; exit is). legmacs calls it only when stdout is not a terminal.
+(defn ^{:twin "os/exit"} exit [& args]
+  (let [n (if (seq args) (first args) 0)]
+    (if (int? n)
+      (wasm/trap "lower-wasm: os/exit: the host ABI has no exit import (named limit)")
+      (raise-lit "os/exit expected Int"))))
 
 ;; ---------------------------------------------------------------------------
 ;; JSON (json.go): encoding/json at Go 1.27, whose messages these are
@@ -429,23 +526,41 @@
         (digit? (nth cs i)) (digits-end cs i)
         :else (bad! (nth cs i) "in numeric literal")))
 
+;; An out-of-range number is Unmarshal's UnmarshalTypeError, which does not
+;; stop the decode: the whole input is still checked, so a later syntax
+;; error wins, and the FIRST range error is reported at the end. Its text
+;; names the value's path (json/v2's JSON Pointer tokens joined by "."; v2
+;; is Go 1.27's default encoding/json): "into Go value" at the top level,
+;; "into .a.1" when the last token is an array index, else "into Go struct
+;; field .a" (v2_decode.go UnmarshalTypeError.Error).
+(def ^:private json-range-err (atom nil))
+
+(defn- range-err! [text path]
+  (when (nil? @json-range-err)
+    (let [field (string/join "." path)
+          last-tok (if (seq path) (peek path) "")
+          into (cond (= field "") "Go value"
+                     (and (seq last-tok) (every? #(digit? (int %)) last-tok)) (str "." field)
+                     :else (str "Go struct field ." field))]
+      (reset! json-range-err (str "json: cannot unmarshal number " text " into " into " of type float64"))))
+  nil)
+
 (defn- num-value
   "toValue (json.go:15) of the float64 Unmarshal gives: an integral value
    below 2^63 in magnitude is an Int."
-  [text int-syntax?]
+  [text int-syntax? path]
   (if (and int-syntax? (<= (count text) 15))
     (rd/read-string text)
     ;; the reader refuses a float literal out of float64's range
     (let [f (try (rd/read-string (if int-syntax? (str text ".0") text))
-                 (catch Exception e (raise-lit (str "json: cannot unmarshal number " text " into Go value of type float64"))))]
+                 (catch Exception e ::range))]
       ;; Go's f == float64(int64(f)): integral and in [-2^63, 2^63)
-      (cond (and (== f (clojure.math/floor f)) (>= f -9.223372036854775808E18) (< f 9.223372036854775808E18)) (long f)
-            ;; out of float64 range: Unmarshal's UnmarshalTypeError (the
-            ;; native message also names the value's path; named limit)
-            (wm/nan? (- f f)) (raise-lit (str "json: cannot unmarshal number " text " into Go value of type float64"))
+      (cond (= f ::range) (range-err! text path)
+            (and (== f (clojure.math/floor f)) (>= f -9.223372036854775808E18) (< f 9.223372036854775808E18)) (long f)
+            (wm/nan? (- f f)) (range-err! text path)
             :else f))))
 
-(defn- j-number [cs i]
+(defn- j-number [cs i path]
   (let [n (count cs)
         j (if (= 45 (nth cs i)) (inc i) i)
         j (cond (>= j n) (eof!)
@@ -459,7 +574,7 @@
                   k (if (and (< k n) (or (= 43 (nth cs k)) (= 45 (nth cs k)))) (inc k) k)]
               (need-digit cs k))
             j)]
-    [(num-value (apply str (map char (subvec cs i j))) (= j int-end)) j]))
+    [(num-value (apply str (map char (subvec cs i j))) (= j int-end) path) j]))
 
 (defn- hex-val [c]
   (cond (digit? c) (- c 48)
@@ -520,13 +635,13 @@
 
 (declare j-value)
 
-(defn- j-array [cs i kw?]
+(defn- j-array [cs i kw? path]
   (let [n (count cs) i (skip-ws cs i)]
     (cond (>= i n) (eof!)
           (= 93 (nth cs i)) [[] (inc i)]
           :else
           (loop [i i out []]
-            (let [[v j] (j-value cs i kw?)
+            (let [[v j] (j-value cs i kw? (conj path (str (count out))))
                   j (skip-ws cs j)
                   out (conj out v)]
               (cond (>= j n) (eof!)
@@ -539,7 +654,7 @@
         (= 34 (nth cs i)) (j-string cs (inc i))
         :else (bad! (nth cs i) "looking for beginning of object key string")))
 
-(defn- j-object [cs i kw?]
+(defn- j-object [cs i kw? path]
   (let [n (count cs) i (skip-ws cs i)]
     (cond (>= i n) (eof!)
           (= 125 (nth cs i)) [{} (inc i)]
@@ -548,7 +663,7 @@
             (let [[k j] (j-key cs i)
                   j (skip-ws cs j)
                   _ (cond (>= j n) (eof!) (not= 58 (nth cs j)) (bad! (nth cs j) "after object key"))
-                  [v j] (j-value cs (inc j) kw?)
+                  [v j] (j-value cs (inc j) kw? (conj path k))
                   j (skip-ws cs j)
                   m (assoc m (if kw? (keyword k) k) v)]
               (cond (>= j n) (eof!)
@@ -556,18 +671,18 @@
                     (= 125 (nth cs j)) [m (inc j)]
                     :else (bad! (nth cs j) "after object key:value pair")))))))
 
-(defn- j-value [cs i kw?]
+(defn- j-value [cs i kw? path]
   (let [i (skip-ws cs i)]
     (if (>= i (count cs))
       (eof!)
       (let [c (nth cs i)]
-        (cond (= c 123) (j-object cs (inc i) kw?)
-              (= c 91) (j-array cs (inc i) kw?)
+        (cond (= c 123) (j-object cs (inc i) kw? path)
+              (= c 91) (j-array cs (inc i) kw? path)
               (= c 34) (j-string cs (inc i))
               (= c 116) (j-lit cs i "true" true)
               (= c 102) (j-lit cs i "false" false)
               (= c 110) (j-lit cs i "null" nil)
-              (or (= c 45) (digit? c)) (j-number cs i)
+              (or (= c 45) (digit? c)) (j-number cs i path)
               :else (bad! c "looking for beginning of value"))))))
 
 (defn ^{:twin "json/read-json"} read-json [& args]       ; json.go:156
@@ -582,9 +697,12 @@
                         (raise-lit "read-json options are not Map"))
                       false)
                 cs (mapv int (first args))
-                [v j] (j-value cs 0 kw?)
+                _ (reset! json-range-err nil)
+                [v j] (j-value cs 0 kw? [])
                 j (skip-ws cs j)]
-            (if (< j (count cs)) (bad! (nth cs j) "after top-level value") v)))))
+            (cond (< j (count cs)) (bad! (nth cs j) "after top-level value")
+                  @json-range-err (raise-lit @json-range-err)
+                  :else v)))))
 
 ;; --- write-json: fromValue (json.go:107), then json.Marshal
 
@@ -919,33 +1037,35 @@
           (or (keyword? a) (symbol? a)) [:string (if (keyword? a) (subs (str a) 1) (str a))]
           :else [:other a])))
 
-(defn- shortest-g [f] (fmt-float f \g {}))
 
-(defn- bad-verb [verb kind x]
+(declare fmt-arg)
+;; fmt's badVerb: the operand is printed with %v under the directive's own
+;; width, flags and precision (printArg(arg, 'v') keeps p.fmt), so
+;; (format "%-6b" true) is "%!b(bool=true  )"; a nil operand is a bare <nil>.
+(defn- bad-verb [verb kind x fl]
   (str "%!" verb "("
-       (cond (= kind :nil) "<nil>"
-             (= kind :int) (str "int=" x)
-             (= kind :float) (str "float64=" (shortest-g x))
-             (= kind :string) (str "string=" x)
-             (= kind :bool) (str "bool=" x)
-             :else (str "int32=" x))
+       (if (= kind :nil)
+         "<nil>"
+         (str (cond (= kind :int) "int" (= kind :float) "float64" (= kind :string) "string"
+                    (= kind :bool) "bool" :else "int32")
+              "=" (fmt-arg [kind x] \v fl)))
        ")"))
 
 (defn- fmt-arg [[kind x] verb fl]
   (cond
-    (= kind :nil) (if (= verb \v) (pad "<nil>" fl false) (bad-verb verb kind x))
+    (= kind :nil) (if (= verb \v) (pad "<nil>" fl false) (bad-verb verb kind x fl))
     (= kind :int) (cond (#{\d \v \x \X \o \b} verb) (fmt-int x verb fl)
                (= verb \c) (pad (str (char x)) fl false)
                (= verb \q) (pad (str "'" (subs (go-quote (str (char x))) 1 (dec (count (go-quote (str (char x)))))) "'") fl false)
                (= verb \U) (pad (str "U+" (let [t (string/upper-case (int-digits x 16 true))] (str (apply str (repeat (- 4 (count t)) "0")) t))) fl false)
-               :else (bad-verb verb kind x))
-    (= kind :char) (if (#{\d \v \x \X \o \b \c \q \U} verb) (fmt-arg [:int x] verb fl) (bad-verb verb kind x))
+               :else (bad-verb verb kind x fl))
+    (= kind :char) (if (#{\d \v \x \X \o \b \c \q \U} verb) (fmt-arg [:int x] verb fl) (bad-verb verb kind x fl))
     (= kind :float) (cond (#{\f \e \E \g \G} verb) (fmt-float x verb fl)
                  (= verb \v) (fmt-float x \g fl)
                  (#{\x \X} verb) (limit "format %x of a float")
-                 :else (bad-verb verb kind x))
-    (= kind :string) (if (#{\s \v \q \x \X} verb) (fmt-str x verb fl) (bad-verb verb kind x))
-    (= kind :bool) (if (#{\t \v} verb) (pad (str x) fl false) (bad-verb verb kind x))
+                 :else (bad-verb verb kind x fl))
+    (= kind :string) (if (#{\s \v \q \x \X} verb) (fmt-str x verb fl) (bad-verb verb kind x fl))
+    (= kind :bool) (if (#{\t \v} verb) (pad (str x) fl false) (bad-verb verb kind x fl))
     ;; a list Unboxes to a Go slice: fmt prints it [e1 e2], each element
     ;; through its String() (a vector is its own Stringer)
     (= kind :other) (if (#{\s \v \q \x \X} verb)

@@ -22,7 +22,7 @@
 ;; timeout channel exists (xsofy sleeps with (<!! (timeout ms))); chan, go
 ;; and >! are Phase 5.
 (ns wasm.host
-  (:refer-clojure :exclude [println print pr prn write! flush! close!])
+  (:refer-clojure :exclude [println print pr prn write! flush! close! sleep])
   (:require [wasm.intrinsics :as wasm]
             [wasm.seq :as sq]
             [wasm.str :as s]
@@ -120,6 +120,20 @@
 (defn ^{:twin "System/currentTimeMillis"} current-time-millis [] (sq/box-int (quot (wasm/host-nanotime) 1000000)))
 (defn ^{:twin "let-go.core/now"} now []
   (wasm/trap "lower-wasm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
+
+;; sleep (lang.go:4563): Int or Float ms (a Float truncates); a non-positive
+;; duration returns at once, as an expired time.Timer does. Through
+;; env.sleep, so a JS host yields (JSPI) and the reference advances its
+;; virtual clock. No cancellation: a module has no goroutine registry.
+(defn ^{:twin "core/sleep"} sleep
+  ([] (c/raise (wasm/bytes-of-string "sleep expects 1 arg")))
+  ([ms] (let [k (sq/kind ms)
+              n (cond (= k 1) (sq/unbox-int ms)
+                      (= k 22) (let [f (wasm/get sq/Float 0 ms)] (if (if (< f 9.0e15) (> f -9.0e15) false) (wasm/f64-to-i64 f) 0))
+                      :else (c/raise (wasm/bytes-of-string "sleep expects a number")))]
+          (when (> n 0) (wasm/host-sleep n))
+          (wasm/null)))
+  ([ms x] (c/raise (wasm/bytes-of-string "sleep expects 1 arg"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Timeout channels. (timeout ms) fixes a deadline now; the first take

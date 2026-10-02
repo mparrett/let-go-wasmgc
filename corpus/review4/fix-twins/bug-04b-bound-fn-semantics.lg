@@ -1,0 +1,51 @@
+;; P6.7 (review4 bug-04 audit): bound-fn conveyance semantics probed on
+;; native. Captured vars freeze at their creation-time value and are
+;; overlaid on the caller's bindings (an uncaptured var keeps the caller's);
+;; set! inside the call and a throw out of it leave the caller's values;
+;; nested bound-fns; 5+ and variadic arities; bound-fn* of a non-fn.
+;; Needs the backend half ($rt_bframe*, src diff in the P6.7 report).
+;; native lg 4e769212 prints:
+;; [:bf :wroot]
+;; [:bf :caller]
+;; [:bf :wroot]
+;; [1 :star]
+;; true
+;; bound-fn* expected Fn
+;; [:root :wroot]
+;; [:outer :inner]
+;; [:b :a]
+;; :changed :root
+;; x :root
+;; 26
+;; [:ap 7]
+;; [:y :wroot] :root
+;; :one
+;; :o
+(def ^:dynamic *v* :root)
+(def ^:dynamic *w* :wroot)
+(defn rd [] [*v* *w*])
+(def bf (binding [*v* :bf] (bound-fn [] (rd))))
+(println (bf))
+(println (binding [*w* :caller] (bf)))
+(println (binding [*v* :caller-v] (bf)))
+(def bf2 (binding [*v* :star] (bound-fn* (fn [x] [x *v*]))))
+(println (bf2 1))
+(println (fn? (bound-fn* (fn [] 1))))
+(println (try (bound-fn* 1) (catch Exception e (ex-message e))))
+(println ((bound-fn [] (rd))))
+(def nested (binding [*v* :outer] (binding [*w* :inner] (bound-fn [] (rd)))))
+(println (nested))
+(def bfn (binding [*v* :a] (let [inner (bound-fn [] *v*)] (binding [*v* :b] (bound-fn [] [*v* (inner)])))))
+(println (bfn))
+(def bset (binding [*v* :s] (bound-fn [] (set! *v* :changed) *v*)))
+(println (bset) *v*)
+(def bthrow (binding [*v* :t] (bound-fn [] (throw (ex-info "x" {})))))
+(println (try (bthrow) (catch Exception e (ex-message e))) *v*)
+(def b5 (binding [*v* 5] (bound-fn [a b c d e f] (+ *v* a b c d e f))))
+(println (b5 1 2 3 4 5 6))
+(println (apply (binding [*v* :ap] (bound-fn [& xs] [*v* (count xs)])) (range 7)))
+(def later (binding [*v* :x] (bound-fn [] (binding [*v* :y] (rd)))))
+(println (later) *v*)
+(def b-after (binding [*v* :one] (let [f (bound-fn [] *v*)] (set! *v* :two) f)))
+(println (b-after))
+(println (with-out-str (let [f (binding [*v* :o] (bound-fn [] (print *v*)))] (f))))

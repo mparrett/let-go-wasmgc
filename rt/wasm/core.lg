@@ -24,9 +24,10 @@
 ;; "lower-wasm: " message.
 (ns wasm.core
   (:refer-clojure :exclude [assoc dissoc get contains? conj nth peek pop transient persistent! conj! assoc! dissoc!
-                            key val subvec complement max min mod number? map? set? seq? sorted? vector?
+                            key val subvec max min mod number? map? set? seq? sorted? vector?
                             list? fn? nil? string? keyword? symbol? coll? sequential? atom deref reset! swap!
-                            compare-and-set! volatile! vreset! vswap! with-meta meta gensym apply* bound-fn*
+                            compare-and-set! volatile! vreset! vswap! with-meta meta gensym apply*
+                            promise deliver delay* force delay? realized?
                             ex-info ex-data ex-message ex-cause sort read-string slurp open compare])
   (:require [wasm.intrinsics :as wasm]
             [wasm.pvec :as pv]
@@ -44,20 +45,27 @@
 (wasm/defstruct TSet [:ref])                      ; TransientSet: wraps phm's HTransient (transient.go:451)
 (wasm/defstruct TypeVal [:ref :i64])              ; a let-go ValueType: name bytes, id (interned)
 (wasm/defstruct MetaEnv [:ref :ref])              ; a with-meta'd fn's env: inner fn, meta (vm.NewMetaFn)
-(wasm/defstruct FnEnv [:ref])                     ; complement's env: the wrapped fn
 ;; A keyword or symbol with meta: let-go's is a distinct value that is still
 ;; keyword?/symbol? and prints as the name, but is = only to itself and
 ;; hashes apart from the plain one ((= 'x (with-meta 'x nil)) is false).
 (wasm/defstruct MetaNamed [:ref :ref])            ; the interned Kw/Sym, meta
-;; The one runtime global (D39): the gensym counter and the interned types.
-(wasm/defstruct Globals [[:mut :i64] :ref])
-(def globals (wasm/new Globals 0 (wasm/array-new pv/Node 40 (wasm/null))))
+;; P6.7: the two blocking refs of a single-threaded module (vm/promise.go,
+;; vm/delay.go). Promise: value, delivered (0/1). Delay: the thunk until
+;; forced then its value, state (0 pending, 1 value, 2 threw, 3 running), the error.
+(wasm/defstruct Promise [[:mut :ref] [:mut :i32]])
+(wasm/defstruct Delay [[:mut :ref] [:mut :i32] [:mut :ref]])
+;; The one runtime global (D39): the gensym counter, the interned types and
+;; (P6.7) the roots alter-var-root gave vars the module does not hold (a
+;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
+;; stand-in's "#'ns/name" text to the root, which var-value reads first.
+(wasm/defstruct Globals [[:mut :i64] :ref [:mut :ref]])
+(def globals (wasm/new Globals 0 (wasm/array-new pv/Node 42 (wasm/null)) (wasm/null)))
 
 ;; Kinds as this namespace sees them: wasm.seq/kind, with its foreign kind 18
 ;; refined into the collections seq.lg cannot name.
 ;;  30 map  31 set  32 TransientMap  33 TransientSet  34 TransientVector  35 Type
 ;;  36 keyword/symbol with meta  37 a typed array (wasm.arrays)
-;;  38 SortedMap  39 SortedSet (wasm.sorted)
+;;  38 SortedMap  39 SortedSet (wasm.sorted)  40 Promise  41 Delay
 (defn ckind [x]
   (let [k (sq/kind x)]
     (if (= k 18)
@@ -71,6 +79,8 @@
             (wasm/is? arr/Arr x) 37
             (wasm/is? so/SMap x) 38
             (wasm/is? so/SSet x) 39
+            (wasm/is? Promise x) 40
+            (wasm/is? Delay x) 41
             :else 18)
       k)))
 
@@ -94,7 +104,28 @@
 ;; var's current value (lower-wasm's var-const-form; for a var the program
 ;; does not define it raises that named limit). meta hides the key.
 (defn- lw-var-kw [] (s/kw-of-bytes (wasm/bytes-of-string "lw/var")))
-(defn var-value [v] (sq/invoke0 (m/mget (wasm/get MetaNamed 1 v) (lw-var-kw) (wasm/null))))
+(declare raise)
+(defn- var-key [v]                                        ; the stand-in's text, "#'ns/name", as a String
+  (let [y (wasm/get MetaNamed 0 v) ns (wasm/get sq/Sym 0 y)]
+    (s/mk-str (if (wasm/null? ns) (wasm/get sq/Sym 1 y)
+                  (sq/bytes-cat (sq/bytes-cat ns (wasm/bytes-of-string "/")) (wasm/get sq/Sym 1 y))))))
+(defn var-root-set?
+  "Has alter-var-root given the var stand-in v a root in the module?"
+  [v]
+  (let [rs (wasm/get Globals 2 globals)]
+    (if (wasm/null? rs) false (m/mcontains? rs (var-key v)))))
+(defn set-var-root! [v x]
+  (let [rs (wasm/get Globals 2 globals)]
+    (wasm/set! Globals 2 globals (m/massoc (if (wasm/null? rs) (m/empty-map) rs) (var-key v) x))
+    x))
+(defn var-value [v]
+  (if (var-root-set? v)
+    (m/mget (wasm/get Globals 2 globals) (var-key v) (wasm/null))
+    (let [f (m/mget (wasm/get MetaNamed 1 v) (lw-var-kw) (wasm/null))]
+      (if (wasm/null? f)                                  ; a stand-in find-var made: no reader fn
+        (raise (sq/bytes-cat (sq/bytes-cat (wasm/bytes-of-string "lower-wasm: the value of ") (s/str-bytes (var-key v)))
+                             (wasm/bytes-of-string " is not reachable from its stand-in (named limit)")))
+        (sq/invoke0 f)))))
 
 (defn- lit [bs] (s/mk-str bs))
 (defn- int-key? [k] (= 1 (sq/kind k)))
@@ -129,6 +160,8 @@
           (= k 37) (wasm/bytes-of-string "let-go.lang.Array")
           (= k 38) (wasm/bytes-of-string "let-go.lang.PersistentTreeMap")
           (= k 39) (wasm/bytes-of-string "let-go.lang.PersistentTreeSet")
+          (= k 40) (wasm/bytes-of-string "let-go.lang.Promise")
+          (= k 41) (wasm/bytes-of-string "let-go.lang.Delay")
           :else (wasm/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -532,20 +565,6 @@
 (defn sequential? [x]
   (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true :else false))))
 
-;; complement (lang.go:5522): a fn of any arity that negates f's result.
-(defn- env-f [self] (wasm/get FnEnv 0 (wasm/get sq/Fn 3 self)))
-(defn- compl0 [self] (lnot (invoke-args (env-f self) 0 nil nil nil nil)))
-(defn- compl1 [self a] (lnot (invoke-args (env-f self) 1 a nil nil nil)))
-(defn- compl2 [self a b] (lnot (invoke-args (env-f self) 2 a b nil nil)))
-(defn- compl3 [self a b c] (lnot (invoke-args (env-f self) 3 a b c nil)))
-(defn- compl4 [self a b c d] (lnot (invoke-args (env-f self) 4 a b c d)))
-
-(defn ^{:twin "core/complement"} complement [f]
-  (if (callable? f)
-    (wasm/new sq/Fn (wasm/funcref sq/Code0 compl0) (wasm/funcref sq/Code1 compl1) (wasm/funcref sq/Code2 compl2)
-              (wasm/new FnEnv f) (wasm/funcref sq/Code3 compl3) (wasm/funcref sq/Code4 compl4)
-              (wasm/new sq/FnInfo 0 -1 (wasm/bytes-of-string "complemented-fn")) 0)
-    (raise (wasm/bytes-of-string "complement expected Fn"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lookup: get, contains?, key/val
@@ -740,14 +759,15 @@
         (= k 38) true (= k 39) true :else false))
 
 (defn ^{:twin "core/nth"} nth                             ; Nth/Nth3 plus TransientVector (Indexed, not seqable)
-  ([coll i] (let [k (ckind coll)]
+  ([coll i] (let [k (ckind coll) n (sq/int-arg i)]
               (cond (= k 34)
-                    (let [v (wasm/get TVec 0 coll) n (sq/unbox-int i)]
+                    (let [v (wasm/get TVec 0 coll)]
                       (if (if (< n 0) true (>= n (pv/vcount v))) (raise (wasm/bytes-of-string "nth index out of bounds")) (pv/vnth v n)))
                     (seqable-k? k) (sq/nth coll i)
-                    (< (sq/unbox-int i) 0) (raise (wasm/bytes-of-string "nth index out of bounds"))   ; checked before seqOf (native_prims.go:173)
+                    (< n 0) (raise (wasm/bytes-of-string "nth index out of bounds"))   ; checked before seqOf (native_prims.go:173)
                     :else (raise-not-supported (lit (wasm/bytes-of-string "don't know how to create ISeq from ")) coll))))
-  ([coll i nf] (if (= 34 (ckind coll)) (vec-get (wasm/get TVec 0 coll) i nf) (sq/nth coll i nf))))
+  ([coll i nf] (do (sq/int-arg i)                            ; native converts the index before the TransientVector lookup
+                   (if (= 34 (ckind coll)) (vec-get (wasm/get TVec 0 coll) i nf) (sq/nth coll i nf)))))
 
 ;; peek/pop (lang.go:6707, :6739). A String and a set are vm.Seqs in Go
 ;; (a map is not), so pop gives their rest.
@@ -855,6 +875,62 @@
   ([t key key2] (dissoc! (dissoc! t key) key2)))
 
 ;; ---------------------------------------------------------------------------
+;; Promise and delay (P6.7; lang.go:7994-8030, 8312-8330, vm/promise.go,
+;; vm/delay.go). A module has one thread, so deref of an undelivered
+;; promise, which blocks forever natively (nothing else can deliver), is a
+;; named limit instead of a hang; future, the usual deliverer, is Phase 7.
+
+(defn ^{:twin "core/promise"} promise [] (wasm/new Promise (wasm/null) 0))   ; any arg count natively; the module has 0
+
+(defn ^{:twin "core/deliver"} deliver
+  ([] (raise (wasm/bytes-of-string "deliver expects 2 args")))
+  ([p] (raise (wasm/bytes-of-string "deliver expects 2 args")))
+  ([p v] (cond (if (= 40 (ckind p)) false true) (raise (wasm/bytes-of-string "deliver expected Promise"))
+               (= 1 (wasm/get Promise 1 p)) (wasm/null)                 ; a second deliver is a no-op returning nil
+               :else (do (wasm/set! Promise 0 p v) (wasm/set! Promise 1 p 1) v)))
+  ([p v x] (raise (wasm/bytes-of-string "deliver expects 2 args"))))
+
+(defn- promise-value [p]
+  (if (= 1 (wasm/get Promise 1 p))
+    (wasm/get Promise 0 p)
+    (wasm/trap "lower-wasm: deref of an undelivered promise would block forever (one thread; future is Phase 7)")))
+
+(defn ^{:twin "core/delay*"} delay*
+  ([] (raise (wasm/bytes-of-string "delay* expects 1 arg (thunk fn)")))
+  ([f] (if (callable? f) (wasm/new Delay f 0 (wasm/null)) (raise (wasm/bytes-of-string "delay* expected Fn"))))   ; vm.Fn: keywords too
+  ([f x] (raise (wasm/bytes-of-string "delay* expects 1 arg (thunk fn)"))))
+
+(defn- delay-fail [d e] (wasm/set! Delay 2 d e) (wasm/set! Delay 1 d 2) (wasm/set! Delay 0 d (wasm/null)) (throw e))
+
+(defn- force-delay [d]                                    ; Delay.Force: realized before the thunk runs; a throw is cached
+  (let [st (wasm/get Delay 1 d)]
+    (cond (= st 1) (wasm/get Delay 0 d)
+          (= st 2) (throw (wasm/get Delay 2 d))
+          (= st 3) (wasm/trap "lower-wasm: a delay forced from its own thunk (native deadlocks on its mutex)")
+          :else (let [f (wasm/get Delay 0 d)]
+                  (wasm/set! Delay 1 d 3)                 ; running: realized? is already true natively
+                  (let [v (try (invoke-args f 0 (wasm/null) (wasm/null) (wasm/null) (wasm/null)) (catch Throwable e (delay-fail d e)))]
+                    (wasm/set! Delay 0 d v)
+                    (wasm/set! Delay 1 d 1)
+                    v)))))
+
+(defn ^{:twin "core/force"} force
+  ([] (raise (wasm/bytes-of-string "force expects 1 arg")))
+  ([x] (if (= 41 (ckind x)) (force-delay x) x))
+  ([x y] (raise (wasm/bytes-of-string "force expects 1 arg"))))
+
+(defn ^{:twin "core/delay?"} delay?
+  ([] (sq/bool false))
+  ([x] (sq/bool (= 41 (ckind x))))
+  ([x y] (sq/bool false)))
+
+(defn ^{:twin "core/realized?"} realized? [x]             ; CoreIsRealized (lang.go:8030): delay, promise, else seq.lg's lazy seq
+  (let [k (ckind x)]
+    (cond (= k 40) (sq/bool (= 1 (wasm/get Promise 1 x)))
+          (= k 41) (sq/bool (if (= 0 (wasm/get Delay 1 x)) false true))
+          :else (sq/realized? x))))
+
+;; ---------------------------------------------------------------------------
 ;; State: atom (validators, watches and :meta are named limits) and volatile
 
 (defn ^{:twin "core/atom"} atom
@@ -870,8 +946,15 @@
                (= k 25) (wasm/get sq/Volatile 0 r)
                (= k 14) (wasm/get sq/Reduced 0 r)            ; Reduced is an IDeref natively: @(reduced 2) = 2
                (= 2 (standin r)) (var-value r)              ; P5.9
+               (= 40 (ckind r)) (promise-value r)
+               (= 41 (ckind r)) (force-delay r)
                :else (raise (wasm/bytes-of-string "deref expected Reference")))))
-  ([r ms v] (raise (wasm/bytes-of-string "deref with timeout expects a blocking ref (promise or future)"))))
+  ;; Deref3 (native_prims.go:241): with no other thread nothing can deliver
+  ;; while this one waits, so an undelivered promise sleeps ms and times out
+  ([r ms v] (cond (if (= 40 (ckind r)) false true)
+                  (raise (wasm/bytes-of-string "deref with timeout expects a blocking ref (promise or future)"))
+                  (= 1 (wasm/get Promise 1 r)) (wasm/get Promise 0 r)
+                  :else (let [n (sq/int-arg ms)] (when (> n 0) (wasm/host-sleep n)) v))))
 
 (defn- atom-of [a who]
   (if (= 24 (sq/kind a)) a (raise who)))
@@ -1032,10 +1115,16 @@
                   (invoke-vec f (sq/vec args))
                   (raise (wasm/bytes-of-string "apply expected Seq"))))))
 
-;; bound-fn* (lang.go:3388) returns f itself when no dynamic binding is in
-;; effect; the wasm runtime has no binding frames until Phase 5.
-(defn ^{:twin "core/bound-fn*"} bound-fn* [f]
-  (if (= 16 (sq/kind f)) f (raise (wasm/bytes-of-string "bound-fn* expected Fn"))))
+;; Binding frames for bound-fn* (wasm.natives, P6.7). binding is the
+;; backend's: each bound var saves on its own $bs_ stack (D149), so only the
+;; backend can enumerate them. It lowers these three as $rt_bframe (every
+;; var whose stack is non-empty with its current value; nil when none),
+;; $rt_bframe_push (re-establish a frame: push each var as binding does)
+;; and $rt_bframe_pop (undo it). Under the reference intrinsics no binding
+;; frame exists, so the bodies are the no-frame case.
+(defn binding-frame [] (wasm/null))
+(defn frame-push! [fr] (wasm/null))
+(defn frame-pop! [fr] (wasm/null))
 
 ;; gensym (lang.go:5560): prefix (default "G__") + the next id.
 (defn ^{:twin "core/gensym"} gensym
@@ -1146,7 +1235,8 @@
   ([f coll] (if (callable? f) (sort* f coll) (raise (wasm/bytes-of-string "sort expected a comparator function")))))
 
 ;; ---------------------------------------------------------------------------
-;; Host and reader. os/getenv is the host import; slurp/open are host I/O
+;; Host and reader. os/getenv is the host import; open is host I/O (slurp
+;; is wasm.natives' no-file-system twin, D138)
 ;; (Phase 3/4) and read-string is edn.lg compiled through the backend (plan
 ;; D8, rt/wasm/README.md): named limits until then.
 
@@ -1157,7 +1247,6 @@
     (let [v (wasm/host-getenv (s/str-bytes nm))] (if (wasm/null? v) (lit (wasm/bytes-of-string "")) (s/mk-str v)))
     (lit (wasm/bytes-of-string ""))))
 
-(defn ^{:twin "core/slurp"} slurp [x] (wasm/trap "lower-wasm: slurp is host I/O (Phase 3/4)"))
 (defn ^{:twin "core/open"} open [x] (wasm/trap "lower-wasm: open is host I/O (Phase 3/4)"))
 (defn ^{:twin "core/read-string"} read-string [x] (wasm/trap "lower-wasm: read-string is edn.lg through the backend (plan D8)"))
 
@@ -1218,6 +1307,13 @@
           (= k 37) (arr/print-arr x)
           (= k 38) (so/smap-print x)
           (= k 39) (so/sset-print x)
+          (= k 40) (s/str (lit (wasm/bytes-of-string "#<Promise@0x0: "))
+                          (if (= 1 (wasm/get Promise 1 x)) (s/value-string (wasm/get Promise 0 x)) (lit (wasm/bytes-of-string ":pending")))
+                          (lit (wasm/bytes-of-string ">")))
+          (= k 41) (s/str (lit (wasm/bytes-of-string "#<Delay@0x0: "))
+                          (if (= 0 (wasm/get Delay 1 x)) (lit (wasm/bytes-of-string ":pending"))
+                              (s/value-string (if (= 1 (wasm/get Delay 1 x)) (wasm/get Delay 0 x) (wasm/null))))
+                          (lit (wasm/bytes-of-string ">")))
           :else (wasm/trap "wasm.core: printing this value is not implemented"))))
 
 (defn- pr-hook [self x] (s/value-string x))

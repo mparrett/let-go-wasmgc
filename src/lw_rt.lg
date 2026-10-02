@@ -273,6 +273,8 @@
    #'math/round #'lw-ext/round-v #'clojure.math/round #'lw-ext/round-v
    #'clojure.math/floor #'lw-ext/floor-v #'clojure.math/ceil #'lw-ext/ceil-v
    #'clojure.math/floor-div #'lw-ext/floor-div-v
+   ;; P6.8: review4 bug-10's static interop call (strconv.ParseInt(s, 10, 32))
+   (resolve 'Integer/parseInt) #'lw-ext/parse-int-v
    #'clojure.math/sqrt #'wasm.math/sqrt #'clojure.math/pow #'wasm.math/pow
    #'clojure.math/exp #'wasm.math/exp #'clojure.math/abs #'wasm.math/abs
    #'core/with-out-str* #'lw-ext/with-out-str-v #'core/read-all-string #'lw-ext/read-all-string-v

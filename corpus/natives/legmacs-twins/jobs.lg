@@ -1,0 +1,30 @@
+;; legmacs-twins (P6.7, review4 bug-05): the natives the reach list gained
+;; when main.lg and the tests became roots, plus the fn-wrapping twins
+;; review4 found short: sleep, promise/deliver, delay*/force/delay?,
+;; realized?, a run-time require, os/exit's argument check, slurp,
+;; complement and bound-fn* (bound-fn* with no binding in effect; the
+;; conveying case needs the backend's $rt_bframe, review4/fix-twins).
+;; Each line prints a value or the caught error text.
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e))))))
+(t "sleep" #(sleep 1))
+(t "sleep float" #(sleep 0.5))
+(t "sleep bad" #(sleep :k))
+(t "promise" #(let [p (promise)] [(realized? p) (deliver p :v) (deliver p :w) @p (realized? p)]))
+(t "promise timeout" #(deref (promise) 1 :late))
+(t "deliver bad" #(deliver [] 1))
+(t "delay" #(let [n (atom 0) d (delay (swap! n inc))] [(realized? d) @d @d (force d) @n (delay? d)]))
+(t "force plain" #(force :x))
+(t "delay* bad" #(delay* 1))
+(t "realized? lazy" #(let [s (map inc [1 2])] [(realized? s) (do (doall s) (realized? s))]))
+(t "realized? bad" #(realized? [1]))
+(t "require builtin" #(require 'clojure.string))
+(t "require missing" #(require 'legmacs-init))
+(t "require vector" #(require '[clojure.set :as set]))
+(t "require bad" #(require 1))
+(t "os/exit bad" #(os/exit "1"))
+(t "slurp" #(slurp "/nonexistent/legmacs-init.lg"))
+(t "complement" #(mapv (complement even?) [1 2 3]))
+(t "complement 6" #((complement (fn [a b c d e f] (= a f))) 1 2 3 4 5 6))
+(t "complement bad" #(complement "s"))
+(t "bound-fn* unbound" #((bound-fn* (fn [a b] (+ a b))) 1 2))
+(t "bound-fn* bad" #(bound-fn* 1))

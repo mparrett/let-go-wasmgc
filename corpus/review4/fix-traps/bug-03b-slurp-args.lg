@@ -1,0 +1,23 @@
+;; P6.6 (review4 bug-03 audit): slurp's argument checks and its open-failed
+;; text for any path (D138: a module has no file system, so every path
+;; reads as one whose directory does not exist).
+;; native lg 4e769212 prints:
+;; E: slurp failed: open : no such file or directory
+;; E: slurp failed: open relative/x.txt: no such file or directory
+;; E: slurp expected String
+;; E: slurp expected String
+;; E: slurp expected String
+;; E: wrong number of arguments 0
+;; E: wrong number of arguments 2
+;; nil
+;; alive
+(defn t [f] (println (try (pr-str (f)) (catch Exception e (str "E: " (ex-message e))))))
+(t #(slurp ""))
+(t #(slurp "relative/x.txt"))
+(t #(slurp nil))
+(t #(slurp 1))
+(t #(slurp :k))
+(t #(apply slurp []))
+(t #(apply slurp ["a" "b"]))
+(println (try (slurp "/no/such") (catch e nil)))
+(println "alive")

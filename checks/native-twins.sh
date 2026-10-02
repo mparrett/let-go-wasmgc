@@ -2,7 +2,8 @@
 # checks/native-twins.sh <reach-list> [--manifest FILE] [--exclude REGEX] [--skip FILE]
 #   — the P2.8/P3.1/P6.0 check.
 #
-# For a reach list (one `ns/name` per line, as tools/reach.sh writes), print
+# For a reach list (one `ns/name` per line, as tools/reach.sh writes; `#`
+# lines are comments, e.g. the regeneration command in the header), print
 # every native with no wasm twin, grouped by ns, with the inventory's arity,
 # source and registration columns, then `MISSING n / REACHED m`.
 # Exit 0 iff n = 0; 1 otherwise; 2 when an input is missing or the --skip
@@ -118,6 +119,7 @@ awk -F'\t' -v invf="$inv" -v manf="$tmp/manifest" -v ex="$exclude" -v skipf="$tm
     }
   }
   /^[ \t]*$/ { next }
+  /^[ \t]*#/ { next }
   ex != "" && $1 ~ ex { excluded++; next }
   {
     q = $1; reached++; inreach[q] = 1

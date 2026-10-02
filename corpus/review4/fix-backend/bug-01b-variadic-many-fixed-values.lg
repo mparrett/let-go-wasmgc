@@ -1,0 +1,26 @@
+;; P6.8 extension of bug-01: variadic arities with 5..20 fixed params, as
+;; values (apply, map, a local, a map entry, with-meta), from a defn whose
+;; only arity is variadic, a multi-arity defn, and closures; apply with
+;; exactly k args (rest nil) and fewer than k (native's arity error).
+(require '[clojure.string :as str])
+(defn msg [e] (last (str/split (ex-message e) #"> ")))
+(defn v6 [a b c d e f & r] [f r])
+(println (apply v6 (range 6)) (apply v6 (range 9)) (map v6 [1] [2] [3] [4] [5] [6] [7]))
+(println (try (apply v6 (range 5)) (catch Exception e (msg e))))
+(def table {:v v6})
+(println ((:v table) 1 2 3 4 5 6 7 8))
+(let [g v6] (println (g 1 2 3 4 5 6) (try (g 1 2) (catch Exception e (msg e)))))
+(defn mm ([a] a) ([a b c d e] [:5 e]) ([a b c d e f & r] [:v r]))
+(println (apply mm (range 1)) (apply mm (range 5)) (apply mm (range 6)) (apply mm (range 9)))
+(println (try (apply mm (range 3)) (catch Exception e (msg e))))
+(def wm (with-meta mm {:m 1}))
+(println (meta wm) (wm 1 2 3 4 5 6 7) (apply wm (range 8)))
+(defn v20 [a b c d e f g h i j k l m n o p q r s t & z] [t z])
+(println (apply v20 (range 20)) (apply v20 (range 23)))
+(println (try (apply v20 (range 19)) (catch Exception e (msg e))))
+(defn mk [x] (fn [a b c d e f g & r] [(+ x g) r]))
+(let [c (mk 100)]
+  (println (c 1 2 3 4 5 6 7) (c 1 2 3 4 5 6 7 8 9) (apply c (range 7)) (apply c (range 10)))
+  (println (map c [1] [2] [3] [4] [5] [6] [7] [8]))
+  (println (try (apply c (range 6)) (catch Exception e (msg e)))))
+(println (reduce (fn [acc f] (conj acc (apply f (range 12)))) [] [v6 mm (mk 0)]))

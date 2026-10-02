@@ -295,12 +295,10 @@
   (same (= (type 1) (type 2)) (sq/equals (c/type-of (W 1)) (c/type-of (W 2))))
   (same (= (type 1) (type :a)) (sq/equals (c/type-of (W 1)) (c/type-of (W :a))))
   (same (pr-str (type :a)) (s/pr-str (c/type-of (W :a))))
-  (same ((complement nil?) 1) (sq/invoke1 (c/complement (clo nil?)) (W 1)))
-  (same ((complement +)) (sq/invoke0 (c/complement (clo +))))
-  (same ((complement (fn [a b] (= a b))) 1 1) (sq/invoke2 (c/complement (clo =)) (W 1) (W 1)))
-  (same ((complement :a) {:a false}) (sq/invoke1 (c/complement (W :a)) (W {:a false})))
-  (same (complement 1) (c/complement (W 1)))
-  (same ((complement (fn [a b c d] (+ a b c d))) 1 2 3 4) (c/invoke4 (c/complement (clo +)) (W 1) (W 2) (W 3) (W 4))))
+  ;; complement moved to wasm.natives at P6.7 (a variadic closure: any arg
+  ;; count, review4 bug-08); its oracles are corpus/natives/legmacs-twins/jobs.lg
+  ;; and corpus/review4/fix-twins/bug-08*.lg
+  )
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers
@@ -534,8 +532,8 @@
       (is (= :trap (first (res #(c/apply* (W f) (W args))))) "more than 4 args: named limit")
       (same (apply* f args) (c/apply* (W f) (if (seq? args) (W args) (W args))))))
   (same (apply* + (range 4)) (c/apply* (clo +) (sq/range (W 4))))
-  (same ((bound-fn* inc) 1) (sq/invoke1 (c/bound-fn* (clo inc)) (W 1)))
-  (same (bound-fn* 1) (c/bound-fn* (W 1)))
+  ;; bound-fn* moved to wasm.natives at P6.7 (conveys bindings through the
+  ;; backend's $rt_bframe); oracles in corpus/review4/fix-twins/bug-04*.lg
   (let [a (<-w (c/gensym)) b (<-w (c/gensym)) p (<-w (c/gensym (W "foo")))]
     (is (and (symbol? a) (re-matches #"G__\d+" (name a)) (re-matches #"foo\d+" (name p))) (pr-str [a p]))
     (is (< (parse-long (subs (name a) 3)) (parse-long (subs (name b) 3)))))
@@ -559,7 +557,8 @@
   (same (os/getenv 1) (c/getenv (W 1)))
   (same (os/getenv nil) (c/getenv (W nil)))
   (is (= "v" (binding [wasm/*host-env* {"K" "v"}] (<-w (c/getenv (W "K"))))))
-  (doseq [f [#(c/slurp (W "f")) #(c/open (W "f")) #(c/read-string (W "1"))]]
+  ;; slurp is wasm.natives' no-file-system twin since P6.6 (D138's text)
+  (doseq [f [#(c/open (W "f")) #(c/read-string (W "1"))]]
     (is (string/starts-with? (second (res f)) "lower-wasm: ") "named limit")))
 
 ;; ---------------------------------------------------------------------------
@@ -751,6 +750,10 @@
     (let [[head & more] form]
       (cond
         (= 'quote head) []
+        ;; (catch Throwable e body...) inside try: D31's one catch class; e is a
+        ;; local (as seq_test's dialect check; P6.7's force-delay caches a throw)
+        (= 'catch head) (let [[cls sym & body] more]
+                          (if (= 'Throwable cls) (mapcat #(var-refs % (conj bound sym)) body) [form]))
         (= 'fn* head)
         (let [more (if (symbol? (first more)) (rest more) more)
               arities (if (vector? (first more)) [more] more)]

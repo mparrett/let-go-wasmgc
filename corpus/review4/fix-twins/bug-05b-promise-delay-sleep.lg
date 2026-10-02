@@ -1,0 +1,80 @@
+;; P6.7 (review4 bug-05 audit): the twins legmacs' job loop and tests reach.
+;; sleep: Int or Float ms, non-positive returns at once, anything else
+;; native's text. promise/deliver: a second deliver returns nil and keeps
+;; the first value; deref with a timeout returns the value once delivered,
+;; else (one thread: nothing can deliver) the timeout value. delay*/force/
+;; delay?/realized?: once-only, a throw is cached and rethrown, any vm.Fn
+;; (keywords, maps, transients) is a thunk. Not here: printing a promise or
+;; delay (native prints its address), deref of an undelivered promise (blocks
+;; forever natively; a named limit in the module).
+;; native lg 4e769212 prints:
+;; :slept
+;; nil
+;; nil
+;; nil
+;; E: sleep expects a number
+;; E: sleep expects a number
+;; [false true 7 nil 7 7]
+;; :timeout
+;; [true nil]
+;; E: deliver expected Promise
+;; E: deliver expected Promise
+;; E: deref with timeout expects a blocking ref (promise or future)
+;; let-go.lang.Promise
+;; false
+;; [false true false :v :v :v 1 true]
+;; [5 nil [1]]
+;; E: boom
+;; E: boom
+;; [true 2]
+;; let-go.lang.Delay
+;; E: delay* expected Fn
+;; E: realized? expected delay, promise, future, or lazy seq
+;; false
+;; true
+;; true
+;; (1 2 3)
+;; true
+;; true
+;; [true true true true true true]
+;; E: delay* expected Fn
+;; E: wrong number of arguments 0
+;; ["divide by zero" "divide by zero"]
+;; [1 nil 1]
+(defn t [f] (println (try (pr-str (f)) (catch Exception e (str "E: " (ex-message e))))))
+(t (fn [] (sleep 1) :slept))
+(t (fn [] (sleep 2.7)))
+(t (fn [] (sleep -5)))
+(t (fn [] (sleep 0)))
+(t (fn [] (sleep "x")))
+(t (fn [] (sleep nil)))
+(t (fn [] (let [p (promise)] [(realized? p) (do (deliver p 7) (realized? p)) @p (deliver p 8) @p (deref p)])))
+(t (fn [] (let [p (promise)] (deref p 5 :timeout))))
+(t (fn [] (let [p (promise)] (deliver p nil) [(realized? p) (deref p 5 :timeout)])))
+(t (fn [] (deliver 1 2)))
+(t (fn [] (deliver (atom 1) 2)))
+(t (fn [] (deref (atom 1) 5 :x)))
+(t (fn [] (type (promise))))
+(t (fn [] (realized? (delay 1))))
+(def n (atom 0))
+(def d (delay (swap! n inc) :v))
+(t (fn [] [(realized? d) (delay? d) (delay? 1) @d @d (force d) @n (realized? d)]))
+(t (fn [] [(force 5) (force nil) (force [1])]))
+(def bad (delay (swap! n inc) (throw (ex-info "boom" {}))))
+(t (fn [] @bad))
+(t (fn [] (force bad)))
+(t (fn [] [(realized? bad) @n]))
+(t (fn [] (type (delay 1))))
+(t (fn [] (delay* 1)))
+(t (fn [] (realized? 5)))
+(t (fn [] (= (delay 1) (delay 1))))
+(t (fn [] (let [x (delay 1)] (= x x))))
+(t (fn [] (let [p (promise)] (= p p))))
+(t (fn [] (map force [(delay 1) 2 (delay (+ 1 2))])))
+(t (fn [] (let [d2 (delay (realized? d))] @d2)))
+(t (fn [] (delay? (delay* :k))))
+(t (fn [] (mapv #(delay? (delay* %)) [{} [1] 'a #{} (transient {}) (transient [])])))
+(t (fn [] (delay* "s")))
+(t (fn [] (force (delay* :k))))
+(t (fn [] (let [d (delay (/ 1 0))] [(try @d (catch Exception e (ex-message e))) (try @d (catch Exception e (ex-message e)))])))
+(t (fn [] (let [p (promise)] [(deliver p 1) (deliver p 2) @p])))

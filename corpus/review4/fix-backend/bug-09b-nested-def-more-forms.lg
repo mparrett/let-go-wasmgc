@@ -1,0 +1,24 @@
+;; P6.8 extension of bug-09: a def nested in more top-level forms (case
+;; with a default, try/catch/finally, nested try, binding, letfn, loop,
+;; dotimes, with-out-str) of the main program; a def's value
+;; is its var. (`locking` is not a let-go form. The library ns-init shapes:
+;; lib/bug-09c-lib-nsinit.lg, run with LG_ARGS, outside run-corpus.)
+(case :zz :a (def c1 1) (def c1 :default))
+(println c1 (case 3 3 (def c2 33)) c2)
+(try (try (def t1 (throw (ex-info "inner" {}))) (catch Exception e (def t1 (ex-message e)) (throw e)))
+     (catch Exception e (def t2 [:outer (ex-message e)]))
+     (finally (def t3 :fin)))
+(println t1 t2 t3)
+(def ^:dynamic *d* :root)
+(binding [*d* :b1] (binding [*d* :b2] (def b2 *d*)) (def b1 *d*))
+(println b1 b2 *d*)
+(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))]
+  (def lf (ev? 10)))
+(println lf)
+(loop [i 0] (when (< i 3) (def lp i) (recur (inc i))))
+(dotimes [i 4] (def dt (* i i)))
+(println lp dt)
+(def s (with-out-str (print "hi") (def wos :inside)))
+(println s wos)
+
+(println (try (def tv 5) (catch Exception e nil)) (case 1 1 (def cv 6)))

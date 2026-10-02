@@ -614,7 +614,7 @@
 (defn ^{:twin "core/lazy-seq*"} lazy-seq* [f]                                      ; CoreLazySeq (lang.go:7885): any IFn, a non-Fn fails when realised
   (if (callable? f) (wasm/new LazySeq f (wasm/null) 0 (wasm/null)) (raise-b (wasm/bytes-of-string "lazy-seq* expected a function"))))
 
-(defn ^{:twin "core/realized?"} realized? [x]                                      ; CoreIsRealized (lang.go:8030); IsRealized (lazy_seq.go:38)
+(defn realized? [x]                                      ; the lazy-seq half of CoreIsRealized (lang.go:8030; IsRealized, lazy_seq.go:38); the core/realized? twin is wasm.core's
   (if (= 5 (kind x))
     (bool (if (= 1 (wasm/get LazySeq 2 x)) true (wasm/null? (wasm/get LazySeq 0 x))))
     (raise-b (wasm/bytes-of-string "realized? expected delay, promise, future, or lazy seq"))))
@@ -716,9 +716,16 @@
           :else (let [hit (nth-in-seq (force-seq (seq-of coll)) i)]
                   (if (wasm/null? hit) (oob has-nf nf) (wasm/get Cons 0 hit))))))
 
+(defn int-arg
+  "A native fn's int64 parameter (D42: the boxed path never ref.casts an
+   unchecked operand): an Int unboxed, anything else native's conversion
+   error, raised before the fn body runs."
+  [x]
+  (if (= 1 (kind x)) (unbox-int x) (raise-typed (wasm/bytes-of-string "expected int64, got ") x)))
+
 (defn nth                                                ; the core/nth twin is wasm.core/nth (adds TransientVector)
-  ([coll i] (nth* coll (unbox-int i) false (wasm/null)))
-  ([coll i nf] (nth* coll (unbox-int i) true nf)))
+  ([coll i] (nth* coll (int-arg i) false (wasm/null)))
+  ([coll i nf] (nth* coll (int-arg i) true nf)))
 
 (defn peek [x]                                                             ; CorePeek (lang.go:6707)
   (let [k (kind x)]

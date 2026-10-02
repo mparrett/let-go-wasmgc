@@ -1,0 +1,23 @@
+;; P6.7 (review4 bug-11 audit): Go 1.27's encoding/json (json/v2 by
+;; default) names the first out-of-range number's path: "Go value" at the
+;; top level, ".a.1"/".0" when the last token is an array index, "Go struct
+;; field .a" otherwise. The decode does not stop there: a later syntax error
+;; still wins.
+;; native lg 4e769212 prints:
+;; json: cannot unmarshal number 1e400 into .0 of type float64
+;; json: cannot unmarshal number 1e400 into Go value of type float64
+;; json: cannot unmarshal number 1e400 into Go struct field .a of type float64
+;; json: cannot unmarshal number 1e400 into .a.1 of type float64
+;; json: cannot unmarshal number 1e400 into .0.0 of type float64
+;; json: cannot unmarshal number 1e400 into Go struct field .1.b of type float64
+;; json: cannot unmarshal number 1e400 into .0 of type float64
+;; json: cannot unmarshal number -1e400 into Go struct field .a.b c of type float64
+;; invalid character 'x' looking for beginning of value
+;; json: cannot unmarshal number 1e400 into Go struct field .a.b of type float64
+;; json: cannot unmarshal number 1e400 into .2 of type float64
+;; json: cannot unmarshal number 1e400 into Go value of type float64
+;; json: cannot unmarshal number 1e999 into .k.0.z.2 of type float64
+;; json: cannot unmarshal number 1e400 into Go struct field .a of type float64
+(doseq [s ["[1e400]" "1e400" "{\"a\":1e400}" "{\"a\":[1,1e400]}" "[[1e400]]" "[1,{\"b\":1e400}]" "[1e400, 2e400]" "{\"a\":{\"b c\":-1e400}}" "[1e400, x]" "{\"a.b\":1e400}" "[{},[],1e400]" "{\"\":1e400}" "{\"k\":[{\"z\":[0,0,1e999]}]}"]]
+  (println (try (pr-str (json/read-json s)) (catch Exception e (ex-message e)))))
+(println (try (pr-str (json/read-json "{\"a\":1e400}" {:keywords? true})) (catch Exception e (ex-message e))))

@@ -89,3 +89,10 @@
 | P6.2 | measured 2026-10-02 11:00 | runner | 252/373, 24/30 on 1f51b18; #bar 252; limit-adjusted ceiling 262 (eval + go/future/promise = Phase 7) |
 | P6.3 | done 2026-10-02 11:40 | opus | legmacs-parity 5/5 MATCH (legmacs 187fea2), module 1.23 MB raw / 343 KB opt |
 | P6.4/P6.5 | red 11:40 | — | boot dies at install-spawn-tracking! (alter-var-root of native #'future*); rt half → P6.7, src half → P6.8 (messaged) |
+| P6.8 | done 2026-10-02 12:50 | opus | fix-backend 9/9; verified by rerun; rooted natives for legmacs' spawn tracking |
+| P6.6/P6.7 | verifying 13:20 | opus+runner | rt traps/twins + bound-fn src diff applied; batch running |
+| P6.6 | done 2026-10-02 13:40 | opus | fix-traps 4/4; verified by rerun |
+| P6.7 | done 2026-10-02 13:40 | opus | fix-twins 11/11, P6.0 MISSING 0/156 on the regenerated reach list; verified |
+| P6.4 | done 2026-10-02 13:40 | opus | legmacs boots in the browser: bootMs 264, echoMs 17, resizeMs 31, no COI |
+| P6.5 | done 2026-10-02 13:40 | opus | corpus/legmacs/size-boot.md; stock lane size-only (cannot boot) |
+| P6.2 | bar 262 2026-10-02 13:40 | runner | ceiling after P6.6; gate 6 verifies |

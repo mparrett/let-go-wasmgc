@@ -1,0 +1,30 @@
+;; P6.7 (review4 bug-08 audit): complement's fn takes any arg count (fixed
+;; 5+ and variadic, called and applied), wraps any vm.AsFn (keyword, set),
+;; checks its own arity and argument. Not here: printing it (native prints
+;; <native-fn complemented-fn ADDR>) and a wrapped fn's arity error (native
+;; prefixes ExecutionError and prints the inner fn's address).
+;; native lg 4e769212 prints:
+;; true
+;; complement expected Fn
+;; false
+;; true
+;; false
+;; false
+;; wrong number of arguments 0
+;; wrong number of arguments 2
+;; (true false true)
+;; true
+;; true
+;; true
+(println (fn? (complement odd?)))
+(println (try (complement 1) (catch Exception e (ex-message e))))
+(println ((complement :a) {:a 1}))
+(println ((complement (fn [] nil))))
+(println ((complement (fn [& xs] (count xs))) 1 2 3 4 5 6 7))
+(println (apply (complement vector) (range 10)))
+(println (try (complement) (catch Exception e (ex-message e))))
+(println (try (complement odd? even?) (catch Exception e (ex-message e))))
+(println (map (complement nil?) [1 nil 2]))
+(println ((complement (fn [a b c d e f g h] (= a h))) 1 2 3 4 5 6 7 8))
+(println (apply (complement (fn [& xs] (seq xs))) []))
+(println ((complement #{1 2}) 3))

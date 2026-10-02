@@ -1,0 +1,12 @@
+(ns p68lib.nsdefs)
+;; P6.8 bug-09: defs nested in top-level case/try/binding forms of a
+;; library's ns init
+(def ^:dynamic *mode* :root)
+(case (count [1 2]) 1 (def picked :one) 2 (def picked :two))
+(try (def parsed (/ 10 0)) (catch Exception e (def parsed :div0)) (finally (def fin :ran)))
+(binding [*mode* :bound] (def seen *mode*))
+(def out (with-out-str (print "lib") (def in-wos :w)))
+(letfn [(twice [x] (* 2 x))] (def tw (twice 21)))
+;; bug-06 in a library: the second defonce is a no-op
+(defonce lo (do (println "lib defonce once") 1))
+(defonce lo 2)

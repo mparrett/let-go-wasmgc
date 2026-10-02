@@ -200,8 +200,9 @@ scores what the shipped programs reach (MISSING 0 since P2.7). One-kind
 entries (`massoc`, `vnth`, `sconj`, ...) carry no marker; the dispatching
 entries do, and where wasm.core's dispatcher supersedes a seq.lg/str.lg one
 (`conj`, `nth`, `peek`, `pop`, `compare`) the marker moved to wasm.core.
-`slurp`, `open` and `read-string` are named-limit twins: they claim the
-native and trap with a `lower-wasm:` message.
+`open` and `read-string` are named-limit twins: they claim the native and
+trap with a `lower-wasm:` message. `slurp` (wasm.natives, D138) raises
+native's catchable open-failed text, as `spit` does.
 
 ## Errors
 

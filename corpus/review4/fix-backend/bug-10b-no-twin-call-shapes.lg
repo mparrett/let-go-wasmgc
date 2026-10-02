@@ -1,0 +1,25 @@
+;; P6.8 extension of bug-10: every call shape of a native with no twin
+;; raises a catchable error that is not a native-looking `TypeError: nil is
+;; not a function` (D139): in try tail and non-tail position, through apply,
+;; as a value to map, bound to a local, from a defn body, plus `.method`
+;; interop. Each call is one native lg also throws on (wrong argument type),
+;; so both sides print :named whether or not a twin ever exists. Plus
+;; Integer/parseInt's twin on syntax, sign and 32-bit range edges.
+(require '[clojure.string :as str])
+(defn tag [e] (if (str/starts-with? (str (ex-message e)) "TypeError") :nil-fn :named))
+(println (try (Long/parseLong 5) (catch Exception e (tag e)))
+         (try (str (Long/parseLong 5)) (catch Exception e (tag e)))
+         (try (apply Long/parseLong [5]) (catch Exception e (tag e)))
+         (try (doall (map Long/parseLong [5])) (catch Exception e (tag e)))
+         (try (vec (mapv URLEncoder/encode [5])) (catch Exception e (tag e))))
+(let [f URLEncoder/encode] (println (try (f 5) (catch Exception e (tag e)))))
+(defn p [x] (Long/parseLong x))
+(defn q [x] (inc (Long/parseLong x)))
+(println (try (p 5) (catch Exception e (tag e))) (try (q 5) (catch Exception e (tag e))))
+(println (try (.noSuchMethodHere "x") (catch Exception e (tag e))))
+(def tbl {:f Long/parseLong})
+(println (try ((:f tbl) 5) (catch Exception e (tag e))))
+(doseq [s ["0" "-0" "+7" "2147483647" "-2147483648" "2147483648" "-2147483649" "4294967296x"
+           "99999999999" "12a" "" "-" "+" " 1" "1_000" "007" "é"]]
+  (println (pr-str s) (try (Integer/parseInt s) (catch Exception e (ex-message e)))))
+(println (try (Integer/parseInt 5) (catch Exception e (ex-message e))) (map #(Integer/parseInt %) ["1" "22"]))

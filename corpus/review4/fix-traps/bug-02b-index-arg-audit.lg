@@ -1,0 +1,148 @@
+;; P6.6 (review4 bug-02 audit): every native that converts an index
+;; argument to int64 raises native's catchable "expected int64, got <type>"
+;; for nil/String/Float/Keyword (nth on each collection kind, both arities,
+;; TransientVector included; subs), and the siblings with their own texts
+;; (get, assoc, aget, subvec, nthnext, take, drop) never trap. The fix:
+;; wasm.seq/int-arg, the checked unbox D42 asks for, in nth's boxed path.
+;; native lg 4e769212 prints:
+;; -- nil
+;; nth2-vec E: expected int64, got nil
+;; nth3-vec E: expected int64, got nil
+;; nth2-list E: expected int64, got nil
+;; nth3-list E: expected int64, got nil
+;; nth2-str E: expected int64, got nil
+;; nth2-seq E: expected int64, got nil
+;; nth2-range E: expected int64, got nil
+;; nth2-nil E: expected int64, got nil
+;; nth3-nil E: expected int64, got nil
+;; nth2-arr E: expected int64, got nil
+;; nth2-num E: expected int64, got nil
+;; nth3-tv E: expected int64, got nil
+;; nth2-tv E: expected int64, got nil
+;; get-vec nil
+;; get-str nil
+;; subs1 E: expected int64, got nil
+;; subs2 E: expected int64, got nil
+;; assoc-vec E: assoc failed for key nil
+;; aget E: aget index must be Int
+;; subvec1 E: subvec expected Int start
+;; subvec2 E: subvec expected Int end
+;; -- str
+;; nth2-vec E: expected int64, got let-go.lang.String
+;; nth3-vec E: expected int64, got let-go.lang.String
+;; nth2-list E: expected int64, got let-go.lang.String
+;; nth3-list E: expected int64, got let-go.lang.String
+;; nth2-str E: expected int64, got let-go.lang.String
+;; nth2-seq E: expected int64, got let-go.lang.String
+;; nth2-range E: expected int64, got let-go.lang.String
+;; nth2-nil E: expected int64, got let-go.lang.String
+;; nth3-nil E: expected int64, got let-go.lang.String
+;; nth2-arr E: expected int64, got let-go.lang.String
+;; nth2-num E: expected int64, got let-go.lang.String
+;; nth3-tv E: expected int64, got let-go.lang.String
+;; nth2-tv E: expected int64, got let-go.lang.String
+;; get-vec nil
+;; get-str nil
+;; subs1 E: expected int64, got let-go.lang.String
+;; subs2 E: expected int64, got let-go.lang.String
+;; assoc-vec E: assoc failed for key "a"
+;; aget E: aget index must be Int
+;; subvec1 E: subvec expected Int start
+;; subvec2 E: subvec expected Int end
+;; -- flt
+;; nth2-vec E: expected int64, got let-go.lang.Float
+;; nth3-vec E: expected int64, got let-go.lang.Float
+;; nth2-list E: expected int64, got let-go.lang.Float
+;; nth3-list E: expected int64, got let-go.lang.Float
+;; nth2-str E: expected int64, got let-go.lang.Float
+;; nth2-seq E: expected int64, got let-go.lang.Float
+;; nth2-range E: expected int64, got let-go.lang.Float
+;; nth2-nil E: expected int64, got let-go.lang.Float
+;; nth3-nil E: expected int64, got let-go.lang.Float
+;; nth2-arr E: expected int64, got let-go.lang.Float
+;; nth2-num E: expected int64, got let-go.lang.Float
+;; nth3-tv E: expected int64, got let-go.lang.Float
+;; nth2-tv E: expected int64, got let-go.lang.Float
+;; get-vec nil
+;; get-str nil
+;; subs1 E: expected int64, got let-go.lang.Float
+;; subs2 E: expected int64, got let-go.lang.Float
+;; assoc-vec E: assoc failed for key 1.0
+;; aget E: aget index must be Int
+;; subvec1 [2 3]
+;; subvec2 [1]
+;; -- kw
+;; nth2-vec E: expected int64, got let-go.lang.Keyword
+;; nth3-vec E: expected int64, got let-go.lang.Keyword
+;; nth2-list E: expected int64, got let-go.lang.Keyword
+;; nth3-list E: expected int64, got let-go.lang.Keyword
+;; nth2-str E: expected int64, got let-go.lang.Keyword
+;; nth2-seq E: expected int64, got let-go.lang.Keyword
+;; nth2-range E: expected int64, got let-go.lang.Keyword
+;; nth2-nil E: expected int64, got let-go.lang.Keyword
+;; nth3-nil E: expected int64, got let-go.lang.Keyword
+;; nth2-arr E: expected int64, got let-go.lang.Keyword
+;; nth2-num E: expected int64, got let-go.lang.Keyword
+;; nth3-tv E: expected int64, got let-go.lang.Keyword
+;; nth2-tv E: expected int64, got let-go.lang.Keyword
+;; get-vec nil
+;; get-str nil
+;; subs1 E: expected int64, got let-go.lang.Keyword
+;; subs2 E: expected int64, got let-go.lang.Keyword
+;; assoc-vec E: assoc failed for key :k
+;; aget E: aget index must be Int
+;; subvec1 E: subvec expected Int start
+;; subvec2 E: subvec expected Int end
+;; -- nil
+;; nthnext E: cannot compare nil and let-go.lang.Int
+;; take E: cannot compare nil and let-go.lang.Int
+;; drop E: cannot compare nil and let-go.lang.Int
+;; take-doall E: cannot compare nil and let-go.lang.Int
+;; drop-doall E: cannot compare nil and let-go.lang.Int
+;; -- str
+;; nthnext E: cannot compare let-go.lang.String and let-go.lang.Int
+;; take E: cannot compare let-go.lang.String and let-go.lang.Int
+;; drop E: cannot compare let-go.lang.String and let-go.lang.Int
+;; take-doall E: cannot compare let-go.lang.String and let-go.lang.Int
+;; drop-doall E: cannot compare let-go.lang.String and let-go.lang.Int
+;; -- kw
+;; nthnext E: cannot compare let-go.lang.Keyword and let-go.lang.Int
+;; take E: cannot compare let-go.lang.Keyword and let-go.lang.Int
+;; drop E: cannot compare let-go.lang.Keyword and let-go.lang.Int
+;; take-doall E: cannot compare let-go.lang.Keyword and let-go.lang.Int
+;; drop-doall E: cannot compare let-go.lang.Keyword and let-go.lang.Int
+;; alive
+(defn t [label f] (println label (try (pr-str (f)) (catch Exception e (str "E: " (ex-message e))))))
+(doseq [[nm i] [["nil" nil] ["str" "a"] ["flt" 1.0] ["kw" :k]]]
+  (println "--" nm)
+  (t "nth2-vec" #(nth [1 2] i))
+  (t "nth3-vec" #(nth [1 2] i :nf))
+  (t "nth2-list" #(nth '(1 2) i))
+  (t "nth3-list" #(nth '(1 2) i :nf))
+  (t "nth2-str" #(nth "ab" i))
+  (t "nth2-seq" #(nth (map inc [1 2]) i))
+  (t "nth2-range" #(nth (range 3) i))
+  (t "nth2-nil" #(nth nil i))
+  (t "nth3-nil" #(nth nil i :nf))
+  (t "nth2-arr" #(nth (to-array [1 2]) i))
+  (t "nth2-num" #(nth 5 i))
+  (t "nth3-tv" #(nth (transient [1 2]) i :nf))
+  (t "nth2-tv" #(nth (transient [1 2]) i))
+  (t "get-vec" #(get [1 2] i))
+  (t "get-str" #(get "ab" i))
+  (t "subs1" #(subs "abc" i))
+  (t "subs2" #(subs "abc" 0 i))
+  (t "assoc-vec" #(assoc [1 2] i 9))
+  (t "aget" #(aget (to-array [1 2]) i))
+  (t "subvec1" #(subvec [1 2 3] i))
+  (t "subvec2" #(subvec [1 2 3] 0 i)))
+;; seq fns compare the count with <: a Float count is D42's numeric tower,
+;; and nthrest's count reaches an Int-typed slot (backend text, P6.8)
+(doseq [[nm i] [["nil" nil] ["str" "a"] ["kw" :k]]]
+  (println "--" nm)
+  (t "nthnext" #(nthnext [1 2 3] i))
+  (t "take" #(take i [1 2 3]))
+  (t "drop" #(drop i [1 2 3]))
+  (t "take-doall" #(doall (take i [1 2 3])))
+  (t "drop-doall" #(doall (drop i [1 2 3]))))
+(println "alive")

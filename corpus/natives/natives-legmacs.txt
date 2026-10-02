@@ -1,8 +1,23 @@
+# legmacs reach list: every Go native legmacs reaches, rooted at all of its
+# namespaces, main.lg (legmacs.main) and its tests' defns and deftests.
+# Regenerated 2026-10-02 (P6.7, review4 bug-05) over legmacs 187fea2 with
+# lg 4e769212, from dev/lower-wasm:
+#   L=~/projects-new/3p/legmacs
+#   { tools/reach.sh --extra legmacs.main=main.lg $L legmacs
+#     tools/reach.sh --deftests --exclude-ns test.run $L test.
+#   } | LC_ALL=C sort -u > natives.tmp
+#   (cat <this header>; cat natives.tmp) > corpus/natives/natives-legmacs.txt
+# Before P6.7 it was `tools/reach.sh $L legmacs` alone (main.lg and test/
+# unrooted): it lacked core/sleep, core/promise, core/deliver, System/nanoTime,
+# core//, core/defmethod*, core/iterate, core/println, core/require, os/exit
+# and ten term/* entries.
+System/nanoTime
 async/go*
 clojure.lang.MapEntry/create
 core/*
 core/+
 core/-
+core//
 core/<
 core/<=
 core/=
@@ -33,6 +48,8 @@ core/conj!
 core/cons
 core/contains?
 core/count
+core/defmethod*
+core/deliver
 core/deref
 core/dissoc
 core/ends-with?
@@ -56,6 +73,7 @@ core/includes?
 core/index-of
 core/int
 core/intern
+core/iterate
 core/key
 core/keyword
 core/last-index-of
@@ -84,6 +102,8 @@ core/pop
 core/pop-binding!
 core/pr
 core/pr-str
+core/println
+core/promise
 core/push-binding!
 core/quot
 core/range
@@ -97,6 +117,7 @@ core/reduce
 core/reduced
 core/reduced?
 core/repeat
+core/require
 core/reset!
 core/resolve
 core/rest
@@ -104,6 +125,7 @@ core/second
 core/seq
 core/seq?
 core/set?
+core/sleep
 core/slurp
 core/some
 core/sort
@@ -137,6 +159,7 @@ let-go.core/gt
 let-go.core/lines
 let-go.core/lt
 os/cwd
+os/exit
 os/getenv
 os/ls
 os/sh
@@ -144,5 +167,15 @@ os/stat
 string/includes?
 string/trim
 string/upper-case
+term/alternate-screen
+term/clear
+term/flush
 term/key-pending?
+term/main-screen
+term/raw-mode!
 term/read-key
+term/reset-style
+term/restore-mode!
+term/show-cursor
+term/size
+term/write

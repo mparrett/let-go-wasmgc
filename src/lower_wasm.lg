@@ -113,10 +113,11 @@
 ;; $Code<k+1>: the closure, the k fixed args, then the rest seq, a
 ;; PersistentList as natively, null when no arg is left over), field 9 is k
 ;; (field 7 is rt's identity id, P5.3).
-;; k is capped at max-var-fixed (code types $Code1..$Code5). Calls through a
-;; value take up to max-invoke args ($rt_invoke0..N; past 4 only a variadic
+;; k is capped at max-var-fixed (code types $Code1..$Code21; P6.8 raised it
+;; from 4 to Clojure's positional cap). Calls through a value take up to
+;; max-invoke args ($rt_invoke0..N; past 4 only a $FnX slot or a variadic
 ;; arity can accept them).
-(def max-var-fixed 4)
+(def max-var-fixed 20)
 (def max-invoke 32)
 ;; P6.1: fixed arities 5..max-arity-x (Clojure's positional cap) live in a
 ;; $FnX, a subtype of $FnV (rt/'s Fn has slots for 0-4 only): fields 10.. are
@@ -135,6 +136,14 @@
   [n]
   (when (and *invoke-max* (> n @*invoke-max*)) (reset! *invoke-max* n))
   n)
+;; P6.8: module-wide atom, the largest variadic k any fn value has (at least
+;; 4, the runtime's own); the dispatch helpers test k = 0..that only, so a
+;; module without a >4-fixed variadic keeps its round-1 helper text
+(def ^:dynamic *var-k-max* nil)
+(defn var-k! [k]
+  (when (and *var-k-max* (> k @*var-k-max*)) (reset! *var-k-max* k))
+  k)
+(defn var-k-max [] (if *var-k-max* @*var-k-max* 4))
 
 ;; Probe knobs (see ../emit-wasm-probe/ext/README.md). *checked* defaults to
 ;; :inline because D3 makes checked + - * the semantics, not an option.
@@ -405,6 +414,9 @@
     ;; placeholder throw is stack-polymorphic, so it stands in for any kind k
     (symbol-const? nid) (phase2-const-wat (const-val nid))
     (var-const? nid) (phase2-const-wat (const-val nid))
+    ;; P6.8: a def's value is its var, as natively (a def in a top-level
+    ;; case branch flows into the case's result)
+    (and *rt* (def-val? nid)) (str (const-box-wat (const-val (first (ir/refs (src-of nid) *f*)))) (coerce :box k))
     (def-val? nid) (fail "unsupported :def result used as a value" {:nid nid :fn *fname*})
     (some? (int-const-val nid)) (str "(i64.const " (int-const-val nid) ")" (coerce :int k))
     :else (str (lget nid) (coerce (ty nid) k))))
@@ -906,6 +918,11 @@
         (str "(drop " call ")")
         (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")")))))
 
+(defn- bframe-override [fname]
+  (fn [nid [fr]]
+    (str "(call " fname " " (arg-as fr :box) ")"
+         (when-not (no-local? nid) (str " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))))
+
 (def rt-overrides
   {#'wasm.seq/float-bits
    (fn [nid args]
@@ -925,7 +942,14 @@
    #'wasm.core/invoke-vec
    (fn [nid [f v]]
      (let [call (str "(call $rt_apply_vec " (arg-as f :box) " " (arg-as v :box) ")")]
-       (if (no-local? nid) (str "(drop " call ")") (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")"))))})
+       (if (no-local? nid) (str "(drop " call ")") (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")"))))
+   ;; P6.7 (bound-fn*): only the backend knows the $bs_ binding stacks
+   ;; (bframe-runtime); the runtime's three stand-ins become these calls
+   #'wasm.core/binding-frame
+   (fn [nid _]
+     (if (no-local? nid) "" (str "(local.set $v" nid " (call $rt_bframe)" (coerce :box (ty nid)) ")")))
+   #'wasm.core/frame-push! (bframe-override "$rt_bframe_push")
+   #'wasm.core/frame-pop! (bframe-override "$rt_bframe_pop")})
 
 (defn rt-call-expr
   "A boxed-result call of runtime defn v on boxed operand exprs."
@@ -1508,6 +1532,7 @@
    fixed args (the value is then a $FnV)."
   [codes env info-g]
   (let [[k vc] (:v codes) codes (dissoc codes :v)
+        _ (when vc (var-k! k))
         x? (some #(> % max-arity) (keys codes))]
     (swap! *elem* into (cond-> (vals codes) vc (conj vc)))
     (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))
@@ -1533,6 +1558,21 @@
        ;; $tmp: coerce's inline int boxing, when called while lowering a program fn
        " (result (ref null eq)) (local $tmp i64)\n  " body ")"))
 
+(defn no-twin-fn-global
+  "P6.8: the value of a native v with no twin: a variadic (k = 0) fn whose
+   every call raises (no-twin-message v), as a direct call does (D139)."
+  [v]
+  (or (get @*fn-values* [:no-twin v])
+      (let [m (no-twin-message v)
+            id (str (safe-id (subs (str v) 2)) "_" (hex32 (str v)))
+            cname (str "notwin_" id)
+            g (str "$ntw_" id)]
+        (swap! *regions* conj (fn-code-wat cname 1 (str "(throw $lgex " (rt-error-wat m m) ")")))
+        (swap! *fn-values* assoc [:no-twin v] g)
+        (swap! *globals* conj (str "(global " g " (ref $Fn) "
+                                   (fn-struct-wat {:v [0 cname]} "(ref.null none)" (info-global 3 0 (subs (str v) 2))) ")"))
+        g)))
+
 (defn defn-fn-global
   "A defn (program or runtime, multi-arity included) as a fn value: one
    wrapper code fn per arity that unboxes per the signature and calls it
@@ -1542,12 +1582,18 @@
   (let [ent (callee-sig v)]
     (when *abi-notes* (swap! *abi-notes* update :value (fnil conj #{}) v))
     (or (get @*fn-values* ent)
-        (let [ars (into (sorted-map) (filter #(<= (key %) max-arity-x) (:arities ent)))
-              vs (let [vs (:variadic ent)] (when (and vs (<= (:fixed vs) max-var-fixed)) vs))
+        (let [ars (into (sorted-map) (:arities ent))
+              vs (:variadic ent)
+              ;; P6.8: an arity past the cap is refused, never silently left
+              ;; out of the value (native takes 21 params, the cap is 20)
+              _ (when (some #(> % max-arity-x) (keys ars))
+                  (fail (str "unsupported defn with more than " max-arity-x " params used as a value") {:var v :fn *fname*}))
+              _ (when (and vs (> (:fixed vs) max-var-fixed))
+                  (fail (str "unsupported variadic defn with more than " max-var-fixed " fixed params used as a value") {:var v :fn *fname*}))
               ;; P2.12: a native past its fixed arities, through its -seq form
               ad (when-not vs (seq-adapter ent))
               _ (when (and (empty? ars) (not vs) (not ad))
-                  (fail "unsupported defn with more than 4 params used as a value" {:var v :fn *fname*}))
+                  (fail "unsupported defn with no arity usable as a value" {:var v :fn *fname*}))
               base (or (when (seq ars) (:name (val (first ars)))) (:name vs) (qual-name v))
               g (str "$dfn_" base)
               info (cond (:multi? ent) (info-global 1 0 (:base ent))
@@ -1627,7 +1673,48 @@
 (defn scalar-const-wat [x]
   (if (int? x) (str "(i64.const " x ")" (coerce :int :box)) (const-box-wat x)))
 
+;; P6.8: natives whose var the program names (#'x, (var x), find-var of a
+;; quoted symbol; the driver's scan): alter-var-root may give one a root in
+;; the runtime's var-roots table (wasm.core/var-root-set?, var-value), which
+;; a direct call and a value read consult first, as native lg's var does.
+;; Every other native keeps its static twin call.
+(def ^:dynamic *rooted-natives* #{})
+(defn rooted? [v] (and *rt* (contains? *rooted-natives* v)))
+;; native lg's compiler emits these (unqualified, by arity) as opcodes
+;; (compiler.go tryFastOpcode), so a direct call never reads the var and an
+;; altered root does not reach it; only the var's other uses do
+(def native-opcode-calls
+  {1 #{#'inc #'dec #'bit-not}
+   2 #{#'+ #'- #'* #'bit-and #'bit-or #'bit-xor #'bit-and-not #'bit-shift-left #'bit-shift-right
+       #'unsigned-bit-shift-right #'unchecked-add #'unchecked-subtract #'unchecked-multiply
+       #'< #'<= #'> #'>= #'=}})
+(defn rooted-call? [v argc] (and (rooted? v) (not (contains? (get native-opcode-calls argc) v))))
+(defn- root-rt [sym]
+  (or (resolve sym) (fail (str "the runtime has no " sym " (alter-var-root of a native)") {:fn *fname*})))
+(defn root-test-wat [v]
+  (str "(call $rt_truthy " (rt-call-expr (root-rt 'wasm.core/var-root-set?) [(const-box-wat v)]) ")"))
+(defn root-value-wat [v] (rt-call-expr (root-rt 'wasm.core/var-value) [(const-box-wat v)]))
+
+(defn rooted-call-wat
+  "A call of rooted native v (P6.8): through its altered root when it has
+   one, else `normal` (the static lowering of the same call)."
+  [nid v args normal]
+  (let [inv (str "(call $rt_invoke" (invoke-n! (count args)) " " (root-value-wat v)
+                 (apply str (map #(str " " (arg-as % :box)) args)) ")")]
+    (str "(if " (root-test-wat v) " (then "
+         (if (no-local? nid) (str "(drop " inv ")") (str "(local.set $v" nid " " inv (coerce :box (ty nid)) ")"))
+         ") (else " normal "))")))
+
+(declare var-value-wat*)
 (defn var-value-wat
+  "A constant var used as a value (not in callee position); a rooted
+   native's altered root first (P6.8)."
+  [v]
+  (if (rooted? v)
+    (str "(if (result (ref null eq)) " (root-test-wat v) " (then " (root-value-wat v) ") (else " (var-value-wat* v) "))")
+    (var-value-wat* v)))
+
+(defn var-value-wat*
   "A constant var used as a value (not in callee position)."
   [v]
   ;; a core op as a value: the runtime's twin when it is compiled in (every
@@ -1650,6 +1737,9 @@
         (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
         (callee-sig v) (str "(global.get " (defn-fn-global v) ")")
+        ;; P6.8: a native with no twin as a value (map, apply, a local) is a
+        ;; fn raising D139's named error when called, not the nil slot
+        (and *rt* (no-twin-message v)) (str "(global.get " (no-twin-fn-global v) ")")
         :else (str "(global.get " (extern-global v) ")")))
 
 (defn closure-of [nid]
@@ -1676,7 +1766,7 @@
         ;; its code is the $FnV's variadic slot (P2.12)
         codes (into {} (for [{tfn :fn :keys [arity variadic?]} tpls]
                          (do (when (and variadic? (> (dec arity) max-var-fixed))
-                               (fail "unsupported variadic closure with more than 4 fixed params" {:fn *fname* :arity arity}))
+                               (fail (str "unsupported variadic closure with more than " max-var-fixed " fixed params") {:fn *fname* :arity arity}))
                              (when (and (not variadic?) (> arity max-arity-x))
                                (fail (str "unsupported closure arity > " max-arity-x) {:fn *fname* :arity arity}))
                              (let [cname (str base "_" (if variadic? "v" arity))
@@ -1703,12 +1793,24 @@
     (str "(local.set $v" nid " (call $rt_invoke" (invoke-n! n) " " (arg-as callee :box)
          (apply str (map #(str " " (arg-as % :box)) args)) ")" (coerce :box (ty nid)) ")")))
 
+(defn top-level-fname?
+  "_main, a library's __lw_nsinit, or a try region lifted out of either
+   (a top-level try/binding body, catch or finally; P6.8), possibly nested.
+   A closure's name has a __fn<nid>_ link, so a fn body never matches."
+  [nm]
+  (boolean (re-matches #"(_main|.+/__lw_nsinit)(__try[0-9]+_(body|catch|finally))*" nm)))
+
+;; P6.8: the vars a top-level with-out-str/with-redefs thunk defs (the
+;; driver's thunk-def-syms): their def may sit in that thunk's closure
+(def ^:dynamic *thunk-def-vars* #{})
+
 (defn def-wat
-  "Top-level (def x v) sets x's var-table global. A def anywhere else (in a
-   defn, a closure or a try region) stays refused (P1.4)."
+  "Top-level (def x v) sets x's var-table global, also inside a top-level
+   try region or a top-level with-out-str/with-redefs thunk (P6.8). A def in
+   any other defn or closure stays refused (P1.4)."
   [nid]
   (let [[vr val] (ir/refs nid *f*) v (const-val vr) g (get *var-globals* v)]
-    (if (and g (or (= *fname* "_main") (str/ends-with? *fname* "/__lw_nsinit")))
+    (if (and g (or (top-level-fname? *fname*) (contains? *thunk-def-vars* v)))
       (when val (str "(global.set " g " " (arg-as val :box) ")"))
       (fail "unsupported op :def" {:op :def :var v :nid nid :fn *fname*}))))
 
@@ -1750,11 +1852,12 @@
       (= op :call)
       (let [callee (first refs) v (var-of callee)]
         (if (and v (not (table-var? v)))
-          (or (when (lw-rt/intrinsic? v) (intrinsic-call-wat nid v (rest refs)))
-              (when-let [cop (core-var-ops v)]
-                (or (prim-wat nid cop (rest refs))
-                    (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
-              (call-wat nid v (rest refs)))
+          (let [normal (or (when (lw-rt/intrinsic? v) (intrinsic-call-wat nid v (rest refs)))
+                           (when-let [cop (core-var-ops v)]
+                             (or (prim-wat nid cop (rest refs))
+                                 (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
+                           (call-wat nid v (rest refs)))]
+            (if (rooted-call? v (count (rest refs))) (rooted-call-wat nid v (rest refs) normal) normal))
           (invoke-wat nid callee (rest refs))))
       :else (fail (str "unsupported op " op) {:op op :nid nid :fn *fname*}))))
 
@@ -1781,6 +1884,7 @@
     (cond
       (not (and v (not (table-var? v)))) (inv (arg-as callee :box))
       (lw-rt/intrinsic? v) nil
+      (rooted-call? v argc) nil
       (core-var-ops v) nil
       (and *rt* (rt-overrides v)) nil
       (get @*sigs* v) (direct (get @*sigs* v))
@@ -1788,6 +1892,9 @@
       (= v core-println) nil
       (and *rt* (coll-ctors v)) nil
       (and *rt* (rt-target v) (callee-sig v)) (direct (callee-sig v))
+      ;; P6.8: call-wat's named no-twin error, never the nil slot (bug-10:
+      ;; a try body's call is in tail position)
+      (and *rt* (no-twin-message v)) nil
       :else (inv (str "(global.get " (extern-global v) ")")))))
 
 (defn block-wat [bid]
@@ -2705,7 +2812,7 @@
                    "  (if (ref.test (ref $FnV) (local.get $fn))
     (then (local.set $v (ref.cast (ref $FnV) (local.get $fn)))\n"
                    (apply str
-                          (for [k (range (inc (min n max-var-fixed)))]
+                          (for [k (range (inc (min n (var-k-max))))]
                             (str "      (if (i32.eq (struct.get $FnV 9 (local.get $v)) (i32.const " k "))
         (then (return_call_ref $Code" (inc k) " (local.get $fn)"
                                  (apply str (map #(str " (local.get $a" % ")") (range k)))
@@ -2762,15 +2869,20 @@
     (then (call $rt_arity_error (ref.cast (ref $Fn) (local.get $f)) (local.get $n)) unreachable))
   (local.set $fv (ref.cast (ref $FnV) (local.get $f)))
   (local.set $k (struct.get $FnV 9 (local.get $fv)))
-  ;; k <= 4 < n: the rest is never empty
+  ;; P6.8: k may exceed 4 now: fewer args than k is native's arity error, k
+  ;; exactly leaves the rest nil
+  (if (i32.lt_s (local.get $n) (local.get $k))
+    (then (call $rt_arity_error (ref.cast (ref $Fn) (local.get $f)) (local.get $n)) unreachable))
+  (if (i32.gt_s (local.get $n) (local.get $k))
+    (then
   (local.set $rest (struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none)))
   (local.set $i (local.get $n))
   (loop $l
     (local.set $i (i32.sub (local.get $i) (i32.const 1)))
     (local.set $rest (struct.new $List (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (local.get $i))) (local.get $rest)
                                  (i64.extend_i32_u (i32.sub (local.get $n) (local.get $i))) (ref.null none)))
-    (br_if $l (i32.gt_u (local.get $i) (local.get $k))))\n"
-            (apply str (for [k (range (inc max-var-fixed))]
+    (br_if $l (i32.gt_u (local.get $i) (local.get $k))))))\n"
+            (apply str (for [k (range (inc (var-k-max)))]
                          (str "  (if (i32.eq (local.get $k) (i32.const " k "))
     (then (return_call_ref $Code" (inc k) " (local.get $f)"
                               (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range k)))
@@ -2821,6 +2933,38 @@
 (defn wat-bytes [s]
   (apply str (map #(let [b (bit-and % 255)] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b))))
                   (.getBytes s))))
+
+(defn bframe-runtime
+  "P6.7 (bound-fn*, review4 bug-04): every var a binding form in this
+   module can bind has a $bs_<g> stack (bind-stack-global) beside its global
+   $<g>; generated last, when all are known. $rt_bframe captures each var
+   whose stack is non-empty as a MapEntry [index value] in a Cons chain (nil
+   when nothing is bound); $rt_bframe_push re-establishes a frame by
+   pushing each var exactly as binding does; $rt_bframe_pop undoes it."
+  []
+  (let [gs (map-indexed vector (sort (keep #(second (re-find #"^\(global \$bs_(\S+) " %)) @*globals*)))
+        frame-loop (fn [nm per-var]
+               (str "(func " nm " (param $fr (ref null eq)) (local $e (ref $MapEntry)) (local $i i32) (local $x (ref null eq))\n"
+                    "  (block $done (loop $l\n"
+                    "    (br_if $done (ref.is_null (local.get $fr)))\n"
+                    "    (local.set $e (ref.cast (ref $MapEntry) (struct.get $Cons 0 (ref.cast (ref $Cons) (local.get $fr)))))\n"
+                    "    (local.set $i (i31.get_s (ref.cast (ref i31) (struct.get $MapEntry 0 (local.get $e)))))\n"
+                    "    (local.set $x (struct.get $MapEntry 1 (local.get $e)))\n"
+                    (apply str (for [[i g] gs] (str "    (if (i32.eq (local.get $i) (i32.const " i ")) (then " (per-var g) "))\n")))
+                    "    (local.set $fr (struct.get $Cons 1 (ref.cast (ref $Cons) (local.get $fr))))\n"
+                    "    (br $l))))\n"))]
+    (str "(func $rt_bframe (result (ref null eq)) (local $fr (ref null eq))\n"
+         (apply str (for [[i g] gs]
+                      (str "  (if (i32.eqz (ref.is_null (global.get $bs_" g ")))\n"
+                           "    (then (local.set $fr (struct.new $Cons (struct.new $MapEntry (ref.i31 (i32.const " i ")) (global.get $" g "))"
+                           " (local.get $fr)))))\n")))
+         "  (local.get $fr))\n"
+         (frame-loop "$rt_bframe_push"
+               (fn [g] (str "(global.set $bs_" g " (struct.new $List (global.get $" g ") (global.get $bs_" g ") (i64.const 1) (ref.null none)))"
+                            " (global.set $" g " (local.get $x))")))
+         (frame-loop "$rt_bframe_pop"
+               (fn [g] (str "(global.set $" g " (struct.get $List 0 (ref.cast (ref $List) (global.get $bs_" g "))))"
+                            " (global.set $bs_" g " (struct.get $List 1 (ref.cast (ref $List) (global.get $bs_" g "))))"))))))
 
 (defn runtime []
   (let [boxed (fn [op]
@@ -2935,7 +3079,8 @@
          "(func $rt_raise_overflow " (raise-wat) ")\n"
          (boxed :add) (boxed :sub) (boxed :mul)
          (apply str (map unbox (sort (keys op-names))))
-         (print-runtime) "\n" (exn-runtime) (fn-runtime))))
+         (print-runtime) "\n" (exn-runtime) (fn-runtime)
+         (when *rt* (bframe-runtime)))))
 
 ;; Shared with the P1.5 census, which must expand units exactly as the driver.
 (def core-minus #'clojure.core/-)
@@ -3317,9 +3462,17 @@
 (defn var-value-form
   "P5.9: the 0-arg fn a var stand-in keeps under :lw/var (wasm.core/var-value
    calls it for deref, a call of the var and type): reads v where the
-   program defines it, else raises the named limit."
+   program defines it or the module has its native's value (P6.8), else
+   raises the named limit."
   [v]
-  (if (program-var? v)
+  (if (or (program-var? v)
+          ;; P6.8: a native's value as the module has it (its twin, a core
+          ;; fn, or D139's no-twin fn), so alter-var-root's old root and
+          ;; var-get of a native work; var-value-wat reads it (and a
+          ;; root alter-var-root set, when the var is rooted)
+          (and *rt* (var? v) (not (:macro (meta v)))
+               (or (value-substs v) (and (rt-target v) (callee-sig v)) (core-fn-impls v)
+                   (no-twin-message v) (native-scalar-const? v))))
     (list 'fn* [] (symbol v))
     (list 'fn* [] (list 'wasm.core/raise
                         (list 'wasm.intrinsics/bytes-of-string
@@ -3608,7 +3761,7 @@
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
     :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
-    :invoke-max (atom max-arity)}))
+    :invoke-max (atom max-arity) :var-k-max (atom 4)}))
 
 (def ^:dynamic *shake* true)
 
@@ -3619,7 +3772,8 @@
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
             *prog-decls* (or (:prog-decls ss) (atom {}))
-            *invoke-max* (or (:invoke-max ss) (atom max-arity))]
+            *invoke-max* (or (:invoke-max ss) (atom max-arity))
+            *var-k-max* (or (:var-k-max ss) (atom 4))]
     (thunk)))
 
 (defn top-forms
@@ -3667,7 +3821,8 @@
          " (field funcref) (field i32)"
          (apply str (repeat (- max-arity-x max-arity) " (field funcref)"))
          ")))\n"
-         (apply str (for [n (range (inc max-arity) (inc max-arity-x))]
+         ;; P6.8: through $Code21, a variadic arity's code with 20 fixed args
+         (apply str (for [n (range (inc max-arity) (+ 2 (max max-arity-x max-var-fixed)))]
                       (str "  (type $Code" n " (func" (apply str (repeat (inc n) " (param (ref null eq))")) " (result (ref null eq))))\n"))))))
 
 (defn rec-group

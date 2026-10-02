@@ -1,0 +1,27 @@
+;; P6.8 (coordinator's addition): alter-var-root on a NATIVE var. Native lg
+;; compiles a direct (inc x) to an opcode (compiler.go tryFastOpcode), so an
+;; altered root does not reach it; the var's other uses (map, apply, a
+;; local, var-get) and direct calls of any non-opcode native (zero?, 3-arg
+;; +, future*, as legmacs main.lg wraps it) do. Restoring the root restores
+;; the original. (Named limit, not exercised: an opcode native bound to a
+;; local, (let [g inc] (g 0)), still takes the opcode path here, because
+;; the IR folds the local into a direct call.)
+(def orig-inc inc)
+(def orig-zero zero?)
+(defn use-inc [x] (inc x))
+(println (inc 1) (use-inc 1) (map inc [1 2]) (zero? 0))
+(alter-var-root #'inc (fn [f] (fn [x] (+ (f x) 100))))
+(alter-var-root #'zero? (constantly (fn [x] :never-zero)))
+(println (inc 1) (use-inc 1) (map inc [1 2]) (apply inc [5]))
+(println (zero? 0) (map zero? [0 1]) (= orig-inc (var-get #'inc)))
+(alter-var-root #'inc (constantly orig-inc))
+(alter-var-root #'zero? (constantly orig-zero))
+(println (inc 1) (use-inc 1) (map inc [1 2]) (zero? 0) (= orig-inc (var-get #'inc)))
+(def wrapped (atom []))
+(alter-var-root #'future* (fn [f] (fn [thunk] (swap! wrapped conj :w) (thunk))))
+(println (future* (fn [] :ran)) (future* (fn [] :again)) @wrapped)
+(def orig-count count)
+(alter-var-root #'count (fn [f] (fn [x] (+ 10 (f x)))))
+(println (count [1 2]) (let [g count] (g [1])) (map count [[1] [1 2]]) (apply count [[1 2 3]]))
+(alter-var-root #'count (constantly orig-count))
+(println (count [1 2]) (map count [[1] [1 2]]))
