@@ -38,7 +38,7 @@
             (wasm/null)
             (wasm/funcref sq/Code3 (fn [_ a b cc] (->w (f (<-w a) (<-w b) (<-w cc)))))
             (wasm/funcref sq/Code4 (fn [_ a b cc d] (->w (f (<-w a) (<-w b) (<-w cc) (<-w d)))))
-            (wasm/new sq/FnInfo 0 1 (wasm/null))))
+            (wasm/new sq/FnInfo 0 1 (wasm/null)) 0))
 
 (defn- with-native-meta [w x] (if (meta x) (c/with-meta w (->w (meta x))) w))
 
@@ -259,7 +259,7 @@
   (same (pr-str (transient [1])) (s/pr-str (c/transient (W [1]))))
   (let [nat (persistent! (reduce conj! (transient []) (range 100)))
         mine (c/persistent! (sq/reduce (wasm/new sq/Fn (wasm/null) (wasm/null) (wasm/funcref sq/Code2 (fn [_ t x] (c/conj! t x)))
-                                                 (wasm/null) (wasm/null) (wasm/null) (wasm/null))
+                                                 (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0)
                                        (c/transient (W [])) (sq/range (W 100))))]
     (same nat mine)))
 
@@ -481,7 +481,7 @@
   (same (fn? (with-meta inc {})) (c/fn? (c/with-meta (clo inc) (W {}))))
   (both-throw ((with-meta (fn [a] a) {}) 1 2)
               (c/invoke-args (c/with-meta (wasm/new sq/Fn (wasm/null) (wasm/funcref sq/Code1 (fn [_ a] a)) (wasm/null) (wasm/null)
-                                                    (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 1 (wasm/null)))
+                                                    (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 1 (wasm/null)) 0)
                                           (W {}))
                              2 (W 1) (W 2) nil nil))
   (is (string/starts-with? (second (res #(c/with-meta (c/atom (W 1)) (W {:a 1})))) "lower-wasm: ") "with-meta on an atom: named limit")

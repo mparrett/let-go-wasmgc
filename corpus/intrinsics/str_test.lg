@@ -28,7 +28,7 @@
             (wasm/funcref sq/Code0 (fn [_] (->w (f))))
             (wasm/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
             (wasm/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
-            (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+            (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 
 (def ^:private array-type (type (object-array 0)))
 (defn- wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))

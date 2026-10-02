@@ -44,7 +44,8 @@
 (wasm/deffunc Code3 [:ref :ref :ref :ref] :ref)
 (wasm/deffunc Code4 [:ref :ref :ref :ref :ref] :ref)
 (wasm/defstruct FnInfo [:i32 :i32 :ref])
-(wasm/defstruct Fn [:funcref :funcref :funcref :ref :funcref :funcref :ref])
+;; Field 7 is the identity id (P5.3): 0 until the fn is first hashed.
+(wasm/defstruct Fn [:funcref :funcref :funcref :ref :funcref :funcref :ref [:mut :i64]])
 (wasm/defstruct Env2 [:ref :ref])
 
 ;; Seq kinds (field order follows the Go structs).
@@ -72,8 +73,9 @@
 ;; Err is the backend's $Err (kind 0 ex-info, 1 raw runtime error, 2 caught
 ;; runtime error; message bytes; message once caught; ex-data) plus a cause.
 (wasm/defstruct MapEntry [:ref :ref])              ; key, val
-(wasm/defstruct Atom [[:mut :ref]])
-(wasm/defstruct Volatile [[:mut :ref]])
+;; Field 1 of Atom and Volatile is the identity id, as Fn's field 7.
+(wasm/defstruct Atom [[:mut :ref] [:mut :i64]])
+(wasm/defstruct Volatile [[:mut :ref] [:mut :i64]])
 (wasm/defstruct Err [:i32 :ref :ref :ref :ref])    ; kind, msg bytes, caught msg bytes, data, cause
 ;; Foreign-kind hooks (kind 18: maps from phm, sets from phs, anything else),
 ;; one Handler per slot so registrations never overwrite each other's:
@@ -81,8 +83,9 @@
 ;; equiv hash], each a Fn; pred (null = matches every foreign value) answers
 ;; whether the value is this handler's. Dispatch tries 0, 1, then 2.
 (wasm/defstruct Handler [:ref :ref :ref :ref :ref])
-(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]]) ; slots 0-2, the printer, seqable?, ifn, type namer
-(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+(wasm/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :i64]]) ; slots 0-2, the printer, seqable?, ifn, type namer
+;; the last Hooks field is the identity-id counter (P5.3)
+(def hooks (wasm/new Hooks (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 ;; P2.13 (R5, D105): the seq of a map, a set or a transient map is MapSeq or
 ;; SetSeq (map.go:110, set.go:131): a cached array of entries (MapEntry) or
 ;; keys plus an index. Type() is ListType and = is sequential, but neither has
@@ -137,9 +140,9 @@
 (defn invoke2 [f a b] (if (= 16 (kind f)) (wasm/call-ref Code2 (wasm/get Fn 2 f) f a b) (invoke-ifn* f 2 a b)))
 
 (defn mk-fn1 "A closure with only arity 1 (hook code)." [code]
-  (wasm/new Fn (wasm/null) code (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+  (wasm/new Fn (wasm/null) code (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 (defn mk-fn2 "A closure with only arity 2 (hook code)." [code]
-  (wasm/new Fn (wasm/null) (wasm/null) code (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+  (wasm/new Fn (wasm/null) (wasm/null) code (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 
 (defn set-kind-hooks!
   "Register the Handler for one slot (:int 0 maps, 1 sets, 2 generic): pred
@@ -856,7 +859,7 @@
 
 (defn- nil-thunk [self] (wasm/null))
 (defn- empty-lazy-seq []                                 ; emptyLazySeq (lang.go:1473)
-  (wasm/new LazySeq (wasm/new Fn (wasm/funcref Code0 nil-thunk) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)) (wasm/null) 0 (wasm/null)))
+  (wasm/new LazySeq (wasm/new Fn (wasm/funcref Code0 nil-thunk) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0) (wasm/null) 0 (wasm/null)))
 
 (declare map-lazy)
 
@@ -879,7 +882,7 @@
   (if (wasm/null? s)
     (wasm/null)
     (wasm/new LazySeq (wasm/new Fn (wasm/funcref Code0 map-step) (wasm/null) (wasm/null) (wasm/new Env2 f s)
-                                 (wasm/null) (wasm/null) (wasm/null))
+                                 (wasm/null) (wasm/null) (wasm/null) 0)
               (wasm/null) 0 (wasm/null))))
 
 (defn ^{:twin "core/map*"} map* [f coll]
@@ -1131,6 +1134,16 @@
         v (bit-xor v (wasm/i64-shr-u v 33))]
     (bit-and v 0xffffffff)))
 
+;; Identity ids for atoms, volatiles and fns (P5.3). fmix32 (MurmurHash3's
+;; finaliser) is a bijection on 32 bits, so distinct ids hash apart; native's
+;; pointer hash is also a 32-bit value.
+(defn- next-id []
+  (let [n (inc (wasm/get Hooks 7 hooks))] (wasm/set! Hooks 7 hooks n) n))
+(defn- fmix32 [h0]
+  (let [h1 (bit-and (wasm/i64-mul (bit-xor h0 (unsigned-bit-shift-right h0 16)) 0x85ebca6b) 0xffffffff)
+        h2 (bit-and (wasm/i64-mul (bit-xor h1 (unsigned-bit-shift-right h1 13)) 0xc2b2ae35) 0xffffffff)]
+    (bit-xor h2 (unsigned-bit-shift-right h2 16))))
+
 (defn- fnv-byte [h b] (bit-and (wasm/i64-mul (bit-xor h b) 16777619) 0xffffffff))
 (defn- fnv-bytes [h bs]
   (loop [i 0 h h] (if (< i (wasm/alen bs)) (recur (inc i) (fnv-byte h (wasm/bget bs i))) h)))
@@ -1198,15 +1211,13 @@
           (= k 18) (unbox-int (invoke1 (hook 4 x) x))
           (= k 23) (hash* (entry-vec x))                     ; MapEntry.Hash is the ArrayVector's
           ;; An exception hashes by FNV of its String(). Atoms, volatiles and fns hash
-          ;; by pointer natively (a volatile's String() embeds it); the runtime has no
-          ;; address or per-object id slot ($Atom/$Fn layouts are the backend's, D52/
-          ;; D53), so each kind hashes to one constant: consistent with identity
-          ;; equality and stable, but not distinct between objects (D74, README).
+          ;; by pointer natively; here by an identity id drawn on first hash (D80's
+          ;; id slot, P5.3): stable per object, distinct between objects.
           ;; Reduced, ArrayChunk, ChunkBuffer and exceptions are not Hashable either
           (if (= k 26) true (if (= k 14) true (if (= k 12) true (= k 13)))) (fnv-elem 2166136261 x)
-          (= k 16) (fnv-bytes 2166136261 (wasm/bytes-of-string "let-go.lang.Fn"))
-          (= k 24) (fnv-bytes 2166136261 (wasm/bytes-of-string "let-go.lang.Atom"))
-          (= k 25) (fnv-bytes 2166136261 (wasm/bytes-of-string "let-go.lang.Volatile"))
+          (= k 16) (fmix32 (let [id (wasm/get Fn 7 x)] (if (= id 0) (let [n (next-id)] (wasm/set! Fn 7 x n) n) id)))
+          (= k 24) (fmix32 (let [id (wasm/get Atom 1 x)] (if (= id 0) (let [n (next-id)] (wasm/set! Atom 1 x n) n) id)))
+          (= k 25) (fmix32 (let [id (wasm/get Volatile 1 x)] (if (= id 0) (let [n (next-id)] (wasm/set! Volatile 1 x n) n) id)))
           :else (wasm/trap "wasm.seq: hash of this kind is not implemented"))))
 
 (defn ^{:twin "core/hash"} hash [x] (box-int (hash* x)))

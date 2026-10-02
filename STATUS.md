@@ -62,3 +62,8 @@
 | P5.4 | in progress 00:05 | runner | checks/attest.sh |
 | P6.2 | measured 2026-10-02 00:50 | runner | 152/373 deftests, 9/30 files on the round-1 tree; table corpus/legmacs-tests-results.tsv; blockers → P6.1 scope (ROUND2.md) |
 | P5.R | done 2026-10-02 01:20 | opus | corpus/review3: 51 oracle programs 25 MATCH, 12 bugs ranked; xsofy-critical claims HELD (map order, hash, closures); fix rows P5.6–P5.11 filed |
+| P5.1 | done 2026-10-02 02:35 | opus | 271/273, 44/44, 2 named skips; verified by rerun (58fb3a7) |
+| P5.2 | done 2026-10-02 02:35 | opus | P2.3 2/2; to-array/object arrays (58fb3a7) |
+| P5.3 | verifying 02:50 | opus+runner | rt half in 58fb3a7 (2/4); src patches A/B/C applied, run.sh P5.3 running |
+| P5.6/P5.7 | dispatched 02:20 | opus | regex literal/POSIX/backtracking; math-round trap, dissoc!, array-map msg |
+| P6.0+P5.8 | dispatched 01:25 | opus | legmacs twins + review3 unbound natives, rt/ only |

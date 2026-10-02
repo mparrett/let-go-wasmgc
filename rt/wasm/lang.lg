@@ -25,7 +25,7 @@
 (defn- raise-arity [n] (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
 (defn- env [self] (wasm/get sq/Fn 3 self))
 (defn- thunk [code e]                                    ; a 0-arity closure
-  (wasm/new sq/Fn code (wasm/null) (wasm/null) e (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 0 (wasm/null))))
+  (wasm/new sq/Fn code (wasm/null) (wasm/null) e (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 0 (wasm/null)) 0))
 
 ;; ---------------------------------------------------------------------------
 ;; iterate: x, then (f x), ... with each f call made when that cell is
@@ -105,7 +105,7 @@
          (sq/list)
          (let [st (wasm/new TState src (pv/empty-vec) 0 (wasm/null) 0 0)
                rf (wasm/new sq/Fn (wasm/funcref sq/Code0 buf-rf0) (wasm/funcref sq/Code1 buf-rf1) (wasm/funcref sq/Code2 buf-rf2)
-                            (wasm/new TEnv st) (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 -1 (wasm/null)))
+                            (wasm/new TEnv st) (wasm/null) (wasm/null) (wasm/new sq/FnInfo 0 -1 (wasm/null)) 0)
                xf (c/invoke-args xform 1 rf (wasm/null) (wasm/null) (wasm/null))]
            (if (c/callable? xf)
              (do (wasm/set! TState 3 st xf) (tseq st))

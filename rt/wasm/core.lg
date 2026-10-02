@@ -511,7 +511,7 @@
   (if (callable? f)
     (wasm/new sq/Fn (wasm/funcref sq/Code0 compl0) (wasm/funcref sq/Code1 compl1) (wasm/funcref sq/Code2 compl2)
               (wasm/new FnEnv f) (wasm/funcref sq/Code3 compl3) (wasm/funcref sq/Code4 compl4)
-              (wasm/new sq/FnInfo 0 -1 (wasm/bytes-of-string "complemented-fn")))
+              (wasm/new sq/FnInfo 0 -1 (wasm/bytes-of-string "complemented-fn")) 0)
     (raise (wasm/bytes-of-string "complement expected Fn"))))
 
 ;; ---------------------------------------------------------------------------
@@ -825,7 +825,7 @@
 ;; State: atom (validators, watches and :meta are named limits) and volatile
 
 (defn ^{:twin "core/atom"} atom
-  ([x] (wasm/new sq/Atom x))
+  ([x] (wasm/new sq/Atom x 0))
   ([x k] (raise (wasm/bytes-of-string "atom options must be key/value pairs")))
   ([x k v] (wasm/trap "lower-wasm: atom options (:meta, :validator) are not supported yet (P2.7 named limit)"))
   ([x k v k2] (raise (wasm/bytes-of-string "atom options must be key/value pairs")))
@@ -880,7 +880,7 @@
       (do (wasm/set! sq/Atom 0 at nv) (T))
       (F))))
 
-(defn ^{:twin "core/volatile!"} volatile! [x] (wasm/new sq/Volatile x))
+(defn ^{:twin "core/volatile!"} volatile! [x] (wasm/new sq/Volatile x 0))
 
 (defn- volatile-of [v who] (if (= 25 (sq/kind v)) v (raise who)))
 
@@ -928,7 +928,7 @@
   (let [g (if (meta-fn? f) (meta-inner f) f)]
     (wasm/new sq/Fn (wasm/funcref sq/Code0 mfn0) (wasm/funcref sq/Code1 mfn1) (wasm/funcref sq/Code2 mfn2)
               (wasm/new MetaEnv g mt) (wasm/funcref sq/Code3 mfn3) (wasm/funcref sq/Code4 mfn4)
-              (wasm/get sq/Fn 6 g))))
+              (wasm/get sq/Fn 6 g) 0)))
 
 (defn ^{:twin "core/with-meta"} with-meta [x mt]
   (let [k (ckind x)]
@@ -1231,7 +1231,7 @@
                       (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-hash)))
   (sq/set-seqable-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 foreign-seqable)))
   (sq/set-ifn-hook! (wasm/new sq/Fn (wasm/null) (wasm/funcref sq/Code1 ifn-pred) (wasm/null) (wasm/null)
-                              (wasm/null) (wasm/funcref sq/Code4 ifn-call) (wasm/null)))
+                              (wasm/null) (wasm/funcref sq/Code4 ifn-call) (wasm/null) 0))
   (s/set-print-hook! (sq/mk-fn2 (wasm/funcref sq/Code2 print-foreign)))
   (arr/set-type-name-hook! (sq/mk-fn1 (wasm/funcref sq/Code1 tn-hook)))
   (so/set-compare-hook! (sq/mk-fn2 (wasm/funcref sq/Code2 sorted-compare)))

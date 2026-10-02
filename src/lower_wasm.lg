@@ -109,9 +109,10 @@
 
 ;; P2.12 (D83): a fn with a variadic arity is a $FnV, a subtype of $Fn the
 ;; backend declares (rt/'s Fn is left as is, so every runtime `wasm/new Fn`
-;; and field read stays valid): field 7 is the variadic code (funcref of type
+;; and field read stays valid): field 8 is the variadic code (funcref of type
 ;; $Code<k+1>: the closure, the k fixed args, then the rest seq, a
-;; PersistentList as natively, null when no arg is left over), field 8 is k.
+;; PersistentList as natively, null when no arg is left over), field 9 is k
+;; (field 7 is rt's identity id, P5.3).
 ;; k is capped at max-var-fixed (code types $Code1..$Code5). Calls through a
 ;; value take up to max-invoke args ($rt_invoke0..N; past 4 only a variadic
 ;; arity can accept them).
@@ -654,7 +655,12 @@
   [v]
   (when-let [src (lw-ext/regex-source v)]
     (when-let [p (try (lw-ext/regex-parse src) (catch e nil))]
-      (with-meta (symbol (str v)) {:lw/regex (:ast p) :lw/groups (:groups p) :lw/src src}))))
+      ;; P5.6: a metacharacter-free pattern also carries its text (:lw/lit)
+      ;; for lw-ext's literal fast path; the value stays a regex stand-in
+      (with-meta (symbol (str v))
+        (cond-> {:lw/regex (assoc (lw-ext/regex-compile (:ast p)) :ngroups (:groups p))
+                 :lw/groups (:groups p) :lw/src src}
+          (literal-regex v) (assoc :lw/lit (literal-regex v)))))))
 
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
@@ -663,10 +669,9 @@
         (keyword? v) (kw-wat v)
         (char? v) (str "(struct.new $Char (i32.const " (int v) "))")
         (float? v) (float-wat v)
-        ;; P3.2: a regex whose source has no metacharacter is matched as a
-        ;; plain string (lw-ext/re-find-lit); others stay Phase-2 constants
-        (and *rt* (literal-regex v)) (str-wat (literal-regex v))
-        ;; P2.14: other regexes in lw-ext's supported subset (regex-standin)
+        ;; P2.14: regexes in lw-ext's supported subset (regex-standin). P5.6
+        ;; (review3 bug-01): a metacharacter-free one is a stand-in too, not
+        ;; the String P3.2 lowered it to, which lost replace's $-expansion
         (and *rt* (regex-standin v)) (str "(global.get " (const-global! (regex-standin v)) ")")
         (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
         (str "(global.get " (const-global! v) ")")
@@ -714,8 +719,6 @@
                  (arg-as (second args) :box) ")" (coerce :bool (ty nid)) ")")))
       nil)))
 
-(def print-fn-msg "lower-wasm: printing a fn value (native prints its heap address)")
-
 (defn print-wat [nid]
   ;; one value of println's argument list
   (case (ty nid)
@@ -732,7 +735,7 @@
         set (fn [e] (str "(local.set $v" nid " " e (coerce :box (ty nid)) ")"))
         bx (fn [] (str/join " " (map #(arg-as % :box) args)))]
     (condp = v
-      #'atom (when (= n 1) (set (str "(struct.new $Atom " (bx) ")")))
+      #'atom (when (= n 1) (set (str "(struct.new $Atom " (bx) " (i64.const 0))")))
       #'deref (when (= n 1) (set (str "(call $rt_deref " (bx) ")")))
       #'reset! (when (= n 2) (set (str "(call $rt_reset " (bx) ")")))
       #'swap! (when (<= 2 n 4) (set (str "(call $rt_swap" (- n 2) " " (bx) ")")))
@@ -1182,6 +1185,8 @@
       "i64-extend-i32-u" [(str "(i64.extend_i32_u (i32.wrap_i64 " (arg-as (a 0) :int) "))") :int]
       "i64-to-f64" [(str "(f64.convert_i64_s " (arg-as (a 0) :int) ")") :float]
       "f64-to-i64" [(str "(i64.trunc_f64_s " (f64-arg (a 0)) ")") :int]
+      ;; P5.7: lw-ext's saturating twin conversions (round, long of NaN)
+      "f64-to-i64-sat" [(str "(i64.trunc_sat_f64_s " (f64-arg (a 0)) ")") :int]
       "f64-neg" [(str "(f64.neg " (f64-arg (a 0)) ")") :float]
       "f64-bits" [(str "(i64.reinterpret_f64 " (f64-arg (a 0)) ")") :int]
       "bytes-new" [(str "(array.new_default $Bytes " (wrap-idx (a 0)) ")") :box]
@@ -1232,7 +1237,7 @@
 (def emitted-intrinsics
   #{"new" "get" "set!" "is?" "as" "array-new" "aget" "aset!" "alen" "array-copy" "ref-eq" "null" "null?"
     "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
-    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
+    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-to-i64-sat" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
     "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
     "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"
@@ -1392,10 +1397,10 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Fn values (D36). A closure is
-;;   (struct.new $Fn code0 code1 code2 env code3 code4 info)
+;;   (struct.new $Fn code0 code1 code2 env code3 code4 info id)
 ;; where codeK is (ref.func $<fn>__fn<nid>_K) of type $CodeK or null, env is a
 ;; per-closure struct of the captures (typed: an int capture stays i64) or
-;; null, and info is a static $FnInfo global. Code takes the closure itself
+;; null, info is a static $FnInfo global and id is 0 (rt draws it on first hash). Code takes the closure itself
 ;; first and its args boxed, and returns boxed (D37). A closure without
 ;; captures is one immutable global.
 
@@ -1425,7 +1430,7 @@
     (swap! *elem* into (cond-> (vals codes) vc (conj vc)))
     (let [slot (fn [a] (if-let [c (get codes a)] (str "(ref.func $" c ")") (str "(ref.null $Code" a ")")))]
       (str "(struct.new " (if vc "$FnV " "$Fn ") (slot 0) " " (slot 1) " " (slot 2) " " env " " (slot 3) " " (slot 4)
-           " (global.get " info-g ")"
+           " (global.get " info-g ") (i64.const 0)"
            (when vc (str " (ref.func $" vc ") (i32.const " k ")")) ")"))))
 
 (defn env-type [kinds]
@@ -2250,10 +2255,10 @@
     (then (call $rt_print_kw (ref.cast (ref $Kw) (local.get $v))) (return)))
   (if (i32.or (ref.test (ref i31) (local.get $v)) (ref.test (ref $Int) (local.get $v)))
     (then (call $print_i64 (call $rt_unbox_int (local.get $v))) (return)))
-  ;; native prints a fn with its heap address, which no build can reproduce
-  ;; byte for byte: a named error instead (P1.7 gap-02)
+  ;; a fn prints as native's `<fn NAME 0x..>` with the address fixed at 0x0,
+  ;; as $rt_fn_desc names it in arity errors and wasm.core prints it (P5.3)
   (if (ref.test (ref $Fn) (local.get $v))
-    (then (throw $lgex " (rt-error-wat print-fn-msg print-fn-msg) ")))
+    (then (call $rt_print_bytes (call $rt_fn_desc (ref.cast (ref $Fn) (local.get $v)))) (return)))
   ;; a caught runtime error (kind 2): native's #error form (the runtime's
   ;; printer gives only the message for it)
   (if (ref.test (ref $Err) (local.get $v))
@@ -2597,12 +2602,16 @@
     (then (local.set $v (ref.cast (ref $FnV) (local.get $fn)))\n"
                    (apply str
                           (for [k (range (inc (min n max-var-fixed)))]
-                            (str "      (if (i32.eq (struct.get $FnV 8 (local.get $v)) (i32.const " k "))
+                            (str "      (if (i32.eq (struct.get $FnV 9 (local.get $v)) (i32.const " k "))
         (then (return_call_ref $Code" (inc k) " (local.get $fn)"
                                  (apply str (map #(str " (local.get $a" % ")") (range k)))
                                  " " (rest-list-wat (map #(str "(local.get $a" % ")") (range k n)))
-                                 " (ref.cast (ref $Code" (inc k) ") (struct.get $FnV 7 (local.get $v))))))\n")))
+                                 " (ref.cast (ref $Code" (inc k) ") (struct.get $FnV 8 (local.get $v))))))\n")))
                    "))
+  ;; a with-meta'd fn (wasm.core's MetaEnv wrapper) has only fixed arities 0-4:
+  ;; past them, the inner fn's dispatch (its variadic arity or arity error)
+  (if (ref.test (ref $MetaEnv) (struct.get $Fn 3 (local.get $fn)))
+    (then (return_call $rt_invoke" n " (struct.get $MetaEnv 0 (ref.cast (ref $MetaEnv) (struct.get $Fn 3 (local.get $fn))))" args ")))
   (call $rt_arity_error (local.get $fn) (i32.const " n ")) unreachable)\n")))
      ;; wasm.core/invoke-args (n <= 4 args a..d) as the backend's dispatch, so a
      ;; runtime caller (swap!, complement, apply*) reaches variadic arities;
@@ -2632,10 +2641,13 @@
     (then (return_call $rt_invoke_ifn (local.get $f) (local.get $n)"
             (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range max-arity)))
             ")))
+  (if (ref.test (ref $MetaEnv) (struct.get $Fn 3 (ref.cast (ref $Fn) (local.get $f))))
+    (then (return_call $rt_apply_vec (struct.get $MetaEnv 0 (ref.cast (ref $MetaEnv) (struct.get $Fn 3 (ref.cast (ref $Fn) (local.get $f)))))
+                       (local.get $v))))
   (if (i32.eqz (ref.test (ref $FnV) (local.get $f)))
     (then (call $rt_arity_error (ref.cast (ref $Fn) (local.get $f)) (local.get $n)) unreachable))
   (local.set $fv (ref.cast (ref $FnV) (local.get $f)))
-  (local.set $k (struct.get $FnV 8 (local.get $fv)))
+  (local.set $k (struct.get $FnV 9 (local.get $fv)))
   ;; k <= 4 < n: the rest is never empty
   (local.set $rest (struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none)))
   (local.set $i (local.get $n))
@@ -2648,7 +2660,7 @@
                          (str "  (if (i32.eq (local.get $k) (i32.const " k "))
     (then (return_call_ref $Code" (inc k) " (local.get $f)"
                               (apply str (map #(str " (call $wasm.pvec/vnth#2__box (local.get $v) (ref.i31 (i32.const " % ")))") (range k)))
-                              " (local.get $rest) (ref.cast (ref $Code" (inc k) ") (struct.get $FnV 7 (local.get $fv))))))\n")))
+                              " (local.get $rest) (ref.cast (ref $Code" (inc k) ") (struct.get $FnV 8 (local.get $fv))))))\n")))
             "  unreachable)\n"))
      ";; a non-Fn callee: keywords, symbols, maps, sets and vectors call
 ;; themselves through the runtime (wasm.core/invoke-args); anything else is
