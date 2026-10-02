@@ -4125,7 +4125,9 @@
 
 (defn rtlib-key []
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
-                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])))))
+                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
+                            ;; P7.6: the no-eval runtime has no wasm.eval twins
+                            [(if lw-rt/no-eval? "|no-eval" "")]))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))

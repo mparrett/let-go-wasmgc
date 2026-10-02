@@ -686,7 +686,10 @@
      [(list 'clojure.core/in-ns (list 'quote main-ns))])
    ;; LW_NO_PROGRAM_TABLE=1: diagnostic, leaves the table out (P7.4 sizes
    ;; the evaluator and the table separately)
+   ;; P7.6: LW_NO_EVAL=1 (lw-rt/no-eval?) leaves the evaluator out, and so
+   ;; the table and its hidden __lw_* defns
    (when (and @eval-reached (lw-rt/ns-var 'wasm.eval 'install-program-table!)
+              (not lw-rt/no-eval?)
               (not= "1" (os/getenv "LW_NO_PROGRAM_TABLE")))
      [(list 'wasm.eval/install-program-table!
             (into {} (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))

@@ -9,7 +9,7 @@
 # set), legmacs' sources and wasm-opt's flags. A failed compile is not
 # cached. Prints "cache hit|built <key>" and the raw/optimised sizes on
 # stderr; on a failed compile, the driver's output (minus catalog lines) on
-# stderr and exit 1. Env: LG, LEGMACS, LW_RT_DIR, LW_NO_OPT=1,
+# stderr and exit 1. Env: LG, LEGMACS, LW_RT_DIR, LW_NO_OPT=1, LW_NO_EVAL=1,
 # LW_LEGMACS_RAW=<path> (also copy the unoptimised module there),
 # LW_LEGMACS_MAIN=<file.lg> (compile this entry instead of main.lg, still
 # against the legmacs source root: a diagnostic stand-in for exercising the
@@ -24,7 +24,9 @@ OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory
           --enable-tail-call --enable-multivalue)
 cache=${LW_LEGMACS_CACHE:-${TMPDIR:-/tmp}/lw-legmacs-module}; mkdir -p "$cache"
-key=$( { shasum "$LG"; echo "${optflags[*]} ${LW_NO_OPT:-}";
+# LW_NO_EVAL=1 (P7.6, no evaluator) is a different module: in the key, and
+# only when set, so the default build keeps its key
+key=$( { shasum "$LG"; echo "${optflags[*]} ${LW_NO_OPT:-}"; [ -n "${LW_NO_EVAL:-}" ] && echo "no-eval=$LW_NO_EVAL";
          cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg "${LW_RT_DIR:-$here/rt/wasm}"/README.md;
          cat "$entry"; find "$LEGMACS/legmacs" -name '*.lg' -print0 | sort -z | xargs -0 cat; } | md5 -q)
 if [ -f "$cache/$key.wasm" ]; then

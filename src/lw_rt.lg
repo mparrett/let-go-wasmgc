@@ -155,12 +155,18 @@
   []
   (for [ns-sym rt-nss [_ v] (ns-publics ns-sym) :when (intrinsic? v)] v))
 
+;; P7.6: LW_NO_EVAL=1 builds a module without the evaluator: wasm.eval's
+;; twins are dropped, so core/eval is again a native with no twin (D139's
+;; named error at the call) and nothing links rt/wasm/eval.lg; the driver
+;; emits no program table. Part of the rtlib cache key (lower-wasm/rtlib-key).
+(def no-eval? (= "1" (os/getenv "LW_NO_EVAL")))
+
 ;; D58: a runtime defn claims the native(s) it implements with :twin; the
 ;; native's var is what a program's call resolves to.
 (def twins
   (into {} (for [d defns
                  :let [t (:twin (meta (:var d)))]
-                 :when t
+                 :when (and t (not (and no-eval? (= 'wasm.eval (:ns d)))))
                  tw (if (string? t) [t] t)
                  :let [nv (resolve (symbol tw))]
                  :when nv]

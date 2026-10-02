@@ -16,3 +16,14 @@ stock boot: run 0: program ended before the first frame: error: getwd: not imple
 The stock lane builds but does not boot legmacs: under js/wasm let-go's `os/cwd` raises "getwd: not implemented on js",
 and main.lg calls it to set up the *scratch* buffer, so its boot column is empty and the comparison is bundle size only.
 The lower-wasm runtime returns "" for `os/cwd` (D138: no file system in the module).
+
+## P7.6: the evaluator opt-out (measured 2026-10-02, checks/eval-optout.sh)
+
+legmacs 187fea2 `main.lg`, lg 4e769212, tree at 871be67 + the P7.6 src change. `LW_NO_EVAL=1` leaves rt/wasm/eval.lg
+and the program table out (C-x C-e then echoes `Eval error: lower-wasm: core/eval has no twin`); the default build
+links both because legmacs calls `eval`.
+
+| legmacs main.lg | raw | wasm-opt -O3 | brotli |
+|---|---|---|---|
+| evaluator (default) | 2,199,454 B | 671,302 B | 166,284 B |
+| LW_NO_EVAL=1 | 1,614,250 B | 461,803 B | 119,844 B |
