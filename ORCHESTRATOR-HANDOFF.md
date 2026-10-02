@@ -37,6 +37,14 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   run (my mistake); the next P5.1 --corpus run regenerates it; do not commit the legmacs rows under that name.
 - Next: P5.GATE, then Phase 6 legmacs (P6.0 natives + P6.1 blockers first; P6.2 needs corpus/legmacs-tests.txt over 30 files).
 
+- 03:15 state: P5.0 P5.1 P5.2 P5.3 P5.5 P5.R DONE (58fb3a7, eeca0fd; D128-D133). P5.4 mechanism in, row needs a
+  settled tree (run `LW_ATTEST=0 checks/gate.sh 2` once, then `checks/run.sh P5.4`). In flight: P5.6+P5.7 regex/trap
+  (opus, src/lw_ext.lg lw_rt.lg lower_wasm.lg) agent `aedf16da08ce741e3`; P6.0+P5.8 twins (opus, rt/wasm/natives.lg)
+  agent `aa4d7abc83a06d628`; P5.10+P5.11 test shim + counter (opus, src/testshim.lg checks/run-tests.sh) agent `a9fde288530c2dafd`.
+  Queue: P5.9 (reader meta + var stand-in, src/lower_wasm.lg) after the regex agent; P5.8's named-error src half (patch from
+  the twins agent); then P5.GATE (LW_ATTEST=0, gates 5,1,2,3,4); then P6.1.
+  Struct change to tell every new agent: `wasm/new Fn` 8 fields, Atom/Volatile 2 (trailing 0) since eeca0fd.
+
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
 
 ## (historical) In flight at 13:05
