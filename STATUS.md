@@ -79,3 +79,5 @@
 | P5.10 | done 2026-10-02 06:15 | opus | 3/3 PASS after P5.8's error landed; verified by rerun |
 | P5.11 | done 2026-10-02 06:15 | opus | counter vs native; core tests stay 271/273; verified by rerun |
 | P5.9 | done 2026-10-02 06:40 | opus | fix-meta 5/5; verified by rerun |
+| P5.4 | done 2026-10-02 07:20 | runner | first gate.sh 2 10m29s all 14 ok (P2.3 included); second run 1 s, 13 attested, same result |
+| GATE 2 | re-run 2026-10-02 07:15 | runner | 14/14 ok on af7e1d0, no named limit left (D127's P2.3 limit closed by P5.2) |
