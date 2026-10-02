@@ -29,6 +29,12 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   P5.3 (opus, rt/ + corpus/wasm/gaps, no src/) agent `af3f0ef23d134c3c3`;
   P5.R reviewer (opus, read-only, corpus/review3) agent `a79b16cc200312b2e`.
   Runner builds P5.4 `checks/attest.sh` meanwhile. P5.5 already satisfied (check fixed in 1fc6164).
+- 01:25: P5.R DONE (6f35066): review3 filed fix rows P5.6-P5.11. P5.4 mechanism landed (9c72c4a), row waits for a settled tree.
+  Third slot now P6.0 + P5.8 twin half (opus, rt/ + checks/native-twins.sh --skip, no src/) agent `aa4d7abc83a06d628`.
+  Queue for the src/ slot once P5.1/P5.2 reports: P5.6 regex, P5.9 meta/var stand-in, P5.10/P5.11 test shim + counter,
+  P5.7 twins' trap fix, P5.8's named-error half (patch from the twins agent), then P6.1 (5 census blockers + 3 ns-init blockers).
+  P6.2 first measurement 152/373 (a11dc4e). NOTE corpus/core-tests-results.tsv is modified in the tree by a legmacs
+  run (my mistake); the next P5.1 --corpus run regenerates it; do not commit the legmacs rows under that name.
 - Next: P5.GATE, then Phase 6 legmacs (P6.0 natives + P6.1 blockers first; P6.2 needs corpus/legmacs-tests.txt over 30 files).
 
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
