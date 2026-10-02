@@ -49,6 +49,28 @@ if (process.argv[2] === '--settle-walk') {
   console.log(JSON.stringify(out));
   process.exit(out.failure ? 2 : 0);   // 2 = harness failure, not a lane mismatch
 }
+// --run <base-url> <module> <expected-stdout-file>: boot one module in
+// host/index.html, wait for it to finish, compare stdout (P7.5 eval-hosts.sh)
+if (process.argv[2] === '--run') {
+  const [rbase, rmodule, rexpected] = process.argv.slice(3);
+  const exp = fs.readFileSync(rexpected, 'utf8');
+  const b = await chromium.launch();
+  const out = { module: rmodule };
+  try {
+    const page = await b.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`${rbase}/index.html?module=${rmodule}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__lgw && window.__lgw.done, null, { timeout: 60000 });
+    const r = await page.evaluate(() => window.__lgw);
+    out.pass = r.code === 0 && r.stdout === exp && !errors.length;
+    out.code = r.code; out.error = r.error || null; out.errors = errors; out.totalMs = r.tTotal;
+    if (!out.pass) out.stdout = r.stdout;
+  } catch (e) { out.pass = false; out.failure = String((e && e.message) || e).split('\n')[0]; }
+  await b.close();
+  console.log(JSON.stringify(out));
+  process.exit(out.pass ? 0 : 1);
+}
 if (process.argv[2] === '--xsofy') {
   console.log(JSON.stringify(await xsofyGame(...process.argv.slice(3))));
   process.exit(0);

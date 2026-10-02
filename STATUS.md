@@ -116,3 +116,13 @@ TOTAL ≈ $1,227
 | claude-fable-5-1 | 484 | 0.33 M | 0.13 B | 0.9 M | ≈$242 |
 | claude-opus-5-5 | 2650 | 0.05 M | 0.53 B | 11.7 M | ≈$1,018 |
 | **total** | | | | | **≈$1,259** |
+
+## Round 3, Track A (Phase 7 eval), started 2026-10-02 ~08:00 PDT (git times authoritative)
+
+| item | state | by | note |
+|---|---|---|---|
+| P7 rows | appended 2026-10-02 | runner | items.tsv P7.0-P7.GATE exit 2 until built; affected table; seam in ROUND3.md |
+| D159 | done 2026-10-02 | runner | os/getenv reaches the host; XSOFY_DEV=1 under node (Matt's small ask) |
+| A: rt/wasm/eval.lg | running | opus | closure-compiling evaluator, core table, core macros, registry ns/vars, reader code forms, corpus/eval |
+| B: program table | running | opus | backend emits install-program-table! when eval is reached; *ns* route; program macros as hidden fns; corpus/eval/program |
+| P7.5 harness | built 2026-10-02 | runner | checks/eval-hosts.sh + browser-boot.mjs --run; self-test green on hello.lg; waits for eval |

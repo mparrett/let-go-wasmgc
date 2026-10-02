@@ -1,0 +1,13 @@
+;; P7.5 host smoke: the in-module evaluator reached the same way from every
+;; host. Prints what eval of read code yields, a defn made by eval and called
+;; from compiled code through its var, and an eval error's message.
+(ns eval-hello)
+
+(println "eval" (eval (read-string "(+ 1 2)")))
+(println "let" (eval '(let [x 20 y 22] (+ x y))))
+(eval (read-string "(defn twice [x] (* x 2))"))
+(println "twice" (eval '(twice 21)))
+(println "map" (eval '(map inc [1 2 3])))
+(println "closure" (eval '(let [k 3] ((fn [x] (* k x)) 14))))
+(println "err" (try (eval '(nope 1)) (catch e (ex-message e))))
+(println "done")
