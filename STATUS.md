@@ -48,3 +48,5 @@
 | P2.14 | progress 18:44 | opus | 265/273 projected (subsets on dev tree); ported to src/, running checks/run.sh P2.14 then P3.2 + corpus/wasm |
 | P2.14 | progress 18:55 | opus | 265/273, 38/44 files: checks/run.sh P2.14 exit 0; running P3.2, corpus/wasm, gold, falsification done |
 | P2.14 | done 19:11 | opus | 265/273 (97%), 38/44 files; run.sh P2.14 exit 0; corpus/wasm 14/14; P3.2 20/20; gold 3/7 |
+| P2.4 | GREEN 2026-10-01 | — | 14/14 after array-map twin |
+| P2.5 | GREEN 2026-10-01 | — | corpus/seqs 4/4 |
