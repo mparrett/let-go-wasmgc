@@ -32,3 +32,19 @@ P4.1	4	checks/browser-boot.sh --xsofy-shell && checks/browser-boot.sh --xsofy	HO
 P4.2	4	checks/lane5.sh	zz-determinism-probe.mjs screen dump for the wasm lane is byte-identical to the stock-Go lane at seed 424242
 P4.3	4	checks/size-boot.sh	table: bundle bytes (raw, brotli), time-to-title, time-to-map vs the TinyGo lane; recorded in STATUS.md
 P4.GATE	4	checks/gate.sh 4	P4.1–P4.3 exit 0. THIS IS THE CAMPAIGN FINISH LINE; Phase 5 is a new decision, not a continuation
+P5.0	5	test -s corpus/quality/2026-10-01/letgo-comment-lint.txt && test -s corpus/quality/2026-10-01/aislop.txt	quality baseline captured for data only (comment linter, aislop); no gate on findings this round
+P5.1	5	checks/run-tests.sh --corpus corpus/core-tests.txt --bar 273	core tests 273/273 or each remaining failure named in a SKIP with a reason
+P5.2	5	checks/run.sh P2.3	the to-array deftest (round 1's one named limit) green
+P5.3	5	checks/run-corpus.sh corpus/wasm/gaps	INVENTORY gaps as oracle programs: with-meta on variadic fn, identity hash, sort pair message, printing a fn
+P5.4	5	checks/attest.sh	attestation reuse: a gate skips rows whose inputs are unchanged since their last green run; second gate.sh 2 on an unchanged tree < 60 s, same result
+P5.5	5	checks/affected.sh src/lower_wasm.lg | grep -q P3.2 && checks/affected.sh rt/wasm/seq.lg | grep -q P4.2	regression rows: every src/ and rt/ path maps to P3.2 and P4.2
+P5.R	5	test -s corpus/review3/README.md	adversarial review of the round-1 gaps (read-only agent, own corpus)
+P5.GATE	5	checks/gate.sh 5 && checks/gate.sh 1 && checks/gate.sh 2 && checks/gate.sh 3 && checks/gate.sh 4	round-1 debt paid with gates 1–4 still green
+P6.0	6	checks/native-twins.sh corpus/natives/natives-legmacs.txt --exclude 'term/' --skip corpus/natives/SKIP-legmacs	legmacs natives: 34 ordinary twins; eval/go/full-regex in SKIP-legmacs with reasons (Phase 7)
+P6.1	6	checks/census.sh legmacs && test "$(awk -F'\t' '$2!="ok" && $2!="unbound-var" && $2!="phase2-const"' corpus/census/legmacs.tsv | wc -l)" -eq 0	backend blockers: binding of dynamic vars, closure arity > 4; census 816/816
+P6.2	6	checks/run-tests.sh --corpus corpus/legmacs-tests.txt	legmacs' own test suite under the backend; bar set by the first measured run
+P6.3	6	checks/legmacs-parity.sh 5	scripted editing session, buffer dump byte-identical native vs emitted
+P6.4	6	checks/browser-boot.sh --legmacs	legmacs in the browser on the lower-wasm host
+P6.5	6	checks/size-boot.sh --legmacs	size and boot table for the legmacs module beside xsofy's
+P6.R	6	test -s corpus/review4/README.md	adversarial review of the legmacs surface (read-only agent, own corpus)
+P6.GATE	6	checks/gate.sh 6	ROUND 2 FINISH LINE (with gates 1–5 still green)
