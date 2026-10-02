@@ -21,7 +21,9 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
 - Pulse claim held: `task:letgo-emit-wasm-campaign` (#303). Release with
   `--outcome handoff` when stopping.
 
-## In flight right now (updated 2026-10-01 ~13:05)
+## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
+
+## (historical) In flight at 13:05
 - P3.2 xsofy world-gen parity (src/, opus): agent `a94c28a6237679045`.
   Done when `checks/run.sh P3.2` exits 0 (world-parity.sh 20/20).
 - P0.1 check speedups (checks/, sonnet): agent `a6f67a916a68a3410`. Done when

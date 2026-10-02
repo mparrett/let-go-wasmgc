@@ -52,3 +52,5 @@
 | P2.5 | GREEN 2026-10-01 | — | corpus/seqs 4/4 |
 | P2.14 | re-verified 2026-10-01 | — | 265/273, 38/44 on the settled tree |
 | P2.7 | GREEN 2026-10-01 (scoped) | — | 2/2 in scope; 10 skipped with reasons |
+| P2.GATE | PASSED w/ 1 named limit 2026-10-01 20:21 | — | 13/14 rows; P2.3 = to-array deftest (D122) |
+| CAMPAIGN | COMPLETE 2026-10-01 | — | gates 1,2*,3,4 closed; see ORCHESTRATOR-HANDOFF.md |
