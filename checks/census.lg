@@ -36,6 +36,17 @@
 (def wat-dir (nth args 3))
 (def files (vec (drop 4 args)))
 
+;; Sharded runs (checks/census.sh, D106 item 6): LW_CENSUS_ALL names a file
+;; listing EVERY corpus file in census order, and the positional files are this
+;; process's share. Every process still reads, requires and declares all of
+;; them (corpus-nses and the vars a unit can resolve are then what a serial run
+;; sees) and numbers units over all of them, but lowers only its own. Unset,
+;; all-files = files and nothing changes.
+(def all-files
+  (let [p (os/getenv "LW_CENSUS_ALL")]
+    (if (seq p) (vec (remove empty? (clojure.string/split-lines (slurp p)))) files)))
+(def own-files (set files))
+
 ;; ---- file loading, as census.lg (from scripts/ir-stress.lg) -----------------
 
 (defn read-all [path]
@@ -122,7 +133,7 @@
               (clojure.string/join "," (:externs r)) (or (:inside r) 0)
               (clojure.string/join "," (:phase2 r)) ms]))))
 
-(defn census-file [rel]
+(defn census-file [rel own?]
   (let [parsed (read-all (str corpus-dir rel))]
     (if (nil? parsed)
       (println (str "READ-ERROR " rel))
@@ -136,11 +147,13 @@
             (try (eval (cons 'declare decl)) (catch e nil)))
           (doseq [u units
                   [arity args-vec body] (arity-units u)]
-            (run-unit rel (nth u 1) arity args-vec body))
-          (println (str rel ": " (count units) " units")))))))
+            (if own?
+              (run-unit rel (nth u 1) arity args-vec body)
+              (swap! idx inc)))   ; another shard lowers it; keep the serial numbering
+          (when own? (println (str rel ": " (count units) " units"))))))))
 
 (defn run []
-  (doseq [rel files]
+  (doseq [rel all-files]
     (try (let [parsed (read-all (str corpus-dir rel))
                nsf (ns-form-of parsed)]
            (when nsf
@@ -149,7 +162,7 @@
            (require-deps! nsf)
            (require-top-level! parsed))
          (catch e nil)))
-  (doseq [rel files] (census-file rel))
+  (doseq [rel all-files] (census-file rel (contains? own-files rel)))
   (spit out-path (str "idx\tfile\tname\tarity\tbucket\tdetail\texterns\tprogram-vars\tphase2\tms\n"
                       (clojure.string/join "\n" @rows) "\n"))
   (println "rows:" (count @rows) "->" out-path))

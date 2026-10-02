@@ -34,9 +34,12 @@
 | P2.13 | done 2026-10-01 | opus | kind 27; f64-neg; raise sweep (~80 sites); 116 tests/37.8k asserts; corpus/wasm 14/14; verified |
 | perf | investigated 2026-10-01 | fable | corpus/perf-report.md; D106; P0.1 queued for application |
 | P2.1 + P2.11 | GREEN 2026-10-01 | — | checks/run-corpus.sh corpus/wasm = 14/14 |
-| P0.1 | running | sonnet | apply D106 speedups |
+| P0.1 | done 2026-10-01 | sonnet | all speedups byte-identical; run.sh P0.1 green |
 | P3.2 + P3.GATE | PASSED 2026-10-01 | opus | 20/20 (+5/5 autoex, 5/5 descend, 3/3 deep); 313 KB module; verified |
 | P2.3 | measured 2026-10-01 | sonnet | 133/273 (49%); blockers → P2.14 (D112) |
 | P4.1-backend + P4.3 | done 2026-10-01 | opus | xsofy plays in the real shell; 140 KB brotli; verified --xsofy PASS |
 | P4.2 | done 2026-10-01 | sonnet | settle-based lane5; 3/3 IDENTICAL; stock lane was the flaky one |
 | P4.GATE | PASSED 2026-10-01 17:05 | — | campaign finish line; verified by orchestrator |
+| P2.14 | progress 17:56 | opus | 145/273 measured (blocker 1 done: source paths + load-by-path); blockers 2-8 + regex engine coded in scratch, rebuilding/measuring |
+| P0.1 | progress 17:59 | sonnet | steps done: sem.sh pool, run-corpus P=3, gate -j2, native per-file P=4, census sharded P=4 + content-hash key, LW_RTLIB_DIR, affected.sh bash-3.2 fix; serial-vs-parallel outputs byte-identical (corpus/wasm, native, legmacs+xsofy TSV, gate); falsified; remaining: final `checks/run.sh P0.1` in the live tree (census rerun in progress, then gate once); ETA 30 min |
+| P2.14 | progress 18:21 | opus | 223/273 (dev tree; blockers 1-7 + stdlib/regex/format fills in); working on the tail: getBytes, quality.*, walk, thrown, replace-fn |

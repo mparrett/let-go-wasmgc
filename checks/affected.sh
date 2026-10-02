@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # checks/affected.sh [--all] [<path>...]  — which items.tsv rows a change touches.
 #
-# With no args: paths = `git diff --name-only HEAD` + untracked files under
-# dev/lower-wasm (what an implementer is about to hand over). With paths:
+# With no args: paths = `git diff --name-only HEAD` (staged and unstaged) +
+# untracked files under dev/lower-wasm (what an implementer is about to hand
+# over). Runs under macOS bash 3.2; advisory only (D106), gates stay full. With paths:
 # those. Prints the item ids whose check reads at least one of the paths,
 # one per line, in items.tsv order; --all prints the id → inputs table.
 #
@@ -26,6 +27,7 @@ cd "$(dirname "$0")/.."
 # id<TAB>space-separated input prefixes. "oracle" expands to the compile+run
 # path: src/ rt/ checks/oracle.sh checks/wasm-run.sh src/run.mjs.
 table() { cat <<'EOF'
+P0.1	checks/run-corpus.sh checks/sem.sh checks/gate.sh checks/census.sh checks/census.lg checks/census-summary.py checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg checks/run.sh corpus/scalar/
 P1.0	oracle corpus/scalar/
 P1.1	oracle corpus/scalar/ corpus/opmatrix/ corpus/typed/ checks/run-corpus.sh
 P1.2	oracle corpus/control/ checks/run-corpus.sh
@@ -59,8 +61,14 @@ EOF
 # BSD sed has no \b: the token is always first in column 2, so match it there.
 expand() { awk -F'\t' 'BEGIN{OFS="\t"} {sub(/^oracle /, "src/ rt/ checks/oracle.sh checks/wasm-run.sh ", $2); print}'; }
 if [ "${1:-}" = --all ]; then table | expand; exit 0; fi
+# bash 3.2 (macOS /bin/bash) has no mapfile. --relative keeps paths relative to
+# this dir wherever the checkout sits (a worktree, a copy inside another repo);
+# --no-renames lists both ends of a rename; `diff HEAD` covers staged and
+# unstaged tracked changes, ls-files --others the new untracked files.
+paths=()
 if [ $# -gt 0 ]; then paths=("$@"); else
-  mapfile -t paths < <({ git diff --name-only HEAD -- . ; git ls-files --others --exclude-standard -- . ; } | sed 's#^dev/lower-wasm/##')
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "affected.sh: not in a git checkout; pass paths explicitly" >&2; exit 2; }
+  while IFS= read -r p; do [ -n "$p" ] && paths+=("$p"); done < <({ git diff --name-only --relative --no-renames HEAD -- . ; git ls-files --others --exclude-standard -- . ; } | sort -u)
 fi
 [ ${#paths[@]} -gt 0 ] || { echo "no changes" >&2; exit 0; }
 # a path matches a token when the token is a prefix of it (dirs end in /),
