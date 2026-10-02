@@ -1,0 +1,2 @@
+;; native: "[:first-only [0]]" -- (first (for ...)) realises only the first element (chunking aside: native for is lazy-seq per element)
+(println (eval '(let [seen (atom [])] (first (for [x (range 5)] (do (swap! seen conj x) x))) [:first-only @seen])))

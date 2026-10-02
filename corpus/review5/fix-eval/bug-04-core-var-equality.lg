@@ -1,0 +1,2 @@
+;; native: "true true :found 2" -- #'inc is the same var each time: =, map lookup and set dedup work on core vars
+(println (eval '(= #'inc #'inc)) (eval '(= (var inc) (var clojure.core/inc))) (eval '(get {#'inc :found} #'inc)) (eval '(count (set [#'inc #'inc #'dec]))))

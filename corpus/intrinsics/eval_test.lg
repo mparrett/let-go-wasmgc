@@ -55,7 +55,9 @@
     "(loop [x 1] (try (recur 2) (finally 1)))" "(try)" "(try 1 (catch))"
     "(def)" "(def 1 2)" "(def x 1 2)" "(def x (nope))" "(set!)" "(set! 1 2)"
     "(var nope)" "(when (nope) 1)" "(cond (nope) 1)" "(defn f [] (nope))"
-    "nope/x" "(nope/x 1)" "user/nope" "(let-go.core/inc 1)"]))
+    "nope/x" "(nope/x 1)" "user/nope" "(let-go.core/inc 1)"
+    ;; review5 (P7.7): catch-body layers, def name pr-str, throw arity, with-out-str's core/fn
+    "(try 1 (catch e (nope)))" "(def \"s\" 1)" "(throw)" "(throw 1 2)" "(with-out-str (nope))"]))
 
 (deftest macros
   (check-all
@@ -78,7 +80,11 @@
     "(take 3 (lazy-seq (cons 1 (lazy-seq [2 3 4]))))" "@(delay (+ 1 2))" "(with-out-str (println 1) (print 2))"
     "(defn ev-f [x] (* x 2))" "(ev-f 21)" "(defn ev-g ([] 0) ([x] (inc x)))" "[(ev-g) (ev-g 1)]"
     "(defn- ev-h [] :h)" "(ev-h)" "(defmacro ev-m [x] (list 'inc x))" "(ev-m 41)"
-    "(do (defmacro ev-m2 [x] (list 'inc x)) (ev-m2 1))" "(declare ev-d)" "ev-d" "(assert true)"]))
+    "(do (defmacro ev-m2 [x] (list 'inc x)) (ev-m2 1))" "(declare ev-d)" "ev-d" "(assert true)"
+    ;; review5 (P7.7): lazy for, catch of thrown non-exceptions, last same-count arity, &form, :tag as data
+    "(take 3 (for [x (range)] (* x x)))" "(let [seen (atom [])] (first (for [x (range 5)] (do (swap! seen conj x) x))) @seen)"
+    "(count (for [x (range 3000)] x))" "(try (throw \"s\") (catch e [:caught e]))" "(try (case 5 1 :a) (catch e (ex-message e)))"
+    "((fn ([a] 1) ([b] 2)) 0)" "(do (defmacro ev-fm [& _] (pr-str &form)) (ev-fm 1 2))" "(meta ^{:tag String :k (inc 1)} [1])"]))
 
 (deftest core-calls
   (check-all

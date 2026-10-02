@@ -1,0 +1,4 @@
+;; native: "#'r5.ct/ctv" then "nil #'r5.ct/ctv" -- a def after (in-ns ..) inside one evaluated do interns in the NEW namespace
+(println (eval '(do (in-ns 'r5.ct) (def ctv 1))))
+(eval '(in-ns 'user))
+(println (eval '(resolve 'ctv)) (eval '(resolve 'r5.ct/ctv)))

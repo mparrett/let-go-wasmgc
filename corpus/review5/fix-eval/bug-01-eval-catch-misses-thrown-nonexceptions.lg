@@ -1,0 +1,5 @@
+;; native: "[:caught s]", ":caught [:fin-ran true]", "No matching clause: " -- an evaluated (catch e ...) catches thrown non-exception values (string, number, case's default string)
+(println (eval '(try (throw "s") (catch e [:caught e]))))
+(def fin (atom false))
+(println (try (eval '(try (throw 42) (catch e :caught) (finally (reset! user/fin true)))) (catch e [:escaped (ex-message e)])) [:fin-ran @fin])
+(println (eval '(try (case 5 1 :a) (catch e (ex-message e)))))

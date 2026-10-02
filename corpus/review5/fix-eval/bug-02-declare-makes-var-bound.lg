@@ -1,0 +1,5 @@
+;; native: "false false 5" -- (declare x)/(def x) leave the var UNBOUND, so bound? is false and a later defonce defines it
+(println (eval '(do (declare r5-o) (bound? (var r5-o))))
+         (eval '(do (def r5-u) (bound? (var r5-u)))))
+(eval '(defonce r5-o 5))
+(println (eval 'r5-o))

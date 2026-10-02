@@ -1,0 +1,8 @@
+;; native: a 20000-element evaluated for and a 3-deep nested for over 30x30x30 realise fine
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "(count (for [x (range 20000)] x))")
+(show "(count (for [x (range 30) y (range 30) z (range 30)] [x y z]))")
+(show "(reduce + (for [x (range 1000) :when (even? x)] x))")
