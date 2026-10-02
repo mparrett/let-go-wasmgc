@@ -1,0 +1,29 @@
+;; A let-go REPL for the browser demo (round 3): reads a line of keys from
+;; the host (term/read-key, one key per call, JSPI on the web), evaluates
+;; every form on it with the in-module evaluator, prints the last value with
+;; prn (an error prints its message). The page echoes the input itself, so
+;; this program prints only results. End of input (read-key nil) exits.
+(ns repl
+  (:require [term]))
+
+(defn read-line* []
+  (loop [acc []]
+    (let [k (term/read-key)]
+      (cond (nil? k) (when (seq acc) (apply str acc))
+            (or (= k "\n") (= k "\r")) (apply str acc)
+            :else (recur (conj acc k))))))
+
+(defn eval-line [line]
+  (try
+    (let [forms (read-all-string line)]
+      (if (empty? forms)
+        nil
+        (do (prn (reduce (fn [_ f] (eval f)) nil forms)) nil)))
+    (catch e (println "error:" (ex-message e)))))
+
+(println ";; let-go in WasmGC: type a form and press Enter.")
+(loop []
+  (let [line (read-line*)]
+    (when line
+      (when (seq line) (eval-line line))
+      (recur))))
