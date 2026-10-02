@@ -1,4 +1,6 @@
-# Round 2 plan (drafted 2026-10-01 evening; starts when Matt says go)
+# Round 2 plan (drafted 2026-10-01 evening; ran 2026-10-01 22:30 to 2026-10-02 05:21 PDT; FINISH LINE REACHED, D158)
+
+**Status 2026-10-02 05:30 PDT:** every Phase 5 and Phase 6 row green; gates 1–6 green with `LW_ATTEST=0`. Tour: `TOUR.html` section 7; previews: `previews/2026-10-02/`; cost and gate rows: `STATUS.md`.
 
 Scope agreed with Matt 2026-10-01: bugs first, then legmacs with the
 interpreter deferred to a follow-up phase, quality tools run for data only,
