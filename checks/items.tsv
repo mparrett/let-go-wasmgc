@@ -37,7 +37,7 @@ P5.1	5	checks/run-tests.sh --corpus corpus/core-tests.txt --bar 273	core tests 2
 P5.2	5	checks/run.sh P2.3	the to-array deftest (round 1's one named limit) green
 P5.3	5	checks/run-corpus.sh corpus/wasm/gaps	INVENTORY gaps as oracle programs: with-meta on variadic fn, identity hash, sort pair message, printing a fn
 P5.4	5	checks/attest.sh	attestation reuse: a gate skips rows whose inputs are unchanged since their last green run; second gate.sh 2 on an unchanged tree < 60 s, same result
-P5.5	5	checks/affected.sh src/lower_wasm.lg | grep -q P3.2 && checks/affected.sh rt/wasm/seq.lg | grep -q P4.2	regression rows: every src/ and rt/ path maps to P3.2 and P4.2
+P5.5	5	checks/affected.sh src/lower_wasm.lg | grep -x P3.2 >/dev/null && checks/affected.sh rt/wasm/seq.lg | grep -x P4.2 >/dev/null	regression rows: every src/ and rt/ path maps to P3.2 and P4.2
 P5.R	5	test -s corpus/review3/README.md	adversarial review of the round-1 gaps (read-only agent, own corpus)
 P5.GATE	5	checks/gate.sh 5 && checks/gate.sh 1 && checks/gate.sh 2 && checks/gate.sh 3 && checks/gate.sh 4	round-1 debt paid with gates 1–4 still green
 P6.0	6	checks/native-twins.sh corpus/natives/natives-legmacs.txt --exclude 'term/' --skip corpus/natives/SKIP-legmacs	legmacs natives: 34 ordinary twins; eval/go/full-regex in SKIP-legmacs with reasons (Phase 7)
