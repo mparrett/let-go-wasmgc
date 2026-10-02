@@ -61,6 +61,21 @@ through the backend so the module can lower and instantiate new wasm at
 run time (large; needs `WebAssembly.instantiate` from inside the host ABI).
 `go` blocks and full regex ride with whichever is chosen.
 
+## Phase 8 (follow-up, after Phase 7, needs its own decision)
+
+A non-GC wasm target: the same front end and IR lowered to linear memory,
+for hosts without WasmGC (wazero, wasmtime without GC, edge and embedded
+runtimes), including back inside Go programs via wazero. Values become
+pointers into linear memory with a bump/free-list allocator, roots go on a
+shadow stack (wasm cannot scan its own stack), and a simple mark-sweep
+collector is written in let-go and compiled by the same backend (precedent:
+TinyGo's `-gc=conservative` and `leaking` modes on wasm/WASI). The bar
+stays the oracle: byte-identical with native on the round-1 corpus, then
+xsofy. Costs: bigger, slower modules than WasmGC, and GC bugs need stress
+rows (allocation-heavy corpus, forced-GC mode). Decide first: conservative
+or precise roots; WASI preview 1 or 2 for the host ABI. Proposed by Matt
+2026-10-01.
+
 ## Process (what round 1 did that we keep, plus the three additions)
 
 - Rows before code: an item's check must exist and exit 2 before an agent
