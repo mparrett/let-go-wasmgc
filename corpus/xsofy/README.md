@@ -40,8 +40,10 @@ xsofy, D114), wasm-opt -O3, cached by content. Checks:
 | check | what |
 |---|---|
 | `checks/browser-boot.sh --xsofy` | term-demo.lg under node-host == native lg on a 100x30 pty; the module in the real shell reaches the title card and the map, ?seed= honoured, xsofy/startup + xsofy/stats received |
-| `checks/lane5.sh` | `zz-determinism-probe.mjs`'s walk and a held-key burst walk, seed 424242: `document.body.innerText` byte-identical to the stock-Go lane (`lg -w` at 4e769212 + the same injected shell) |
+| `checks/lane5.sh` | settle-based probe walk (`browser-boot.mjs --settle-walk`: `zz-determinism-probe.mjs`'s `l l j j h k l j` at seed 424242, each key sent after the previous turn finished): `document.body.innerText` byte-identical to the stock-Go lane (`lg -w` at 4e769212 + the same injected shell). The held-key burst walk is printed too but is informational only |
 | `checks/size-boot.sh` | bundle bytes and boot times vs the stock and TinyGo lanes, written to `size-boot.md` |
+
+Lane 5's gate is settle-based because fixed spacing is load-dependent: the original probe sent a key every 400 ms, and under load 15-45 whether a key landed mid-turn changed the dump from run to run (one run probe IDENTICAL / held DIFFER, the next the reverse). The stock-Go lane is the sensitive one (its turns took 200-2000 ms at that load, the emitted lane 30-180 ms); both lanes coalesce identical queued keys (D98), so a late `l` after `l` is merged into one step. Measured 2026-10-01 at load 17-22: the 400 ms walk gave the stock lane a final turn counter of 5-8 for the same 8 keys (4 of 5 runs differed from the emitted lane, which always reached 8). The settle walk sends a key only after the game's `xsofy/stats` event for the previous one and 3 x 100 ms of unchanged xterm rows (>= 200 ms; a wait over 5 s is a harness failure, exit 2, not a lane mismatch), and logs the turn counter per key. The held-key bursts coalesce by design, depend on timing in both lanes, and so cannot be a byte-identity gate; `lane5.sh` prints them as informational, and the deterministic property (a burst is ONE read) stays gated by `checks/browser-boot.sh`'s `held` assertion.
 
 | repro | cause | fixed in |
 |---|---|---|

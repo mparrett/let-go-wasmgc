@@ -15,16 +15,27 @@
 # key ring needs SharedArrayBuffer; the lw lane does not care (D91).
 #
 # Walks, each run on both lanes and compared with cmp (document.body.innerText):
-#   probe  local-scripts/browser-smoke-playwright/zz-determinism-probe.mjs as
-#          is: ?seed=, title, Space, map, 3 s, then l l j j h k l j one key
-#          per 400 ms, 2 s, dump.
-#   held   checks/browser-boot.mjs --walk: the same boot, then auto-repeat
-#          bursts (n keydowns in one task) that let-go's ring coalesces into
-#          one read (D98).
+#   probe  GATE. browser-boot.mjs --settle-walk: zz-determinism-probe.mjs's key
+#          sequence (?seed=, title, Space, map, 3 s, then l l j j h k l j), but a
+#          key is sent only after the game finished the previous one (its
+#          xsofy/stats event arrived, then the xterm rows held still for 3 x
+#          100 ms). The probe's own 400 ms spacing made the result depend on
+#          machine load (run A probe IDENTICAL/held DIFFER, run B the reverse at
+#          load 15-45): both lanes coalesce identical queued keys, so whether a
+#          key lands mid-turn changes the dump in BOTH lanes. A wait that times
+#          out is a HARNESS failure (reported as such), not a lane mismatch.
+#   held   INFORMATIONAL, never affects the exit code. checks/browser-boot.mjs
+#          --walk: the same boot, then auto-repeat bursts (n keydowns in one
+#          task) that let-go's ring coalesces into one read (D98). Coalescing is
+#          timing-dependent by design in both lanes, so the screens cannot be a
+#          byte-identity gate; the deterministic half (a 5-key burst is ONE read)
+#          is gated by checks/browser-boot.sh --xsofy-shell's `held` assertion.
 # No masking: neither lane has build-info.json, so the shell prints the same
 # chrome; the title bar and quest come from xsofy/startup on both.
-# Exit 0 iff both walks are byte-identical across the lanes.
-# Env: LG, XSOFY, SEED (424242), KEEP=1, LW_LANE5_CACHE.
+# Exit 0 iff the probe walk is byte-identical across the lanes; 2 on a harness
+# failure (walk timeout / crash), 1 on a lane mismatch.
+# Env: LG, XSOFY, SEED (424242), KEEP=1, LW_LANE5_CACHE, LW_SETTLE (quiet samples,
+# default 3; 0 = ack only, the falsification), LW_MIN_MS (default 200).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
@@ -65,26 +76,38 @@ ps=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$ps" "$stock" >"$t/s.
 pl=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$pl" "$t/lw" >"$t/l.log" 2>&1 & pids+=($!)
 for p in "$ps" "$pl"; do for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/index.html" && break; sleep 0.1; done; done
 
-ok=0
+harness=0
 for lane in stock lw; do
-  dir=$stock; [ "$lane" = lw ] && dir=$t/lw
-  port=$(free_port)
-  # the probe resolves playwright from its own directory
-  (cd "$pw" && node zz-determinism-probe.mjs "$dir" "$port" "$lane" "$SEED" "$t/probe-$lane.txt") >"$t/probe-$lane.json" 2>&1 \
-    || { echo "FAIL: probe on $lane"; cat "$t/probe-$lane.json"; }
   url=http://127.0.0.1:$ps; [ "$lane" = lw ] && url=http://127.0.0.1:$pl
+  node "$here/checks/browser-boot.mjs" --settle-walk "$url" "$SEED" "$t/probe-$lane.txt" >"$t/probe-$lane.json" 2>&1
+  case $? in 0) ;; 2) harness=1; echo "HARNESS FAIL: probe walk on $lane: $(grep -ho '"failure":"[^"]*"' "$t/probe-$lane.json")";;
+    *) harness=1; echo "HARNESS FAIL: probe walk on $lane"; cat "$t/probe-$lane.json";; esac
   node "$here/checks/browser-boot.mjs" --walk "$url" "$SEED" "$t/held-$lane.txt" >"$t/held-$lane.json" 2>&1 \
-    || { echo "FAIL: held walk on $lane"; cat "$t/held-$lane.json"; }
+    || echo "note: held walk on $lane crashed (informational)"
 done
+ok=1
 for w in probe held; do
   if [ -s "$t/$w-stock.txt" ] && cmp -s "$t/$w-stock.txt" "$t/$w-lw.txt"; then
     echo "$w  IDENTICAL  $(wc -c <"$t/$w-lw.txt" | tr -d ' ') bytes, md5 $(md5 -q "$t/$w-lw.txt")"
-    ok=$((ok + 1))
   else
     echo "$w  DIFFER"; diff "$t/$w-stock.txt" "$t/$w-lw.txt" | head -12
     grep -h failure "$t/$w-stock.json" "$t/$w-lw.json" 2>/dev/null
+    [ "$w" = probe ] && ok=0
   fi
 done
-echo "walks: probe = l l j j h k l j (400 ms apart); held = $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("bursts","?"))' "$t/held-lw.json" 2>/dev/null) (one task per burst)"
-if [ "$ok" = 2 ]; then echo "PASS (lane 5 byte-identical to the stock-Go lane at seed $SEED, both walks)"; exit 0; fi
+# first key at which the two lanes' settled screens part, and each lane's
+# per-key turn counter (a key that coalesced shows turn +0)
+python3 - "$t/probe-stock.txt.steps.json" "$t/probe-lw.txt.steps.json" <<'PY'
+import json, sys
+try: a, b = (json.load(open(f)) for f in sys.argv[1:3])
+except Exception: sys.exit(0)
+for name, st in (("stock", a), ("lw", b)):
+    print("  probe %-5s turns %s  ack ms %s" % (name, " ".join("%s:%s>%s" % (s["key"], s["turnBefore"], s["turnAfter"]) for s in st), [s["ackMs"] for s in st]))
+for i, (x, y) in enumerate(zip(a, b)):
+    if x["rows"] != y["rows"]:
+        print("  probe: first differing key = #%d ('%s'); settled screens differ" % (i, x["key"])); break
+PY
+echo "walks: probe (gate) = l l j j h k l j, each after the game settled; held (informational) = $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("bursts","?"))' "$t/held-lw.json" 2>/dev/null) (one task per burst)"
+if [ "$harness" = 1 ]; then echo "FAIL (lane 5: harness failure, not a lane mismatch)"; exit 2; fi
+if [ "$ok" = 1 ]; then echo "PASS (lane 5 probe walk byte-identical to the stock-Go lane at seed $SEED)"; exit 0; fi
 echo "FAIL (lane 5)"; exit 1

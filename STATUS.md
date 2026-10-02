@@ -38,4 +38,4 @@
 | P3.2 + P3.GATE | PASSED 2026-10-01 | opus | 20/20 (+5/5 autoex, 5/5 descend, 3/3 deep); 313 KB module; verified |
 | P2.3 | measured 2026-10-01 | sonnet | 133/273 (49%); blockers → P2.14 (D112) |
 | P4.1-backend + P4.3 | done 2026-10-01 | opus | xsofy plays in the real shell; 140 KB brotli; verified --xsofy PASS |
-| P4.2 | fixing harness flake | sonnet | lane5 settle-based pacing (D118) |
+| P4.2 | done 2026-10-01 | sonnet | settle-based lane5; 3/3 IDENTICAL; stock lane was the flaky one |
