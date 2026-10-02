@@ -42,7 +42,8 @@ They go in `corpus/natives/SKIP-legmacs` with reasons and become Phase 7.
 |---|---|---|
 | P6.0 | legmacs natives: the 34 ordinary missing twins | `native-twins.sh natives-legmacs.txt` MISSING 0 outside the SKIP list |
 | P6.1 | backend blockers: `binding` of dynamic vars via the var table; closure arity > 4 | `census.sh legmacs` 816/816, 0 other |
-| P6.2 | legmacs' own test suite under the backend (30 `*_test.lg` files in `~/projects-new/3p/legmacs/test` as of 2026-10-01, legmacs 187fea2; the plan draft said 9) | `run-tests.sh` over `corpus/legmacs-tests.txt` at a bar set by the first measured run, raised to all-pass minus named limits |
+| P6.1 (scope found 2026-10-02 00:50 by the first P6.2 run) | three more backend blockers the per-fn census cannot see because they live in ns init: (a) `defcommand`'s `def` inside a non-top-level form ("unsupported op :def" in `legmacs.modes.letgo/__lw_nsinit`, 13 of 30 test files), (b) an ns global initialised from an unboxed i64 call (`_rt_init` "global.set expected eqref, found i64", windows/markdown/vibe: `(def min-window-rows 2)` shape), (c) keymap_test "main is not a function" | P6.2's per-file table |
+| P6.2 (first measured 2026-10-02 00:50: deftests 152/373, files 9/30, before any Phase 6 work) | legmacs' own test suite under the backend (30 `*_test.lg` files in `~/projects-new/3p/legmacs/test` as of 2026-10-01, legmacs 187fea2; the plan draft said 9) | `run-tests.sh` over `corpus/legmacs-tests.txt` at a bar set by the first measured run, raised to all-pass minus named limits |
 | P6.3 | legmacs headless oracle: scripted editing session, buffer dump byte-identical native vs emitted | `checks/legmacs-parity.sh N` |
 | P6.4 | legmacs in the browser on the lower-wasm host (xterm, key input, resize) | `browser-boot.sh --legmacs` |
 | P6.5 | size and boot table for the legmacs module beside xsofy's | `size-boot.sh --legmacs` |

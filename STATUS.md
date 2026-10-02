@@ -60,3 +60,4 @@
 | P5.3 | dispatched 00:05 | opus | corpus/wasm/gaps, rt/ only |
 | P5.R | dispatched 00:05 | opus | read-only, corpus/review3 |
 | P5.4 | in progress 00:05 | runner | checks/attest.sh |
+| P6.2 | measured 2026-10-02 00:50 | runner | 152/373 deftests, 9/30 files on the round-1 tree; table corpus/legmacs-tests-results.tsv; blockers → P6.1 scope (ROUND2.md) |

@@ -1,0 +1,10 @@
+# checks/native-twins.sh --skip file for the legmacs reach list (P6.0).
+# <native>  <reason>. Only subsystems that are out of Phase 6 by decision
+# (ROUND2.md; they become Phase 7) belong here, never an ordinary twin.
+core/eval            in-module eval needs a compiler or interpreter in the module (Phase 7)
+core/read-all-string reader-to-eval path of the REPL; rides with eval (Phase 7)
+core/go*             go blocks need a scheduler on JSPI (Phase 7)
+async/go*            same
+core/future*         same scheduler (Phase 7)
+http/post            vibe's network call; no fetch in the host ABI this round, host-side later (Phase 7)
+os/sh                spawning a process has no browser meaning; legmacs' use (shell command) stays native-only
