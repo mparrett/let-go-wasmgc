@@ -106,3 +106,13 @@
 | claude-fable-5-1 | 441 | 0.28 M | 0.12 B | 0.8 M | ≈$209 |
 | claude-opus-5-5 | 2650 | 0.05 M | 0.53 B | 11.7 M | ≈$1,018 |
 TOTAL ≈ $1,227
+| GATE 5 | PASSED 2026-10-02 05:11 PDT | runner | 14/14 with LW_ATTEST=0 (first run: P5.4 self-test could not run under the decision env; fixed) |
+| GATE 6 | PASSED 2026-10-02 05:21 PDT, ROUND 2 FINISH LINE | runner | 10/10 with LW_ATTEST=0; gates 1–4 green the same morning (1: 8/8 05:19, 2: 14/14 04:40, 3: 3/3 04:29, 4: 4/4 04:44); D158 |
+
+## Round-2 cost, final (list prices, same assumptions as the round-1 tally; 2026-10-01 22:25 to 2026-10-02 05:25 PDT; Opus output tokens are undercounted in the subagent transcripts as in round 1)
+
+| model | turns | output | cache read | cache write | ≈ cost |
+|---|---|---|---|---|---|
+| claude-fable-5-1 | 484 | 0.33 M | 0.13 B | 0.9 M | ≈$242 |
+| claude-opus-5-5 | 2650 | 0.05 M | 0.53 B | 11.7 M | ≈$1,018 |
+| **total** | | | | | **≈$1,259** |

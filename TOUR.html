@@ -64,6 +64,7 @@ table{border-collapse:collapse;width:100%;margin:8px 0 14px}td,th{padding:5px 8p
 
 <p>Start here if you read one thing: <a href="INVENTORY.md">INVENTORY.md</a> (try-it commands, knobs, traps, gaps). The write-up for you is <a href="../../docs/project_incoming/letgo-emit-wasm-campaign-summary-2026-10-01.md">the campaign summary</a>. The plan that was executed is <a href="../../docs/project_incoming/letgo-emit-wasm-plan-2026-09-30.md">plan v2</a>.</p>
 
+<p class="sub">Round 2 (the next night) is <a href="#r2">section 7</a>.</p>
 <h2>0. Play it</h2>
 <p>The emitted lane needs no cross-origin isolation, so any static server works. From <code>dev/lower-wasm/</code>:</p>
 <pre><code>host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # ~80 s compile + wasm-opt, cached by content
@@ -229,6 +230,75 @@ open 'http://localhost:8260/index.html?seed=424242'</code></pre>
 <h2>6. Diff previews, archived</h2>
 <p>Self-contained pages of <code>git diff origin/main 9de705c</code> with the corpora excluded, kept under <code>previews/2026-10-01/</code>: <a href="previews/2026-10-01/lw-backend.html">backend + driver</a>, <a href="previews/2026-10-01/lw-runtime.html">runtime</a>, <a href="previews/2026-10-01/lw-host-checks.html">host + checks</a>, <a href="previews/2026-10-01/lw-docs.html">docs</a>.</p>
 
+<h2 id="r2">7. Round 2 (2026-10-01 22:30 to 2026-10-02 05:21 PDT): debt, then legmacs</h2>
+<p class="sub">Same machinery, one night. Bugs first (Phase 5), then legmacs (Phase 6) with the interpreter deferred to Phase 7. Plan: <a href="ROUND2.md">ROUND2.md</a>. Decisions D128 onward in <a href="DECISIONS.md">DECISIONS.md</a>. One dot per commit, diamonds are gates; hover for the subject.</p>
+<div class="bar" id="bar2"></div>
+<div class="legend">
+ <span><i style="background:var(--p0)"></i>readiness, attestation, prep</span>
+ <span><i style="background:var(--p2)"></i>Phase 5: round-1 debt</span>
+ <span><i style="background:var(--p3)"></i>Phase 6: legmacs backend + runtime</span>
+ <span><i style="background:var(--p4)"></i>Phase 6: legmacs host (headless, browser, size)</span>
+ <span><i style="background:var(--pr)"></i>adversarial reviews</span>
+ <span><i style="background:var(--pd)"></i>docs, handoffs</span>
+</div>
+
+<div class="chapters">
+<div class="ch" style="border-left-color:var(--p0)">
+<h3>R0. Readiness and attestation<span class="when">22:31 to 22:49, 4 commits</span></h3>
+<p>Two board bugs surfaced before go (a row that died on SIGPIPE, a row that read green with nothing built) and were fixed first. Then <a href="checks/attest.sh">checks/attest.sh</a>: a row is keyed by the inputs the affected table names, and the gate skips rows whose key is unchanged since their last green run. Later that night a second gate 2 took 1 s where the first took 10 m 29 s (D129). The legmacs test suite was listed and measured before any Phase 6 work: 152 of 373 deftests, 9 of 30 files (D133).</p>
+</div>
+<div class="ch" style="border-left-color:var(--p2)">
+<h3>R1. Phase 5: the round-1 debt<span class="when">23:03 to 00:10, 4 commits</span></h3>
+<p>Review 3 (<a href="corpus/review3/README.md">corpus/review3</a>) attacked the mechanisms that landed fastest at the end of round 1 and found 12 bugs; the xsofy-critical claims held. Core tests went to 271 of 273 with two named skips, closing round 1's one named limit (<code>to-array</code>, object arrays over a PVec) and adding sorted maps and sets (<a href="rt/wasm/sorted.lg">rt/wasm/sorted.lg</a>). The INVENTORY gaps became oracle programs and were fixed: identity hash via an id slot on Fn/Atom/Volatile, <code>sort</code> as a port of Go's SliceStable so error pairs match, fn printing, <code>with-meta</code> keeping variadic arities (D130, D131). The regex engine was rewritten as Go's compiler plus Go's bit-state backtracker, linear instead of exponential, with an 81,000-case native differential fuzz at 0 differences (D134).</p>
+</div>
+<div class="ch" style="border-left-color:var(--p2)">
+<h3>R2. Twins, stand-ins, and an honest test counter<span class="when">00:53 to 01:05, 2 commits</span></h3>
+<p><a href="rt/wasm/natives.lg">rt/wasm/natives.lg</a> arrived as a plain-lg home for 40-plus legmacs natives (ns/var table, no-file-system behaviours, JSON, the math tail); a native without a twin now raises a named error instead of a native-looking TypeError (D139). Reader meta survives every rewrite and sits in the constant-pool key; var and regex stand-ins answer <code>type</code>, <code>symbol?</code>, <code>deref</code> and calls as native does (D144). The test shim stopped letting a backend limitation read as a passing <code>thrown?</code>, and the corpus counter now compares every file with native (D141 to D143).</p>
+</div>
+<div class="ch" style="border-left-color:var(--p3)">
+<h3>R3. Phase 6: legmacs through the backend<span class="when">01:32 to 02:54, 3 commits</span></h3>
+<p>The host checks were built first and were honestly red at the first backend blocker. P6.1 then cleared the census' five blockers and the three ns-init blockers the first suite run exposed: per-var binding save stacks (the shared stack had been swapping multi-var bindings), <code>*err*</code>, <code>set!</code>, fixed arities 5 to 20 in <code>$FnX</code>, <code>defcommand</code>'s defining <code>do</code> spliced at top level, boxed global inits built in constant order (D149 to D151). The loop-shadow miscompile a twins agent had tripped over turned out to be an upstream <code>ir.build/build-loop</code> re-bind, overridden (D148). The legmacs suite went from 152 to 252 of 373; review 4 (<a href="corpus/review4/README.md">corpus/review4</a>) then found 11 more, two of them uncatchable traps legmacs hits directly.</p>
+</div>
+<div class="ch" style="border-left-color:var(--p4)">
+<h3>R4. legmacs boots in the browser<span class="when">03:01 to 04:12, 4 commits</span></h3>
+<p>The review-4 fixes: <code>nth</code> with a bad index raises instead of trapping, <code>slurp</code> behaves like the other no-file-system natives, promise/delay kinds, <code>bound-fn</code> conveyance, and rooted natives, which is what legmacs' spawn tracking does at boot with <code>alter-var-root</code> on <code>future*</code> (D154 to D157). With that, <a href="checks/legmacs-parity.sh">five scripted editing sessions</a> match byte for byte, native versus module, and legmacs boots in the browser on let-go's stock xterm shell: mode line at 264 ms, key echo 17 ms, redraw on resize 31 ms, no cross-origin isolation (<a href="corpus/legmacs/size-boot.md">size and boot table</a>). The stock <code>lg -w</code> legmacs bundle builds at 9 MB and cannot boot (<code>os/cwd</code>), so that lane is a size comparison only.</p>
+</div>
+<div class="ch" style="border-left-color:var(--p0)">
+<h3>R5. Gates<span class="when">from 04:09</span></h3>
+<p>All six gates with attestation off: 1 (8/8), 2 (14/14), 3 (3/3), 4 (4/4), 5 (14/14), 6 (10/10). No named limit at any gate: round 1's <code>to-array</code> limit is closed, and the legmacs suite passes at its measured bar of 252 of 373 with the Phase 7 files as the ledgered remainder. Two first-run failures were check-design errors (P5.4's self-test under the decision env; a bar set ten too high by a deftest that runs <code>rc</code> in a <code>future</code>), fixed and rerun (D158). Round 2: 2026-10-01 22:30 to 2026-10-02 05:21 PDT, 29 commits, 13 Opus dispatches, one Fable runner.</p>
+</div>
+</div>
+
+<h3>Round-2 zoom spots</h3>
+<div class="spots">
+<div><code>src/lower_wasm.lg:129</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:129">copy</button><span><code>$FnX</code>: fixed arities 5..20 beside the variadic slot (D150)</span></div>
+<div><code>src/lower_wasm.lg:671</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:671">copy</button><span><code>regex-standin</code>: a regex constant compiles to Go's program at build time (D134)</span></div>
+<div><code>src/lw_ext.lg:569</code><button data-c="dev/lower-wasm/src/lw_ext.lg:569">copy</button><span><code>regex-compile</code>, Go's syntax.Compile port; <code>rx-search</code> at 678 is the bit-state backtracker</span></div>
+<div><code>src/lower_wasm.lg:997</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:997">copy</button><span><code>push-err!</code>: the fd-2 binding stack beside <code>*out*</code>'s; per-var <code>$bs_</code> stacks (D149)</span></div>
+<div><code>src/lower_wasm.lg:1125</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:1125">copy</button><span><code>no-twin-message</code>: a native without a twin raises by name, never a nil-fn TypeError (D139)</span></div>
+<div><code>src/lower_wasm.lg:1698</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:1698">copy</button><span><code>rooted-call-wat</code>: direct calls to a native whose var was altered consult the runtime root (D154)</span></div>
+<div><code>src/lower_wasm.lg:1807</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:1807">copy</button><span><code>def-wat</code>: defs nested in top-level let/when/case/try/thunks become var-table vars (D151, D154)</span></div>
+<div><code>src/lower_wasm.lg:2937</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:2937">copy</button><span><code>bframe-runtime</code>: the binding frame <code>bound-fn</code> captures and overlays (D155)</span></div>
+<div><code>src/lower_wasm.lg:3419</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:3419">copy</button><span>the <code>ir.build/build-loop</code> override: the upstream loop re-bind that clobbered outer locals (D148)</span></div>
+<div><code>src/lower_wasm.lg:3561</code><button data-c="dev/lower-wasm/src/lower_wasm.lg:3561">copy</button><span><code>const-global!</code>: a constant's meta is part of its pool key (D144)</span></div>
+<div><code>rt/wasm/core.lg:90</code><button data-c="dev/lower-wasm/rt/wasm/core.lg:90">copy</button><span><code>standin</code>: var vs regex stand-ins told apart by their <code>#'</code>/<code>#"</code> text</span></div>
+<div><code>rt/wasm/core.lg:883</code><button data-c="dev/lower-wasm/rt/wasm/core.lg:883">copy</button><span>Promise and Delay kinds 40/41 (D155)</span></div>
+<div><code>rt/wasm/core.lg:1203</code><button data-c="dev/lower-wasm/rt/wasm/core.lg:1203">copy</button><span><code>stable-sort!</code>: Go's SliceStable, so the incomparable-pair error names native's pair (D131)</span></div>
+<div><code>rt/wasm/seq.lg:719</code><button data-c="dev/lower-wasm/rt/wasm/seq.lg:719">copy</button><span><code>int-arg</code>: the checked index unbox that ended the <code>nth</code> trap (D155)</span></div>
+<div><code>rt/wasm/sorted.lg:51</code><button data-c="dev/lower-wasm/rt/wasm/sorted.lg:51">copy</button><span>sorted map/set kinds 38/39 (D130)</span></div>
+<div><code>rt/wasm/natives.lg:126</code><button data-c="dev/lower-wasm/rt/wasm/natives.lg:126">copy</button><span><code>bound-fn*</code>; <code>alter-var-root</code> on a builtin var at 370 (D157)</span></div>
+<div><code>checks/attest.sh:38</code><button data-c="dev/lower-wasm/checks/attest.sh:38">copy</button><span><code>key()</code>: what a row's attestation hashes (D129)</span></div>
+<div><code>corpus/legmacs/dump-session.lg</code><button data-c="dev/lower-wasm/corpus/legmacs/dump-session.lg">copy</button><span>legmacs driven headlessly through main.lg's own loop; the P6.3 oracle (D145)</span></div>
+</div>
+
+<h3>Round 2: what is open</h3>
+<ul>
+<li><b>Phase 7</b> (its own decision): in-module <code>eval</code> for legmacs' REPL and eval-last-sexp, <code>go</code>/<code>future</code>/<code>promise</code> scheduling on JSPI, regex flags beyond the subset. These hold the legmacs suite at its ceiling of 262 of 373 (letgo_mode, vibe, commands, repl_mode, buffers).</li>
+<li><b>Named limits recorded this round</b>: D42's numeric-tower error texts need both operands' types; <code>*out*</code>/<code>*err*</code> not conveyed by <code>bound-fn</code>; native accepts 21 params where the module stops at 20; <code>var-get</code>/<code>with-redefs</code> of a program var; native opcode calls (<code>inc</code>, binary arithmetic) do not see an altered root.</li>
+<li><b>Upstream-worthy, generic</b> (dossier only, nothing filed): <code>ir.build/build-loop</code> re-binds loop symbols into the enclosing scope (D148); the reader counts a <code>;;</code> comment inside a map literal as a form (D147); <code>binding</code> of <code>*ns*</code> around <code>eval</code> leaks (D124, round 1).</li>
+<li><b>Quality data</b>, not acted on: <a href="corpus/quality/2026-10-02/letgo-comment-lint.txt">comment linter</a> 114 advisory patterns (102 the day before), aislop 7 auto-fixables (6).</li>
+</ul>
+
 <script>
 const T0=Date.parse('2026-09-30T22:46:00-07:00'), T1=Date.parse('2026-10-01T21:03:00-07:00');
 const C=[
@@ -305,6 +375,50 @@ C.forEach(([when,ph,msg,g])=>{
   d.addEventListener('mouseleave',()=>tip.style.display='none');
   bar.appendChild(d);
 });
+
+// Round-2 bar
+(function(){
+const T0=Date.parse('2026-10-01T22:25:00-07:00'), T1=Date.parse('2026-10-02T06:30:00-07:00');
+const bar=document.getElementById('bar2');
+const x=t=>((t-T0)/(T1-T0)*100).toFixed(2)+'%';
+for(let h=Date.parse('2026-10-01T23:00:00-07:00');h<=T1;h+=3600e3){
+  const d=new Date(h),hh=d.getHours();
+  const l=document.createElement('div');l.className='tl';l.style.left=x(h);bar.appendChild(l);
+  const k=document.createElement('div');k.className='tick';k.style.left=x(h);k.textContent=(hh<10?'0':'')+hh+':00';bar.appendChild(k);
+}
+const chaps=[['R0 ready','2026-10-01T22:31:00-07:00'],['R1 Phase 5 debt','2026-10-01T23:03:00-07:00'],['R2 twins + shim','2026-10-02T00:53:00-07:00'],['R3 Phase 6 backend','2026-10-02T01:32:00-07:00'],['R4 legmacs in the browser','2026-10-02T03:01:00-07:00'],['R5 gates','2026-10-02T04:09:00-07:00']];
+chaps.forEach(([n,t],i)=>{const e=document.createElement('div');e.className='chap';e.style.left=x(Date.parse(t));const nx=chaps[i+1]?Date.parse(chaps[i+1][1]):T1;e.style.width=((nx-Date.parse(t))/(T1-T0)*100)+'%';e.textContent=n;bar.appendChild(e);});
+const C2=[
+['10-01 22:31','p0','round-2 readiness: P5.5 SIGPIPE, size-boot --legmacs exit 2, legmacs test count'],
+['10-01 22:36','p0','P5.4: checks/attest.sh attestation reuse; affected table P2.14/P5/P6 rows'],
+['10-01 22:36','p0','affected.sh exits 0 (pipefail broke P5.5)'],
+['10-01 22:49','p3','P6 prep: legmacs-tests.txt (30 files, 373 deftests), SKIP-legmacs, first measurement 152/373'],
+['10-01 23:03','pr','P5.R review3: 12 bugs, fix rows P5.6-P5.11'],
+['10-01 23:19','p2','P5.1 P5.2: core tests 271/273, to-array/object arrays, sorted kinds, set-test reflection, --bar'],
+['10-01 23:36','p2','P5.3: identity hash id slot, with-meta variadic, fn printing, SliceStable sort; gaps 4/4'],
+['10-02 00:10','p2','P5.6 P5.7: regex = Go compiler + bit-state backtracker (81k fuzz, 0 diffs), POSIX classes; saturating float->long'],
+['10-02 00:53','p3','P6.0 P5.8 P5.9 P5.10 P5.11: natives.lg twins, no-twin named error, reader meta + stand-ins, test shim, counter vs native'],
+['10-02 01:05','p0','P5.4 done: second gate 2 in 1 s (first 10m29s); gate 2 14/14, round-1 limit closed','gate'],
+['10-02 01:32','p4','P6.3 P6.4 P6.5 checks built (red at the *err* blocker)'],
+['10-02 02:02','pd','gate 1 regression: fn-print repro moved refused -> fixed; gates 1 and 3 green'],
+['10-02 02:54','p3','P5.12 P6.1 P6.R: loop-shadow (upstream build-loop), binding stacks, *err*, set!, $FnX, defcommand splicing; census 816/816; review4 11 bugs'],
+['10-02 03:01','p3','P6.2: bar 252 after P6.1 (252/373, 24/30)'],
+['10-02 03:05','p4','P6.3 done: legmacs headless session parity 5/5'],
+['10-02 04:09','p4','P6.6 P6.7 P6.8 P6.4 P6.5: nth/slurp/promise/bound-fn/rooted natives; legmacs boots in the browser 264 ms'],
+['10-02 04:12','pd','quality data 10-02, round-2 cost tally, clock correction'],
+['10-02 04:48','p0','bar back to the measured 252; attest.sh self-test runs its own attested first gate'],
+['10-02 05:21','p0','ROUND 2 FINISH LINE: gates 1-6 green with LW_ATTEST=0 (D158)','gate']
+];
+const lanes={};
+C2.forEach(([when,ph,msg,g])=>{
+  const t=Date.parse('2026-'+when.replace(' ','T')+':00-07:00');
+  const slot=Math.round((t-T0)/600e3);lanes[slot]=(lanes[slot]||0)+1;
+  const d=document.createElement('div');d.className='dot'+(g?' gate':'');d.style.left=x(t);d.style.bottom=(22+(lanes[slot]-1)*13)+'px';d.style.background=col[ph];
+  d.addEventListener('mousemove',e=>{tip.style.display='block';tip.innerHTML='<b>'+when+'</b> '+msg;tip.style.left=Math.min(e.clientX+12,innerWidth-440)+'px';tip.style.top=(e.clientY+14)+'px';});
+  d.addEventListener('mouseleave',()=>tip.style.display='none');
+  bar.appendChild(d);
+});
+})();
 document.querySelectorAll('button[data-c]').forEach(b=>b.addEventListener('click',async()=>{
   try{await navigator.clipboard.writeText(b.dataset.c);b.textContent='copied';}catch(e){prompt('copy:',b.dataset.c);}
   setTimeout(()=>b.textContent='copy',1200);
