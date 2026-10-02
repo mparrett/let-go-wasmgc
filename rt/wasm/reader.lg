@@ -25,6 +25,17 @@
 ;; need *ns* or *data-readers*) are raised the same way, catchable, with a
 ;; "lower-wasm: " message, because read-string's input is user data (xsofy's
 ;; console wraps it in try).
+;;
+;; Code forms (P7.0, amending READER.md's limits table): `#(...)` reads as
+;; native's `(fn* [%1 ..] body)` here (readShortFn, reader.go:1195, %-args
+;; at read time, positions on both lists); `::name`, `::alias/name` and
+;; syntax-quote need the current ns, and #"regex" a compiler only plain
+;; lg has (lw-ext's re-pattern), so they go through the code hook
+;; wasm.eval installs (see `hook`): with it, native's forms; without it (no
+;; eval in the program yet, or native lg's tests) the named limits stand.
+;; New named limit: an `unquote-splicing used outside of a list` error
+;; inside syntax-quote has no line:column (the hook sees a form, not the
+;; text).
 (ns wasm.reader
   (:refer-clojure :exclude [read-string])
   (:require [wasm.intrinsics :as wasm]
@@ -39,11 +50,26 @@
 ;; State (`new` takes at most 7 fields). RS: input bytes, length, byte
 ;; position, rune position (Go's r.pos), line, column, Aux. Aux: lastCol,
 ;; lastRune, lastSize, error chain (Str), caused-by-EOF flag, the Void
-;; marker, and the :line/:column keywords (Kws).
+;; marker, the :line/:column keywords (Kws), and the #( state (null outside
+;; a fn literal, else its ShortFn: the highest %N seen, readShortFn's
+;; maxPercent).
 (wasm/defstruct RS [:ref :i64 [:mut :i64] [:mut :i64] [:mut :i64] [:mut :i64] :ref])
-(wasm/defstruct Aux [[:mut :i64] [:mut :i64] [:mut :i64] [:mut :ref] [:mut :i64] :ref :ref])
+(wasm/defstruct Aux [[:mut :i64] [:mut :i64] [:mut :i64] [:mut :ref] [:mut :i64] :ref :ref [:mut :ref]])
 (wasm/defstruct Kws [:ref :ref])
 (wasm/defstruct Void [:i64])
+(wasm/defstruct ShortFn [[:mut :i64]])
+;; P7.0: the code hook wasm.eval installs, a plain 2-arg fn. op 0 + a Str
+;; name: the Str "<cur-ns>/name" of `::name`; op 1 + a Str alias: the Str ns
+;; it names in the current ns, or nil; op 2 + a form: the syntax-quote
+;; expansion of `form; op 3 + a Str: the Regex of #"src" (re-pattern; with
+;; no hook it stays a named limit). No runtime global here (the dialect deftest): the
+;; hook is the root wasm.core keeps for the pseudo-var
+;; #'wasm.reader/code-hook (Globals field 2, alter-var-root's roots). With no
+;; hook the three stay named limits (they need *ns*), as under native lg's
+;; tests, which never install one.
+(defn- hook []
+  (let [v (c/with-meta (s/sym-of-bytes (wasm/bytes-of-string "#'wasm.reader/code-hook")) (m/empty-map))]
+    (if (c/var-root-set? v) (c/var-value v) (wasm/null))))
 (wasm/defstruct RBuf [[:mut :ref] [:mut :i64]])                ; bytes, length
 (wasm/defstruct RDec [:ref [:mut :i64] [:mut :i64] [:mut :i64]]) ; strconv decimal: digits 0..9, nd, dp, trunc
 
@@ -51,7 +77,8 @@
   (wasm/new RS bs (wasm/alen bs) from 0 0 0
             (wasm/new Aux 0 -1 0 (wasm/null) 0 (wasm/new Void 0)
                       (wasm/new Kws (s/kw-of-bytes (wasm/bytes-of-string "line"))
-                                (s/kw-of-bytes (wasm/bytes-of-string "column"))))))
+                                (s/kw-of-bytes (wasm/bytes-of-string "column")))
+                      (wasm/null))))
 (defn- aux [st] (wasm/get RS 6 st))
 (defn- void [st] (wasm/get Aux 5 (aux st)))
 (defn- failed? [st v] (wasm/ref-eq v st))
@@ -266,6 +293,29 @@
 
 (defn- invalid-token [st tk] (fail! st (s/str (s/lit "invalid token: ") (s/mk-str tk))))
 
+;; interpretToken's %-arm (reader.go:392): inside #( a %N token raises the
+;; fn literal's arity to N when strconv.Atoi(N) succeeds with N >= 0 (so a
+;; sign is accepted and %0 counts nothing); a bare % reads as %1. Any other
+;; % token (%&, %a) is a plain symbol, and %& is NOT made a rest param:
+;; native's own quirk, reproduced.
+(defn- atoi-from [tk a n]                                ; strconv.Atoi(tk[a:n]): value, or -1 when it fails or is negative
+  (let [neg (if (< a n) (= 45 (wasm/bget tk a)) false)
+        a2 (if (< a n) (if (if (= 45 (wasm/bget tk a)) true (= 43 (wasm/bget tk a))) (inc a) a) a)]
+    (if (>= a2 n)
+      -1
+      (let [v (loop [i a2 v 0]
+                (cond (>= i n) v
+                      (> v 100000000000000) -1                    ; past what an arity can be: Atoi's range error or far beyond 20
+                      (if (>= (wasm/bget tk i) 48) (<= (wasm/bget tk i) 57) false) (recur (inc i) (+ (* v 10) (- (wasm/bget tk i) 48)))
+                      :else -1))]
+        (if (< v 0) -1 (if neg (if (= v 0) 0 -1) v))))))
+
+(defn- short-fn-arg [st tk]
+  (let [sf (wasm/get Aux 7 (aux st)) n (wasm/alen tk)
+        k (if (= n 1) 1 (atoi-from tk 1 n))]
+    (when (> k (wasm/get ShortFn 0 sf)) (wasm/set! ShortFn 0 sf k))
+    (if (= n 1) (s/sym-of-bytes (wasm/bytes-of-string "%1")) (s/sym-of-bytes tk))))
+
 ;; interpretToken (reader.go:336)
 (defn- interpret [st tk]
   (let [n (wasm/alen tk)]
@@ -275,16 +325,23 @@
             (= 58 (wasm/bget tk 1))
             (let [sl (slash-in tk 2 n)]
               (if (< sl 0)
-                (if (colon-bad? tk 2 n) (invalid-token st tk)
-                    (limit (s/lit "auto-resolved keyword ::name needs *ns* (named limit)")))
-                (if (alias-bad? tk sl n)
-                  (invalid-token st tk)
-                  (limit (s/lit "auto-resolved keyword ::alias/name needs the ns alias table (named limit)")))))
+                (cond (colon-bad? tk 2 n) (invalid-token st tk)
+                      (wasm/null? (hook)) (limit (s/lit "auto-resolved keyword ::name needs *ns* (named limit)"))
+                      :else (s/kw-of-bytes (s/str-bytes (sq/invoke2 (hook) (sq/box-int 0) (s/mk-str (slice tk 2 n))))))
+                (cond (alias-bad? tk sl n) (invalid-token st tk)
+                      (wasm/null? (hook)) (limit (s/lit "auto-resolved keyword ::alias/name needs the ns alias table (named limit)"))
+                      :else
+                      (let [r (sq/invoke2 (hook) (sq/box-int 1) (s/mk-str (slice tk 2 sl)))]
+                        (if (wasm/null? r)
+                          (fail! st (s/str (s/str (s/str (s/lit "invalid token: ") (s/mk-str tk)) (s/lit ", namespace alias "))
+                                           (s/str (s/mk-str (slice tk 2 sl)) (s/lit " not found"))))
+                          (s/kw-of-bytes (s/str-bytes (s/str (s/str r (s/lit "/")) (s/mk-str (slice tk (inc sl) n))))))))))
             (colon-bad? tk 1 n) (invalid-token st tk)
             :else (s/kw-of-bytes (slice tk 1 n)))
       (bytes-is? tk (wasm/bytes-of-string "nil")) (wasm/null)
       (bytes-is? tk (wasm/bytes-of-string "true")) (sq/bool true)
       (bytes-is? tk (wasm/bytes-of-string "false")) (sq/bool false)
+      (if (wasm/null? (wasm/get Aux 7 (aux st))) false (= 37 (wasm/bget tk 0))) (short-fn-arg st tk)
       :else (s/sym-of-bytes tk))))
 
 ;; ---------------------------------------------------------------------------
@@ -848,14 +905,58 @@
               (bytes-is? tk (wasm/bytes-of-string "NaN")) (s/box-float ##NaN) ; literal: Go math.NaN() payload 0x7FF8000000000001 (D103), not the canonical NaN (- inf inf) yields
               :else (fail! st (s/str (s/lit "unknown symbolic value: ##") (s/mk-str tk))))))))
 
+(defn- pct-sym [i] (s/sym-of-bytes (s/str-bytes (s/str (s/lit "%") (sq/box-int i)))))
+
+(defn- read-short-fn [st]                                ; readShortFn (reader.go:1195)
+  (let [line (wasm/get RS 4 st)
+        col (wasm/get RS 5 st)
+        start-col (if (< (- col 2) 0) 0 (- col 2))
+        body-col (if (< (- col 1) 0) 0 (- col 1))
+        ax (aux st)
+        prev (wasm/get Aux 7 ax)
+        sf (wasm/new ShortFn 0)]
+    (wasm/set! Aux 7 ax sf)
+    (let [fs (read-forms st 41)]
+      (wasm/set! Aux 7 ax prev)
+      (if (failed? st fs)
+        st
+        (let [mx (wasm/get ShortFn 0 sf)
+              ps (loop [i 1 v (pv/empty-vec)] (if (<= i mx) (recur (inc i) (pv/vconj v (pct-sym i))) v))
+              body (sq/list-with-meta (vec->list fs) (pos-meta st line body-col))]
+          (sq/list-with-meta (sq/conj (list2 (pv/varray ps) body) (sym (wasm/bytes-of-string "fn*")))
+                             (pos-meta st line start-col)))))))
+
+(defn- read-regex [st]                                   ; readRegex (reader.go:510), through the hook
+  (let [b (buf-new)
+        r (loop []
+            (let [ch (next! st)]
+              (cond (= ch -1) (fail-eof! st (s/lit "unterminated regex"))
+                    (= ch 92) (let [c2 (next! st)]
+                                (if (= c2 -1)
+                                  (fail-eof! st (s/lit "unterminated regex escape"))
+                                  (do (buf-rune! b 92) (buf-rune! b c2) (recur))))
+                    (= ch 34) (wasm/null)
+                    :else (do (buf-rune! b ch) (recur)))))]
+    (cond (failed? st r) st
+          (wasm/null? (hook)) (limit (s/lit "#\"regex\" literal (no Regex in the runtime; named limit)"))
+          :else (sq/invoke2 (hook) (sq/box-int 3) (s/mk-str (buf-bytes b))))))
+
+(defn- read-syntax-quote [st]                            ; readSyntaxQuote (reader.go:958), through the hook
+  (if (wasm/null? (hook))
+    (limit (s/lit "` syntax-quote (resolves symbols against *ns*; named limit)"))
+    (let [f (read1 st)]
+      (cond (failed? st f) (wrap! st (s/lit "reading quoted form"))
+            (void? st f) (no-value (s/lit "syntax-quote"))
+            :else (sq/invoke2 (hook) (sq/box-int 2) f)))))
+
 (defn- read-hash [st]                                    ; readHashMacro (reader.go:1724)
   (let [ch (next! st)]
     (cond (= ch -1) (fail! st (s/lit "reading hash macro"))
           (= ch 39) (read-var-quote st)
           (= ch 95) (read-discard st)
-          (= ch 40) (limit (s/lit "#( fn literal (code, not data; named limit)"))
+          (= ch 40) (read-short-fn st)
           (= ch 123) (read-set st)
-          (= ch 34) (limit (s/lit "#\"regex\" literal (no Regex in the runtime; named limit)"))
+          (= ch 34) (read-regex st)
           (= ch 63) (limit (s/lit "#? reader conditional (named limit)"))
           (= ch 35) (read-symbolic st)
           (if (if (>= ch 97) (<= ch 122) false) true (if (>= ch 65) (<= ch 90) false))
@@ -908,7 +1009,7 @@
         (= ch 92) (read-char st)
         (= ch 39) (read-wrapped st (sym (wasm/bytes-of-string "quote")) (s/lit "reading quoted form"))
         (= ch 64) (read-wrapped st (sym (wasm/bytes-of-string "deref")) (s/lit "reading deref form"))
-        (= ch 96) (limit (s/lit "` syntax-quote (resolves symbols against *ns*; named limit)"))
+        (= ch 96) (read-syntax-quote st)
         (= ch 126) (read-unquote st)
         (= ch 59) (read-comment st)
         (= ch 35) (read-hash st)

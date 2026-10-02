@@ -195,3 +195,8 @@ the load order; until then `tools/twin-manifest.lg` lists both claims.
 
 Falsified 2026-10-01: writing `h + 1` for a `\uXXXX` escape turns
 `edn-corpus` red with 144 mismatches.
+
+**2026-10-02 (Phase 7):** the limits table above predates the code hook: `#(`,
+`::kw`, syntax-quote and `#"re"` now read through `wasm.eval`'s hook once a
+program has called `eval` (or the program table is installed); the current
+behaviour and remaining limits are in reader.lg's header.

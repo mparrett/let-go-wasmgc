@@ -1,0 +1,26 @@
+;; P7.0: run-time errors inside evaluated code: the callee's own message,
+;; caught by evaluated try or by the compiled caller.
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch Exception e (str "ERR " (pr-str (ex-message e)))))))
+
+(show "(throw (ex-info \"thrown\" {:a 1}))")
+(show "(first 1)")
+(show "(+ 1 :a)")
+(show "(nth [1] 5)")
+(show "(ex-info \"a\")")
+(show "(:a 1 2 3)")
+(show "(apply + [1 :a])")
+(show "(assoc [1] 5 2)")
+(show "(reduce + [1 \"x\"])")
+(show "(try (nth [] 0) (catch Exception e (ex-message e)))")
+(show "(try (throw (ex-info \"in\" {})) (catch Exception e (throw (ex-info (str \"re-\" (ex-message e)) {}))))")
+(show "(let [a (atom 0)] (try (try (/ 1 0) (finally (swap! a inc))) (catch Exception e [@a (ex-message e)])))")
+(show "((fn [x] (if (pos? x) (throw (ex-info \"pos\" {:x x})) :neg)) 1)")
+(show "(ex-data (try ((fn [] (throw (ex-info \"d\" {:deep true})))) (catch Exception e e)))")
+(show "(map (fn [x] (/ 10 x)) [1 2 0])")
+(show "(try (doall (map (fn [x] (/ 10 x)) [1 0])) (catch Exception e :lazy-caught))")
+(show "(vec (filter (fn [x] (throw (ex-info \"in-filter\" {}))) [1]))")
+(def bad (eval '(fn [x] (if (= x 3) (throw (ex-info "three" {:x x})) x))))
+(println "compiled caller:" (try (mapv bad [1 2 3]) (catch Exception e (ex-message e))))
+(println "ex-data:" (try (bad 3) (catch Exception e (ex-data e))))

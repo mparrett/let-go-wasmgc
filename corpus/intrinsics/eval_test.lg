@@ -1,0 +1,105 @@
+;; P7.0: wasm.eval (rt/wasm/eval.lg) under native lg. The evaluator is plain
+;; lg over core fns, so with `native-tier` set it runs on native values: each
+;; form is evaluated by it and by native `eval`, and the printed results (or
+;; the error messages, CompileError chains included) must be equal. This
+;; checks the compile step (special forms, macro expanders, resolution,
+;; error layers) and the closures it builds; the module tier
+;; (checks/run-corpus.sh corpus/eval/*/) checks the same through the backend.
+;; Program vars, the program table, var stand-ins and the wasm.natives fns
+;; the core table names (format, resolve, push-binding! for binding,
+;; defonce's bound?) are module-only and are not exercised here.
+(ns eval-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.eval :as ev]
+            [string]))
+
+(defn- res [f] (try [:ok (pr-str (f))] (catch Exception e [:err (ex-message e)])))
+
+(defn- both
+  "[native mine] for source s (read once, by native's reader)."
+  [s]
+  (let [form (read-string s)]
+    [(res (fn [] (eval form))) (res (fn [] (ev/eval form)))]))
+
+(defn- same-ns!
+  "Evaluate in the namespace native eval uses here (the test's *ns*)."
+  []
+  (reset! ev/native-tier true)
+  (wasm.natives/set-cur! (wasm.natives/add-ns* (str (ns-name *ns*)))))
+
+(defn- check-all [srcs]
+  (same-ns!)
+  (doseq [s srcs]
+    (let [[n m] (both s)] (is (= n m) s))))
+
+(deftest special-forms
+  (check-all
+   ["1" "\"s\"" ":k" "nil" "[1 [2 3]]" "{:a 1 :b [2]}" "#{1}" "()" "'x" "'(1 2)" "(quote)" "(quote 1 2)"
+    "(if true 1 2)" "(if false 1)" "(if nil 1 2)" "(do)" "(do 1 2 3)"
+    "(let [x 1 y (+ x 1)] [x y])" "(let [x 1] (let [x 2] x))" "(let [x] x)" "(let* [x 1] x)"
+    "(loop [i 0 acc []] (if (< i 5) (recur (inc i) (conj acc i)) acc))"
+    "(loop [x 1] x)" "((fn [x] (* x x)) 7)" "((fn [x & r] [x r]) 1 2 3)" "((fn [& r] r))"
+    "((fn ([] 0) ([x] x) ([x y] (+ x y))) 1 2)" "((fn [n acc] (if (zero? n) acc (recur (dec n) (* acc n)))) 5 1)"
+    "((fn [x & y] (if (> x 3) [x y] (recur (inc x) (cons x y)))) 1)"
+    "(try 1 (finally 2))" "(try (throw (ex-info \"a\" {})) (catch Exception e (ex-message e)))"
+    "(try (throw (ex-info \"a\" {:k 1})) (catch e (ex-data e)))"
+    "(var map)" "(def ev-a 1)" "ev-a" "(def ev-b \"doc\" 2)" "ev-b" "(def ev-c)" "ev-c" "(set! ev-a 5)" "ev-a"]))
+
+(deftest compile-errors
+  (check-all
+   ["nope" "(nope)" "(nope 1)" "(str (nope))" "(str \"s\" nope)" "[1 (nope)]" "{:a (nope)}" "#{(nope)}"
+    "(if)" "(if 1 2 3 4)" "(if (nope) 1 2)" "(if 1 (nope))" "(if 1 2 (nope))" "(do (nope))"
+    "(let [a (nope)] a)" "(let [a 1] (nope))" "(let* [1 2] 3)" "(let* [x] 3)" "(loop [x (nope)] x)"
+    "(fn [1] 1)" "(fn [& x y] 1)" "(fn [& x & y] 1)" "(fn [] (nope))" "(fn* (1))" "(fn*)"
+    "(recur 1)" "(loop [x 1] (recur))" "(fn [x] (recur))" "(loop [x 1] (+ 1 (recur 2)))"
+    "(loop [x 1] (try (recur 2) (finally 1)))" "(try)" "(try 1 (catch))"
+    "(def)" "(def 1 2)" "(def x 1 2)" "(def x (nope))" "(set!)" "(set! 1 2)"
+    "(var nope)" "(when (nope) 1)" "(cond (nope) 1)" "(defn f [] (nope))"
+    "nope/x" "(nope/x 1)" "user/nope" "(let-go.core/inc 1)"]))
+
+(deftest macros
+  (check-all
+   ["(when 1 2 3)" "(when-not nil 4)" "(if-not false 1 2)" "(and)" "(and 1 2)" "(and 1 nil 3)" "(or)" "(or nil 2)"
+    "(cond (= 1 2) :a :else :b)" "(cond 1)" "(condp = 2 1 :one 2 :two :none)" "(case 2 1 :one 2 :two :other)"
+    "(case 'b (a b) :ab :no)" "(case 9 1 :one :dflt)" "(-> 1 inc (* 3))" "(->> [1 2 3] (map inc) (filter odd?))"
+    "(if-let [x 1] x 2)" "(if-let [x nil] x 2)" "(when-let [x 5] (* x 2))" "(if-some [x false] x 3)" "(when-some [x 0] x)"
+    "(when-first [x [7 8]] x)" "(dotimes [i 3] i)" "(let [a (atom 0)] (dotimes [i 4] (swap! a + i)) @a)"
+    "(let [[a b & r :as all] [1 2 3 4]] [a b r all])" "(let [{:keys [a b] :or {b 5} :as m} {:a 1}] [a b m])"
+    "(let [{:strs [x]} {\"x\" 9}] x)" "(let [{a :a [b] :b} {:a 1 :b [2]}] [a b])"
+    "((fn [[a b] {:keys [c]}] [a b c]) [1 2] {:c 3})" "((fn [a & {:keys [k]}] [a k]) 1 :k 2)"
+    "(loop [[x & xs] [1 2 3] acc 0] (if x (recur xs (+ acc x)) acc))"
+    "((fn fact [n] (if (zero? n) 1 (* n (fact (dec n))))) 6)"
+    "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 10))"
+    "(for [x [1 2 3] :when (odd? x)] (* x 10))" "(for [x [1 2] y [:a :b]] [x y])" "(for [x (range 5) :let [y (* x x)] :while (< y 9)] y)"
+    "(with-out-str (doseq [x [1 2]] (print x)))" "(with-out-str (doseq [x [1 2 3] :when (odd? x) :let [y (* 2 x)]] (print y)))"
+    "(cond-> 1 true inc false dec)" "(cond->> [1 2] true (map inc))" "(some-> {:a 1} :a inc)" "(some-> {:a 1} :b inc)"
+    "(some->> [1 2] (map inc))" "(as-> 1 x (inc x) (* x 10))" "(doto (atom 1) (swap! inc))"
+    "(let [a (atom 0)] (while (< @a 3) (swap! a inc)) @a)" "(comment 1 2)" "(realized? (lazy-seq [1]))"
+    "(take 3 (lazy-seq (cons 1 (lazy-seq [2 3 4]))))" "@(delay (+ 1 2))" "(with-out-str (println 1) (print 2))"
+    "(defn ev-f [x] (* x 2))" "(ev-f 21)" "(defn ev-g ([] 0) ([x] (inc x)))" "[(ev-g) (ev-g 1)]"
+    "(defn- ev-h [] :h)" "(ev-h)" "(defmacro ev-m [x] (list 'inc x))" "(ev-m 41)"
+    "(do (defmacro ev-m2 [x] (list 'inc x)) (ev-m2 1))" "(declare ev-d)" "ev-d" "(assert true)"]))
+
+(deftest core-calls
+  (check-all
+   ["(map inc [1 2 3])" "(reduce + (range 10))" "(apply str [1 2 \"x\"])" "(into {} [[:a 1]])" "(get-in {:a {:b 2}} [:a :b])"
+    "(assoc-in {} [:a :b] 1)" "(update {:a 1} :a inc)" "(merge {:a 1} {:b 2})" "(frequencies [1 1 2])" "(group-by odd? [1 2 3])"
+    "(sort-by - [1 3 2])" "(partition 2 [1 2 3 4])" "(str/join \",\" [1 2])" "(string/upper-case \"ab\")" "(clojure.string/trim \" x \")"
+    "(:a {:a 1})" "({:a 1} :a)" "(#{1 2} 2)" "([1 2 3] 1)" "(keyword \"k\")" "(symbol \"s\")" "(name :a/b)"
+    "(let [f (fn [x] (+ x 1))] (map f [1 2]))" "(fn? (fn [x] x))" "(fn? +)" "(let [a (atom {})] (swap! a assoc :k 1) @a)"
+    "(clojure.core/inc 1)" "(core/inc 1)" "(pr-str [1 \"s\" :k])" "(read-string \"(1 2)\")"
+    "(eval '(+ 1 2))" "(eval (list '* 6 7))" "(first 1)" "(+ 1 :a)" "(nth [1] 5)" "(throw (ex-info \"x\" {:a 1}))"]))
+
+(deftest syntax-quote-expansion
+  (same-ns!)
+  (doseq [s ["`x" "`if" "`(a b)" "`(a ~b ~@c)" "`[a# a# b#]" "`{:a ~x}" "`#{~x}" "`(1 \"s\" :k nil)" "`[]" "`()"
+             "`(let [x# 1] (inc x#))" "`with-meta" "`a/b" "`(f ^:m x)" "``a"]]
+    (let [native (read-string s)
+          mine (ev/syntax-quote (read-string (subs s 1)))]
+      (is (= (pr-str native) (pr-str mine)) s))))
+
+(deftest dialect
+  ;; eval.lg is plain lg like natives.lg; what this file relies on is that
+  ;; the evaluator touches the runtime only behind native-tier (raise) or in
+  ;; module-only paths (var stand-ins), so it runs here at all.
+  (is (string/includes? (slurp "rt/wasm/eval.lg") "DIALECT: plain lg")))

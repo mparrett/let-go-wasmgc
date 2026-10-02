@@ -45,7 +45,7 @@
 (ns wasm.natives
   (:refer-clojure :exclude [format fn? identical? rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
-                            spit slurp make-array complement bound-fn*])
+                            spit slurp make-array complement bound-fn* ns-resolve])
   (:require [clojure.string :as string]
             [wasm.intrinsics :as wasm]
             [wasm.pvec :as pv]
@@ -444,6 +444,40 @@
       (require-one x)
       (raise-lit (str "require expected Symbol or Vector, got " (tname x)))))
   nil)
+
+;; ---------------------------------------------------------------------------
+;; P7.0: what wasm.eval (rt/wasm/eval.lg) reads and writes here. These use
+;; core predicates only (no wasm.seq kinds), so the evaluator also runs over
+;; this table under native lg (corpus/intrinsics/eval_test.lg). The table
+;; gains :refers {ns {"sym" "lib"}} (a run-time require's :refer) and
+;; :program (the backend's program table, wasm.eval/install-program-table!).
+
+(defn table* [] (table))
+(defn canon* [nm] (canon nm))
+(defn ns-exists*? [nm] (ns-exists? nm))
+(defn add-ns* [nm] (add-ns! nm))
+(defn set-cur! [nm] (swap! registry assoc :cur nm) nm)
+
+(defn current-ns
+  "The stand-in `<ns cur>` of the current namespace: what *ns* reads (the
+   backend routes reads of *ns* here)."
+  [] (ns-of (:cur (table))))
+
+;; core.lg's ns-resolve is (resolve 'ns/sym) natively, so a var only when
+;; the namespace holds it: here a cell (intern, or a def in evaluated code)
+;; or a var of the program table (wasm.eval's install-program-table!);
+;; nil for a core name, as natively (ns-resolve *ns* 'map) is nil.
+(defn ^{:twin "core/ns-resolve"} ns-resolve
+  ([nsx sym] (ns-resolve nsx nil sym))
+  ([nsx env sym]
+   (when-not (and env (contains? env sym))
+     (let [nm (cond (stand-in-ns nsx) (stand-in-ns nsx)
+                    (symbol? nsx) (canon (str nsx))
+                    :else (raise-lit "ns-resolve expected a namespace or symbol"))
+           nm (if (namespace sym) (canon (namespace sym)) nm)
+           k (name sym)]
+       (or (:var (cell (str nm "/" k)))
+           (get-in (table) [:program nm :vars k]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The file system of a module without one

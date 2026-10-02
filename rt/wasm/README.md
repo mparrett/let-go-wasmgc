@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Fourteen namespaces that load together under native lg as one runtime (P2.9, P3.1),
+Seventeen namespaces that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go 4e769212. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -25,6 +25,7 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 14 | `lang.lg` | `wasm.lang` | 1-4 9 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
 | 15 | `term.lg` | `wasm.term` | 1-4 9 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
 | 16 | `natives.lg` | `wasm.natives` | 1 3 4 7 9 10 11 | P6.0/P5.8, in PLAIN lg like `src/lw_ext.lg` (not seq.lg's dialect): `format`, the ns/var table (`all-ns` `in-ns` `alias` `intern` `ns-publics` `resolve` `find-var` `var?` `var-get` `alter-var-root` `alter-meta!` `push-binding!`/`pop-binding!`), `json/read-json` `write-json`, `spit` and `os/cwd` `ls` `stat` (no file system), `let-go.core/lines`, `fn?`, `identical?`, `rseq`, `make-array`, ten `clojure.math` fns |
+| 17 | `eval.lg` | `wasm.eval` | 3 4 9 10 16 | P7.0, in PLAIN lg like natives.lg: `eval` (`core/eval`), a closure-compiling evaluator over the reader's data (compiler.go's special forms, core.lg's macros as expanders, CompileError chains as native prints them), the core table (name -> fn value) evaluated code resolves against, cells for evaluated `def`s in wasm.natives' registry, and `install-program-table!` (the backend's program table) |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the
@@ -51,7 +52,7 @@ Runtime globals (D39), one per namespace that has state: `wasm.seq/hooks`
 (three Handler slots, the hashing printer, the seqable and ifn hooks, the type namer), `wasm.str/globals` (intern
 table, its count, the print hook), `wasm.core/globals` (gensym counter,
 interned types), `wasm.arrays/globals` (the type-name hook), `wasm.sorted/globals` (the comparator hook),
-`wasm.math/globals` (rand-int's xorshift state), `wasm.xxhash/globals` (the
+`wasm.math/globals` (rand-int's xorshift state), `wasm.natives/registry` (the ns/var table, P6.0) and wasm.eval's atoms (`native-tier`, the recur sentinel, its table caches, P7.0; wasm.reader has none: the reader's code hook is the wasm.core var root of `#'wasm.reader/code-hook`), `wasm.xxhash/globals` (the
 default secret, built on first use) and `wasm.host/globals` (the stdout and
 stderr handles).
 
