@@ -1,0 +1,111 @@
+ aislop 0.10.2  ·  the quality gate for agentic coding
+
+ Scan result  ·  lower-wasm  ·  unknown  ·  11 files
+
+ Scope: 44 file(s) (from --path)
+ [ok] Formatting: done (0 issues, 181ms)
+ [ok] Linting: done (0 issues, 181ms)
+ [!] Code Quality: done (3 warnings, 181ms)
+ [!] AI Slop: done (23 warnings, 150ms)
+ [ok] Security: done (0 issues, 36ms)
+  > Code Quality
+    [WARN] Function too long (max: 80) (2)
+      checks/browser-boot.mjs:126  xsofyShell · 100 lines
+      corpus/hash/gen.go:77        corpus · 132 lines
+      Consider breaking this function into smaller pieces
+
+    [WARN] File too large (max: 400)
+      checks/browser-boot.mjs  539 lines
+      Consider splitting this file into smaller modules
+
+  > AI Slop
+    [WARN] [auto] Narrative comment block (decorative separator) (7)
+      checks/browser-boot.mjs:118
+      checks/browser-boot.mjs:227
+      checks/browser-boot.mjs:279
+      +4 more location(s), use -d for full list
+      Remove — narrative/decorative comments belong in PR descriptions, not source. Code should be self-explanatory.
+
+    [WARN] `print()` in production code — usually a leftover debug statement. (3)
+      checks/census-summary.py:115:1
+      checks/census-summary.py:118:1
+      checks/census-summary.py:120:1
+      Use the project's logger (`logging.getLogger(__name__).info(...)`). If this file is genuinely a CLI entry point
+      (typer/click/argparse), it's safe to ignore — but rename to `__main__.py` or move under `scripts/` so the rule
+      skips it next time.
+
+    [WARN] Heavy connective-arrow use (7 occurrences of ' → ') (2)
+      corpus/hash/SPEC.md:12
+      corpus/maporder/SPEC.md:32
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [WARN] Cluster of AI mannerisms (5 occurrences of 'lands'/'genuinely'/'load-bearing'/'surface area')
+      DECISIONS.md:10
+      Each is fine alone, but in clusters they're a strong AI tell. Rewrite for plain English.
+
+    [WARN] Heavy connective-arrow use (23 occurrences of ' → ')
+      DECISIONS.md:7
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [WARN] Heavy em-dash use (12 occurrences)
+      STATUS.md:36
+      Em dashes are AI-stylish at scale. Mix in periods, semicolons, or just two sentences.
+
+    [WARN] Heavy connective-arrow use (10 occurrences of ' → ')
+      STATUS.md:23
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [WARN] Vacuous marketing language (9 occurrences of 'leverage'/'robust'/'seamless'/'comprehensive'/etc.)
+      corpus/core-tests-report.md:20
+      Replace with concrete claims. 'Leverage', 'robust', 'seamless' usually signal padding, not meaning.
+
+    [WARN] Heavy connective-arrow use (9 occurrences of ' → ')
+      corpus/depth/README.md:36
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [WARN] Heavy em-dash use (15 occurrences)
+      corpus/perf-report.md:36
+      Em dashes are AI-stylish at scale. Mix in periods, semicolons, or just two sentences.
+
+    [WARN] Heavy connective-arrow use (16 occurrences of ' → ')
+      corpus/perf-report.md:18
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [WARN] Vacuous marketing language (5 occurrences of 'leverage'/'robust'/'seamless'/'comprehensive'/etc.)
+      corpus/review3/README.md:10
+      Replace with concrete claims. 'Leverage', 'robust', 'seamless' usually signal padding, not meaning.
+
+    [WARN] Heavy connective-arrow use (6 occurrences of ' → ')
+      host/ABI.md:45
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [WARN] Heavy connective-arrow use (19 occurrences of ' → ')
+      rt/wasm/INTRINSICS.md:25
+      Arrows as prose connectives ('X → Y → Z') are an AI mannerism. Use plain conjunctions or bullets.
+
+    [INFO] Empty function body — possible stub or unfinished implementation
+      checks/bench-fib.mjs:8
+      Implement the function body or add a comment explaining why it's empty
+
+
+   22 / 100  Critical      0 errors  ·  26 warnings  ·  7 fixable
+   11 files  ·  5 engines  ·  317ms
+
+   Verdict mix: 17 AI-slop indicators  ·  10 style/policy  ·  27 medium-confidence
+
+ Top findings
+   8  Heavy connective-arrow use             (ai-slop/md-arrow-overuse)  ·  8 warn
+   7  Narrative comment block                (ai-slop/narrative-comment)  ·  7 warn  7 fix
+   3  print() left in code                   (ai-slop/python-print-debug)  ·  3 warn
+   2  Heavy em-dash use                      (ai-slop/md-em-dash-overuse)  ·  2 warn
+   2  Cluster of vacuous marketing language  (ai-slop/md-vacuous-language)  ·  2 warn
+   2  Function too long                      (complexity/function-too-long)  ·  2 warn
+   1  Empty function body                    (ai-slop/empty-function)  ·  1 info
+   1  Cluster of AI mannerisms               (ai-slop/md-mannerism-cluster)  ·  1 warn
+   1  File too large                         (complexity/file-too-large)  ·  1 warn
+
+ → Run aislop fix to auto-fix 7 issues
+ → Run aislop fix --claude (or --codex, --cursor, --gemini, etc.) to hand off to agent
+
+ ★ Found this useful? Star us at github.com/scanaislop/aislop
+aislop exit 1

@@ -96,3 +96,13 @@
 | P6.4 | done 2026-10-02 13:40 | opus | legmacs boots in the browser: bootMs 264, echoMs 17, resizeMs 31, no COI |
 | P6.5 | done 2026-10-02 13:40 | opus | corpus/legmacs/size-boot.md; stock lane size-only (cannot boot) |
 | P6.2 | bar 262 2026-10-02 13:40 | runner | ceiling after P6.6; gate 6 verifies |
+| CLOCK NOTE | 2026-10-02 04:15 PDT | runner | the times I wrote in the round-2 rows above (from "dispatched 00:05" through "13:40") are wrong by roughly +9 h: round 2 started 2026-10-01 22:30 PDT, not 00:05, and the "13:40" rows landed at 04:09 PDT on 10-02. Git commit times are authoritative; D128–D136 were written 2026-10-01 22:30–23:40 PDT although dated 10-02. |
+| COST (through 04:12 PDT, before the gate runs) | 2026-10-02 | runner | see the Round-2 cost table below (method: the summary doc's tally over this session's JSONL + subagents/, since 2026-10-01 22:25 PDT) |
+
+## Round-2 cost (list prices, same assumptions as the round-1 tally; through 2026-10-02 04:12 PDT, before the gate runs)
+
+| model | turns | output | cache read | cache write | ≈ cost |
+|---|---|---|---|---|---|
+| claude-fable-5-1 | 441 | 0.28 M | 0.12 B | 0.8 M | ≈$209 |
+| claude-opus-5-5 | 2650 | 0.05 M | 0.53 B | 11.7 M | ≈$1,018 |
+TOTAL ≈ $1,227
