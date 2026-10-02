@@ -36,3 +36,4 @@ Rules (not negotiable):
    oversubscribing the 8-core laptop (native tier: 90 s at load 10, 525 s at
    load 30+). Before running the full gate, `checks/affected.sh` tells you
    which rows your diff actually touches; run those first, the gate once.
+9. **Runtime struct shapes (D131/D136):** `wasm/new Fn` takes 8 fields, `Atom` and `Volatile` 2, the last one the id slot (`0`). The native tier fails with "wasm/new Fn: 8 fields, got 7" otherwise.

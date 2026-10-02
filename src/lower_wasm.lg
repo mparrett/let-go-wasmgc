@@ -1185,8 +1185,6 @@
       "i64-extend-i32-u" [(str "(i64.extend_i32_u (i32.wrap_i64 " (arg-as (a 0) :int) "))") :int]
       "i64-to-f64" [(str "(f64.convert_i64_s " (arg-as (a 0) :int) ")") :float]
       "f64-to-i64" [(str "(i64.trunc_f64_s " (f64-arg (a 0)) ")") :int]
-      ;; P5.7: lw-ext's saturating twin conversions (round, long of NaN)
-      "f64-to-i64-sat" [(str "(i64.trunc_sat_f64_s " (f64-arg (a 0)) ")") :int]
       "f64-neg" [(str "(f64.neg " (f64-arg (a 0)) ")") :float]
       "f64-bits" [(str "(i64.reinterpret_f64 " (f64-arg (a 0)) ")") :int]
       "bytes-new" [(str "(array.new_default $Bytes " (wrap-idx (a 0)) ")") :box]
@@ -1237,7 +1235,7 @@
 (def emitted-intrinsics
   #{"new" "get" "set!" "is?" "as" "array-new" "aget" "aset!" "alen" "array-copy" "ref-eq" "null" "null?"
     "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
-    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-to-i64-sat" "f64-bits" "f64-neg"
+    "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
     "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
     "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"

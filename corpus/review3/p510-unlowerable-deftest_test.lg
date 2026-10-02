@@ -1,0 +1,11 @@
+;; P5.10 probe (bug-09's guard, kept apart from the shim's thrown? support):
+;; `bad`'s own body has a user catch class the module's catch-class table
+;; does not know, so the deftest's defn does not lower and becomes a stub.
+;; The run must still print its summary, with `bad` as exactly one ERROR.
+;; native: Ran 2 tests containing 2 assertions. 0 failures, 0 errors.
+;; backend (expected, until user catch classes lower): Ran 2 tests containing
+;; 2 assertions. 0 failures, 1 errors. -- run-tests.sh reports FAIL, the
+;; point is the summary and the single ERROR line.
+(ns r3.p510-unlowerable-deftest-test (:require [test :refer :all]))
+(deftest bad (is (= 1 (try 1 (catch ArithmeticException _ 0)))))
+(deftest fine (is (= 1 1)))

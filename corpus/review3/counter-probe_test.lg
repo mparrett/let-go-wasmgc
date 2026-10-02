@@ -1,0 +1,14 @@
+;; P5.11 counter self-test probe (checks/run-tests.sh --corpus counter.txt).
+;; DELIBERATELY unmatchable: `reads-own-source` slurps this file, which works
+;; natively, while slurp is host file I/O, a declared named limit in the module
+;; (rt/wasm/core.lg traps; checks/run-tests.skip's P5.1 category). The test's
+;; own catch turns the trap into "", so the backend runs ZERO assertions there
+;; and prints no FAIL/ERROR line naming it. A counter that only looks for
+;; backend FAIL/ERROR names credits both deftests (2/2); the P5.11 counter sees
+;; native's assertion count (4) differ from the backend's (1) and scores the
+;; whole file 0. Never "fix" this file: it exists to stay at 0.
+(ns r3.counter-probe-test (:require [test :refer :all]))
+(deftest reads-own-source
+  (let [s (try (slurp "counter-probe_test.lg") (catch Exception _ ""))]
+    (doseq [c (take 3 s)] (is (char? c)))))
+(deftest plain (is (= 1 1)))

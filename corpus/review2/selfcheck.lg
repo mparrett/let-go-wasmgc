@@ -18,7 +18,7 @@
 (defn kw [x] (s/kw-of-bytes (wasm/bytes-of-string x)))
 (defn sym [x] (s/sym-of-bytes (wasm/bytes-of-string x)))
 (defn st [x] (s/mk-str (wasm/bytes-of-string x)))
-(defn thunk [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+(defn thunk [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 (defn wv [xs] (reduce (fn [v i] (c/conj v (sq/box-int i))) (pv/empty-vec) xs))
 
 (defn em

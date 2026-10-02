@@ -1,0 +1,16 @@
+;; P5.10 probe (bug-08 through the stub path, independent of P5.8): `helper`
+;; works natively but does not lower (a user catch class outside the module's
+;; catch-class table), so under --test it is a stub whose throw says
+;; "lower-wasm: ... did not compile". That throw must not satisfy thrown?:
+;; native FAILs (nothing thrown), so must the backend. `slurper` is the same
+;; through a named limit (slurp is host file I/O). `real-throw` is a genuine
+;; throw and must still pass; `is-value` checks is returns the caught value.
+;; native: Ran 4 tests containing 5 assertions. 2 failures, 0 errors.
+(ns r3.p510-stub-thrown-test (:require [test :refer :all]))
+(defn helper [] (try 41 (catch ArithmeticException _ 0)))
+(deftest stubbed-inside-thrown (is (thrown? Exception (helper))))
+(deftest slurper (is (thrown-with-msg? Exception #"." (slurp "p510-stub-thrown_test.lg"))))
+(deftest real-throw (is (thrown? Exception (throw (ex-info "x" {})))))
+(deftest is-value
+  (let [r (is (thrown? RuntimeException (throw (ex-info "y" {}))))]
+    (is (= "y" (ex-message r)))))

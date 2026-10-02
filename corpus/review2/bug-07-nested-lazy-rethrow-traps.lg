@@ -11,7 +11,7 @@
 ;; (concat <empty> (transient-map)) printed twice. Fuzz sig: [:concat :str :ok :trap].
 (require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
-(defn thunk [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))
+(defn thunk [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 (defn r [f] (try (f) (catch Throwable e (str "THROWS " (if (and (= (type e) (type (object-array 0)))) (wasm/string-of-bytes (wasm/get sq/Err 2 e)) (ex-message e))))))
 (defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
 (def ns* (lazy-seq (lazy-seq (throw (ex-info "boom" {})))))

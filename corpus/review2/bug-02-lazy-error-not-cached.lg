@@ -18,10 +18,10 @@
 
 (let [n (atom 0)
       thunk (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (if (= 1 (swap! n inc)) (throw (ex-info "boom" {})) (sq/list (sq/box-int 1) (sq/box-int 2)))))
-                      (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null))
+                      (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0)
       ls (sq/lazy-seq* thunk)]
   (println "runtime 1st" (try (P ls) (catch Throwable e (msg e))) " 2nd" (try (P ls) (catch Throwable e (msg e))) " thunk runs" @n))
-(let [ns* (take 9 false) ws (sq/lazy-seq* (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (sq/seq (sq/bool false)))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null)))]
+(let [ns* (take 9 false) ws (sq/lazy-seq* (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (sq/seq (sq/bool false)))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))]
   (try (pr-str ns*) (catch Throwable e nil)) (try (P ws) (catch Throwable e nil))
   (println "native  realized? after a throwing realization" (realized? ns*))
   (println "runtime realized? after a throwing realization" (P (sq/realized? ws))))

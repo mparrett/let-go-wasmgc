@@ -67,3 +67,6 @@
 | P5.3 | verifying 02:50 | opus+runner | rt half in 58fb3a7 (2/4); src patches A/B/C applied, run.sh P5.3 running |
 | P5.6/P5.7 | dispatched 02:20 | opus | regex literal/POSIX/backtracking; math-round trap, dissoc!, array-map msg |
 | P6.0+P5.8 | dispatched 01:25 | opus | legmacs twins + review3 unbound natives, rt/ only |
+| P5.6 | done 2026-10-02 04:20 | opus | fix-regex 3/3: Go-compiled program + bit-state backtracker, POSIX classes, literal regex stays a regex; verified by rerun |
+| P5.7 | done 2026-10-02 04:20 | opus | fix-twins 3/3: saturating float→long, dissoc! variadic, array-map message; verified by rerun |
+| P5.10/P5.11 | dispatched 03:15 | opus | test shim + --corpus counter vs native |
