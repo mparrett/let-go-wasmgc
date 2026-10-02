@@ -1,0 +1,9 @@
+;; gap-02 (p58-print-fn): println of a fn. Round 1 refused it (D71: uncatchable
+;; `illegal cast`). Since P5.3 (D131) a fn prints in native's shape with the
+;; address fixed at 0x0, so a direct println can never match native's
+;; `<fn 0x3ce33240a340>`; the program pins the shape through str/pr-str prefixes
+;; (not with-out-str: the inlined println ignores *out*, a separate limit). Moved refused -> fixed 2026-10-02.
+(println "x")
+(println (subs (str (fn [] 1)) 0 6))
+(println (subs (pr-str (fn named [] 1)) 0 5))
+(println (string? (str (fn [] 1))))
