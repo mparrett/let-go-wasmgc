@@ -14,6 +14,16 @@
 (defn read-program [path]
   (read-string (str "[" (slurp path) "\n]")))
 
+(defn splice-do
+  "A top-level (do a b ..) as the top-level forms a b .. (P2.14): native
+   compiles and runs a top-level do subform by subform (Clojure's
+   Compiler.eval special case, let-go #195), so a require in an earlier
+   subform makes its namespace resolvable in a later one."
+  [form]
+  (if (and (seq? form) (= 'do (first form)))
+    (mapcat splice-do (rest form))
+    [form]))
+
 (defn defn-form? [form] (and (seq? form) (= 'defn (first form))))
 
 (def expand lw/expand-form)
@@ -111,7 +121,11 @@
   [defns main-src boxed]
   (doall
    (for [src (conj defns main-src)]
-     (do (lw/analyze-deps! src)
+     (do ;; P2.14: in --test a library defn the test reaches that fails
+         ;; to compile stubs the test (below) instead of the whole file
+         (if *stub-failures*
+           (try (lw/analyze-deps! src) (catch e nil))
+           (lw/analyze-deps! src))
          (let [main? (= main-src src)
                multi? (::multi (meta src))
                argc (arity-key (nth src 2))
@@ -155,15 +169,31 @@
        (let [head (when (seq? form) (first form))]
          (cond
            ;; native's assert-expr special forms; the class is a catch class
+           ;; native's is returns the caught exception (thrown_test's
+           ;; thrown-returns-the-exception reads it)
            (= head 'thrown?)
-           `(__t-report (try (do ~@(drop 2 form) false) (catch ~(second form) e# true) (catch Throwable e# :__t-error)))
+           `(try (do ~@(drop 2 form) (__t-report false) nil)
+                 (catch ~(second form) e# (__t-report true) e#)
+                 (catch Throwable e# (__t-report :__t-error) nil))
            (= head 'thrown-with-msg?)
            `(__t-report (try (do ~@(drop 3 form) false)
                              (catch ~(second form) e# (if (re-find ~(nth form 2) (ex-message e#)) true false))
                              (catch Throwable e# :__t-error)))
            :else `(__t-report (try (if ~form true false) (catch Throwable e# :__t-error))))))
       ([form msg] `(is ~form)))
-    (defmacro testing [s & body] `(do ~@body))])
+    (defmacro testing [s & body] `(do ~@body))
+    ;; P2.14: a set-test probe only runs through run-test-var (test-ns
+    ;; reflection), which the shim does not have; the deftests that drive one
+    ;; report their own ERROR
+    (defmacro set-test [nm & body] nil)])
+
+(defn stub-deftest
+  "P2.14: the defn for a deftest that fails to compile natively (thrown at
+   macro expansion, e.g. a user macro whose body touches a program atom the
+   driver only interned): it reports one ERROR for that test, so one bad
+   form costs one test instead of the file."
+  [nm]
+  (list 'defn nm [] (list '__t-begin (str nm)) (list '__t-uncaught nil)))
 
 (defn deftest->defn [[_ nm & body]]
   (list 'defn nm [] (list '__t-begin (str nm))
@@ -359,7 +389,7 @@
         rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))
-        forms (read-program in)
+        forms (mapcat splice-do (read-program in))
         tests (atom [])
         forms (if test?
                 (let [[pre post] (split-with #(not (and (seq? %) (= 'ns (first %)))) forms)
@@ -387,7 +417,7 @@
                        form)]
             (cond
               (= form ::install-test-macros)
-              (do (doseq [s '[deftest is testing]] (ns-unmap *ns* s))
+              (do (doseq [s '[deftest is testing set-test]] (ns-unmap *ns* s))
                   (doseq [m test-macros] (eval m)))
               (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defns into (expand-defn form)))
               (decl-form? form) (do (native! form) (swap! decls conj (resolve (second form))))
@@ -415,9 +445,21 @@
               (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
               (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               :else (do (compile-check! form) (swap! body conj form)))))
+        ;; P2.14: a var's :file/:line/:column meta, as native's load gives
+        ;; it (a def is only interned here, a defn's file is <read-string>);
+        ;; lower-wasm's var constants carry it
+        stamp! (fn [form]
+                 (when-let [s (and (seq? form) (#{'defn 'defn- 'def} (first form)) (def-sym form))]
+                   (let [v (try (resolve s) (catch e nil))]
+                     (when (and (var? v) (= *ns* (:ns (meta v))))
+                       (alter-meta! v merge (select-keys (meta form) [:line :column]) {:file in})))))
         compile-error (reduce (fn [_ form]
-                                (try (process! form) nil
-                                     (catch e (if-let [m (::native (ex-data e))] (reduced m) (throw e)))))
+                                (try (process! form) (stamp! form) nil
+                                     (catch e (if-let [m (::native (ex-data e))]
+                                                (if (and test? (defn-form? form) (contains? (set @tests) (def-sym form)))
+                                                  (do (process! (stub-deftest (def-sym form))) nil)
+                                                  (reduced m))
+                                                (throw e)))))
                               nil forms)]
     ;; native stops at the failing form: the forms before it run, then the error
     (when compile-error (swap! body conj (list 'throw (list 'ex-info compile-error {}))))
@@ -438,7 +480,7 @@
       (lw/with-session*
        ss
        (fn []
-        (binding [*stub-failures* (boolean test?)]
+        (binding [*stub-failures* (boolean test?) lw/*stub-libs* (boolean test?) lw/*program-file* in]
          ;; the cached, fully lowered runtime (lower-wasm/load-rtlib!)
          (when rtlib? (lw/load-rtlib!))
          (doseq [v @decls] (lw/add-decl! v))

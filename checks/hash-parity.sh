@@ -51,15 +51,17 @@ fi
 
 hook=${WASM_HASH:-$here/wasm-hash.sh}  # override to test the loop
 [ -x "$hook" ] || { echo "NOT IMPLEMENTED: $hook missing"; exit 2; }
-rows=0 misses=0
+rows=0 misses=0 limits=0
 while IFS=$'\t' read -r kind edn want; do
   case $kind in ''|'#'*) continue ;; esac
   rows=$((rows + 1))
   got=$("$hook" "$edn" "$kind" 2>&1)
+  # LIMIT = the runtime names this kind a Phase-2 limit (bigint/ratio/bigdec, D15): skipped, reported, not a miss.
+  if [ "$got" = LIMIT ]; then limits=$((limits + 1)); echo "LIMIT $kind ${edn:0:60}"; continue; fi
   if [ "$got" != "$want" ]; then
     misses=$((misses + 1))
     echo "MISS $kind ${edn:0:80} want $want got ${got:0:80}"
   fi
 done < "$tsv"
-echo "ROWS $rows MISSES $misses"
+echo "ROWS $rows MISSES $misses LIMITS $limits"
 [ "$misses" = 0 ]

@@ -170,7 +170,9 @@
 ;; these unmarked because P2.7 gave them names that shadow core's, D68).
 (def extra-twins
   (into {} (for [[n r] [['core/ex-message 'wasm.core/ex-message] ['core/ex-data 'wasm.core/ex-data]
-                        ['core/ex-cause 'wasm.core/ex-cause]]
+                        ['core/ex-cause 'wasm.core/ex-cause]
+                        ;; P2.14 (D112): defined in wasm.core, never marked
+                        ['core/meta 'wasm.core/meta] ['core/dissoc! 'wasm.core/dissoc!]]
                  :let [nv (resolve n) rv (resolve r)]
                  :when (and nv rv)]
              [nv rv])))
@@ -250,19 +252,131 @@
 (def ext-twins
   (merge
   {#'core/long #'lw-ext/long-v #'core/ints #'lw-ext/ints-v #'core/longs #'lw-ext/ints-v
-   #'core/re-find #'lw-ext/re-find-lit
+   #'core/re-find #'lw-ext/re-find-v
    (resolve 'let-go.core/now) #'lw-ext/now-v
    #'term/size #'lw-ext/term-size-v
    ;; P4.1: the real entry's host seams
    #'os/os-name #'lw-ext/os-name-v #'core/char? #'lw-ext/char-v
-   (resolve 'core/.) #'lw-ext/dot-v}
+   (resolve 'core/.) #'lw-ext/dot-v
+   ;; P2.14: natives let-go's core tests reach (lw_ext.lg says why each)
+   #'core/disj #'lw-ext/disj-v #'core/disj! #'lw-ext/disj!-v
+   #'core/map-entry? #'lw-ext/map-entry?-v #'core/lazy-seq? #'lw-ext/lazy-seq?-v
+   #'core/shutdown-agents #'lw-ext/shutdown-agents-v
+   (resolve 'let-go.core/str-replace-first) #'lw-ext/str-replace-first-rx-v
+   ;; P2.14: regexes (lw_ext.lg's engine); a String separator/match still
+   ;; reaches the runtime's split / str-replace
+   #'core/re-matches #'lw-ext/re-matches-v #'core/re-seq #'lw-ext/re-seq-v
+   #'core/split #'lw-ext/split-v #'core/str-replace #'lw-ext/str-replace-v
+   #'core/find-ns #'lw-ext/find-ns-v #'core/ns-name #'lw-ext/ns-name-v
+   #'math/round #'lw-ext/round-v #'clojure.math/round #'lw-ext/round-v
+   #'clojure.math/floor #'lw-ext/floor-v #'clojure.math/ceil #'lw-ext/ceil-v
+   #'clojure.math/floor-div #'lw-ext/floor-div-v
+   #'clojure.math/sqrt #'wasm.math/sqrt #'clojure.math/pow #'wasm.math/pow
+   #'clojure.math/exp #'wasm.math/exp #'clojure.math/abs #'wasm.math/abs
+   #'core/with-out-str* #'lw-ext/with-out-str-v #'core/read-all-string #'lw-ext/read-all-string-v
+   #'core/double #'lw-ext/double-v #'core/format #'lw-ext/format-v #'math/log #'lw-ext/log-v
+   #'core/empty #'lw-ext/empty-v}
   ;; D100: js/emit and js/url-param through the host imports, until rt/'s
   ;; host.lg twins call the intrinsics themselves (the requested patch
   ;; defines wasm.host/host-emit; then the runtime twins are used as is)
   (when-not (ns-var 'wasm.host 'host-emit)
     {#'js/emit #'lw-ext/emit-v #'js/url-param #'lw-ext/url-param-v})))
 
+;; ---------------------------------------------------------------------------
+;; P2.14 (D112): let-go's other lg-DEFINED stdlib namespaces (zip.lg,
+;; data.lg, set.lg, walk.lg, pprint.lg, graph.lg, ...) are compiled from
+;; their own source like core.lg (read at letgo-commit), not ported into rt/.
+;; They load on demand: the first var of such a namespace the backend meets
+;; (its :file meta is `<embedded:<ns>>`) indexes the whole file. Their defns
+;; are library defns (D114: params boxed, compiled when reached, a compile
+;; error names the defn chain), keyed by the native var, so a program's call
+;; to clojure.zip/node reaches zip.lg's node.
+;;
+;; A protocol the file extends only to Object and/or nil (data.lg's
+;; EqualityPartition and Diff) has no lg defn to compile: its method var is
+;; filled by a synthesized defn in the same namespace that dispatches nil vs
+;; everything else to the two extend-type bodies. Extending such a protocol
+;; from a program is not seen (named limit: protocols are unsupported).
+
+(def stdlib-index (atom {}))   ; ns-sym -> {var entry}
+(def stdlib-twin-map (atom {})) ; protocol method var -> synthesized fill var
+(def stdlib-fills (atom {}))    ; synthesized fill var -> its entry
+
+(defn embedded-ns
+  "The stdlib namespace v was loaded from (`<embedded:zip>` -> zip), or nil."
+  [v]
+  (let [f (when (var? v) (:file (meta v)))]
+    (when (and (string? f) (str/starts-with? f "<embedded:") (str/ends-with? f ">"))
+      (symbol (subs f 10 (dec (count f)))))))
+
+(defn- protocol-fills
+  "[[method-sym fill-form] ...] for the methods a file's (extend-type Object ..)
+   and (extend-type nil ..) forms implement."
+  [forms]
+  (let [impls (atom {})]   ; method -> {:object (fn ..) :nil (fn ..)}
+    (doseq [form forms
+            :when (and (seq? form) (= 'extend-type (first form)) (contains? '#{Object nil} (second form)))
+            :let [target (if (= 'Object (second form)) :object :nil)]
+            m (drop 2 form)
+            :when (seq? m)]
+      (swap! impls assoc-in [(first m) target] (apply list 'fn (rest m))))
+    (vec (for [[m impl] @impls
+               :let [object (:object impl) nil-impl (:nil impl)
+                     argc (count (second (or object nil-impl)))
+                     args (vec (map #(symbol (str "a" %)) (range argc)))
+                     call (fn [impl] (if impl (apply list impl args)
+                                         (list 'throw (list 'ex-info (str "No implementation of method: " m) {}))))]]
+           [m (list 'defn (symbol (str "__lw_proto_" m)) args
+                    (list 'if (list 'nil? (first args)) (call nil-impl) (call object)))]))))
+
+(defn stdlib-ns!
+  "Index stdlib namespace ns-sym (once); its {var entry} map."
+  [ns-sym]
+  (or (get @stdlib-index ns-sym)
+      (let [file (str (str/replace (str ns-sym) "." "/") ".lg")
+            forms (embedded-forms file ns-sym)
+            fills (protocol-fills forms)
+            ;; eval of a defn under (binding [*ns* ..]) leaves *ns* there
+            ;; after the binding exits (lg 4e769212), so restore it by name
+            cur (ns-name *ns*)
+            fill-vars (try (doall (for [[m form] fills]
+                                    (binding [*ns* (the-ns ns-sym)]
+                                      (eval form)
+                                      [(ns-var ns-sym m) (ns-var ns-sym (second form)) form])))
+                           (finally (in-ns cur)))
+            idx (merge (into {} (for [[v e] (embedded-defns ns-sym forms)]
+                                  [v (-> e (dissoc :core-lg) (assoc :lib true))]))
+                       (into {} (for [[_ fv form] fill-vars]
+                                  [fv {:var fv :ns ns-sym :name (second form) :lib true
+                                       :arities (arities (drop 2 form))}])))]
+        (doseq [[mv fv _] fill-vars :when mv] (swap! stdlib-twin-map assoc mv fv))
+        (swap! stdlib-fills merge (into {} (for [[_ fv _] fill-vars] [fv (get idx fv)])))
+        (swap! stdlib-index assoc ns-sym idx)
+        idx)))
+
+(defn stdlib-defn
+  "v's source defn when v is an lg-defined stdlib fn outside core/string."
+  [v]
+  (or (get @stdlib-fills v)
+      (let [n (embedded-ns v)]
+        (when (and n (not (#{'core 'string} n)))
+          (get (stdlib-ns! n) v)))))
+
+(defn stdlib-twin
+  "The synthesized fill of a stdlib protocol method var (see above), or nil."
+  [v]
+  (when (var? v)
+    (or (get @stdlib-twin-map v)
+        (let [m (meta v) n (when (:ns m) (ns-name (:ns m)))]
+          ;; a protocol method var carries :ns but no :file; index its
+          ;; namespace when that is an embedded stdlib one
+          (when (and n (nil? (:file m)) (not (#{'core 'string} n))
+                     (some #(= (str "<embedded:" n ">") (:file (meta %))) (vals (ns-interns n))))
+            (stdlib-ns! n)
+            (get @stdlib-twin-map v))))))
+
 (defn source-defn
   "The source defn the backend compiles for v: a runtime defn, an lg-defined
-   core fn, one of src/lw_ext.lg's, or a program library defn."
-  [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v) (get @lib-defns v)))
+   core fn, one of src/lw_ext.lg's, a stdlib defn, or a program library defn."
+  [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v) (get @lib-defns v)
+          (stdlib-defn v)))

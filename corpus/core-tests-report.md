@@ -107,3 +107,74 @@ checks/sem.sh checks/wasm-run.sh ~/projects-new/3p/let-go/test/gold/<x>.cljc | c
 - `run-tests.sh` should default native `-source-paths` to `rt:<let-go root>:<test dir>` for files under let-go/test (or the corpus list should carry the root).
 - `--test` mode should skip `_main` calls to deftests that failed to define, so one bad form costs one test, not the file.
 - Count a deftest as passing only when the backend run prints no FAIL/ERROR line for it (used here); the shim prints no per-test pass line, so a test aborted by a whole-program trap counts 0.
+
+# P2.14: core tests to the gate (2026-10-01)
+
+`checks/run.sh P2.14` (= `checks/run-tests.sh --corpus corpus/core-tests.txt`) exits 0:
+**deftests 265/273 (97.1%, bar 246), files MATCH 38/44**. Per-file rows regenerated in
+`corpus/core-tests-results.tsv` by the same command. Checkpoints on the same harness: 133 (P2.3 as run),
+145 with blocker 1 alone, 223 with blockers 1-7 and the first tail fills, 265 final.
+`run-corpus.sh corpus/wasm` 14/14, `run.sh P3.2` 20/20 (module 1,386,559 B raw / 319,197 B wasm-opt) after the change.
+
+## What changed, by blocker (D112 order)
+
+| # | blocker | deftests gained (files) | mechanism | where |
+|---|---|---|---|---|
+| 1 | source paths, ns/file mismatch | +12 alone (chunked_seq 11, quality_cost 1); enables quality_* (+33 with 2, 8) | native side LOADS the file by path then runs its ns (language_test.go semantics), so `chunked_seq_test.lg` (ns `test.chunked-seq`) runs; files under a let-go `test/` dir get root:test:scripts on both sides (driver `-source-paths` too, D114) and run from `test/`; a no-ns file is load-only: `lg f` vs `wasm-run.sh f`, stdout+exit | `checks/run-tests.sh`, `checks/native-test-runner.lg` |
+| 2 | lg-defined stdlib namespaces | zip 20, data 15, set_ns 5, persistent_set 2, walk 5 (with `empty`) | `lw-rt/stdlib-defn`: a var whose `:file` is `<embedded:ns>` (ns ≠ core/string) indexes that file from let-go at 4e769212 on first use, defns become library defns (D114); a protocol extended only to Object/nil in the file (data.lg's EqualityPartition, Diff) gets a synthesized fill in that ns dispatching nil vs the rest | `src/lw_rt.lg`, `src/lower_wasm.lg` rt-target |
+| 3 | `(var x)` / `#'x` | def_meta 2 | interned stand-in: Symbol `#'ns/name` carrying the var's plain-data meta (identity `=`, D69); `:ns` is the Symbol `<ns name>` that `find-ns`/`ns-name` fills use; the driver stamps `:file`/`:line`/`:column` on program vars as native load does | `src/lower_wasm.lg` var-const-form, `src/driver.lg`, `src/lw_ext.lg` |
+| 4 | regex literals with escapes | string_split 3, string_replace_fn 6, thrown 1, quality_cost (forms/lines `#"\r?\n"`) | metacharacter-free regexes incl. literal escapes still lower to a String (D115); every other regex in the RE2 subset is parsed at build time and stood in by its printed Symbol with the AST in meta; a backtracking matcher (leftmost-first) implements re-find/re-matches/re-seq, core/split (Go Regexp.Split), str-replace(-first) with Go Expand + let-go's group validation, fn replacements. Differential test vs Go regexp: 10800/10800 | `src/lw_ext.lg`, `src/lower_wasm.lg` regex-standin |
+| 5 | `(.getBytes s [enc])` | getBytes 8 | `dot-v` arm returns a fresh byte `Arr` (rt arrays, D86); UTF-8 any case or `UTF8`, else native's messages | `src/lw_ext.lg` |
+| 6 | defmacro touching a program atom | try_finally 5, thrown 3 | `--test`: a deftest that fails native compile becomes a stub reporting one ERROR; library fns a test reaches that fail analysis/lowering become stubs (`lw/*stub-libs*`); `set-test` is a no-op; `is (thrown? ..)` returns the exception | `src/driver.lg`, `src/lower_wasm.lg` |
+| 7 | `core/meta` twin | update_keys_vals 2 (+ zip, set) | `extra-twins` rows for `core/meta`, `core/dissoc!` until the rt patch below lands | `src/lw_rt.lg` |
+| 8 | tail | clojure_math 2, quality_terms 11, quality_cost 22, transient 2, map_order 1, lazy_seq_pred 1, map_entry 1, file_var 1 | fills: disj, disj!, map-entry?, lazy-seq?, shutdown-agents (no-op), str-replace-first, find-ns, ns-name, math/round, clojure.math round/floor/ceil/floor-div (+ sqrt/pow/exp/abs → wasm.math), double, math/log, format (%s %d %f %.Nf %%, Go-exact incl. ties via Dekker TwoProduct, 0 diffs on 5,000 values), empty, read-all-string (rt reader loop), with-out-str (fd -2 capture stack, D115), `*file*` = program path, native scalar vars (math/PI) inline; boxed zero?/pos?/neg? go through `$rt_cmp_*` (Float operands); top-level `do` spliced (Compiler.eval, #195) | `src/lw_ext.lg`, `src/lw_rt.lg`, `src/lower_wasm.lg`, `src/driver.lg` |
+
+## What remains (8 deftests, 6 files)
+
+| deftest | file | why (named limit) |
+|---|---|---|
+| a-core-call-on-non-parameter-data-is-constant-in-the-input | quality_cost | reads `cost-catalog.edn` with `slurp`: host file I/O is not in the ABI (catalog falls back to `{}`) |
+| set-test probes: thrown-fails-when-body-does-not-throw, thrown-non-matching-class-is-an-error, thrown-with-msg-fails-on-non-matching-regex | thrown | `run-test-var` / test-var reflection over `:test` meta (3) |
+| type-predicates | predicates | `sorted-map`/`sorted-set`: no sorted runtime kind |
+| walk-on-maps | walk | `sorted-map` |
+| vec-object-array-alias | transient | `to-array` / object arrays (rt named limit) |
+| finally-macro-expands-once | try_finally | a macro's side effect on a program atom at expansion time: the macro runs in the compiler, the atom in the module |
+
+Files not MATCHing: those six. Gold pairs (`checks/wasm-run.sh x.cljc`, stdout vs `.out` AND exit 0): **3/7**
+(map_macroexpansion_eval, set_macroexpansion_eval: `shutdown-agents`; return_hint_metadata: `meta`).
+Still out: dynvar_callbacks (`future`), dynvar_threads and macro_literal_kind_field (`defprotocol`), ns_threads (`binding` of `*ns*`).
+
+## rt patch requested (verified with `LW_RT_DIR`, D104)
+
+```diff
+--- rt/wasm/core.lg
++++ rt/wasm/core.lg
+@@ -759 +759 @@
+-(defn dissoc!
++(defn ^{:twin "core/dissoc!"} dissoc!
+@@ -888 +888 @@
+-(defn meta [x]
++(defn ^{:twin "core/meta"} meta [x]
+```
+With it overlaid and the two `extra-twins` rows removed, update_keys_vals/persistent_set/zip/map_order/transient
+give the same 52/53. Drop the rows when it lands.
+
+## Falsified
+
+- stdlib loading off (`stdlib-defn`/`stdlib-twin` → nil): zip_test 0/20, every `zip/*` call compiled through a nil
+  `$ext_zip/*` slot (144 references in the module) → `TypeError: nil is not a function`.
+- `(var x)` lowering off (arg-as / const-box-wat rows removed): def_meta_test 0/2, `ERROR in (def-attaches-ns-and-name)`
+  (`Phase-2 constant var` again).
+- regex engine: differential against Go's regexp (40 patterns × 27 inputs × find/matches/seq/split×5/replace/replace-first);
+  it went red on `(a*)*b` (empty-iteration captures) until the RE2 rule was matched.
+
+## Harness notes
+
+- `--corpus` counts a deftest as passing when the backend printed its summary and no FAIL/ERROR line names it;
+  bar = ceil(90% × total). P at a time (default 3), each file under `sem.sh` with `timeout 300`; the rtlib is
+  built once first so the workers do not each rebuild it.
+- `.txt` lists may carry `<TAB>count`; bare names resolve beside the list, then in `LETGO_TEST`. Before this the
+  P2.3/P2.6 rows read `file<TAB>n` as a path and failed every file ("no such file"); P2.6 is now 6/6, P2.3 1/2
+  (transient's object-array deftest above).
+- UPSTREAM finding: `(binding [*ns* x] (eval '(defn ..)))` leaves `*ns*` at x after the binding exits (lg 4e769212);
+  `lw-rt/stdlib-ns!` restores it with `in-ns`.

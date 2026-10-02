@@ -1,10 +1,20 @@
-;; checks/run-tests.sh's native side: run one test namespace under native lg
-;; with test/run-tests, after taking the :test off every deftest named in
-;; the skip list (the same ones the backend side leaves out), so the summary
-;; lines compare like for like.
-;;   lg -source-paths <paths> checks/native-test-runner.lg <ns> [skip ...]
-(let [[ns-name & skips] (map symbol *command-line-args*)]
-  (require ns-name)
+;; checks/run-tests.sh's native side: load one test file by path and run its
+;; namespace's tests with test/run-tests, after taking the :test off every
+;; deftest named in the skip list (the same ones the backend side leaves out),
+;; so the summary lines compare like for like.
+;;   lg -source-paths <paths> checks/native-test-runner.lg <file.lg> [skip ...]
+;; Loading by path, not `require`, is what let-go's own harness does
+;; (test/language_test.go executes each file): a file whose ns does not
+;; match its name (chunked_seq_test.lg declares test.chunked-seq) runs too.
+;; An ns symbol instead of a path is still accepted (required as before).
+(let [[target & skips] *command-line-args*
+      skips (map symbol skips)
+      ns-name (if (clojure.string/ends-with? target ".lg")
+                (let [forms (read-string (str "[" (slurp target) "\n]"))
+                      n (some #(when (and (seq? %) (= 'ns (first %))) (second %)) forms)]
+                  (binding [*file* target] (load-string (slurp target)))
+                  n)
+                (let [n (symbol target)] (require n) n))]
   (doseq [s skips]
     (when-let [v (get (ns-interns ns-name) s)] (alter-meta! v dissoc :test)))
   (test/run-tests ns-name))

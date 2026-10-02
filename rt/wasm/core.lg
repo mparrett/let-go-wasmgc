@@ -756,7 +756,7 @@
   ([t key v key2] (assoc!1 (assoc!1 t key v) key2 (wasm/null)))
   ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2)))
 
-(defn dissoc!
+(defn ^{:twin "core/dissoc!"} dissoc!
   ([t] (raise-arity 1))
   ([t key] (if (= 32 (ckind t)) (m/tdissoc! t key) (raise (wasm/bytes-of-string "dissoc! expected TransientMap"))))
   ([t key key2] (dissoc! (dissoc! t key) key2)))
@@ -885,7 +885,7 @@
           (if (>= k 32) (<= k 34) false) (wasm/trap "lower-wasm: with-meta on a transient (P2.7 named limit)")
           :else x)))
 
-(defn meta [x]
+(defn ^{:twin "core/meta"} meta [x]
   (let [k (ckind x)]
     (cond (= k 11) (pv/vmeta x)
           (= k 30) (m/mmeta x)

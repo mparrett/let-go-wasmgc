@@ -845,7 +845,7 @@
             inf (* 1.7976931348623157e308 10.0)]
         (cond (bytes-is? tk (wasm/bytes-of-string "Inf")) (s/box-float inf)
               (bytes-is? tk (wasm/bytes-of-string "-Inf")) (s/box-float (- 0.0 inf))
-              (bytes-is? tk (wasm/bytes-of-string "NaN")) (s/box-float (- inf inf))
+              (bytes-is? tk (wasm/bytes-of-string "NaN")) (s/box-float ##NaN) ; literal: Go math.NaN() payload 0x7FF8000000000001 (D103), not the canonical NaN (- inf inf) yields
               :else (fail! st (s/str (s/lit "unknown symbolic value: ##") (s/mk-str tk))))))))
 
 (defn- read-hash [st]                                    ; readHashMacro (reader.go:1724)

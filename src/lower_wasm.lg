@@ -388,6 +388,8 @@
     (null-call? nid) (str "(ref.null none)" (coerce :box k))
     (string-const? nid) (str (str-wat (const-val nid)) (coerce :box k))
     (and *rt* (symbol-const? nid)) (str (const-box-wat (const-val nid)) (coerce :box k))
+    ;; P2.14: (var x) / #'x as a value (var-const-form)
+    (and *rt* (var-const? nid)) (str (const-box-wat (const-val nid)) (coerce :box k))
     (var-hidden? nid) (str (var-value-wat (var-of nid)) (coerce :box k))
     (closure-hidden? nid) (fail "unsupported closure used as a value (a :try region)" {:nid nid :fn *fname*})
     ;; quoted symbols and #'vars as values are Phase 2's value kinds; the
@@ -625,12 +627,34 @@
     (str "(struct.new $Kw " (if (namespace kw) (bytes-wat (namespace kw)) "(ref.null none)") " "
          (bytes-wat (name kw)) " (i64.const 0))")))
 
+(def regex-metachars (set ".[]{}()*+?^$|\\"))
+;; P2.14: an escape that denotes one literal char (Go RE2 syntax): an escaped
+;; metachar or punctuation, or a control escape. \d \w \s \b \pL \x.. etc.
+;; are classes or assertions, so a pattern using one stays a named limit.
+(def regex-literal-escapes
+  (merge (into {} (for [c ".[]{}()*+?^$|\\/-#&~,:;=<>!@%'\"`"] [c (str c)]))
+         {\n "\n" \t "\t" \r "\r" \f "\f"}))
+
 (defn literal-regex
-  "The source text of regex v when it matches only itself, else nil."
+  "The text regex v matches when it matches only itself (no metacharacter,
+   escapes only of literal chars), else nil."
   [v]
-  (when (= "let-go.lang.Regex" (str (type v)))
-    (let [t (str v) src (subs t 2 (dec (count t)))]
-      (when (re-matches #"[A-Za-z0-9 _:,;=<>/'-]*" src) src))))
+  (when-let [src (lw-ext/regex-source v)]
+    (loop [cs (seq src) out ""]
+      (cond (empty? cs) out
+            (= \\ (first cs)) (when-let [lit (regex-literal-escapes (second cs))]
+                                 (recur (drop 2 cs) (str out lit)))
+            (contains? regex-metachars (first cs)) nil
+            :else (recur (rest cs) (str out (first cs)))))))
+
+(defn regex-standin
+  "P2.14: regex v as lw-ext's stand-in (the Symbol it prints as, carrying the
+   pattern parsed at build time), or nil when v is not a regex or uses
+   syntax outside the engine's subset (then it stays a Phase-2 constant)."
+  [v]
+  (when-let [src (lw-ext/regex-source v)]
+    (when-let [p (try (lw-ext/regex-parse src) (catch e nil))]
+      (with-meta (symbol (str v)) {:lw/regex (:ast p) :lw/groups (:groups p) :lw/src src}))))
 
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
@@ -642,8 +666,12 @@
         ;; P3.2: a regex whose source has no metacharacter is matched as a
         ;; plain string (lw-ext/re-find-lit); others stay Phase-2 constants
         (and *rt* (literal-regex v)) (str-wat (literal-regex v))
+        ;; P2.14: other regexes in lw-ext's supported subset (regex-standin)
+        (and *rt* (regex-standin v)) (str "(global.get " (const-global! (regex-standin v)) ")")
         (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
         (str "(global.get " (const-global! v) ")")
+        ;; P2.14: (var x) / #'x, see var-const-form
+        (and *rt* (var? v)) (str "(global.get " (const-global! v) ")")
         :else nil))
 
 (defn const-wat [nid aux]
@@ -1180,6 +1208,9 @@
       ;; D100: js/emit and js/url-param's host imports (P4.1-backend)
       "host-emit" [(str "(call $rt_host_emit " (cast-ref "$Bytes" (a 0)) " " (cast-ref "$Bytes" (a 1)) ")") :void]
       "host-url-param" [(str "(call $rt_host_url_param " (cast-ref "$Bytes" (a 0)) ")") :box]
+      ;; P2.14: with-out-str (lw-ext/with-out-str-v)
+      "capture-begin" ["(call $rt_capture_begin)" :void]
+      "capture-end" ["(call $rt_capture_end)" :box]
       "trap" (if (string-const? (a 0))
                [(str "(call $rt_trap " (bytes-wat (const-val (a 0))) ")") :bottom]
                (fail "wasm/trap needs a string literal" {:nid (a 0) :fn *fname*}))
@@ -1204,7 +1235,8 @@
     "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
     "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
-    "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"})
+    "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"
+    "capture-begin" "capture-end"})
 
 ;; every ^:intrinsic var has an emitter: a new intrinsic fails the backend's
 ;; load, not a program's compile (D24: the set is read from the metadata)
@@ -1306,6 +1338,17 @@
                 (coerce :bool (ty nid))))
       (and (#{:inc :dec} op) (= 1 (count refs)))
       (int-arith nid (if (= op :inc) :add :sub) (op-int-arg op (first refs)) "(i64.const 1)")
+      ;; P2.14: a boxed operand of a sign predicate may be a Float (quality
+      ;; terms' (pos? (+ v k))): compare it with 0 through the runtime's
+      ;; numeric comparison, as the binary ops do; zero? is <= and >= so a
+      ;; NaN is not zero
+      (and *rt* (#{:zero? :pos? :neg?} op) (= 1 (count refs)) (= :box (ty (first refs))))
+      (let [x (arg-as (first refs) :box) z "(ref.i31 (i32.const 0))"]
+        (set (str (case op
+                    :pos? (str "(call $rt_cmp_gt " x " " z ")")
+                    :neg? (str "(call $rt_cmp_lt " x " " z ")")
+                    (str "(i32.and (call $rt_cmp_lte " x " " z ") (call $rt_cmp_gte " x " " z "))"))
+                  (coerce :bool (ty nid)))))
       ;; int sign predicates (P1.3: closures.lg's mutual recursion uses zero?)
       (and (#{:zero? :pos? :neg?} op) (= 1 (count refs)))
       (set (str "(" ({:zero? "i64.eq" :pos? "i64.gt_s" :neg? "i64.lt_s"} op) " "
@@ -1479,6 +1522,19 @@
         (swap! *externs* assoc v g)
         g)))
 
+(def ^:dynamic *program-file* nil)   ; the driver's input path, for *file*
+
+(defn native-scalar-const?
+  "A non-dynamic var of a native namespace whose value is a number, string
+   or keyword (lg defines no such var by def outside a program, whose defs
+   are var-table vars and never reach var-value-wat)."
+  [v]
+  (and (var? v) (not (:dynamic (meta v))) (not (lw-rt/source-defn v)) (not (lw-rt/runtime-var? v))
+       (let [x (try @v (catch e nil))] (or (float? x) (int? x) (string? x) (keyword? x)))))
+
+(defn scalar-const-wat [x]
+  (if (int? x) (str "(i64.const " x ")" (coerce :int :box)) (const-box-wat x)))
+
 (defn var-value-wat
   "A constant var used as a value (not in callee position)."
   [v]
@@ -1492,6 +1548,12 @@
         (let [s (get-in (callee-sig (if (= v #'*out*) #'wasm.host/out-handle #'wasm.host/err-handle)) [:arities 0])]
           (str "(call $" (:name s) ")" (coerce (:ret s) :box)))
         (and *rt* (= v #'os/args)) "(call $rt_os_args)"
+        ;; P2.14: *file* is the program's path (native binds it while the
+        ;; file loads; here the whole run is the load)
+        (and *rt* (= v #'*file*) *program-file*) (str-wat *program-file*)
+        ;; P2.14: a native var holding a scalar constant (math/PI, math/E):
+        ;; its value, as native reads it
+        (and *rt* (native-scalar-const? v)) (scalar-const-wat @v)
         (and *rt* (value-substs v)) (str "(global.get " (defn-fn-global (value-substs v)) ")")
         (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
@@ -2332,6 +2394,8 @@
 ;; host-write: copy to linear memory, hand ptr+len to env.write
 (func $rt_host_write (param $fd i32) (param $b (ref $Bytes)) (result i32) (local $i i32) (local $n i32) (local $need i32)
   (local.set $n (array.len (local.get $b)))
+  ;; fd -2: the innermost with-out-str's buffer (P2.14)
+  (if (i32.eq (local.get $fd) (i32.const -2)) (then (call $rt_capture_append (local.get $b)) (return (local.get $n))))
   (local.set $need (i32.add (local.get $n) (i32.const 32)))
   (if (i32.gt_u (local.get $need) (i32.mul (memory.size) (i32.const 65536)))
     (then (drop (memory.grow (i32.sub (i32.add (i32.shr_u (local.get $need) (i32.const 16)) (i32.const 1)) (memory.size))))))
@@ -2355,6 +2419,24 @@
     (global.get $out_stack) (i64.const 1) (ref.null none))))
 (func $rt_pop_out
   (global.set $out_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $out_stack)))))
+;; with-out-str (P2.14): fd -2 on the *out* stack routes fd 1 to the top of
+;; a stack of byte buffers (a List of Bytes, the head replaced on append)
+(global $cap_stack (mut (ref null eq)) (ref.null none))
+(func $rt_capture_begin
+  (global.set $out_stack (struct.new $List (call $rt_box_int (i64.const -2)) (global.get $out_stack) (i64.const 1) (ref.null none)))
+  (global.set $cap_stack (struct.new $List (array.new_default $Bytes (i32.const 0)) (global.get $cap_stack) (i64.const 1) (ref.null none))))
+(func $rt_capture_append (param $b (ref $Bytes)) (local $old (ref $Bytes)) (local $r (ref $Bytes)) (local $n i32)
+  (local.set $old (ref.cast (ref $Bytes) (struct.get $List 0 (ref.cast (ref $List) (global.get $cap_stack)))))
+  (local.set $n (array.len (local.get $old)))
+  (local.set $r (array.new_default $Bytes (i32.add (local.get $n) (array.len (local.get $b)))))
+  (array.copy $Bytes $Bytes (local.get $r) (i32.const 0) (local.get $old) (i32.const 0) (local.get $n))
+  (array.copy $Bytes $Bytes (local.get $r) (local.get $n) (local.get $b) (i32.const 0) (array.len (local.get $b)))
+  (global.set $cap_stack (struct.new $List (local.get $r) (struct.get $List 1 (ref.cast (ref $List) (global.get $cap_stack))) (i64.const 1) (ref.null none))))
+(func $rt_capture_end (result (ref null eq)) (local $b (ref null eq))
+  (local.set $b (struct.get $List 0 (ref.cast (ref $List) (global.get $cap_stack))))
+  (global.set $cap_stack (struct.get $List 1 (ref.cast (ref $List) (global.get $cap_stack))))
+  (call $rt_pop_out)
+  (local.get $b))
 ;; os/args (P3.2): the host's argv as an ArrayVector of Strings, like
 ;; native's [lg-path prog args...]; env.arg follows getenv's contract (the
 ;; byte length; nothing copied when it exceeds cap), so ask, grow, copy
@@ -2882,6 +2964,9 @@
           (contains? lw-rt/core-defns v) v
           (contains? lw-rt/ext-defns v) v
           (contains? @lw-rt/lib-defns v) v
+          ;; P2.14: lg-defined stdlib namespaces, loaded on demand
+          (lw-rt/stdlib-twin v) (lw-rt/stdlib-twin v)
+          (lw-rt/stdlib-defn v) v
           :else nil)))
 
 (defn qual-name [v] (subs (str v) 2))
@@ -2982,10 +3067,40 @@
         (rt-init-fn! (str (qual-name v) "__init") ns init)))
     g))
 
+(declare const-form)
+
+(defn- plain-data? [x]
+  (or (nil? x) (string? x) (number? x) (keyword? x) (symbol? x) (boolean? x)
+      (and (or (vector? x) (seq? x) (set? x)) (every? plain-data? x))
+      (and (map? x) (every? plain-data? (keys x)) (every? plain-data? (vals x)))))
+
+(defn var-const-form
+  "P2.14 (D112): a var as a value, (var x) or #'x. The backend has no Var
+   kind; a var is stood in by an interned constant: the Symbol #'ns/name
+   (it prints as the var does) carrying the var's metadata, so it is equal
+   only to itself (D69: a meta'd symbol compares by identity) and (meta v)
+   reads :name :ns :file :line etc. :ns is the namespace stand-in
+   lw-ext/find-ns-v returns (the Symbol `<ns name>`); meta values that are
+   not plain data (a :test fn) are left out. Deref, var-get and calling the
+   var are named limits: use the name, whose value the var table holds."
+  [v]
+  (let [m (meta v)
+        m (cond-> (into {} (for [[k x] (dissoc m :ns) :when (plain-data? x)] [k x]))
+            (:ns m) (assoc :ns (symbol (str "<ns " (ns-name (:ns m)) ">"))))]
+    (list 'wasm.core/with-meta
+          (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (str "#'" (subs (str v) 2))))
+          (const-form m))))
+
 (defn const-form
   "A form that builds constant v through the runtime's constructors."
   [v]
   (cond
+    (var? v) (var-const-form v)
+    ;; P2.14: a regex stand-in keeps its pattern in its metadata
+    (and (symbol? v) (:lw/regex (meta v)))
+    ;; (str v): natively `namespace` refuses a meta'd symbol
+    (list 'wasm.core/with-meta (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (str v)))
+          (const-form (meta v)))
     (vector? v) (list 'wasm.pvec/varray (reduce (fn [acc x] (list 'wasm.pvec/vconj acc (const-form x))) '(wasm.pvec/empty-vec) v))
     (map? v) (reduce (fn [acc [k x]] (list 'wasm.core/assoc acc (const-form k) (const-form x))) '(wasm.phm/empty-map) v)
     (set? v) (reduce (fn [acc x] (list 'wasm.phs/sconj acc (const-form x))) '(wasm.phs/empty-set) v)
@@ -3358,12 +3473,17 @@
     (str "(func $" name (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
          " (result " (wt ret) ")\n  (throw $lgex " (rt-error-wat m m) "))")))
 
+;; P2.14: the driver's --test mode binds this, so a library fn (a test's
+;; helper namespace) that does not lower becomes a stub like a runtime fn:
+;; the tests that call it report an ERROR instead of the file not compiling
+(def ^:dynamic *stub-libs* false)
+
 (defn lower-pending!
   "Lower one pending runtime fn into :lowered (a stub if it fails)."
   [info]
   (swap! *rt* assoc-in [:lowered (str "$" (:name info))]
          ;; P3.2: a program library fn fails the compile (no stub)
-         (if (:lib info)
+         (if (and (:lib info) (not *stub-libs*))
            (lower-fn info)
            (try (lower-fn info)
               (catch e (swap! *rt* update :failures (fnil conj []) [(:name info) (ex-message e)])
