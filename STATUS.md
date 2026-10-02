@@ -61,3 +61,4 @@
 | P5.R | dispatched 00:05 | opus | read-only, corpus/review3 |
 | P5.4 | in progress 00:05 | runner | checks/attest.sh |
 | P6.2 | measured 2026-10-02 00:50 | runner | 152/373 deftests, 9/30 files on the round-1 tree; table corpus/legmacs-tests-results.tsv; blockers → P6.1 scope (ROUND2.md) |
+| P5.R | done 2026-10-02 01:20 | opus | corpus/review3: 51 oracle programs 25 MATCH, 12 bugs ranked; xsofy-critical claims HELD (map order, hash, closures); fix rows P5.6–P5.11 filed |

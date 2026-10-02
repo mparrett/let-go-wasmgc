@@ -1,0 +1,13 @@
+;; review3 bug-08 (failing test reported passing). Under --test a helper that
+;; does not lower becomes a stub that throws; a named-limit op also throws.
+;; Inside (is (thrown? Exception ..)) that throw is caught, so a test that
+;; FAILS natively PASSES in the backend. checks/run-tests.sh on one file
+;; catches it (FAIL line differs), but run-tests.sh --corpus counts a deftest
+;; as passing when no FAIL/ERROR line names it in the BACKEND output, without
+;; comparing to native, so the 265/273 figure would count it.
+;; native: FAIL in (stubbed-helper-inside-thrown), FAIL in (sorted-inside-thrown), 2 failures
+;; wasm (snapshot 1fc6164): 0 failures, 0 errors
+(ns r3.bug08-test (:require [test :refer :all]))
+(defn helper [] @(future 41))
+(deftest stubbed-helper-inside-thrown (is (thrown? Exception (helper))))
+(deftest sorted-inside-thrown (is (thrown? Exception (sorted-map :b 1 :a 2))))

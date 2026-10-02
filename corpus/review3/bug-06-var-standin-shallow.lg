@@ -1,0 +1,21 @@
+;; review3 bug-06 (wrong value / wrong error). The (var x) stand-in (D122 #3) is
+;; a meta'd Symbol: var? is unbound, symbol? is true, deref and call give
+;; native-looking errors (not `lower-wasm:` named limits as the var-const-form
+;; docstring says), and def metadata (:doc, :name, :line) reads nil in a no-ns
+;; program.
+;; native:
+;;   10
+;;   42
+;;   false
+;;   hi
+;; wasm (snapshot 1fc6164):
+;;   deref expected Reference
+;;   TypeError: lower-wasm: unknown value type is not a function
+;;   true
+;;   nil
+(def ^{:doc "hi"} x 10)
+(defn f [a] (* 2 a))
+(println (try @#'x (catch Exception e (ex-message e))))
+(println (try (#'f 21) (catch Exception e (ex-message e))))
+(println (symbol? #'x))
+(println (:doc (meta #'x)))

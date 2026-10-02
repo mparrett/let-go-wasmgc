@@ -1,0 +1,4 @@
+;; legmacs commands.lg:276 shape: (try (re-pattern input) (catch e nil))
+(defn compile-search [input] (try (re-pattern input) (catch Exception e nil)))
+(let [p (compile-search "fo+")]
+  (println (some? p) (when p (re-find p "a foo b"))))

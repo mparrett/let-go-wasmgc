@@ -64,6 +64,12 @@ P5.3	oracle corpus/wasm/gaps/ checks/run-corpus.sh
 P5.4	checks/attest.sh checks/gate.sh checks/run.sh checks/affected.sh checks/items.tsv
 P5.5	checks/affected.sh
 P5.R	corpus/review3/
+P5.6	oracle corpus/review3/fix-regex/ checks/run-corpus.sh
+P5.7	oracle corpus/review3/fix-twins/ checks/run-corpus.sh
+P5.8	oracle corpus/review3/fix-natives/ checks/run-corpus.sh
+P5.9	oracle corpus/review3/fix-meta/ checks/run-corpus.sh
+P5.10	oracle corpus/review3/ checks/run-tests.sh checks/run-tests.skip src/testshim.lg
+P5.11	oracle corpus/review3/counter.txt checks/run-tests.sh src/testshim.lg
 P6.0	rt/ corpus/natives/ checks/native-twins.sh tools/ legmacs
 P6.1	src/ checks/census.sh checks/census.lg checks/census-summary.py legmacs
 P6.2	oracle corpus/legmacs-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg legmacs

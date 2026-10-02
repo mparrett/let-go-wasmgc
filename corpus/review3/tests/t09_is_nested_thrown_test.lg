@@ -1,0 +1,5 @@
+(ns r3.t09-is-nested-thrown-test (:require [test :refer :all]))
+(deftest thrown-msg-arg (is (thrown? Exception (throw (ex-info "a" {}))) "with message"))
+(deftest twm-nonmatch (is (thrown-with-msg? Exception #"^zzz$" (throw (ex-info "abc" {})))))
+(deftest twm-nothrow (is (thrown-with-msg? Exception #"a" 1)))
+(deftest instance-check (is (instance? clojure.lang.ExceptionInfo (ex-info "a" {}))))

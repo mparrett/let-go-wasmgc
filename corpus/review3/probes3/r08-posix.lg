@@ -1,0 +1,4 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(println (t #(re-find #"[[:alpha:]]+" "12ab3")) (t #(re-find #"[[:digit:]]+" "ab12")) (t #(re-find #"[[:space:]]" "a b")))
+(println (t #(re-find #"[[:upper:]][[:lower:]]+" "xHello")) (t #(re-find #"[^[:alpha:]]+" "ab12cd")))
+(println (t #(re-find #"[a[:digit:]]+" "xa1a2y")) (t #(re-find #"[:a]+" "x::ay")))

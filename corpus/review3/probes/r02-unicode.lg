@@ -1,0 +1,7 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(println (t #(re-find #"é+" "caféé!")) (t #(re-seq #"." "日本語")) (t #(re-find #"[日本]+" "x日本y")))
+(println (t #(re-find #"\w+" "héllo")) (t #(re-seq #"\S+" "α β γ")))
+(println (t #(re-find #"(?i)É" "é")) (t #(re-find #"(?i)straße" "STRASSE")))
+(println (t #(clojure.string/split "a→b→c" #"→")) (t #(clojure.string/replace "añb" #"ñ" "n")))
+(println (t #(re-find #"[^a]" "日")) (t #(count (re-find #".." "日本語"))))
+(println (t #(re-find #"é" "café")))

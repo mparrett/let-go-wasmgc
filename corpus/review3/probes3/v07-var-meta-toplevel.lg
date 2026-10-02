@@ -1,0 +1,7 @@
+(def ^{:doc "hi" :custom 7} m 1)
+(println (:doc (meta #'m)) (:custom (meta #'m)) (:name (meta #'m)) (:line (meta #'m)))
+(defn f [] (meta #'m))
+(println (:doc (f)) (:custom (f)))
+(println (var? #'m) (var? m) (var? 'm))
+(defn g "doc of g" [x] x)
+(println (:doc (meta #'g)) (:arglists (meta #'g)))

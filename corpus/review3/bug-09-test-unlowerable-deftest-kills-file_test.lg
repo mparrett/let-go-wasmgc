@@ -1,0 +1,9 @@
+;; review3 bug-09 (counts shift). A deftest that compiles natively but does not
+;; LOWER (catch class ArithmeticException/RuntimeException, `are`, which binds
+;; *assertion-position*) becomes a stub-fn whose throw escapes the run loop:
+;; the file prints no summary and scores 0, instead of one ERROR.
+;; native: Ran 2 tests containing 2 assertions. 0 failures, 0 errors.
+;; wasm (snapshot 1fc6164): error: lower-wasm: u_arith did not compile (... unsupported catch class ...)
+(ns r3.bug09-test (:require [test :refer :all]))
+(deftest arith (is (thrown? ArithmeticException (quot 1 0))))
+(deftest fine (is (= 1 1)))

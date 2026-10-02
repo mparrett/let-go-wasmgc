@@ -1,0 +1,17 @@
+;; review3 bug-01 (silent wrong value). A regex literal with no metacharacter
+;; (D115/P3.2) is lowered to a plain String, so it loses regex semantics:
+;; `$` groups in a replacement are not expanded, and #"" matches nothing.
+;; native:
+;;   abbc
+;;   a[b]c
+;;   ("" "" "")
+;;   #"b"
+;; wasm (snapshot 1fc6164):
+;;   a$0$0c
+;;   a[$0]c   (expected; same root cause)
+;;   nil
+;;   "b"      (expected; str of the regex is the String)
+(println (clojure.string/replace "abc" #"b" "$0$0"))
+(println (clojure.string/replace-first "abc" #"b" "[$0]"))
+(println (pr-str (re-seq #"" "ab")))
+(println (pr-str #"b"))

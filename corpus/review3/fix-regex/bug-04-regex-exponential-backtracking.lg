@@ -1,0 +1,6 @@
+;; review3 bug-04 (hang). lw-ext's backtracking matcher is exponential on nested
+;; quantifiers; Go RE2 is linear. 18 a's MATCH (probes4/r11-nested-star-18),
+;; 27 a's ran >300 s under wasm (probes/r06-edge.lg), native returns at once.
+;; native: nil
+;; wasm (snapshot 1fc6164): no output, killed at 300 s
+(println (pr-str (re-find #"(a*)*b" "aaaaaaaaaaaaaaaaaaaaaaaaaaac")))

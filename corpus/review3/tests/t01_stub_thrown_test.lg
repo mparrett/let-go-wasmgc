@@ -1,0 +1,10 @@
+(ns r3.t01-stub-thrown-test (:require [test :refer :all]))
+;; a helper that works natively but that the backend cannot lower
+(defn helper [] @(future 41))
+(deftest stubbed-helper-inside-thrown
+  ;; native: helper returns 41, nothing is thrown -> FAIL
+  (is (thrown? Exception (helper))))
+(deftest sorted-inside-thrown
+  ;; native: sorted-map works -> FAIL
+  (is (thrown? Exception (sorted-map :b 1 :a 2))))
+(deftest plain-pass (is (= 1 1)))

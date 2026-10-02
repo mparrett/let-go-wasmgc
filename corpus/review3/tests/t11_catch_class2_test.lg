@@ -1,0 +1,7 @@
+(ns r3.t11-catch-class2-test (:require [test :refer :all]))
+(deftest ei-vs-nth (is (thrown? clojure.lang.ExceptionInfo (nth [1] 5))))
+(deftest ei-vs-quot (is (thrown? clojure.lang.ExceptionInfo (quot 1 0))))
+(deftest re-vs-ei (is (thrown? RuntimeException (throw (ex-info "x" {})))))
+(deftest err-vs-ei (is (thrown? Error (throw (ex-info "x" {})))))
+(deftest twm-class (is (thrown-with-msg? clojure.lang.ExceptionInfo #"x" (quot 1 0))))
+(deftest ok (is (thrown? Exception (quot 1 0))))

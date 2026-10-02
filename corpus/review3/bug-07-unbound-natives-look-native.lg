@@ -1,0 +1,15 @@
+;; review3 bug-07 (wrong error, silent under try). Natives without a twin
+;; report "TypeError: nil is not a function", which a (catch e nil) swallows.
+;; legmacs commands.lg:276 compiles search input with (try (re-pattern input)
+;; (catch e nil)), so incremental search would silently find nothing.
+;; Seen unbound: re-pattern, var?, alter-var-root, resolve, ns-resolve,
+;; find-var, var-get, the-ns, bound?, ns-publics, ns-interns, alter-meta!,
+;; reset-meta!, with-redefs, use-fixtures, clojure.math/{signum log10 sin cos
+;; atan2 to-degrees hypot rint cbrt floor-mod}, make-array, object-array.
+;; native:
+;;   true foo
+;;   1.0
+;; wasm (snapshot 1fc6164): nothing matching; second line ERR TypeError
+(defn compile-search [input] (try (re-pattern input) (catch Exception e nil)))
+(let [p (compile-search "fo+")] (println (some? p) (when p (re-find p "a foo b"))))
+(println (try (clojure.math/signum 2.0) (catch Exception e (str "ERR " (ex-message e)))))

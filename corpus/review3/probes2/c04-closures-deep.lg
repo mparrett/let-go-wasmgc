@@ -1,0 +1,15 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(defn mk [a]
+  (fn [b]
+    (fn [c & ds]
+      (fn [e]
+        (let [x (+ a b c e (count ds))]
+          (fn [& ys] (into [x a b c e] (concat ds ys))))))))
+(println (t #((((((mk 1) 2) 3 :d1 :d2) 4)) :y1 :y2)))
+(def counters (vec (for [i (range 5)] (let [st (atom i)] (fn [& _] (swap! st + i))))))
+(println (t #(mapv #(%) counters)) (t #(mapv #(apply % (range %2)) counters (range))))
+(defn adder-chain [n] (reduce (fn [f i] (fn [& xs] (apply f i xs))) (fn [& xs] (vec xs)) (range n)))
+(println (t #((adder-chain 9) :end)))
+(println (t #(let [a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12]
+               ((fn [] ((fn [] ((fn [& r] [a b c d e f g h i j k l r]) 13 14))))))))
+(println (t #(let [fs (loop [i 0 acc []] (if (< i 4) (recur (inc i) (conj acc (fn [& r] [i r]))) acc))] (map (fn [f i] (f i)) fs (range)))))

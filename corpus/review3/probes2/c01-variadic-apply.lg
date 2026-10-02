@@ -1,0 +1,8 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(defn v0 [& xs] [:v0 xs])
+(defn v1 [a & xs] [:v1 a xs])
+(defn v2 [a b & xs] [:v2 a b xs])
+(defn v4 [a b c d & xs] [:v4 a b c d xs])
+(def fs {:v0 v0 :v1 v1 :v2 v2 :v4 v4 :anon (fn [x & r] (list* x r)) :pct #(vector %1 %&)})
+(doseq [k [:v0 :v1 :v2 :v4 :anon :pct] n (range 10)]
+  (println k n (t #(apply (fs k) (range n)))))

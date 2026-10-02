@@ -1,0 +1,8 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(def p (re-pattern "a+b"))
+(println (t #(re-find p "xaab")) (t #(re-find (re-pattern (str "\\d" "+")) "a12")))
+(println (t #(str #"a\d")) (t #(pr-str #"a\d")) (t #(type #"a")) (t #(= #"a" #"a")))
+(println (t #(re-find #"abc" "xabcx")) (t #(re-find #"a" nil)))
+(println (t #(re-matches #"(a)(b)?" "a")))
+(println (t #(map (fn [r] (re-find r "a1")) [#"\d" #"[a-z]"])))
+(println (t #({#"a" 1} #"a")))

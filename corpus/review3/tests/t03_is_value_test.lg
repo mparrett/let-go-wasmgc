@@ -1,0 +1,5 @@
+(ns r3.t03-is-value-test (:require [test :refer :all]))
+(deftest is-returns-true (let [r (is (= 1 1))] (is (true? r))))
+(deftest is-returns-false (let [r (is (= 1 2))] (is (false? r))))
+(deftest is-returns-value (let [r (is (+ 1 2))] (is (= 3 r))))
+(deftest thrown-nothrow-value (let [r (is (thrown? Exception 1))] (is (nil? r))))

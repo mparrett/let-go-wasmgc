@@ -1,0 +1,7 @@
+;; raw printed (unsorted) order of maps/sets past 8 entries with mixed keys
+(println (pr-str (set [1 1.0 -0.0 \a "a" :a 'a :x/a 'x/a [1] nil true])))
+(println (pr-str (zipmap [1 1.5 -0.0 \a "a" :a 'a :x/a 'x/a [1] nil true] (range))))
+(println (pr-str (into #{} (map #(* 1.5 %) (range 12)))))
+(println (pr-str (disj (set (range 20)) 3 7 11)))
+(println (pr-str (dissoc (zipmap (map str (range 20)) (range)) "3" "7")))
+(println (pr-str (conj (disj (set (map keyword (map str "abcdefghijk"))) :c :d) :c)))

@@ -1,0 +1,8 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(defn v2 [a b & xs] [a b xs])
+(println (t #(v2 1 2)) (t #(v2 1 2 3)) (t #(v2 1 2 3 4 5 6 7 8 9 10 11 12)))
+(println (t #(v2 1)))
+(println (t #(type (nth (v2 1 2 3) 2))) (t #(nil? (nth (v2 1 2) 2))))
+(println (t #(apply v2 1 2 [3 4])) (t #(apply v2 1 [2])) (t #(apply v2 [])))
+(println (t #(apply v2 1 2 3 4 5 [6 7])))
+(println (t #(apply v2 (range 40))))

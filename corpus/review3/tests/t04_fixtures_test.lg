@@ -1,0 +1,4 @@
+(ns r3.t04-fixtures-test (:require [test :refer :all]))
+(def state (atom 0))
+(use-fixtures :each (fn [f] (reset! state 10) (f)))
+(deftest needs-fixture (is (= 10 @state)))

@@ -1,0 +1,5 @@
+(ns r3.t10-stub-lib-nil-test (:require [test :refer :all]))
+;; a stub throws; does anything in the shim turn that into a pass?
+(defn h [] (sorted-set 3 1 2))
+(deftest stub-under-some (is (nil? (try (h) (catch Exception _ nil)))))
+(deftest stub-under-or (is (or (try (first (h)) (catch Exception _ false)) true)))

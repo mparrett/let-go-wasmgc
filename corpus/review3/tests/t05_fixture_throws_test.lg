@@ -1,0 +1,3 @@
+(ns r3.t05-fixture-throws-test (:require [test :refer :all]))
+(use-fixtures :once (fn [f] (throw (ex-info "setup failed" {}))))
+(deftest would-pass (is (= 1 1)))

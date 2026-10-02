@@ -1,0 +1,13 @@
+;; a var reference must see redefinition (indirection), a fn value must not
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(defn h [] :v1)
+(def via-var #'h)
+(def via-val h)
+(defn h [] :v2)
+(println (t #(via-var)) (t #(via-val)) (t #(@via-var)))
+(def n 1)
+(def nv #'n)
+(def n 2)
+(println (t #(deref nv)))
+(alter-var-root #'n (constantly 3))
+(println (t #(deref nv)) n)

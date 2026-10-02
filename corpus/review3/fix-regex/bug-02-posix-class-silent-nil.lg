@@ -1,0 +1,11 @@
+;; review3 bug-02 (silent wrong value). Go RE2 POSIX classes inside a bracket
+;; ([[:alpha:]]) are accepted by lw-ext/regex-parse but parsed as a set of
+;; the chars "[:alph" followed by a literal "]", so the match silently fails.
+;; native:
+;;   "ab"
+;;   "12"
+;; wasm (snapshot 1fc6164):
+;;   nil
+;;   nil
+(println (pr-str (re-find #"[[:alpha:]]+" "12ab3")))
+(println (pr-str (re-find #"[[:digit:]]+" "ab12")))

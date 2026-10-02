@@ -1,0 +1,11 @@
+;; review3 bug-03 (uncatchable trap). clojure.math/round of NaN or of a value
+;; past Long range is a wasm trap ("float unrepresentable in integer range")
+;; that escapes try; native returns 0 and Long/MAX_VALUE (Java's Math.round).
+;; native:
+;;   0
+;;   9223372036854775807
+;; wasm (snapshot 1fc6164):
+;;   error: float unrepresentable in integer range   (exit 1, nothing printed)
+(require '[clojure.math :as m])
+(println (try (m/round ##NaN) (catch Exception e :caught)))
+(println (try (m/round 1e20) (catch Exception e :caught)))

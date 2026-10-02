@@ -1,0 +1,8 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(println (t #(letfn [(ev? [n] (if (zero? n) true (od? (dec n))))
+                     (od? [n] (if (zero? n) false (ev? (dec n))))]
+               [(ev? 10) (od? 7) (ev? 100001)])))
+(println (t #(letfn [(f [& xs] (if (seq xs) (cons (first xs) (apply f (rest xs))) ()))] (f 1 2 3))))
+(println (t #(letfn [(fact [n acc] (if (< n 2) acc (fact (dec n) (* n acc))))] (fact 20 1))))
+(println (t #(let [k 10] (letfn [(a [x] (if (> x k) x (b (inc x)))) (b [x] (a (* 2 x)))] (a 1)))))
+(println (t #(letfn [(f ([] (f 1)) ([x] (* x 7)))] [(f) (f 2)])))

@@ -1,0 +1,393 @@
+[true true false]
+(1 2 3)
+2432902008176640000
+22
+[7 14]
+runtime: goroutine stack exceeds 1000000000-byte limit
+runtime: sp=0x7d1d76400390 stack=[0x7d1d76400000, 0x7d1d96400000]
+fatal error: stack overflow
+
+runtime stack:
+runtime.throw({0x105503636?, 0x104f73e34?})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/panic.go:1243 +0x38 fp=0x16b17eda0 sp=0x16b17ed70 pc=0x104fb9f08
+runtime.newstack()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/stack.go:1207 +0x480 fp=0x16b17eed0 sp=0x16b17eda0 pc=0x104f9d590
+runtime.morestack()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:487 +0x70 fp=0x16b17eed0 sp=0x16b17eed0 pc=0x104fbf9a0
+
+goroutine 1 gp=0x7d1d564741e0 m=5 mp=0x7d1d5685e008 [running]:
+runtime.mapaccess2_fast64(0x105bc91a0?, 0x7d1d5689edb0?, 0x2?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/internal/runtime/maps/runtime_fast64.go:22 +0x280 fp=0x7d1d76400390 sp=0x7d1d76400390 pc=0x104f436f0
+github.com/nooga/let-go/pkg/vm.(*MultiArityFn).variantFor(0x7d1d568ae140, {0x105c7ac90, 0x7d1d568ae140}, 0x2)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:356 +0x3c fp=0x7d1d76400400 sp=0x7d1d76400390 pc=0x1050b031c
+github.com/nooga/let-go/pkg/vm.unwrapBytecodeFn({0x105c7ac90, 0x7d1d568ae140}, 0x2)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:160 +0x118 fp=0x7d1d76400450 sp=0x7d1d76400400 pc=0x1050af708
+github.com/nooga/let-go/pkg/vm.resolveBytecodeCall({0x105c7ac90?, 0x7d1d568ae140?}, {0x7d1d6c114510, 0x2, 0x9})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:118 +0x50 fp=0x7d1d76400550 sp=0x7d1d76400450 pc=0x1050af150
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d6c116460?, 0x7d1d76400948, 0x58?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1159 +0x14b4 fp=0x7d1d76400900 sp=0x7d1d76400550 pc=0x105100e54
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d76400948)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d76400930 sp=0x7d1d76400900 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d76400960 sp=0x7d1d76400930 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d6c10e460, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d764009f0 sp=0x7d1d76400960 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d6c10e460, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d76400a80 sp=0x7d1d764009f0 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d6c10e460?, 0x7d1d6c10bc80?, 0x7d1d5685e008?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d76400ac0 sp=0x7d1d76400a80 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d6c10bce0, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d76400b20 sp=0x7d1d76400ac0 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d6c116380?, 0x7d1d6c10bcd0?, {0x7d1d6c10bce0?, 0x2?, 0x9?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d76400b90 sp=0x7d1d76400b20 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d6c10bce0?, 0x2?, 0x7d1d76400bf0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d76400bd0 sp=0x7d1d76400b90 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d6c1161c0?, 0x7d1d76400fc8, 0xd8?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d76400f80 sp=0x7d1d76400bd0 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d76400fc8)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d76400fb0 sp=0x7d1d76400f80 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d76400fe0 sp=0x7d1d76400fb0 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d6c10e440, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d76401070 sp=0x7d1d76400fe0 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d6c10e440, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d76401100 sp=0x7d1d76401070 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d6c10e440?, 0x7d1d6c10bbc0?, 0x7d1d5685e008?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d76401140 sp=0x7d1d76401100 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d6c10bc20, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d764011a0 sp=0x7d1d76401140 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d6c1160e0?, 0x7d1d6c10bc10?, {0x7d1d6c10bc20?, 0x2?, 0x9?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d76401210 sp=0x7d1d764011a0 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d6c10bc20?, 0x2?, 0x7d1d76401270?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d76401250 sp=0x7d1d76401210 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d6c113dc0?, 0x7d1d76401648, 0x58?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d76401600 sp=0x7d1d76401250 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d76401648)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d76401630 sp=0x7d1d76401600 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d76401660 sp=0x7d1d76401630 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d6c10e420, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d764016f0 sp=0x7d1d76401660 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d6c10e420, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d76401780 sp=0x7d1d764016f0 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d6c10e420?, 0x7d1d6c10bb00?, 0x7d1d5685e008?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d764017c0 sp=0x7d1d76401780 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d6c10bb60, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d76401820 sp=0x7d1d764017c0 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d6c113ce0?, 0x7d1d6c10bb50?, {0x7d1d6c10bb60?, 0x2?, 0x9?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d76401890 sp=0x7d1d76401820 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d6c10bb60?, 0x2?, 0x7d1d764018f0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d764018d0 sp=0x7d1d76401890 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d6c113b20?, 0x7d1d76401cc8, 0xd8?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d76401c80 sp=0x7d1d764018d0 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d76401cc8)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d76401cb0 sp=0x7d1d76401c80 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d76401ce0 sp=0x7d1d76401cb0 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d6c10e400, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d76401d70 sp=0x7d1d76401ce0 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d6c10e400, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d76401e00 sp=0x7d1d76401d70 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d6c10e400?, 0x7d1d6c10ba40?, 0x7d1d5685e008?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d76401e40 sp=0x7d1d76401e00 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d6c10baa0, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d76401ea0 sp=0x7d1d76401e40 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d6c113a40?, 0x7d1d6c10ba90?, {0x7d1d6c10baa0?, 0x2?, 0x9?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d76401f10 sp=0x7d1d76401ea0 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d6c10baa0?, 0x2?, 0x7d1d76401f70?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d76401f50 sp=0x7d1d76401f10 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d6c113880?, 0x7d1d76402348, 0x58?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d76402300 sp=0x7d1d76401f50 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d76402348)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d76402330 sp=0x7d1d76402300 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d76402360 sp=0x7d1d76402330 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d6c10e3e0, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d764023f0 sp=0x7d1d76402360 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d6c10e3e0, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d76402480 sp=0x7d1d764023f0 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d6c10e3e0?, 0x7d1d6c10b980?, 0x7d1d5685e008?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d764024c0 sp=0x7d1d76402480 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d6c10b9e0, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d76402520 sp=0x7d1d764024c0 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d6c1137a0?, 0x7d1d6c10b9d0?, {0x7d1d6c10b9e0?, 0x2?, 0x9?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d76402590 sp=0x7d1d76402520 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d6c10b9e0?, 0x2?, 0x7d1d764025f0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d764025d0 sp=0x7d1d76402590 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d6c1135e0?, 0x7d1d764029c8, 0xd8?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d76402980 sp=0x7d1d764025d0 pc=0x105100ff0
+...2903646 frames elided...
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d5d332040, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d963fde80 sp=0x7d1d963fddf0 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d5d332040?, 0x7d1d5d3308c0?, 0x1050be394?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d963fdec0 sp=0x7d1d963fde80 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d568b4140, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d963fdf20 sp=0x7d1d963fdec0 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d7697dfc8?, 0x7d1d568b4130?, {0x7d1d568b4140?, 0x105100254?, 0x7d1d5d2f69a0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d963fdf90 sp=0x7d1d963fdf20 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d568b4140?, 0x4?, 0x104fbf16c?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d963fdfd0 sp=0x7d1d963fdf90 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d5d2f68c0?, 0x7d1d963fe3c8, 0xd8?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d963fe380 sp=0x7d1d963fdfd0 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d963fe3c8)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d963fe3b0 sp=0x7d1d963fe380 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d963fe3e0 sp=0x7d1d963fe3b0 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d5d332020, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d963fe470 sp=0x7d1d963fe3e0 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d5d332020, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d963fe500 sp=0x7d1d963fe470 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d5d332020?, 0x7d1d5d330880?, 0x1050be394?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d963fe540 sp=0x7d1d963fe500 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d5d2f31a0, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d963fe5a0 sp=0x7d1d963fe540 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d7697e648?, 0x7d1d5d2f3190?, {0x7d1d5d2f31a0?, 0x105100254?, 0x7d1d5d2f6700?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d963fe610 sp=0x7d1d963fe5a0 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d5d2f31a0?, 0x2?, 0x10502c2ec?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d963fe650 sp=0x7d1d963fe610 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d5d2f6620?, 0x7d1d963fea48, 0x58?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d963fea00 sp=0x7d1d963fe650 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d963fea48)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d963fea30 sp=0x7d1d963fea00 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d963fea60 sp=0x7d1d963fea30 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d5d332000, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d963feaf0 sp=0x7d1d963fea60 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d5d332000, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d963feb80 sp=0x7d1d963feaf0 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d5d332000?, 0x7d1d5d330840?, 0x1050be394?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d963febc0 sp=0x7d1d963feb80 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d5d2f30e0, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d963fec20 sp=0x7d1d963febc0 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x7d1d7697ecc8?, 0x7d1d5d2f30d0?, {0x7d1d5d2f30e0?, 0x105100254?, 0x7d1d5d2f6460?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d963fec90 sp=0x7d1d963fec20 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d5d2f30e0?, 0x2?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d963fecd0 sp=0x7d1d963fec90 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d5d2f6380?, 0x7d1d963ff0c8, 0xd8?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d963ff080 sp=0x7d1d963fecd0 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d963ff0c8)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d963ff0b0 sp=0x7d1d963ff080 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x7d1d5d32c910?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d963ff0e0 sp=0x7d1d963ff0b0 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.runBytecodeCallTarget(0x105d33b50, {0x7d1d5d330700, {0x7d1d5d31bee0, 0x1, 0x1}, {0x7d1d5d31bec0, 0x1, 0x1}})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:178 +0xa0 fp=0x7d1d963ff170 sp=0x7d1d963ff0e0 pc=0x1050af8b0
+github.com/nooga/let-go/pkg/vm.(*Closure).invokeIn(0x7d1d5d3307c0, 0x105d33b50, {0x7d1d5d31bee0, 0x1, 0x1})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/func.go:285 +0x12c fp=0x7d1d963ff200 sp=0x7d1d963ff170 pc=0x1050affdc
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x0?, {0x105c7ac50?, 0x7d1d5d3307c0?}, {0x7d1d5d31bee0?, 0x7d1d5d330800?, 0x1050be394?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:215 +0x138 fp=0x7d1d963ff240 sp=0x7d1d963ff200 pc=0x1050adf78
+github.com/nooga/let-go/pkg/rt.installLangNS.func23(0x105d33b50, {0x7d1d56579730, 0x0?, 0x0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/lang.go:2536 +0x1e0 fp=0x7d1d963ff2a0 sp=0x7d1d963ff240 pc=0x10542dca0
+github.com/nooga/let-go/pkg/vm.(*NativeFn).invokeCtx(0x38?, 0x7d1d56579720?, {0x7d1d56579730?, 0x1?, 0x1?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/native_func.go:228 +0x68 fp=0x7d1d963ff310 sp=0x7d1d963ff2a0 pc=0x1050be0e8
+github.com/nooga/let-go/pkg/vm.(*ExecContext).Invoke(0x105c7ab90?, {0x105c7ab90?, 0x7d1d5655a9b0?}, {0x7d1d56579730?, 0x7?, 0x7d1d7697f120?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/exec_context.go:220 +0x7c fp=0x7d1d963ff350 sp=0x7d1d963ff310 pc=0x1050adebc
+github.com/nooga/let-go/pkg/vm.(*Frame).runLoopInner(0x7d1d5d2f5dc0?, 0x7d1d963ff748, 0x5a?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:1183 +0x1650 fp=0x7d1d963ff700 sp=0x7d1d963ff350 pc=0x105100ff0
+github.com/nooga/let-go/pkg/vm.runChain(0x7d1d963ff748)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:883 +0x6c fp=0x7d1d963ff730 sp=0x7d1d963ff700 pc=0x1050ff10c
+github.com/nooga/let-go/pkg/vm.(*Frame).Run(0x0?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:850 +0x64 fp=0x7d1d963ff760 sp=0x7d1d963ff730 pc=0x1050fefc4
+github.com/nooga/let-go/pkg/vm.(*Frame).RunProtected(0x7d1d568b99a0?)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/vm/vm.go:702 +0x50 fp=0x7d1d963ff7c0 sp=0x7d1d963ff760 pc=0x1050fe350
+github.com/nooga/let-go/pkg/compiler.(*Context).compileMultiple.func1({0x105c77738?, 0x7d1d5d329080?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/compiler/compiler.go:290 +0x424 fp=0x7d1d963ff8a0 sp=0x7d1d963ff7c0 pc=0x10547d664
+github.com/nooga/let-go/pkg/compiler.(*Context).compileMultiple(0x7d1d568bcb40, {0x105c735e0?, 0x7d1d56472d28?}, 0x0)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/compiler/compiler.go:315 +0x3c4 fp=0x7d1d963ffa50 sp=0x7d1d963ff8a0 pc=0x105457124
+github.com/nooga/let-go/pkg/compiler.(*Context).CompileMultiple(...)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/compiler/compiler.go:216
+github.com/nooga/let-go/pkg/cli.runFile.func1()
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/cli/cli.go:108 +0x58 fp=0x7d1d963ffaa0 sp=0x7d1d963ffa50 pc=0x1054a3d58
+github.com/nooga/let-go/pkg/rt.WithFile({0x16aec6041, 0x5a}, 0x7d1d56863b38)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/rt/file_var.go:14 +0xe8 fp=0x7d1d963ffb10 sp=0x7d1d963ffaa0 pc=0x10537ac18
+github.com/nooga/let-go/pkg/cli.runFile(0x7d1d568ad3b0?, {0x16aec6041?, 0x1054a4150?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/cli/cli.go:103 +0x60 fp=0x7d1d963ffb60 sp=0x7d1d963ffb10 pc=0x10549cfc0
+github.com/nooga/let-go/pkg/cli.runScript(0x16aec608f?, {0x16aec6041?, 0x10563fed0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/cli/cli.go:139 +0x8c fp=0x7d1d963ffb90 sp=0x7d1d963ffb60 pc=0x10549d19c
+github.com/nooga/let-go/pkg/cli.runMain()
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/cli/cli.go:694 +0xf5c fp=0x7d1d963ffe40 sp=0x7d1d963ffb90 pc=0x1054a021c
+github.com/nooga/let-go/pkg/cli.Main({0x1054fce76?, 0x104f84164?}, {0x10563fed0?, 0x7d1d564741e0?})
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/pkg/cli/cli.go:757 +0x90 fp=0x7d1d963ffe70 sp=0x7d1d963ffe40 pc=0x1054a0650
+main.main.func1(...)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/lg.go:37
+main.bootMain(...)
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/lg_boot_default.go:8
+main.main()
+	/var/folders/9c/fgv3w9n11pxdctyb6rygzvn80000gn/T/lg-at.fOsGeT/tree/lg.go:37 +0x38 fp=0x7d1d963ffea0 sp=0x7d1d963ffe70 pc=0x1054a43b8
+runtime.main()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:302 +0x380 fp=0x7d1d963fffd0 sp=0x7d1d963ffea0 pc=0x104f84190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d963fffd0 sp=0x7d1d963fffd0 pc=0x104fc17d4
+
+goroutine 2 gp=0x7d1d56474780 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f8f90 sp=0x7d1d564f8f70 pc=0x104fba018
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:480
+runtime.forcegchelper()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:387 +0xb4 fp=0x7d1d564f8fd0 sp=0x7d1d564f8f90 pc=0x104f84474
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f8fd0 sp=0x7d1d564f8fd0 pc=0x104fc17d4
+created by runtime.init.7 in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:375 +0x24
+
+goroutine 3 gp=0x7d1d56474d20 m=nil [GC sweep wait]:
+runtime.gopark(0x1?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f9770 sp=0x7d1d564f9750 pc=0x104fba018
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:480
+runtime.bgsweep(0x7d1d56510000)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgcsweep.go:324 +0x178 fp=0x7d1d564f97b0 sp=0x7d1d564f9770 pc=0x104f6ffb8
+runtime.gcenable.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:214 +0x20 fp=0x7d1d564f97d0 sp=0x7d1d564f97b0 pc=0x104fb0c60
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f97d0 sp=0x7d1d564f97d0 pc=0x104fc17d4
+created by runtime.gcenable in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:214 +0x6c
+
+goroutine 4 gp=0x7d1d56474f00 m=nil [GC scavenge wait]:
+runtime.gopark(0x1f1cf0e7?, 0x73665328?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f9f60 sp=0x7d1d564f9f40 pc=0x104fba018
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:480
+runtime.(*scavengerState).park(0x105d35580)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgcscavenge.go:425 +0x5c fp=0x7d1d564f9f90 sp=0x7d1d564f9f60 pc=0x104f6db2c
+runtime.bgscavenge(0x7d1d56510000)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgcscavenge.go:658 +0xac fp=0x7d1d564f9fb0 sp=0x7d1d564f9f90 pc=0x104f6e0bc
+runtime.gcenable.gowrap2()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:215 +0x20 fp=0x7d1d564f9fd0 sp=0x7d1d564f9fb0 pc=0x104fb0c20
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f9fd0 sp=0x7d1d564f9fd0 pc=0x104fc17d4
+created by runtime.gcenable in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:215 +0xac
+
+goroutine 5 gp=0x7d1d564754a0 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f8770 sp=0x7d1d564f8750 pc=0x104fba018
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:480
+runtime.updateMaxProcsGoroutine()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:7146 +0xf4 fp=0x7d1d564f87d0 sp=0x7d1d564f8770 pc=0x104f91da4
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f87d0 sp=0x7d1d564f87d0 pc=0x104fc17d4
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:7134 +0x48
+
+goroutine 6 gp=0x7d1d56475680 m=nil [finalizer wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564fa580 sp=0x7d1d564fa560 pc=0x104fba018
+runtime.runFinalizers()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mfinal.go:210 +0x100 fp=0x7d1d564fa7d0 sp=0x7d1d564fa580 pc=0x104f610c0
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564fa7d0 sp=0x7d1d564fa7d0 pc=0x104fc17d4
+created by runtime.createfing in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mfinal.go:172 +0x78
+
+goroutine 7 gp=0x7d1d56475860 m=nil [cleanup wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564faf50 sp=0x7d1d564faf30 pc=0x104fba018
+runtime.goparkunlock(...)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:480
+runtime.(*cleanupQueue).dequeue(0x105d35a20)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mcleanup.go:522 +0x160 fp=0x7d1d564faf90 sp=0x7d1d564faf50 pc=0x104f5e0a0
+runtime.runCleanups()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mcleanup.go:718 +0x40 fp=0x7d1d564fafd0 sp=0x7d1d564faf90 pc=0x104f5e7f0
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564fafd0 sp=0x7d1d564fafd0 pc=0x104fc17d4
+created by runtime.(*cleanupQueue).createGs in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mcleanup.go:672 +0x108
+
+goroutine 8 gp=0x7d1d568b63c0 m=nil [GC worker (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564fb720 sp=0x7d1d564fb700 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564fb7b0 sp=0x7d1d564fb720 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564fb7d0 sp=0x7d1d564fb7b0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564fb7d0 sp=0x7d1d564fb7d0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 9 gp=0x7d1d568b65a0 m=nil [GC worker (idle)]:
+runtime.gopark(0x14d0a276c5a8b6?, 0x1?, 0xad?, 0xe8?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564fbf20 sp=0x7d1d564fbf00 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564fbfb0 sp=0x7d1d564fbf20 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564fbfd0 sp=0x7d1d564fbfb0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564fbfd0 sp=0x7d1d564fbfd0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 10 gp=0x7d1d568b6780 m=nil [GC worker (idle)]:
+runtime.gopark(0x14d0a276c6db30?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f4720 sp=0x7d1d564f4700 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564f47b0 sp=0x7d1d564f4720 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564f47d0 sp=0x7d1d564f47b0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f47d0 sp=0x7d1d564f47d0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 11 gp=0x7d1d568b6960 m=nil [GC worker (idle)]:
+runtime.gopark(0x14d0a276c0c0da?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f4f20 sp=0x7d1d564f4f00 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564f4fb0 sp=0x7d1d564f4f20 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564f4fd0 sp=0x7d1d564f4fb0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f4fd0 sp=0x7d1d564f4fd0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 12 gp=0x7d1d568b6b40 m=nil [GC worker (idle)]:
+runtime.gopark(0x14d0a276c5b009?, 0x3?, 0x55?, 0x61?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f5720 sp=0x7d1d564f5700 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564f57b0 sp=0x7d1d564f5720 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564f57d0 sp=0x7d1d564f57b0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f57d0 sp=0x7d1d564f57d0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 13 gp=0x7d1d568b6d20 m=nil [GC worker (idle)]:
+runtime.gopark(0x105d601c0?, 0x1?, 0x23?, 0x57?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f5f20 sp=0x7d1d564f5f00 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564f5fb0 sp=0x7d1d564f5f20 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564f5fd0 sp=0x7d1d564f5fb0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f5fd0 sp=0x7d1d564f5fd0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 14 gp=0x7d1d568b6f00 m=nil [GC worker (idle)]:
+runtime.gopark(0x14d0a276c0efba?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f6720 sp=0x7d1d564f6700 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564f67b0 sp=0x7d1d564f6720 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564f67d0 sp=0x7d1d564f67b0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f67d0 sp=0x7d1d564f67d0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130
+
+goroutine 15 gp=0x7d1d568b70e0 m=nil [GC worker (idle)]:
+runtime.gopark(0x14d0a276c10054?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/proc.go:474 +0xb8 fp=0x7d1d564f6f20 sp=0x7d1d564f6f00 pc=0x104fba018
+runtime.gcBgMarkWorker(0x7d1d564c2f50)
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1807 +0xe0 fp=0x7d1d564f6fb0 sp=0x7d1d564f6f20 pc=0x104f643a0
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x20 fp=0x7d1d564f6fd0 sp=0x7d1d564f6fb0 pc=0x104fb1190
+runtime.goexit({})
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/asm_arm64.s:1039 +0x4 fp=0x7d1d564f6fd0 sp=0x7d1d564f6fd0 pc=0x104fc17d4
+created by runtime.gcBgMarkStartWorkers in goroutine 1
+	/opt/homebrew/Cellar/go/1.27.1/libexec/src/runtime/mgc.go:1711 +0x130

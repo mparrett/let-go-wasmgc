@@ -1,0 +1,5 @@
+;; review3 bug-11 (wrong error). dissoc! with more than one key (the D125-era
+;; extra-twin) has no variadic arity.
+;; native: {:c 3}
+;; wasm (snapshot 1fc6164): ExecutionError: function <mfn dissoc! 0x0> doesn't have a 4-arity variant
+(println (persistent! (dissoc! (transient {:a 1 :b 2 :c 3}) :a :b)))

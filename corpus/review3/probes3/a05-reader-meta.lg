@@ -1,0 +1,8 @@
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+(println (t #(meta ^:k {:a 1})) (t #(meta ^:k [1 2])) (t #(meta ^{:x 1} #{1})) (t #(meta ^:k '(1 2))))
+(def v ^:tag-me [1 2 3])
+(println (meta v))
+(println (meta ^:k {}) (meta ^:k []))
+(defn f [x] ^{:built x} [x])
+(println (meta (f 5)))
+(println (meta ^{:a 1 :b [1 2]} {:k (inc 1)}))

@@ -1,0 +1,4 @@
+;; review3 bug-12 (wrong error text, P3). (array-map :a) aliases the hash-map fill.
+;; native: array-map requires an even number of arguments, got 1
+;; wasm (snapshot 1fc6164): wrong number of arguments 2
+(println (try (array-map :a) (catch Exception e (ex-message e))))

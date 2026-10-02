@@ -1,0 +1,11 @@
+;; review3 bug-10 (counts shift). testshim differs from native test.lg:
+;; (a) a redefined deftest runs twice (native keeps the last def): Ran 3 vs 2;
+;; (b) `is` returns __t-report's value, not the form's (true/false/value), so
+;;     tests reading it fail spuriously;
+;; (c) use-fixtures is unbound, the file aborts.
+;; native: Ran 3 tests containing 3 assertions. 0 failures, 0 errors.
+;; wasm (snapshot 1fc6164): Ran 4 tests, FAIL in (same), FAIL in (is-returns-true)
+(ns r3.bug10-test (:require [test :refer :all]))
+(deftest same (is (= 1 2)))
+(deftest same (is (= 1 1)))
+(deftest is-returns-true (let [r (is (= 1 1))] (is (true? r))))

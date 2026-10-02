@@ -1,0 +1,7 @@
+(ns r3.t02-catch-class-test (:require [test :refer :all]))
+(deftest ei-vs-arith (is (thrown? clojure.lang.ExceptionInfo (quot 1 0))))
+(deftest arith-vs-ei (is (thrown? ArithmeticException (throw (ex-info "x" {})))))
+(deftest iae (is (thrown? IllegalArgumentException (throw (ex-info "x" {})))))
+(deftest re (is (thrown? RuntimeException (nth [1] 5))))
+(deftest err (is (thrown? Error (throw (ex-info "x" {})))))
+(deftest twm-class (is (thrown-with-msg? clojure.lang.ExceptionInfo #"x" (quot 1 0))))

@@ -1,0 +1,12 @@
+;; review3 bug-05 (silent wrong value). Reader metadata on a collection literal
+;; is dropped, constant or not (const-form ignores (meta v); the const key is
+;; [kind pr-str], so ^:a [1] and ^:b [1] would also share one global).
+;; native:
+;;   {:k true} {:k true}
+;;   {:built 5}
+;; wasm (snapshot 1fc6164):
+;;   nil nil
+;;   nil
+(println (meta ^:k {:a 1}) (meta ^:k [1 2]))
+(defn f [x] ^{:built x} [x])
+(println (meta (f 5)))
