@@ -14,4 +14,8 @@ echo "-- $cmd"
 set -- $cmd
 # a shell builtin (e.g. the P1.0 row's leading `test -x`) is a real command too
 case "$(type -t "$1" 2>/dev/null)" in file|builtin) ;; *) [ -x "$1" ] || { echo "NOT IMPLEMENTED: $1 missing"; exit 2; } ;; esac
-eval "$cmd"
+eval "$cmd"; rc=$?
+# P5.4: a green run attests the row's current inputs (checks/attest.sh); the
+# gate then skips it until an input moves. LW_ATTEST=0 disables.
+[ $rc = 0 ] && [ "${LW_ATTEST:-1}" != 0 ] && checks/attest.sh record "$id" 2>/dev/null
+exit $rc

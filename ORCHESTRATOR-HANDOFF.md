@@ -21,6 +21,16 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
 - Pulse claim held: `task:letgo-emit-wasm-campaign` (#303). Release with
   `--outcome handoff` when stopping.
 
+## ROUND 2 STARTED 2026-10-02 00:05 PDT (plan: ROUND2.md; rows P5.*/P6.* in items.tsv)
+- Pulse claim #314 `task:letgo-emit-wasm-campaign` held again. Loop prompt:
+  `/loop we will work until completion of our objectives but nothing gets pr until after we chat tomorrow`.
+- Decisions continue from D128. Round-1 rules unchanged (3 Opus max, src/ one at a time, verify by rerunning the row, commit per item).
+- In flight at 00:05: P5.1+P5.2 (opus, owns src/+rt/) agent `a802887eec7e3b717`;
+  P5.3 (opus, rt/ + corpus/wasm/gaps, no src/) agent `af3f0ef23d134c3c3`;
+  P5.R reviewer (opus, read-only, corpus/review3) agent `a79b16cc200312b2e`.
+  Runner builds P5.4 `checks/attest.sh` meanwhile. P5.5 already satisfied (check fixed in 1fc6164).
+- Next: P5.GATE, then Phase 6 legmacs (P6.0 natives + P6.1 blockers first; P6.2 needs corpus/legmacs-tests.txt over 30 files).
+
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
 
 ## (historical) In flight at 13:05

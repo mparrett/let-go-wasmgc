@@ -56,6 +56,21 @@ P4.0	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs
 P4.1	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs xsofy
 P4.2	oracle host/ checks/lane5.sh xsofy
 P4.3	oracle host/ checks/size-boot.sh xsofy
+P2.14	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
+P5.0	corpus/quality/
+P5.1	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
+P5.2	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
+P5.3	oracle corpus/wasm/gaps/ checks/run-corpus.sh
+P5.4	checks/attest.sh checks/gate.sh checks/run.sh checks/affected.sh checks/items.tsv
+P5.5	checks/affected.sh
+P5.R	corpus/review3/
+P6.0	rt/ corpus/natives/ checks/native-twins.sh tools/ legmacs
+P6.1	src/ checks/census.sh checks/census.lg checks/census-summary.py legmacs
+P6.2	oracle corpus/legmacs-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg legmacs
+P6.3	oracle checks/legmacs-parity.sh corpus/legmacs/ legmacs
+P6.4	oracle host/ checks/browser-boot.sh checks/browser-boot.mjs legmacs
+P6.5	oracle host/ checks/size-boot.sh legmacs
+P6.R	corpus/review4/
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

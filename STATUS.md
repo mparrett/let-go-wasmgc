@@ -54,3 +54,9 @@
 | P2.7 | GREEN 2026-10-01 (scoped) | — | 2/2 in scope; 10 skipped with reasons |
 | P2.GATE | PASSED w/ 1 named limit 2026-10-01 20:21 | — | 13/14 rows; P2.3 = to-array deftest (D122) |
 | CAMPAIGN | COMPLETE 2026-10-01 | — | gates 1,2*,3,4 closed; see ORCHESTRATOR-HANDOFF.md |
+| P5.0 | done 2026-10-01 | — | quality baselines in corpus/quality/2026-10-01 |
+| P5.5 | done 2026-10-02 | runner | affected table already maps src/+rt/ → P3.2, P4.2; row check fixed (SIGPIPE) |
+| P5.1/P5.2 | dispatched 00:05 | opus | 8 remaining deftests; to-array, sorted kinds, set-test reflection; slurp + macro-atom → SKIP |
+| P5.3 | dispatched 00:05 | opus | corpus/wasm/gaps, rt/ only |
+| P5.R | dispatched 00:05 | opus | read-only, corpus/review3 |
+| P5.4 | in progress 00:05 | runner | checks/attest.sh |

@@ -25,6 +25,7 @@ case $j in ''|*[!0-9]*|0) echo "LW_GATE_J must be a positive integer (got '$j')"
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
 ids=()
 while IFS= read -r id; do ids+=("$id"); done < <(awk -F'\t' -v p="$ph" '$1 !~ /^#/ && $2==p && $1 !~ /GATE/{print $1}' checks/items.tsv)
+if [ -n "${LW_GATE_ROWS:-}" ]; then ids=(); for id in $LW_GATE_ROWS; do ids+=("$id"); done; fi   # test hook (attest.sh)
 [ ${#ids[@]} -gt 0 ] || exit 0
 
 logd=${TMPDIR:-/tmp}; logd=${logd%/}/lw-gate-$ph; mkdir -p "$logd"
@@ -52,9 +53,16 @@ if [ "$j" -gt 1 ] && [ -x checks/wasm-run.sh ]; then
   fi
 fi
 
+# P5.4: a row whose inputs (checks/attest.sh key) are unchanged since its last
+# green run is not rerun; it reports `ok <id> (attested)`. LW_ATTEST=0 runs
+# everything (phase-gate decisions are taken that way, see attest.sh header).
 row() {
+  if [ "${LW_ATTEST:-1}" != 0 ] && checks/attest.sh fresh "$1" 2>/dev/null; then
+    : >"$rcd/$1.att"; echo 0 >"$rcd/$1.tmp"; command mv "$rcd/$1.tmp" "$rcd/$1.rc"; return
+  fi
   checks/run.sh "$1" >"$logd/$1.log" 2>&1
-  echo $? >"$rcd/$1.tmp"; command mv "$rcd/$1.tmp" "$rcd/$1.rc"
+  rc=$?; [ $rc = 0 ] && [ "${LW_ATTEST:-1}" != 0 ] && checks/attest.sh record "$1" 2>/dev/null
+  echo $rc >"$rcd/$1.tmp"; command mv "$rcd/$1.tmp" "$rcd/$1.rc"
 }
 export -f row
 printf '%s\0' "${ids[@]}" | xargs -0 -n 1 -P "$j" bash -c 'row "$1"' _ &
@@ -65,7 +73,7 @@ for id in "${ids[@]}"; do
     sleep 0.3
   done
   rc=$(cat "$rcd/$id.rc" 2>/dev/null || echo 99)
-  if [ "$rc" = 0 ]; then echo "ok   $id"; else echo "FAIL $id (exit $rc)"; echo "gate: $id output kept in $logd/$id.log" >&2; fail=1; fi
+  if [ "$rc" = 0 ]; then if [ -e "$rcd/$id.att" ]; then echo "ok   $id (attested)"; else echo "ok   $id"; fi; else echo "FAIL $id (exit $rc)"; echo "gate: $id output kept in $logd/$id.log" >&2; fail=1; fi
 done
 wait "$xp" 2>/dev/null; xp=""
 exit $fail
