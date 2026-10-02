@@ -970,12 +970,45 @@
       (wasm/set! sq/Atom 0 at nv)
       nv)))
 
+(defn- conj-1 [v a] (pv/vconj v a))
+(defn- conj-2 [v a b] (pv/vconj (pv/vconj v a) b))
+(defn- conj-3 [v a b c] (pv/vconj (pv/vconj (pv/vconj v a) b) c))
+(defn- conj-4 [v a b c d] (pv/vconj (pv/vconj (pv/vconj (pv/vconj v a) b) c) d))
+
+(defn- swap-v [a f xs]                                    ; xs: a pvec of the extra args
+  (let [at (atom-of a (wasm/bytes-of-string "swap expected Atom"))]
+    (if (callable? f) nil (raise (wasm/bytes-of-string "swap expected Fn")))
+    (let [args (loop [v (pv/vconj (pv/empty-vec) (wasm/get sq/Atom 0 at)) i 0]
+                 (if (< i (pv/vcount xs)) (recur (pv/vconj v (pv/vnth xs i)) (+ i 1)) v))
+          nv (invoke-vec f args)]
+      (wasm/set! sq/Atom 0 at nv)
+      nv)))
+
+;; Natively variadic. A runtime-dialect fn has no rest arity, so 4..18 extra
+;; args are fixed arities up to D150's cap of 20 params, applied through
+;; invoke-vec ($rt_apply_vec, any count); 19+ extra args raise the backend's
+;; "doesn't have a N-arity variant" (review5 bug-21).
 (defn ^{:twin "core/swap!"} swap!
   ([a] (raise-arity 1))
   ([a f] (swap-n a f 0 nil nil nil))
   ([a f x] (swap-n a f 1 x nil nil))
   ([a f x y] (swap-n a f 2 x y nil))
-  ([a f x y z] (swap-n a f 3 x y z)))
+  ([a f x y z] (swap-n a f 3 x y z))
+  ([a f x1 x2 x3 x4] (swap-v a f (conj-4 (pv/empty-vec) x1 x2 x3 x4)))
+  ([a f x1 x2 x3 x4 x5] (swap-v a f (conj-1 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5)))
+  ([a f x1 x2 x3 x4 x5 x6] (swap-v a f (conj-2 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6)))
+  ([a f x1 x2 x3 x4 x5 x6 x7] (swap-v a f (conj-3 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8] (swap-v a f (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9] (swap-v a f (conj-1 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10] (swap-v a f (conj-2 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11] (swap-v a f (conj-3 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12] (swap-v a f (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13] (swap-v a f (conj-1 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14] (swap-v a f (conj-2 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15] (swap-v a f (conj-3 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16] (swap-v a f (conj-4 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15 x16)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17] (swap-v a f (conj-1 (conj-4 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15 x16) x17)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18] (swap-v a f (conj-2 (conj-4 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15 x16) x17 x18))))
 
 (defn- go-identical? [a b]                                ; Go's != on interface values (atom.go:198)
   (let [ka (sq/kind a) kb (sq/kind b)]

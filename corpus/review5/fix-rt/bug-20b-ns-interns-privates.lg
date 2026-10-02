@@ -1,0 +1,5 @@
+;; native: ns-interns keeps privates; ns-publics drops a ^:private def too
+(eval '(defn- r5-priv2 [] 1))
+(eval '(def ^:private r5-hid 2))
+(eval '(def r5-shown 3))
+(println (contains? (ns-interns 'user) 'r5-priv2) (contains? (ns-publics 'user) 'r5-hid) (contains? (ns-publics 'user) 'r5-shown))

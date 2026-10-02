@@ -1,0 +1,5 @@
+;; native: "nil" -- (ns-resolve 'user 'other/k) is nil: the symbol's own namespace does not redirect the lookup
+(eval '(in-ns 'r5.f))
+(eval '(def k :f))
+(eval '(in-ns 'user))
+(println (eval '(ns-resolve 'user 'r5.f/k)))

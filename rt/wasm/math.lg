@@ -16,7 +16,8 @@
 ;; Integer-exponent pow and sqrt agree everywhere (measured; see the test).
 ;;
 ;; Ratios and bigints are not runtime values (D15): `/` of two Ints whose
-;; quotient is not an integer, and (/ MinInt64 -1), are named limits.
+;; quotient is not an integer, and (/ MinInt64 -1), are named limits,
+;; raised catchably (review5: a trap escaped the program's try).
 ;; `float` returns a Float holding float64(float32(x)): native's Float32 has
 ;; the same type name, printed form, hash and =, but (compare (float 1) 1.0)
 ;; throws natively and is 0 here.
@@ -325,9 +326,9 @@
     (cond (if (= ka 1) (= kb 1) false)
           (let [x (sq/unbox-int a) y (sq/unbox-int b)]
             (cond (= y 0) (c/raise (wasm/bytes-of-string "divide by zero"))
-                  (if (= x -9223372036854775808) (= y -1) false) (wasm/trap "lower-wasm: (/ MinInt64 -1) is a BigInt (numeric tower, D15)")
+                  (if (= x -9223372036854775808) (= y -1) false) (c/raise (wasm/bytes-of-string "lower-wasm: (/ MinInt64 -1) is a BigInt (numeric tower, D15)"))
                   (= 0 (wasm/i64-sub x (wasm/i64-mul y (quot x y)))) (sq/box-int (quot x y))
-                  :else (wasm/trap "lower-wasm: / of two Ints yielding a Ratio (numeric tower, D15)")))
+                  :else (c/raise (wasm/bytes-of-string "lower-wasm: / of two Ints yielding a Ratio (numeric tower, D15)"))))
           (if (num-k? ka) (num-k? kb) false) (s/box-float (/ (f64-of a) (f64-of b)))
           :else (raise-two (wasm/bytes-of-string "cannot divide ") a b))))
 

@@ -1,0 +1,4 @@
+;; native: ":done :done [:after]" -- a / yielding a Ratio (natively a value; here D15's named limit) and (/ MinInt64 -1) must not escape a try (module: an uncatchable wasm trap before P7.8)
+(println (try (do (/ 1 3) :done) (catch e :done))
+         (try (do (eval '(/ 2 3)) :done) (catch e :done))
+         (try (do (/ -9223372036854775808 (dec 0)) [:after]) (catch e [:after])))

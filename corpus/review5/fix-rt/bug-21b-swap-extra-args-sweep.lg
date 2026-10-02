@@ -1,0 +1,8 @@
+;; native: swap! with 4..18 extra args from compiled code, as a value, and from evaluated code (D150's 20-param cap)
+(def a (atom 0))
+(defn f [x & ys] (apply + x ys))
+(println (swap! a f 1 2 3 4) (swap! a f 1 2 3 4 5 6) (swap! a f 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18))
+(let [s swap!] (println (s a f 1 2 3 4 5 6 7) @a))
+(println (eval '(let [b (atom 1)] (swap! b + 1 2 3 4 5 6 7 8))))
+(println (try (swap! a f 1 2 3 4 5) (catch e (ex-message e))))
+(println (try (swap! 1 f 1 2 3 4 5) (catch e (ex-message e))) (try (swap! a 1 1 2 3 4 5) (catch e (ex-message e))))

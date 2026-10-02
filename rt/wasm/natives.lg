@@ -300,17 +300,28 @@
                 (= n 3) (swap! registry assoc-in [:cells key :val] (nth args 2)))
           (:var (cell key)))))))
 
-(defn- publics-of [nm]
-  (into {} (for [[_ cl] (:cells (table)) :when (= nm (:ns cl))] [(:name cl) (:var cl)])))
+(defn- interns-of
+  "The vars of namespace nm: its cells, then the program table's vars no
+   cell shadows. With publics?, the :private ones are left out (PublicVars,
+   review5 bug-20): a cell's def meta, a table stand-in's own meta (which
+   carries no :private today, so program privates stay listed: D161)."
+  [nm publics?]
+  (let [pub? (fn [m] (not (and publics? (:private m))))
+        cells (into {} (for [[_ cl] (:cells (table)) :when (and (= nm (:ns cl)) (pub? (:meta cl)))]
+                         [(:name cl) (:var cl)]))
+        prog (for [[k v] (get-in (table) [:program nm :vars])
+                   :when (and (not (cell (str nm "/" k))) (pub? (meta v)))]
+               [(symbol k) v])]
+    (into cells prog)))
 
 (defn ^{:twin "core/ns-publics"} ns-publics               ; CoreNsPublics (lang.go:7708)
   ([] (raise-arity 0))
-  ([x] (publics-of (ns-arg "ns-publics: " x)))
+  ([x] (interns-of (ns-arg "ns-publics: " x) true))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn ^{:twin "core/ns-interns"} ns-interns               ; CoreNsInterns (lang.go:7726): no private vars here
+(defn ^{:twin "core/ns-interns"} ns-interns               ; CoreNsInterns (lang.go:7726): privates too
   ([] (raise-arity 0))
-  ([x] (publics-of (ns-arg "ns-interns: " x)))
+  ([x] (interns-of (ns-arg "ns-interns: " x) false))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
 (defn ^{:twin "core/the-ns"} the-ns                       ; CoreTheNs (lang.go:7695)
@@ -333,14 +344,15 @@
            (if (nil? q)
              (raise-lit (str "find-var expects a fully-qualified symbol: " x))
              (let [nsn (canon q)]
-               (when (ns-exists? nsn)
-                 (or (lookup nsn (name x))
-                     ;; a builtin namespace's var: a stand-in (its value
-                     ;; is wasm.core/var-value's; alter-var-root works).
-                     ;; Named limit: a name the namespace lacks natively
-                     ;; still finds one here (natively nil)
-                     (when (and (not= nsn "user") (some #{nsn} (builtin-nss)))   ; "user" holds the program's vars
-                       (with-meta (symbol (str "#'" nsn "/" (name x))) {:ns (ns-of nsn) :name (symbol (name x))})))))))
+               ;; not gated on ns-exists?: a library program namespace is
+               ;; in the program table but not in :nss (review5 bug-23)
+               (or (lookup nsn (name x))
+                   ;; a builtin namespace's var: a stand-in (its value
+                   ;; is wasm.core/var-value's; alter-var-root works).
+                   ;; Named limit: a name the namespace lacks natively
+                   ;; still finds one here (natively nil)
+                   (when (and (not= nsn "user") (some #{nsn} (builtin-nss)))   ; "user" holds the program's vars
+                     (with-meta (symbol (str "#'" nsn "/" (name x))) {:ns (ns-of nsn) :name (symbol (name x))}))))))
          (raise-lit "find-var expected a symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
@@ -476,21 +488,19 @@
    backend routes reads of *ns* here)."
   [] (ns-of (:cur (table))))
 
-;; core.lg's ns-resolve is (resolve 'ns/sym) natively, so a var only when
-;; the namespace holds it: here a cell (intern, or a def in evaluated code)
-;; or a var of the program table (wasm.eval's install-program-table!);
-;; nil for a core name, as natively (ns-resolve *ns* 'map) is nil.
+;; core.lg's ns-resolve (core.lg:1654) is (resolve (symbol (str ns "/" (name
+;; sym)))): sym's own namespace is dropped and the ns name goes through the
+;; CURRENT namespace's aliases, as any qualified resolve does (review5
+;; bug-15: (ns-resolve 'user 'r5.f/k) is user/k, nil). So a var only when
+;; the namespace holds it; nil for a core name, as (ns-resolve *ns* 'map).
 (defn ^{:twin "core/ns-resolve"} ns-resolve
   ([nsx sym] (ns-resolve nsx nil sym))
   ([nsx env sym]
    (when-not (and env (contains? env sym))
      (let [nm (cond (stand-in-ns nsx) (stand-in-ns nsx)
-                    (symbol? nsx) (canon (str nsx))
-                    :else (raise-lit "ns-resolve expected a namespace or symbol"))
-           nm (if (namespace sym) (canon (namespace sym)) nm)
-           k (name sym)]
-       (or (:var (cell (str nm "/" k)))
-           (get-in (table) [:program nm :vars k]))))))
+                    (symbol? nsx) (str nsx)
+                    :else (raise-lit "ns-resolve expected a namespace or symbol"))]
+       (resolve (symbol (str nm "/" (name sym))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; future* (lang.go:3688) on one thread (P7.1). Natively the thunk runs in a

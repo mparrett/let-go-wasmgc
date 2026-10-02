@@ -1,0 +1,6 @@
+;; native: ns-resolve drops sym's namespace: (ns-resolve 'r5.g 'zz/k) finds r5.g/k; an unknown ns gives nil
+(eval '(in-ns 'r5.g))
+(eval '(def k :g))
+(eval '(in-ns 'user))
+(println (eval '(ns-resolve 'r5.g 'zz/k)) (eval '(ns-resolve 'r5.g 'k)) (eval '(ns-resolve (find-ns 'r5.g) 'k))
+         (eval '(ns-resolve 'user 'map)) (eval '(ns-resolve 'r5.g '{k 1} 'k)))
