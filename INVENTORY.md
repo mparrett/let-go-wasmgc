@@ -19,6 +19,8 @@ host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # compiles xsofy main.lg
 host/build-xsofy-serve.sh /tmp/lw-serve /tmp/lw-play/xsofy.wasm   # real xsofy-shell.html + adapter + module
 cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm    # adapter's default module name (or pass ?module=xsofy.wasm)
 python3 -m http.server 8260 -d /tmp/lw-serve   # then http://localhost:8260/index.html?seed=424242
+# 2b. play in the terminal instead (node host goes raw on a TTY; --url feeds ?seed=)
+node host/node-host.mjs /tmp/lw-play/xsofy.wasm --url seed=424242
 # 3. a plain program through the backend vs native lg
 WASM_RUN=checks/wasm-run.sh checks/oracle.sh corpus/wasm/maps.lg
 # 4. the whole board

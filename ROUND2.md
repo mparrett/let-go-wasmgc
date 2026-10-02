@@ -72,5 +72,11 @@ run time (large; needs `WebAssembly.instantiate` from inside the host ABI).
 - New: `TOUR.html` and the preview pages regenerated at the final gate by
   the runner, not afterwards.
 - New: a cost line per gate in STATUS.md from the session transcript
-  tally (see the round-1 figure in the summary), so the next estimate is
-  measured rather than guessed.
+  tally. Round-1 baseline (summary doc, "Cost of the campaign"): ≈2.0 B
+  cache-read tokens, ≈$4.3k–5k at assumed list prices, 85% of it the Opus
+  subagents, for 22 h and 53 commits.
+- Nits found while playing 2026-10-01 night: `build-info.json` 404 from the
+  shell (serve script should write one); `os/getenv` is nil in the module
+  (runtime does not import env.getenv yet; node host's `--url` is the
+  workaround for seeding); `lw run` / `lw build` one-command wrappers for
+  node and wasmtime (P6 candidate).
