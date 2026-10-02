@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lower-wasm tour</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--line:#e2dfd7;--card:#ffffff;--acc:#2456c4;
+ --p0:#8a8a86;--p1:#2456c4;--p2:#1e8a4a;--p3:#d97a06;--p4:#c4312b;--pd:#7b3fb3;--pr:#b0871a;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#141513;--fg:#e8e6df;--mut:#9d9b93;--line:#2c2d29;--card:#1c1d1a;--acc:#7fa3ff;--p1:#7fa3ff;--p2:#5fcf8a;--p3:#f2a64a;--p4:#f0706a;--pd:#c08cf0;--pr:#e2c068}}
+:root[data-theme=dark]{--bg:#141513;--fg:#e8e6df;--mut:#9d9b93;--line:#2c2d29;--card:#1c1d1a;--acc:#7fa3ff;--p1:#7fa3ff;--p2:#5fcf8a;--p3:#f2a64a;--p4:#f0706a;--pd:#c08cf0;--pr:#e2c068}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,Segoe UI,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:28px;margin:0 0 4px}h2{font-size:20px;margin:40px 0 10px;padding-top:12px;border-top:1px solid var(--line)}h3{font-size:16px;margin:22px 0 6px}
+.sub{color:var(--mut);margin:0 0 18px}
+code,.mono{font-family:var(--mono);font-size:.88em}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+table{border-collapse:collapse;width:100%;margin:8px 0 14px}td,th{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--mut);font-weight:600;font-size:13px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+.kpi div{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.kpi b{display:block;font-size:22px;font-weight:650}.kpi span{color:var(--mut);font-size:13px}
+.bar{position:relative;height:120px;margin:18px 0 6px;border-bottom:1px solid var(--line)}
+.bar .tick{position:absolute;bottom:-20px;font-size:11px;color:var(--mut);transform:translateX(-50%)}
+.bar .tl{position:absolute;bottom:0;width:1px;height:6px;background:var(--line)}
+.bar .dot{position:absolute;width:9px;height:9px;border-radius:50%;transform:translate(-50%,0);cursor:pointer;border:1.5px solid var(--bg)}
+.bar .dot.gate{width:14px;height:14px;border-radius:3px;transform:translate(-50%,-2px) rotate(45deg)}
+.bar .chap{position:absolute;top:0;height:16px;font-size:11px;color:var(--mut);border-left:1px solid var(--line);padding-left:4px;white-space:nowrap;overflow:hidden}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--mut);margin:26px 0 6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:13px;max-width:420px;display:none;z-index:9;box-shadow:0 4px 14px rgba(0,0,0,.12)}
+.chapters{display:grid;gap:12px}
+.ch{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;border-left-width:5px}
+.ch h3{margin:0 0 4px;font-size:15px}.ch .when{color:var(--mut);font-size:13px;margin-left:6px;font-weight:400}
+.ch p{margin:4px 0}.ch ul{margin:4px 0 0 18px;padding:0}.ch li{margin:2px 0}
+.ch details{margin-top:6px}.ch summary{cursor:pointer;color:var(--mut);font-size:13px}
+.ch details table{font-size:13px;margin:4px 0 0}
+.spots{display:grid;gap:8px}
+.spot{display:grid;grid-template-columns:minmax(230px,300px) 1fr;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:7px;align-items:start}
+.spot .loc{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+.spot .loc .ln{color:var(--mut)}
+.spot button{font:11px var(--mono);margin-left:6px;padding:1px 6px;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--mut);cursor:pointer;vertical-align:middle}
+.spot button:hover{color:var(--fg)}
+.spot .why{font-size:14px}
+.tag{display:inline-block;font-size:11px;padding:0 6px;border-radius:9px;border:1px solid var(--line);color:var(--mut);margin-left:6px;vertical-align:middle}
+.note{background:var(--card);border:1px dashed var(--line);border-radius:8px;padding:10px 14px;color:var(--mut);font-size:14px}
+@media (max-width:640px){.spot{grid-template-columns:1fr}.bar{height:100px}}
+</style>
+</head>
+<body><main>
+<h1>lower-wasm: a tour</h1>
+<p class="sub">A WasmGC backend for let-go, built autonomously 2026-09-30 22:46 to 2026-10-01 21:03 (about 22 hours, 53 local commits on joint <code>main</code>, nothing pushed). This page lives beside the code so every link is relative. Written 2026-10-01; the numbers are from that day.</p>
+
+<div class="kpi">
+ <div><b>4 / 4</b><span>plan gates passed (D62, D127, D113, D120)</span></div>
+ <div><b>140 KB</b><span>xsofy bundle, brotli (stock Go lane: 6.64 MB)</span></div>
+ <div><b>~5.0 s</b><span>time to title screen (stock: ~10.9 s)</span></div>
+ <div><b>20 / 20</b><span>seeds byte-identical, world-gen + 60 turns</span></div>
+ <div><b>265 / 273</b><span>let-go core tests pass under the backend</span></div>
+ <div><b>0</b><span>hash-parity misses over 201 vectors</span></div>
+ <div><b>1 + ~40</b><span>one Fable runner, about 40 Opus subagent dispatches, at most 3 concurrent</span></div>
+ <div><b>27</b><span>bugs found by two adversarial reviews, all fixed or refused by name</span></div>
+</div>
+
+<p>Start here if you read one thing: <a href="INVENTORY.md">INVENTORY.md</a> (try-it commands, knobs, traps, gaps). The write-up for you is <a href="../../docs/project_incoming/letgo-emit-wasm-campaign-summary-2026-10-01.md">the campaign summary</a>. The plan that was executed is <a href="../../docs/project_incoming/letgo-emit-wasm-plan-2026-09-30.md">plan v2</a>.</p>
+
+<h2>0. Play it</h2>
+<p>The emitted lane needs no cross-origin isolation, so any static server works. From <code>dev/lower-wasm/</code>:</p>
+<pre><code>host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # ~80 s compile + wasm-opt, cached by content
+host/build-xsofy-serve.sh  /tmp/lw-serve /tmp/lw-play/xsofy.wasm
+cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm      # the adapter's default module name
+python3 -m http.server 8260 -d /tmp/lw-serve
+open 'http://localhost:8260/index.html?seed=424242'</code></pre>
+<p>That is the real <code>xsofy-shell.html</code>, copied unchanged, driving the WasmGC module through <code>window.LetGoHost</code>. Seed 424242 is the one lane 5 proves byte-identical to the stock lane. <code>?module=&lt;name&gt;.wasm</code> picks another module in the same directory.</p>
+
+<h2>1. The 22 hours, on one bar</h2>
+<p class="sub">One dot per commit, coloured by phase. Diamonds are gates. Hover for the commit subject. Clock is local (PDT).</p>
+<div class="bar" id="bar"></div>
+<div class="legend">
+ <span><i style="background:var(--p0)"></i>plan, scaffold, infra</span>
+ <span><i style="background:var(--p1)"></i>Phase 1: backend on scalar code</span>
+ <span><i style="background:var(--p2)"></i>Phase 2: runtime + collections</span>
+ <span><i style="background:var(--p3)"></i>Phase 3: xsofy headless</span>
+ <span><i style="background:var(--p4)"></i>Phase 4: xsofy in the browser</span>
+ <span><i style="background:var(--pr)"></i>adversarial review / perf</span>
+ <span><i style="background:var(--pd)"></i>docs, handoffs</span>
+</div>
+<div class="tip" id="tip"></div>
+
+<h2>2. Chapters</h2>
+<div class="chapters">
+
+<div class="ch" style="border-left-color:var(--p0)">
+<h3>0. Plan and scaffold<span class="when">22:46 to 23:45, 6 commits</span></h3>
+<p>The probe (<a href="../emit-wasm-probe/">dev/emit-wasm-probe</a>) had shown IR to WasmGC works at 120 to 860 times the speed of the VM in wasm. Plan v2 was fact-checked against the tree, then turned into a campaign where <em>done</em> means one thing: a row in <a href="checks/items.tsv">items.tsv</a> whose check exits 0. Every differential check goes through one match relation, <a href="checks/oracle.sh">oracle.sh</a> (exit class, stdout bytes, normalised first error line). Corpora were materialised as files before any backend code was written: the 42-program op matrix, 201 hash vectors pulled from let-go's own <code>vm.HashValue</code>, the map-order oracle.</p>
+<p><b>Why it mattered later:</b> agents could not argue with a check, and I could verify every report by rerunning its row.</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p1)">
+<h3>1. Phase 1: a strict backend on scalar code<span class="when">23:50 to 02:28, 11 commits, gate D62</span></h3>
+<p>Driver, strict control-tree walker (unknown op or tree node is an error, never a fallback), then wasm exception handling for try/throw/finally (one tag, lambda-lifted regions), then every scalar op typed and boxed with hybrid i31 boxing and Go's shift and quot semantics, then closures with the <code>$Fn</code> ABI and a var table. The gate added the refusal corpus, a census of xsofy and legmacs showing zero op errors and zero <code>goto</code> fallbacks, <code>:switch</code>, tree-shaking and typed self-returns. fib(32) came in at 1.385 times the hand-written probe with checked arithmetic kept.</p>
+<p><b>In parallel</b>, three agents wrote the runtime's <em>native halves</em> in the constrained lg dialect over the 42 intrinsics (D24): persistent vector proof, seqs, maps and sets mirroring let-go's array-map and HAMT, strings with an exact port of Go's float formatting. All of it ran and was tested under native lg with reference intrinsics before the backend could compile a line of it. That decision (D4) is the one that made the schedule.</p>
+<details><summary>decisions worth reading</summary><table>
+<tr><td>D16</td><td>native quirks reproduced, not fixed: <code>(quot MinInt64 -1)</code>, shift counts past 64 follow Go</td></tr>
+<tr><td>D19</td><td>hashing reproduced bit for bit including its bugs; fixing them is an upstream conversation phrased as plain hashing bugs</td></tr>
+<tr><td>D24</td><td>intrinsics carry their wasm instruction and type signature as var metadata, read mechanically by backend and coverage test</td></tr>
+<tr><td>D31</td><td>one exception tag <code>$lgex</code>; runtime errors reified on catch so <code>ex-message</code> matches native prefixes</td></tr>
+<tr><td>D35</td><td>unary minus rewritten in the driver because <code>ir.build</code> turns it into a checked <code>sub</code>; lower-go has the same divergence</td></tr>
+<tr><td>D36 / D52</td><td>closure ABI: one code ref per arity, env field, calls through <code>$rt_invokeN</code></td></tr>
+</table></details>
+</div>
+
+<div class="ch" style="border-left-color:var(--pr)">
+<h3>2. First adversarial review, and the EDN reader<span class="when">02:53 to 03:07, 3 commits</span></h3>
+<p>A reviewer agent was briefed to break "the backend is correct on the Phase 1 subset": 148 probes, 11 bugs, 2 gaps, written up in <a href="corpus/review/README.md">corpus/review</a> and turned into item P1.7. Meanwhile the data reader landed in the dialect with a 951-case parity run against native <code>read-string</code>.</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p2)">
+<h3>3. The hinge: the runtime compiled through the backend<span class="when">05:25 to 08:45, 10 commits</span></h3>
+<p>The quiet gap from 03:07 to 05:25 is the hardest item of the campaign being built. At 06:01 the backend compiled its own runtime: intrinsics emitted inline, every runtime type in one <code>rec</code> group, a content-addressed rtlib cache so the 90 second runtime analysis happens once, tree-shaking, and a test shim so let-go's own deftests can run under the backend. From there the pace is one landed item every 20 to 40 minutes:</p>
+<ul>
+<li>the second adversarial review, a 2300-seed differential fuzz of the runtime (16 bugs, <a href="corpus/review2/README.md">corpus/review2</a>), and its fix item</li>
+<li>the 14 oracle programs in <a href="corpus/wasm/">corpus/wasm</a>, which surfaced nine backend bugs and proved variadics were not optional (D83)</li>
+<li>xsofy's natives: typed arrays, math, a canonical XXH3 port, host io and time</li>
+<li>the browser, node and wasmtime host with JSPI for sleep and read-key, so no cross-origin isolation is needed (D91)</li>
+<li>the Phase 1 review fixes: param-typing fixpoint, purity pins, tail calls via <code>return_call</code>, id munging</li>
+<li>the real xsofy shell booting an emitted module unmodified through <code>LetGoHost</code></li>
+<li>the internal dossier of upstream-worthy findings, phrased without naming this project</li>
+</ul>
+</div>
+
+<div class="ch" style="border-left-color:var(--p2)">
+<h3>4. Closure capture, variadics, and a perf detour<span class="when">10:38 to 13:01, 7 commits</span></h3>
+<p>P2.11 fixed closure capture by id (an <code>ir.build</code> free-vars scope bug, upstream-worthy), strict CSE keys, float typing and NaN payloads. Two handoff notes mark where my own context compacted. Matt asked, via the coordinator, for a look at why checks were slow: a read-only agent found the laptop oversubscribed and the same check varying 5.8 times with load alone (<a href="corpus/perf-report.md">perf-report.md</a>). D106 adopted the zero-risk part: a machine-wide slot pool, parallel corpus and census runs, no sleep polling. Then the variadic ABI landed as a <code>$FnV</code> subtype (D109).</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p4)">
+<h3>5. xsofy, headless then in the browser<span class="when">13:57 to 17:10, 5 commits, gates D113 and D120</span></h3>
+<p>Multi-namespace driver, then world generation plus 60 turns byte-identical to native on 20 seeds (Phase 3 gate, 313 KB module). Then xsofy plays in the real shell from the emitted module. Lane 5 flaked between runs; the root cause was fixed-timing key injection, and the stock lane itself drops keys under load. The fix was a settle-based walk that sends the next key only after the shell reports the previous turn (D119). Phase 4 gate at 17:05: the plan's finish line.</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p2)">
+<h3>6. Closing Phase 2 properly<span class="when">17:37 to 21:03, 8 commits, gate D127</span></h3>
+<p>With the finish line passed, the remaining Phase 2 debt was paid rather than waved through: parallel checks landed byte-identical to serial (P0.1), core tests went from 133 to 265 of 273 (stdlib loaded on demand, an RE2-subset regex engine, var and ns symbols), the hash hook hit zero misses after a reader NaN fix, map order reached 14 of 14 via an array-map twin, and let-go's examples were scoped with a written reason per skip. The gate passed with one named limit: a single <code>to-array</code> deftest. Then the summary, inventory and ADR pointer.</p>
+</div>
+</div>
+
+<h2>3. How the work ran</h2>
+<ul>
+<li><b>Three tiers.</b> A Pulse coordinator session oversaw the board and relayed Matt's asks. One Fable session (the campaign runner) owned the plan, the decision log and every commit, and dispatched at most three Opus subagents at a time, roughly 40 dispatches in all. Items touching <code>src/</code> ran one at a time; runtime items ran beside them. Mechanical work went to Sonnet. Every agent read <a href="AGENTS.md">AGENTS.md</a>: write scopes, the match relation, "done = <code>checks/run.sh &lt;id&gt;</code>", falsify your own fix, no polling.</li>
+<li><b>Every report was verified by rerunning its row</b> before anything was committed. Each landed item is one commit naming its D-numbers. <a href="DECISIONS.md">DECISIONS.md</a> is the binding log (D1 to D9 in the plan, D10 to D127 here); <a href="STATUS.md">STATUS.md</a> was the live board; <a href="FINDINGS.md">FINDINGS.md</a> holds what was learned but not decided.</li>
+<li><b>Two adversarial reviews and one perf investigation</b> were separate agents with read-only briefs and their own corpora, so their findings could not be argued away.</li>
+<li><b>Nothing left the machine.</b> let-go, xsofy and docs-xsofy checkouts are untouched; no worktrees; the backend consumes a stock <code>lg</code> at the pinned SHA as a library. <a href="ORCHESTRATOR-HANDOFF.md">ORCHESTRATOR-HANDOFF.md</a> records the standing rules and the compaction points.</li>
+</ul>
+
+<h2>4. Zoom spots</h2>
+<p class="sub">Where to actually read. Links open the file; the line is what to jump to once it is open. The copy button puts <code>path:line</code> on the clipboard for your editor's quick-open.</p>
+
+<h3>The backend: <code>src/lower_wasm.lg</code> (3,679 lines)</h3>
+<div class="spots">
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:1</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:1">copy</button></div><div class="why">The header states the stance: strict by design, an unknown op or a structurize fallback is an error naming it. Then the <code>require</code> of <code>ir.build</code>, <code>ir.passes.pipeline</code>, <code>ir.structurize</code> from a stock lg, which is the whole trick.</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:134</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:134">copy</button></div><div class="why">Hybrid boxing (D2): an int is an <code>i31ref</code> when it fits 31 bits, a <code>$Int</code> struct otherwise. The <code>*box*</code> knob still lets you compare the three strategies.</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:1128</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:1128">copy</button></div><div class="why"><code>emit-intrinsic</code>: how a call to a <code>wasm.intrinsics</code> var becomes an inline instruction, driven by the var's <code>:wasm</code> metadata. This is why the runtime can be ordinary lg.</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:1572</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:1572">copy</button></div><div class="why"><code>closure-wat</code> and <code>invoke-wat</code> just below: the <code>$Fn</code> ABI in practice, one code slot per arity, env in a field, <code>$rt_invokeN</code> for calls through values.</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:1669</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:1669">copy</button></div><div class="why"><code>tail-call-wat</code>: self and mutual tail calls become <code>return_call</code>, which is what keeps deep lg recursion alive on a JSPI stack (D89 was the risk, D99 closed it).</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:2027</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:2027">copy</button></div><div class="why"><code>analyze-fn</code>: the parameter-typing fixpoint and the float-taint analysis that decide which values stay unboxed i64 or f64. The purity pins on let-go's passes are applied around here (D94).</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:2153</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:2153">copy</button></div><div class="why"><code>try-wat</code>: try, catch and finally regions lambda-lifted into their own wasm functions and stitched with <code>try_table</code> and one exception tag (D31).</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:3372</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:3372">copy</button></div><div class="why"><code>rec-group</code> and <code>module</code> at 3577: every runtime type in one recursion group so same-shaped structs stay distinct under <code>ref.test</code> (D25), then tree-shaking by reachability from the program.</div></div>
+<div class="spot"><div class="loc"><a href="src/lower_wasm.lg">src/lower_wasm.lg</a><span class="ln">:3608</span><button data-c="dev/lower-wasm/src/lower_wasm.lg:3608">copy</button></div><div class="why">The rtlib cache: analysing the runtime takes about 90 s, so the result is content-addressed under <code>src/.rtlib/</code> (or <code>LW_RTLIB_DIR</code>) and restored per session.</div></div>
+<div class="spot"><div class="loc"><a href="src/driver.lg">src/driver.lg</a><span class="ln">:1</span><button data-c="dev/lower-wasm/src/driver.lg:1">copy</button></div><div class="why">The driver: <code>-source-paths</code>, multi-namespace loading, <code>--test</code> mode, the unary-minus rewrite (D35), and the top-level form ordering into <code>lw main</code>.</div></div>
+<div class="spot"><div class="loc"><a href="src/lw_rt.lg">src/lw_rt.lg</a><span class="ln">:1</span><button data-c="dev/lower-wasm/src/lw_rt.lg:1">copy</button></div><div class="why">How the runtime and let-go's stdlib get into the module: pinned <code>letgo-commit</code>, stdlib pulled by <code>git show</code>, and the twin table that maps a native to its lg replacement.</div></div>
+</div>
+
+<h3>The runtime: <code>rt/wasm/</code> (about 7,200 lines of lg over 43 intrinsics)</h3>
+<div class="spots">
+<div class="spot"><div class="loc"><a href="rt/wasm/intrinsics.lg">rt/wasm/intrinsics.lg</a><span class="ln">:1</span><button data-c="dev/lower-wasm/rt/wasm/intrinsics.lg:1">copy</button></div><div class="why">The contract. Each intrinsic has a reference implementation (so the runtime runs natively) and <code>:wasm</code>/<code>:type</code> metadata (so the backend emits it). <code>defstruct</code>, <code>defarray</code>, <code>deffunc</code> declare the GC types.</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/seq.lg">rt/wasm/seq.lg</a><span class="ln">:278</span><button data-c="dev/lower-wasm/rt/wasm/seq.lg:278">copy</button></div><div class="why">One file owns every box and its kind tag (kinds 0 to 37) with per-kind hooks (D59). The chunk and realisation behaviour mirrors let-go's lazy seqs so printing a half-realised seq matches.</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/phm.lg">rt/wasm/phm.lg</a><span class="ln">:309</span><button data-c="dev/lower-wasm/rt/wasm/phm.lg:309">copy</button></div><div class="why">The persistent map, a literal port of <code>persistent_map.go</code>: array-map to 8 entries, then a 32-way HAMT. This comment marks the deliberately reproduced collision-bucket dissoc bug (D30), the clearest example of parity-with-quirks.</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/phm.lg">rt/wasm/phm.lg</a><span class="ln">:117</span><button data-c="dev/lower-wasm/rt/wasm/phm.lg:117">copy</button></div><div class="why"><code>mix-finish</code> and the hash helpers: FNV-1a for strings, the Murmur3 mixes, the shared 64-bit finaliser. These are what the 201-vector hash corpus checks to the bit.</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/str.lg">rt/wasm/str.lg</a><span class="ln">:358</span><button data-c="dev/lower-wasm/rt/wasm/str.lg:358">copy</button></div><div class="why"><code>round-shortest!</code>: Go's <code>strconv</code> shortest-float formatting ported so <code>(str 0.1)</code> and friends print identically. The 2000-instruction function that motivated the memoised <code>src-of</code> in the backend.</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/reader.lg">rt/wasm/reader.lg</a><span class="ln">:980</span><button data-c="dev/lower-wasm/rt/wasm/reader.lg:980">copy</button></div><div class="why"><code>read-string*</code>: the data reader, 951-case parity, exact float parse, and the <code>##NaN</code> literal that closed the last hash miss (D123).</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/xxhash.lg">rt/wasm/xxhash.lg</a><span class="ln">:210</span><button data-c="dev/lower-wasm/rt/wasm/xxhash.lg:210">copy</button></div><div class="why">XXH3-64 with seed, the hash xsofy's determinism rests on, ported canonically. Byte-identical world generation depends on this file.</div></div>
+<div class="spot"><div class="loc"><a href="rt/wasm/host.lg">rt/wasm/host.lg</a><span class="ln">:1</span><button data-c="dev/lower-wasm/rt/wasm/host.lg:1">copy</button></div><div class="why">The natives that reach outside: print, write, sleep, nanotime, getenv, emit, url_param. <a href="rt/wasm/term.lg">term.lg</a> beside it is read-key, key-pending and size with exact escape sequences.</div></div>
+</div>
+
+<h3>The host: <code>host/</code></h3>
+<div class="spots">
+<div class="spot"><div class="loc"><a href="host/ABI.md">host/ABI.md</a><button data-c="dev/lower-wasm/host/ABI.md">copy</button></div><div class="why">The import contract between an emitted module and any host: the <code>env.*</code> and <code>term.*</code> imports, the exports <code>lw main</code>, <code>lw mem</code>, <code>lw lgex</code>, key coalescing (D98), ready mode.</div></div>
+<div class="spot"><div class="loc"><a href="host/lg-wasm-host.js">host/lg-wasm-host.js</a><span class="ln">:13</span><button data-c="dev/lower-wasm/host/lg-wasm-host.js:13">copy</button></div><div class="why">JSPI: blocking imports are <code>WebAssembly.Suspending</code> and <code>lw main</code> runs under <code>WebAssembly.promising</code>. No SharedArrayBuffer ring, so no cross-origin isolation headers.</div></div>
+<div class="spot"><div class="loc"><a href="host/xsofy-shell-adapter.js">host/xsofy-shell-adapter.js</a><button data-c="dev/lower-wasm/host/xsofy-shell-adapter.js">copy</button></div><div class="why">82 lines that let the unmodified <code>xsofy-shell.html</code> drive an emitted module through <code>window.LetGoHost</code>. <a href="host/build-xsofy-module.sh">build-xsofy-module.sh</a> and <a href="host/build-xsofy-serve.sh">build-xsofy-serve.sh</a> are the try-it path.</div></div>
+</div>
+
+<h3>The checks: <code>checks/</code> and <code>corpus/</code></h3>
+<div class="spots">
+<div class="spot"><div class="loc"><a href="checks/oracle.sh">checks/oracle.sh</a><button data-c="dev/lower-wasm/checks/oracle.sh">copy</button></div><div class="why">38 lines. The single match relation every differential check uses: exit class, stdout bytes, normalised first error line. Read it first, then everything else is "run native, run emitted, call this".</div></div>
+<div class="spot"><div class="loc"><a href="checks/items.tsv">checks/items.tsv</a><button data-c="dev/lower-wasm/checks/items.tsv">copy</button></div><div class="why">The definition of done, one row per item: id, phase, the command whose exit 0 means done. <a href="checks/gate.sh">gate.sh</a> runs a phase's rows; <a href="checks/run.sh">run.sh</a> runs one.</div></div>
+<div class="spot"><div class="loc"><a href="checks/world-parity.sh">checks/world-parity.sh</a><button data-c="dev/lower-wasm/checks/world-parity.sh">copy</button></div><div class="why">The Phase 3 oracle: N seeds, T turns, scripted keys, native versus emitted, byte comparison of the world dump.</div></div>
+<div class="spot"><div class="loc"><a href="checks/browser-boot.mjs">checks/browser-boot.mjs</a><span class="ln">:39</span><button data-c="dev/lower-wasm/checks/browser-boot.mjs:39">copy</button></div><div class="why">The settle-based walk (D119) that made lane 5 deterministic: next key only after the shell reports the turn. <a href="checks/lane5.sh">lane5.sh</a> wraps it and diffs the two lanes' screens.</div></div>
+<div class="spot"><div class="loc"><a href="checks/sem.sh">checks/sem.sh</a><button data-c="dev/lower-wasm/checks/sem.sh">copy</button></div><div class="why">The machine-wide slot pool (<code>LW_SLOTS</code>) from the perf detour. <a href="checks/affected.sh">affected.sh</a> maps a changed path to the rows it touches.</div></div>
+<div class="spot"><div class="loc"><a href="checks/census.lg">checks/census.lg</a><button data-c="dev/lower-wasm/checks/census.lg">copy</button></div><div class="why">Walks every defn of xsofy or legmacs through the backend in dry-run mode and tallies op errors and structurize fallbacks. Results in <a href="corpus/census/xsofy-summary.md">corpus/census</a>.</div></div>
+<div class="spot"><div class="loc"><a href="corpus/wasm/">corpus/wasm/</a><button data-c="dev/lower-wasm/corpus/wasm">copy</button></div><div class="why">The 14 differential oracle programs that define Phase 2's bar (D75). <a href="corpus/wasm/README.md">Its README</a> lists the backend bugs each one caught.</div></div>
+<div class="spot"><div class="loc"><a href="corpus/hash/">corpus/hash/</a> and <a href="corpus/maporder/SPEC.md">corpus/maporder/SPEC.md</a><button data-c="dev/lower-wasm/corpus/maporder/SPEC.md">copy</button></div><div class="why">The two specs written from let-go's Go source at the pinned SHA before any port began. The hash SPEC's H1 to H5 and the map SPEC's bucket bug are the parity-with-quirks list.</div></div>
+<div class="spot"><div class="loc"><a href="corpus/review/README.md">corpus/review</a>, <a href="corpus/review2/README.md">corpus/review2</a>, <a href="corpus/perf-report.md">corpus/perf-report.md</a></div><div class="why">The two adversarial reviews (148 probes; 2300 seeds) and the perf investigation, each written by an agent that was told not to touch the code.</div></div>
+<div class="spot"><div class="loc"><a href="corpus/core-tests-report.md">corpus/core-tests-report.md</a><button data-c="dev/lower-wasm/corpus/core-tests-report.md">copy</button></div><div class="why">Per-file result of running let-go's own core test suite under the backend, with the eight remaining failures named.</div></div>
+</div>
+
+<h3>Decisions to read in full</h3>
+<table>
+<tr><th>D</th><th>why it matters</th></tr>
+<tr><td>D4, D24</td><td>runtime in lg over intrinsics, not deftype and not hand-written WAT. The backend compiles its own runtime, and the runtime was tested natively first.</td></tr>
+<tr><td>D19, D30, D79</td><td>parity including let-go's quirks; the list of which quirks and where they are reproduced.</td></tr>
+<tr><td>D62, D113, D120, D127</td><td>the four gate records, each with what was run, at what load, and the one named limit.</td></tr>
+<tr><td>D83, D109</td><td>variadics were required for Phase 3; the <code>$FnV</code> subtype design.</td></tr>
+<tr><td>D89, D99</td><td>the JSPI stack-depth risk and the measurement that closed it: xsofy's deepest stack is 20 lg frames.</td></tr>
+<tr><td>D91</td><td>no cross-origin isolation for the emitted lane.</td></tr>
+<tr><td>D106, D121</td><td>what the perf investigation recommended and which parts were adopted.</td></tr>
+<tr><td>D118, D119</td><td>why lane 5 flaked and the settle-based fix.</td></tr>
+</table>
+
+<h2>5. What is open</h2>
+<ul>
+<li><b>One red row</b>: a single <code>to-array</code> deftest in P2.3, named in D127.</li>
+<li><b>Known semantic gaps</b> listed in <a href="INVENTORY.md">INVENTORY.md</a>: <code>with-meta</code> on a variadic fn, identity hash per kind, printing a fn is refused, <code>*out*</code> rebinding is lexical.</li>
+<li><b>Per-turn speed</b> is 1.3 to 1.5 times native on a loaded host, untuned.</li>
+<li><b>Upstream findings</b> wait in the <a href="../../docs/project_incoming/letgo-upstream-findings-from-lower-wasm-2026-10-01.md">internal dossier</a>, phrased as plain bugs. Nothing filed.</li>
+<li><b>Decisions for Matt</b>: surface upstream or not; where the code lives (standalone repo via subtree split was the recommendation); Phase 5 (legmacs) as its own plan.</li>
+</ul>
+
+<h2>6. Diff previews, archived</h2>
+<p>Self-contained pages of <code>git diff origin/main 9de705c</code> with the corpora excluded, kept under <code>previews/2026-10-01/</code>: <a href="previews/2026-10-01/lw-backend.html">backend + driver</a>, <a href="previews/2026-10-01/lw-runtime.html">runtime</a>, <a href="previews/2026-10-01/lw-host-checks.html">host + checks</a>, <a href="previews/2026-10-01/lw-docs.html">docs</a>.</p>
+
+<script>
+const T0=Date.parse('2026-09-30T22:46:00-07:00'), T1=Date.parse('2026-10-01T21:03:00-07:00');
+const C=[
+['09-30 22:46','p0','emit-wasm probe: coverage census + host-capability measurements'],
+['09-30 22:46','pd','docs: emit-wasm plan v2 (fact-checked, measured, agent-ready breakdown)'],
+['09-30 23:20','p0','build-bundle: add lg_no_json to TinyGo builds (unrelated, rides in the range)'],
+['09-30 23:22','pd','docs: emit-wasm plan is skunkworks; upstream spin-offs stay generic'],
+['09-30 23:33','p0','campaign scaffold: match oracle, item table, materialised corpora'],
+['09-30 23:45','p0','op-matrix corpus (23 ops, 42 programs), run-corpus.sh, agent brief, D10–D17'],
+['09-30 23:45','p0','hash parity corpus (201 vectors from vm.HashValue), hash-parity.sh, FINDINGS'],
+['09-30 23:50','p1','P1.0: driver, strict walker with :tail, node runner; scalar corpus 4/4'],
+['10-01 00:00','p2','P2.1 native half: 42 intrinsics with reference impl, pvec proof, dialect check'],
+['10-01 00:03','p2','P2.4 corpus: map/set iteration-order oracle, SPEC with the bucket-dissoc bug'],
+['10-01 00:10','p1','P1.2: try/throw/finally via wasm EH, $Err model, multi-exit loops; control 16/16'],
+['10-01 00:35','p2','P2.5 native half: seq kinds + natives in the dialect, chunk/realisation parity'],
+['10-01 00:45','p1','P1.1: all scalar ops typed+boxed, hybrid i31 boxing, Go shift/quot semantics; opmatrix 39/39'],
+['10-01 01:08','p2','P2.6 native half: strings/chars/keywords/symbols, exact float formatting (Go strconv port)'],
+['10-01 01:08','p2','P2.4 runtime half: persistent map/set mirroring array-map/HAMT, order parity 10k asserts'],
+['10-01 01:10','p1','P1.3: closures ($Fn ABI), var table, calls through fn values; closure corpus 11/11'],
+['10-01 01:35','p2','P2.8: native inventory (954), twin manifest, native-twins.sh scoreboard'],
+['10-01 01:46','p2','P2.9: one runtime (seq.lg owns all boxes, per-kind hooks), D52 Fn, slow tier'],
+['10-01 02:28','p1','P1.4–P1.6 + PHASE 1 GATE: refuse.sh, census 0 op errors / 0 goto, :switch, tree-shake; fib 1.385×','gate'],
+['10-01 02:35','p2','P2.7: generic dispatchers, arithmetic as values, atoms/meta/ex-info/sort/apply; shared natives MISSING 0/91'],
+['10-01 02:53','pr','Phase 1 adversarial review corpus (148 probes, 11 bugs, 2 gaps) + P1.7 fix item'],
+['10-01 02:53','p0','world-parity.sh (Phase 3 oracle driver) + LG_ARGS in oracle.sh'],
+['10-01 03:07','p3','P3.0: EDN data reader in the dialect (951-case parity with native read-string)'],
+['10-01 05:25','pr','runtime differential fuzz review (2300 seeds, 16 bugs) + P2.10 fix item'],
+['10-01 06:01','p2','P2.1 backend: whole runtime compiled through the backend, one rec group, rtlib cache, tree-shake, test shim'],
+['10-01 06:48','p2','P2.10: runtime review fixes (vector kind per native, lazy error caching, transient seqs, hash arms)'],
+['10-01 07:30','p2','P2.1 corpus: 14 differential oracle programs; F1–F9 backend bugs → P2.11; variadic ABI → P2.12'],
+['10-01 07:43','p3','P3.1: xsofy-only natives (arrays, math, xxh3 canonical port, host io/time); xsofy twins MISSING 0/135'],
+['10-01 08:01','p4','P4.0: browser/node/wasmtime host, JSPI sleep + read_key, import ABI; no COI needed'],
+['10-01 08:33','p1','P1.7: review fixes (param-typing fixpoint, purity pins, tail calls, id munging); 48/48 + 3 refused'],
+['10-01 08:34','p4','P4.1 runtime half: term twins (24, exact escapes), recursion depth max 20 (D89 closed)'],
+['10-01 08:36','pd','docs: internal dossier of upstream-worthy findings'],
+['10-01 08:45','p4','P4.1 host half: real xsofy shell boots emitted modules via LetGoHost, key coalescing'],
+['10-01 10:38','p2','P2.11: closure capture by id, strict CSE keys, float typing, $rt_invokeN dispatch, NaN payloads; corpus/wasm 13/14'],
+['10-01 11:01','pd','orchestrator handoff note (pre-compaction)'],
+['10-01 11:10','pd','handoff note: perf investigation in flight'],
+['10-01 11:56','pr','perf investigation report; adopt D106 (slot pool, affected rows, no polling); P0.1 queued'],
+['10-01 12:07','p2','P2.13: MapSeq/SetSeq kind, f64-neg intrinsic + emitter, raise sweep; corpus/wasm 14/14, 116 tests'],
+['10-01 12:59','p2','P2.12: variadic ABI ($FnV subtype, invoke_var/apply spread), lw_ext fills; 9/9 + closure 13/13'],
+['10-01 13:01','pd','handoff note refresh (P3.2/P0.1/P2.3 in flight)'],
+['10-01 13:57','p2','P2.3: core tests under the backend measured (133/273); blockers → P2.14'],
+['10-01 15:17','p3','P3.2 + PHASE 3 GATE: multi-namespace driver, xsofy world-gen 20/20 byte-identical (313 KB module)','gate'],
+['10-01 16:42','p4','P4.1 backend + P4.3: xsofy plays in the real shell from the emitted module; size/boot table'],
+['10-01 17:01','p4','P4.2: settle-based lane-5 walk (3/3 identical); held walk informational'],
+['10-01 17:10','p4','PHASE 4 GATE PASSED (campaign finish line); D120','gate'],
+['10-01 17:37','pd','docs: campaign summary draft (internal)'],
+['10-01 18:39','p0','P0.1: parallel run-corpus/gate/native tier/census with slot pool; outputs byte-identical to serial'],
+['10-01 19:30','p2','P2.14 + P2.2: core tests 265/273 (stdlib on demand, RE2-subset regex, --test stubs); hash hook 0 misses; reader NaN'],
+['10-01 20:18','p2','array-map twin (map-order 14/14), corpus/seqs 4/4, run-roundtrip.sh over examples with SKIP'],
+['10-01 20:21','p2','examples corpus scoped with reasons, SKIP comments, P2.14 re-verified'],
+['10-01 20:33','p2','PHASE 2 GATE passed with one named limit; campaign complete; summary finalised; D127','gate'],
+['10-01 20:34','p0','examples corpus files + regenerated results from the final gate runs'],
+['10-01 21:03','pd','INVENTORY.md (entry point, knobs, traps, gaps); ADR-018 pointer'],
+];
+const col={p0:'var(--p0)',p1:'var(--p1)',p2:'var(--p2)',p3:'var(--p3)',p4:'var(--p4)',pr:'var(--pr)',pd:'var(--pd)'};
+const bar=document.getElementById('bar'),tip=document.getElementById('tip');
+const x=t=>((t-T0)/(T1-T0)*100).toFixed(2)+'%';
+for(let h=Date.parse('2026-09-30T23:00:00-07:00');h<=T1;h+=3600e3){
+  const d=new Date(h),hh=d.getHours();
+  const l=document.createElement('div');l.className='tl';l.style.left=x(h);bar.appendChild(l);
+  if(hh%2===0){const k=document.createElement('div');k.className='tick';k.style.left=x(h);k.textContent=(hh<10?'0':'')+hh+':00';bar.appendChild(k);}
+}
+const chaps=[['0 plan','2026-09-30T22:46:00-07:00'],['1 Phase 1 + rt native halves','2026-09-30T23:50:00-07:00'],['2 review','2026-10-01T02:53:00-07:00'],['3 runtime through the backend','2026-10-01T05:25:00-07:00'],['4 variadics, perf','2026-10-01T10:38:00-07:00'],['5 xsofy','2026-10-01T13:57:00-07:00'],['6 Phase 2 close','2026-10-01T17:37:00-07:00']];
+chaps.forEach(([n,t],i)=>{const e=document.createElement('div');e.className='chap';e.style.left=x(Date.parse(t));const nx=chaps[i+1]?Date.parse(chaps[i+1][1]):T1;e.style.width=((nx-Date.parse(t))/(T1-T0)*100)+'%';e.textContent=n;bar.appendChild(e);});
+const lanes={};
+C.forEach(([when,ph,msg,g])=>{
+  const t=Date.parse('2026-'+when.replace(' ','T')+':00-07:00');
+  const slot=Math.round((t-T0)/600e3);lanes[slot]=(lanes[slot]||0)+1;
+  const d=document.createElement('div');d.className='dot'+(g?' gate':'');d.style.left=x(t);d.style.bottom=(22+(lanes[slot]-1)*13)+'px';d.style.background=col[ph];
+  d.addEventListener('mousemove',e=>{tip.style.display='block';tip.innerHTML='<b>'+when+'</b> '+msg;tip.style.left=Math.min(e.clientX+12,innerWidth-440)+'px';tip.style.top=(e.clientY+14)+'px';});
+  d.addEventListener('mouseleave',()=>tip.style.display='none');
+  bar.appendChild(d);
+});
+document.querySelectorAll('button[data-c]').forEach(b=>b.addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(b.dataset.c);b.textContent='copied';}catch(e){prompt('copy:',b.dataset.c);}
+  setTimeout(()=>b.textContent='copy',1200);
+}));
+</script>
+</main></body></html>

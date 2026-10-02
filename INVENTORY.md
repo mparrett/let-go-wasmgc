@@ -15,9 +15,10 @@ cd ~/projects-new/3p/joint-xsofy/dev/lower-wasm
 checks/browser-boot.sh --xsofy            # title + map, prints timings
 checks/lane5.sh                           # byte-identical to the stock lane at seed 424242
 # 2. open it yourself: build the serve dir and serve it (no COI needed)
-host/build-xsofy-module.sh                 # compiles xsofy main.lg (~80 s) + wasm-opt (~2.5 min), cached
-host/build-xsofy-serve.sh /tmp/lw-serve   # real xsofy-shell.html + adapter + module
-python3 -m http.server 8260 -d /tmp/lw-serve   # then http://localhost:8260/xsofy.html?seed=424242
+host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # compiles xsofy main.lg (~80 s) + wasm-opt, cached by content
+host/build-xsofy-serve.sh /tmp/lw-serve /tmp/lw-play/xsofy.wasm   # real xsofy-shell.html + adapter + module
+cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm    # adapter's default module name (or pass ?module=xsofy.wasm)
+python3 -m http.server 8260 -d /tmp/lw-serve   # then http://localhost:8260/index.html?seed=424242
 # 3. a plain program through the backend vs native lg
 WASM_RUN=checks/wasm-run.sh checks/oracle.sh corpus/wasm/maps.lg
 # 4. the whole board
