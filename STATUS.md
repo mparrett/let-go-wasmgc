@@ -39,3 +39,4 @@
 | P2.3 | measured 2026-10-01 | sonnet | 133/273 (49%); blockers → P2.14 (D112) |
 | P4.1-backend + P4.3 | done 2026-10-01 | opus | xsofy plays in the real shell; 140 KB brotli; verified --xsofy PASS |
 | P4.2 | done 2026-10-01 | sonnet | settle-based lane5; 3/3 IDENTICAL; stock lane was the flaky one |
+| P4.GATE | PASSED 2026-10-01 17:05 | — | campaign finish line; verified by orchestrator |

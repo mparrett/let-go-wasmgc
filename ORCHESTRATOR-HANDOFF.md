@@ -37,6 +37,9 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
 2. P2.GATE: fix the top blockers from the P2.3 report until ≥ 90% of 273.
 3. Gates 2, 3, 4 in order; Phase 4 gate = finish line.
 
+## State summary (updated 2026-10-01 17:10)
+- PHASE 4 GATE PASSED (D120): the finish line. Remaining: P2.14 (core tests to 90%, agent `ae43ef09041ca0217`), P0.1 (speedups, agent `a6f67a916a68a3410`), then P2.GATE, a campaign summary for Matt, release the pulse claim with --outcome handoff.
+
 ## State summary (2026-10-01 10:50)
 - Phase 1: GATE PASSED (D62), review fixes P1.7 landed (D92–D96).
 - Phase 2: runtime 116 tests / 37.8k asserts; compiled through the backend;
