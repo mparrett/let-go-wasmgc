@@ -86,3 +86,4 @@
 | P6.1 | verifying 09:40 | opus+runner | 816/816 in scratch; dynvars/arity/nsinit corpora; diff applied, run.sh P6.1 running |
 | P6.R | dispatched 09:45 | opus | read-only, corpus/review4, frozen copy incl. P6.1 |
 | P6.R | done 2026-10-02 10:50 | opus | review4: 11 bugs, rows P6.6-P6.8 filed; xsofy rows held |
+| P6.2 | measured 2026-10-02 11:00 | runner | 252/373, 24/30 on 1f51b18; #bar 252; limit-adjusted ceiling 262 (eval + go/future/promise = Phase 7) |
