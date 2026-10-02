@@ -1,0 +1,129 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>lw-eval: file map and rows</title>
+<style>
+:root{
+  --ground:#0f1419; --surface:#171d23; --code-bg:#1a2027; --border:#2a333c;
+  --text:#c9d3de; --muted:#7d8896; --faint:#59636e;
+  --accent:#4fd6be; --add:#3fb950; --del:#f85149; --hunk:#58a6ff;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px 96px}
+.top{position:sticky;top:0;z-index:10;background:rgba(15,20,25,.86);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);margin:0 -20px 0;padding:18px 20px 16px}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600;display:flex;gap:10px;align-items:center}
+.eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+h1{font-size:23px;margin:8px 0 0;font-weight:650;letter-spacing:-.01em;text-wrap:balance}
+.refs{margin-top:6px;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.refs b{color:var(--text);font-weight:600}
+.refs .arrow{color:var(--faint);margin:0 6px}
+.cmeta{margin-top:5px;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.totals{display:flex;gap:18px;margin-top:14px;font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums;align-items:center;flex-wrap:wrap}
+.totals .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-right:6px}
+.totals a{border-bottom:1px dotted var(--faint)}
+.totals a:hover{border-bottom-color:var(--accent)}
+.add{color:var(--add)} .del{color:var(--del)}
+.summary{margin:22px 0 30px}
+.sumhead{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0;padding:6px 0;cursor:pointer;list-style:none}
+.sumhead::-webkit-details-marker{display:none}
+.summary[open] .sumhead{margin:0 0 6px}
+.summary[open] .chev{transform:rotate(90deg)}
+.sumhead h3{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0;font-weight:600;display:flex;align-items:center;gap:9px}
+.sumhead h3 .n{font-family:var(--mono);letter-spacing:0;color:var(--faint);font-weight:500}
+.sumhead:hover h3{color:var(--text)}
+.chev{width:0;height:0;flex:none;border-left:6px solid var(--faint);border-top:5px solid transparent;border-bottom:5px solid transparent;transition:transform .15s}
+.chips{display:flex;flex-direction:column;gap:2px}
+.chip{display:grid;grid-template-columns:1fr auto;align-items:center;gap:14px;padding:7px 12px;border-radius:7px;transition:background .12s}
+.chip:hover{background:var(--surface)}
+.chip-path{font-family:var(--mono);font-size:12.5px;color:var(--text);overflow-wrap:anywhere}
+.chip-note{display:block;font-family:var(--sans);font-size:12.5px;color:var(--muted);margin-top:1px}
+.chip-num{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted)}
+.chip-cat{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:lowercase;color:var(--muted);background:var(--code-bg);border:1px solid var(--border);border-radius:5px;padding:1px 6px;margin-left:8px;vertical-align:middle}
+.file{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:20px;overflow:hidden}
+.file-head{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(255,255,255,.02),transparent)}
+.file-head h2{font-family:var(--mono);font-size:13.5px;font-weight:600;margin:0;color:var(--text)}
+.file-stat{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.code-wrap{overflow-x:auto}
+table.rows{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--code-bg)}
+table.rows th{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:left;padding:8px 14px;border-bottom:1px solid var(--border)}
+table.rows td{padding:7px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+table.rows tr:last-child td{border-bottom:none}
+table.rows td:first-child{font-family:var(--mono);font-size:12.5px;white-space:nowrap;color:var(--accent)}
+table.rows code{font:12px var(--mono);color:var(--hunk)}
+.pending{color:var(--faint);font-style:italic}
+.foot{margin-top:26px;color:var(--faint);font-size:12.5px}
+.foot a{color:var(--hunk)}
+@media (max-width:640px){.chip{grid-template-columns:1fr}}
+</style></head><body>
+<div class="wrap"><div class="top">
+<div class="eyebrow"><span class="dot"></span>ROUND 3 PREVIEW</div>
+<h1>lw-eval: the in-module evaluator</h1>
+<div class="refs"><b>dev/lower-wasm</b><span class="arrow">/</span>rt/wasm/eval.lg <span class="arrow">+</span> the program table in src/driver.lg</div>
+<div class="cmeta">file map and row table as of 2026-10-02; D159 to D166; round 3 is not archived as a diff yet, so this page lists instead of diffing</div>
+<div class="totals"><a href="#filemap"><span class="k">entries</span>19</a><a href="#rows"><span class="k">rows</span>11</a><span><span class="k">review5 bugs</span><span class="del">28</span></span><span><span class="k">fix programs</span><span class="add">36/36</span></span></div>
+</div>
+
+<details class="summary" id="filemap" open><summary class="sumhead"><h3><span class="chev"></span>Evaluator file map<span class="n">19</span></h3></summary><div class="chips">
+
+<div class="chip"><span class="chip-path">rt/wasm/eval.lg <span class="chip-cat">rt, agent A</span><span class="chip-note">The evaluator: closure compiler, 11 special forms, about 40 core macros as expanders, the core table (about 230 names), registry cells, the <code>core/eval</code> twin. The header states the shape, the resolution order and every named limit. D160, D162, D165.</span></span><span class="chip-num">1,199 lines</span></div>
+
+<div class="chip"><span class="chip-path">rt/wasm/natives.lg <span class="chip-cat">rt</span><span class="chip-note">The registry the evaluator interns cells into, and the twins evaluated code reaches: <code>resolve</code>, <code>find-var</code>, <code>ns-resolve</code>, <code>ns-publics</code>, <code>current-ns</code> (what <code>*ns*</code> reads). D162, D164.</span></span><span class="chip-num">1,425 lines</span></div>
+
+<div class="chip"><span class="chip-path">rt/wasm/reader.lg <span class="chip-cat">rt</span><span class="chip-note">Code forms (<code>#(</code>, <code>::kw</code>, syntax-quote, <code>#"re"</code>) leave the reader through a hook kept in the root of <code>#'wasm.reader/code-hook</code>; eval.lg installs it. D160.</span></span><span class="chip-num">1,092 lines</span></div>
+
+<div class="chip"><span class="chip-path">src/driver.lg <span class="chip-cat">src, agent B</span><span class="chip-note">The program table: per-ns hidden <code>__lw_pvar</code> and <code>__lw_ptab</code>, program macros as <code>__lw_m_&lt;name&gt;</code>, <code>registry-boot-forms</code> (the in-ns and the <code>install-program-table!</code> call, only when eval is reached). D161, D166.</span></span><span class="chip-num">911 lines</span></div>
+
+<div class="chip"><span class="chip-path">src/lw_rt.lg <span class="chip-cat">src</span><span class="chip-note"><code>no-eval?</code>: with <code>LW_NO_EVAL=1</code> every twin defined in <code>wasm.eval</code> leaves the twin table, and the flag joins the rtlib cache key. D163.</span></span><span class="chip-num">399 lines</span></div>
+
+<div class="chip"><span class="chip-path">src/lw_ext.lg <span class="chip-cat">src</span><span class="chip-note"><code>calling-throw</code>: the <code>calling f</code> layer on an uncaught CompileError out of <code>eval</code> or a program fn. D166.</span></span><span class="chip-num">950 lines</span></div>
+
+<div class="chip"><span class="chip-path">host/repl.html <span class="chip-cat">host</span><span class="chip-note">The browser REPL page: one line in, sent key by key, evaluated in the module; 13 examples; typed text uses an unbounded key queue and no coalescing.</span></span><span class="chip-num">92 lines</span></div>
+
+<div class="chip"><span class="chip-path">corpus/host/repl.lg <span class="chip-cat">corpus</span><span class="chip-note">The program on the other side of the page: <code>term/read-key</code> to a line, <code>read-all-string</code>, <code>eval</code> each form, <code>prn</code> the last value.</span></span><span class="chip-num">29 lines</span></div>
+
+<div class="chip"><span class="chip-path">checks/eval-hosts.sh <span class="chip-cat">check</span><span class="chip-note">P7.5: the evaluator reached the same way from node, Chromium and legmacs C-x C-e.</span></span><span class="chip-num">67 lines</span></div>
+
+<div class="chip"><span class="chip-path">checks/eval-optout.sh <span class="chip-cat">check</span><span class="chip-note">P7.6: the opt-out flag, legmacs built both ways, eval-free modules byte-identical.</span></span><span class="chip-num">76 lines</span></div>
+
+<div class="chip"><span class="chip-path">checks/repl-page-check.mjs <span class="chip-cat">check</span><span class="chip-note">Playwright against the REPL page at :8262: banner, the fib example, the frequencies example.</span></span><span class="chip-num">15 lines</span></div>
+
+<div class="chip"><span class="chip-path">corpus/eval/ <span class="chip-cat">corpus</span><span class="chip-note">P7.0's oracle: 13 programs in special, macros, fns, errors, ns, reader and program (the program table's own, owned by B); each MATCHes native <code>eval</code>.</span></span><span class="chip-num">13 programs</span></div>
+
+<div class="chip"><span class="chip-path">corpus/eval-buffer/ <span class="chip-cat">corpus</span><span class="chip-note">P7.3: eval-buffer of legmacs' <code>comment.lg</code> in the module.</span></span><span class="chip-num">1 program</span></div>
+
+<div class="chip"><span class="chip-path">corpus/intrinsics/eval_test.lg <span class="chip-cat">corpus</span><span class="chip-note">The native tier: the evaluator's compile step under native lg, compared with native <code>eval</code>.</span></span><span class="chip-num">111 lines</span></div>
+
+<div class="chip"><span class="chip-path">corpus/legmacs-eval-tests.txt <span class="chip-cat">corpus</span><span class="chip-note">P7.1's ledger: the eval-dependent legmacs test files and their bar.</span></span><span class="chip-num">19 lines</span></div>
+
+<div class="chip"><span class="chip-path">corpus/review5/probes/ <span class="chip-cat">corpus</span><span class="chip-note">The reviewer's oracle programs, in 12 groups; line 1 of each states native's behaviour. 30 matched.</span></span><span class="chip-num">72 probes</span></div>
+
+<div class="chip"><span class="chip-path">corpus/review5/bugs/ <span class="chip-cat">corpus</span><span class="chip-note">One minimal repro per bug; all 28 MISMATCHed when written. The README ranks them S1 to S4.</span></span><span class="chip-num">28 repros</span></div>
+
+<div class="chip"><span class="chip-path">corpus/review5/fix-eval, fix-rt, fix-backend <span class="chip-cat">corpus</span><span class="chip-note">The same repros regrouped by owner, one row each (P7.7, P7.8, P7.9).</span></span><span class="chip-num">22 + 7 + 7</span></div>
+
+<div class="chip"><span class="chip-path">ROUND3.md, DECISIONS.md <span class="chip-cat">docs</span><span class="chip-note">The plan and the binding seam; D159 to D166 are this round's decisions.</span></span><span class="chip-num">247 / 159 lines</span></div>
+
+</div></details>
+
+<div class="file" id="rows">
+<div class="file-head"><h2>checks/items.tsv, rows P7.0 to P7.GATE</h2><span class="file-stat">results as of 2026-10-02</span></div>
+<div class="code-wrap"><table class="rows">
+<tr><th>row</th><th>what it checks</th><th>result (2026-10-02)</th><th>decision</th></tr>
+<tr><td>P7.0</td><td>programs calling <code>(eval (read-string s))</code> MATCH native across special forms, macros, closures, recursion, errors</td><td>corpus/eval 13/13; native tier 122 tests</td><td>D160</td></tr>
+<tr><td>P7.1</td><td>legmacs repl_mode and letgo_mode, the eval-dependent files</td><td>28/30 (repl 7/7, letgo 21/23); whole suite 252 to 316 of 373</td><td>D162</td></tr>
+<tr><td>P7.2</td><td>script 6: a defn in *scratch*, C-x C-e, a call, C-x C-e</td><td>byte-identical, native versus module</td><td>D162</td></tr>
+<tr><td>P7.3</td><td>eval-buffer of <code>comment.lg</code> defines its commands</td><td><code>comment-dwim</code> defined by eval; <code>defcommand</code> expands in-module</td><td>D162</td></tr>
+<tr><td>P7.4</td><td>size and boot tables with the interpreter linked</td><td>legmacs 166 KB brotli with eval, 120 KB with <code>LW_NO_EVAL=1</code>, round 2 119 KB; xsofy 115 KB, behaviour unchanged</td><td>D161, D163</td></tr>
+<tr><td>P7.5</td><td>the interpreter reachable the same way from node and the browser host</td><td>node, Chromium and legmacs C-x C-e green</td><td>STATUS</td></tr>
+<tr><td>P7.6</td><td>the opt-out flag leaves the evaluator and table out</td><td>eval-optout.sh PASS</td><td>D163</td></tr>
+<tr><td>P7.R</td><td>adversarial review of the evaluator, read-only</td><td>72 probes, 28 bugs</td><td>review5</td></tr>
+<tr><td>P7.7</td><td>review5 evaluator bugs</td><td>fix-eval 22/22</td><td>D165</td></tr>
+<tr><td>P7.8</td><td>review5 runtime bugs</td><td>fix-rt 7/7</td><td>D164</td></tr>
+<tr><td>P7.9</td><td>review5 backend bugs</td><td>fix-backend 7/7</td><td>D166</td></tr>
+<tr><td>P7.GATE</td><td><code>checks/gate.sh 7</code>, with gates 1 to 6 still green</td><td class="pending">see TOUR.html section 8; the runner fills in gates 1 to 6</td><td>-</td></tr>
+</table></div></div>
+
+<p class="foot">Part of <a href="../../TOUR.html#r3">TOUR.html, section 8</a>. Sizes are brotli -q 11 of the served module, from <a href="../../DECISIONS.md">D161 and D163</a>.</p>
+</div></body></html>

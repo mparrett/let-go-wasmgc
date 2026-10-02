@@ -64,7 +64,7 @@ table{border-collapse:collapse;width:100%;margin:8px 0 14px}td,th{padding:5px 8p
 
 <p>Start here if you read one thing: <a href="INVENTORY.md">INVENTORY.md</a> (try-it commands, knobs, traps, gaps). The write-up for you is <a href="../../docs/project_incoming/letgo-emit-wasm-campaign-summary-2026-10-01.md">the campaign summary</a>. The plan that was executed is <a href="../../docs/project_incoming/letgo-emit-wasm-plan-2026-09-30.md">plan v2</a>.</p>
 
-<p class="sub">Round 2 (the next night) is <a href="#r2">section 7</a>.</p>
+<p class="sub">Round 2 (the next night) is <a href="#r2">section 7</a>; round 3 (eval) is <a href="#r3">section 8</a>.</p>
 <h2>0. Play it</h2>
 <p>The emitted lane needs no cross-origin isolation, so any static server works. From <code>dev/lower-wasm/</code>:</p>
 <pre><code>host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # ~80 s compile + wasm-opt, cached by content
@@ -301,6 +301,156 @@ open 'http://localhost:8260/index.html?seed=424242'</code></pre>
 <li><b>Quality data</b>, not acted on: <a href="corpus/quality/2026-10-02/letgo-comment-lint.txt">comment linter</a> 114 advisory patterns (102 the day before), aislop 7 auto-fixables (6).</li>
 </ul>
 
+<h2 id="r3">8. Round 3: eval (2026-10-02, from about 08:00 PDT)</h2>
+<p class="sub">Same machinery, one morning. legmacs calls <code>eval</code> for every interactive feature (the REPL mode, eval-last-sexp, eval-buffer, loading a mode file at run time), and round 2 stopped at 252 of 373 deftests with those files as the ledgered remainder. Round 3 puts an evaluator in the module: <a href="rt/wasm/eval.lg">rt/wasm/eval.lg</a>, plain lg, closure-compiling over the reader's data, plus a program table the backend emits so evaluated code can see the program's own vars, aliases and macros. Matt wanted to test-drive it before deciding anything about the public surface, so Track B (repo split, README, demo page, upstream issues) is on HOLD and nothing in this section leaves the machine. Plan and seam: <a href="ROUND3.md">ROUND3.md</a>. Decisions D159 to D166 in <a href="DECISIONS.md">DECISIONS.md</a>. Every number below is as of 2026-10-02.</p>
+
+<p class="sub">The bar is ordered by the board in <a href="STATUS.md">STATUS.md</a>, not by the clock: git times are authoritative and only a few rows recorded one. One dot per row or landed piece, the diamond is the gate; hover for the result.</p>
+<div class="bar" id="bar3"></div>
+<div class="legend">
+ <span><i style="background:var(--p0)"></i>small ask, prep</span>
+ <span><i style="background:var(--p2)"></i>evaluator (rt, agent A)</span>
+ <span><i style="background:var(--p1)"></i>program table (src, agent B)</span>
+ <span><i style="background:var(--p3)"></i>legmacs wiring (agent C)</span>
+ <span><i style="background:var(--p4)"></i>hosts, opt-out, sizes</span>
+ <span><i style="background:var(--pr)"></i>review5 and its fixes</span>
+</div>
+
+<table>
+<tr><th>row</th><th>result (2026-10-02)</th><th>decision</th></tr>
+<tr><td>P7.0</td><td>corpus/eval 13/13 against native <code>eval</code>; native tier (the evaluator under native lg) 122 tests</td><td>D160</td></tr>
+<tr><td>P7.1</td><td>28/30 of the eval-dependent files (repl_mode 7/7, letgo_mode 21/23); the whole legmacs suite 252 to 316 of 373</td><td>D162</td></tr>
+<tr><td>P7.2</td><td>script 6 (a defn typed into *scratch*, C-x C-e, a call, C-x C-e) byte-identical, native versus module</td><td>D162</td></tr>
+<tr><td>P7.3</td><td><code>comment.lg</code> loaded by eval in the module defines <code>comment-dwim</code>; <code>defcommand</code> expands in-module</td><td>D162</td></tr>
+<tr><td>P7.4</td><td>legmacs module 166 KB brotli with eval, 120 KB with <code>LW_NO_EVAL=1</code>, round 2 119 KB; xsofy module 115 KB brotli, behaviour unchanged (20/20 seeds)</td><td>D161, D163</td></tr>
+<tr><td>P7.5</td><td>reachable the same way from node, Chromium, and legmacs C-x C-e (the echo shows <code>=&gt; 42</code>)</td><td>STATUS</td></tr>
+<tr><td>P7.6</td><td>the opt-out flag: <code>LW_NO_EVAL=1</code> leaves the evaluator and program table out even when the program calls <code>eval</code>; eval-optout.sh PASS</td><td>D163</td></tr>
+<tr><td>P7.R</td><td>review5: 72 probes, 28 bugs (30 probes matched)</td><td><a href="corpus/review5/README.md">corpus/review5</a></td></tr>
+<tr><td>P7.7</td><td>evaluator fixes from review5: fix-eval 22/22</td><td>D165</td></tr>
+<tr><td>P7.8</td><td>runtime fixes from review5: fix-rt 7/7</td><td>D164</td></tr>
+<tr><td>P7.9</td><td>backend fixes from review5: fix-backend 7/7</td><td>D166</td></tr>
+</table>
+<p class="note" id="p7gate">P7.GATE: gate 7 11/11 green; gates 1-6: RESULT PENDING (runner fills in)</p>
+
+<h3>Round-3 chapters</h3>
+<div class="chapters">
+<div class="ch" style="border-left-color:var(--p0)">
+<h3>E0. The seam<span class="when">written before dispatch, D160 to D162</span></h3>
+<p>Two builders worked in parallel on opposite sides of one interface, written down in ROUND3.md ("Phase 7 seam") before either started. <b>A owns <code>rt/</code></b>: <code>rt/wasm/eval.lg</code> in namespace <code>wasm.eval</code>, plain lg like <code>natives.lg</code> (load order 17), claiming <code>core/eval</code> through the usual <code>^{:twin ...}</code>, so a program that never calls <code>eval</code> (xsofy) pays nothing. <b>B owns <code>src/</code></b>: the driver emits a <em>program table</em> when the program reaches <code>eval</code>. Neither edited the other's files; I integrated. The table's shape, installed from ns-init after every library init:</p>
+<pre><code>(wasm.eval/install-program-table!
+  {"legmacs.main" {:aliases {"buf" "legmacs.buffer"}
+                   :refers  {"vibe" "legmacs.vibe"}
+                   :vars    {"x" #'legmacs.main/x}
+                   :macros  {"defcommand" &lt;macro fn&gt;}}
+   ...})</code></pre>
+<p><b>The resolution order</b> for a symbol evaluated in the current namespace (the header of eval.lg states it, D160 records the one deviation from the seam): a local, a cell of the current ns, the table's <code>:vars</code>, the table's <code>:refers</code>, a cell interned into <code>let-go.core</code> (native's baseline refer; legmacs.vibe interns <code>vibe</code> there), then the core table for an unqualified name. <code>a/s</code> goes through the registry's aliases of the current ns, then the table's, then <code>a</code> as a full ns name. Following native, <code>let-go.core/s</code> and <code>user/s</code> do <em>not</em> reach the core table. Not found raises native's <code>Can't resolve s in this context</code> with native's CompileError layers around it.</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p2)">
+<h3>E1. The evaluator's shape<span class="when">agent A, D160, 2026-10-02</span></h3>
+<p><code>(compile form cenv)</code> turns a form into an lg fn of the run-time environment once, and evaluation runs the closures: the dispatch on syntax happens once per form, not once per evaluation. An evaluated fn is an ordinary variadic lg closure that picks its arity inside, so it is a <code>$Fn</code> like any other and works in atoms, <code>map</code>, <code>apply</code> and key bindings. Pieces:</p>
+<ul>
+<li><b>Special forms</b>: 11 native ones (<code>if do def set! fn* quote var let* loop* recur try</code>, as compiler.go has them). <code>loop</code>/<code>recur</code> pass a sentinel to the loop in the compiled closure. <code>try</code> is lg's try; <code>finally</code> runs after the catch and the outcome is rethrown.</li>
+<li><b>Core macros as expanders</b>: about 40 of them (<code>defn let fn cond case for doseq binding ns</code> and the rest), ported from core.lg as functions that build native's exact forms, so the CompileError chains nest the way native prints them.</li>
+<li><b>The core table</b>: a map of about 230 names to fn values, written as plain lg values so the backend links each twin because eval.lg names it. A core name outside it is <code>Can't resolve</code> here.</li>
+<li><b>Registry cells</b>: <code>def</code>/<code>defn</code>/<code>defmacro</code> intern a cell <code>ns/name</code> in <code>wasm.natives</code>' registry; its var is a <code>#'ns/name</code> stand-in with an <code>:lw/var</code> getter, so deref, calls through the var and the var natives all work. Evaluation never writes a program var.</li>
+<li><b>The reader code hook</b>: <code>#(</code>, <code>::kw</code>, syntax-quote and <code>#"re"</code> read as code through a hook kept in the root of <code>#'wasm.reader/code-hook</code>; there is no reader global.</li>
+</ul>
+<p>The evaluator uses only core fns, so it also runs under native lg on native values: <code>corpus/intrinsics/eval_test.lg</code> compares it with native <code>eval</code> (122 tests, 37,970 asserts on 2026-10-02). That is what let agent A work against an oracle before the backend half existed.</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p1)">
+<h3>E2. The backend half<span class="when">agent B, D161 and D166, 2026-10-02</span></h3>
+<p>When the program's forms name <code>eval</code> or <code>*ns*</code>, <code>_main</code> opens with <code>(in-ns '&lt;main ns&gt;)</code>, and when eval is reached it calls <code>install-program-table!</code> after the library inits. Per program namespace the driver compiles two hidden defns in that namespace (so privates and its aliases resolve): <code>__lw_pvar</code>, a binary search over qualified var reads that every table stand-in's getter shares, and <code>__lw_ptab</code>, the entry. Each program <code>defmacro</code> becomes a hidden <code>__lw_m_&lt;name&gt;</code> fn of exactly its declared params, <code>&amp;form</code>/<code>&amp;env</code> nil; legmacs' <code>defcommand</code> expands identically to native <code>macroexpand-1</code>. Reads of <code>*ns*</code> route to <code>wasm.natives/current-ns</code>.</p>
+<p><b>Cost</b> (brotli, legmacs, 2026-10-02): round 2's 119,059 B, then 142,113 B with eval.lg alone (+23 KB), then 166,102 B with the table (+24 KB). The table is mostly that every program def becomes reachable as a value, so tree-shaking can no longer drop the unused ones. That stayed under the 40 KB threshold the seam set for switching to lazy stand-ins, so the eager map stayed. Later fixes put the default module at 166,284 B (D163). Eval-free programs are untouched: xsofy's wasm-opt output was byte-identical across the table change.</p>
+<p>D166 added what the review found on this side: a defn in <code>user</code> before the file's <code>(ns ..)</code> form no longer makes the driver refuse the program, and an <em>uncaught</em> CompileError out of <code>eval</code> or a program fn gains native's <code>error: calling f</code> layer (<code>lw-ext/calling-throw</code>; a caught error keeps native's <code>ex-message</code>).</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--pr)">
+<h3>E3. What review5 found<span class="when">P7.R then P7.7 to P7.9, D164 to D166</span></h3>
+<p>A read-only reviewer ran 72 oracle probes against a frozen copy of the tree (<a href="corpus/review5/README.md">corpus/review5</a>): 30 matched native, and 28 bugs came out, each a minimal repro whose line 1 states native's behaviour. They were ranked silent wrong answer (S1) over uncatchable trap (S2) over wrong error text (S3) over missing feature (S4). The top of the ranked table:</p>
+<table>
+<tr><th>#</th><th>sev</th><th>native</th><th>module, and the cause</th></tr>
+<tr><td>14</td><td>S1+S2</td><td><code>(take 3 (for [x (range)] (* x x)))</code> gives <code>(0 1 4)</code>; <code>first</code> realises one element</td><td>uncatchable <code>Maximum call stack size exceeded</code>. <code>for</code> expanded through <code>cat-list</code>, <code>(apply list (concat a b))</code>: eager, recursive, O(n^2)</td></tr>
+<tr><td>01</td><td>S1</td><td><code>(eval '(try (throw "s") (catch e [:caught e])))</code> gives <code>[:caught s]</code></td><td>the handler never runs; a <code>catch Exception</code> compiled in the module does not catch a thrown non-exception. Use a bare catch</td></tr>
+<tr><td>02</td><td>S1</td><td><code>(declare x)</code> and <code>(def x)</code> leave the var unbound, so a later <code>defonce</code> defines it</td><td>the 1-arg branch wrote <code>:val nil</code>: bound, and <code>defonce</code> silently did nothing</td></tr>
+<tr><td>19</td><td>S1</td><td><code>(do (in-ns 'r5.ct) (def ctv 1))</code> gives <code>#'r5.ct/ctv</code></td><td><code>#'user/ctv</code>: <code>def</code> interned with the compile-time ns</td></tr>
+<tr><td>04</td><td>S1</td><td><code>(= #'inc #'inc)</code> is true; a map keyed by <code>#'inc</code> finds it; a set of two is of size 2</td><td>a fresh stand-in per use: false, nil, 3</td></tr>
+</table>
+<p>The same ranking continues with <code>ns-publics</code> listing privates, <code>ns-resolve</code> following a qualified symbol's own ns, <code>find-var</code> missing library vars, and <code>&amp;form</code> nil in evaluated macros. The fixes are three rows by owner, each its own corpus of the repros: <b>P7.7</b> (D165) fix-eval 22/22: <code>for</code> lazy via <code>concat-list*</code>, a bare catch, one-arg <code>def</code> unbound, an evaluated <code>do</code> following native's rule that a leading <code>(in-ns 'x)</code> switches the compile ns, core var stand-ins interned once per name, and a run of error-text layers. <b>P7.8</b> (D164) fix-rt 7/7: the registry twins, with D15's two division limits raised catchably. <b>P7.9</b> (D166) fix-backend 7/7. The review's own tally of what held matters as much: 500, 5000 and 20000-deep non-tail evaluated recursion all matched, every wrong-type call in the sweep raised native's text catchably, and eval order, shadowing and 24 destructuring cases matched.</p>
+</div>
+
+<div class="ch" style="border-left-color:var(--p3)">
+<h3>E4. A single-threaded future, and the opt-out<span class="when">D162 and D163, 2026-10-02</span></h3>
+<p><b>D162.</b> <code>core/future*</code> got a single-threaded twin: the body runs at the call and the promise comes back delivered (nil when the body throws, as native). The one semantic difference is that a future is never pending. I took this now instead of holding it for Phase 8 because four letgo_mode deftests reach <code>future</code> and legmacs' compiled spawn-task hit the no-twin error, which zeroed the whole file; it also moved acme 0 to 10 and buffers 0 to 30. <code>go</code> stays Phase 8 (channels are a scheduler on JSPI, a separate design). What is left of the 316 of 373: commands 0/24 (spit to /tmp, no file system), vibe 0/30 (builtin namespaces' publics and docs), and one buffers deftest that needs a pending future.</p>
+<p><b>D163.</b> The size table above (119 KB to 166 KB brotli for the same program) prompted Matt's ask: a selectable interpreter. <code>LW_NO_EVAL=1</code> drops every twin defined in <code>wasm.eval</code> from the twin table, so <code>core/eval</code> is a no-twin native again with the pre-round-3 text; the driver emits no <code>install-program-table!</code> and no hidden <code>__lw_*</code> defns, and nothing links eval.lg. The flag is in the rtlib cache key, and in the legmacs build's key only when set, so the default key did not change. legmacs, 2026-10-02:</p>
+<table>
+<tr><th>build</th><th>raw</th><th>wasm-opt -O3</th><th>brotli</th></tr>
+<tr><td>evaluator (default)</td><td>2,199,454 B</td><td>671,302 B</td><td>166,284 B</td></tr>
+<tr><td><code>LW_NO_EVAL=1</code></td><td>1,614,250 B</td><td>461,803 B</td><td>119,844 B</td></tr>
+</table>
+<p>Eval-free modules are byte-identical either way (hello.lg, 75,672 B, same md5), and the flagged legmacs module is within 1 KB of round 2's.</p>
+</div>
+</div>
+
+<p>Diff previews of round 3 are not archived yet. <a href="previews/2026-10-02/lw-eval.html">previews/2026-10-02/lw-eval.html</a> is the evaluator's file map and the row table as a standalone page.</p>
+
+<h3>Round-3 zoom spots</h3>
+<div class="spots">
+<div><code>rt/wasm/eval.lg:1</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:1">copy</button><span>the header: shape, the resolution order, and every named limit in one place</span></div>
+<div><code>rt/wasm/eval.lg:105</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:105">copy</button><span><code>cell-var</code> and <code>intern-cell!</code>: a def's cell and its <code>#'ns/name</code> stand-in with the <code>:lw/var</code> getter; <code>install-program-table!</code> at 121</span></div>
+<div><code>rt/wasm/eval.lg:161</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:161">copy</button><span><code>resolve-global</code>: the seam's resolution order, in code</span></div>
+<div><code>rt/wasm/eval.lg:413</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:413">copy</button><span><code>core-var</code>: one stand-in per core name, the fix for review5 bug 04 (D165)</span></div>
+<div><code>rt/wasm/eval.lg:442</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:442">copy</button><span><code>run-try</code>: the bare catch and the finally-then-rethrow outcome vector (bug 01)</span></div>
+<div><code>rt/wasm/eval.lg:798</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:798">copy</button><span><code>for-emit</code>; <code>concat-list*</code> at 1134 is the lazy one native's <code>for</code> expands to (bug 14)</span></div>
+<div><code>rt/wasm/eval.lg:905</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:905">copy</button><span><code>expand</code>: how an expander or a program macro fn is called with the unevaluated args</span></div>
+<div><code>rt/wasm/eval.lg:960</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:960">copy</button><span><code>code-hook</code> and <code>ensure-hook!</code>: the reader's route to <code>#(</code>, <code>::kw</code>, syntax-quote</span></div>
+<div><code>rt/wasm/eval.lg:1066</code><button data-c="dev/lower-wasm/rt/wasm/eval.lg:1066">copy</button><span><code>compile</code> and the <code>core/eval</code> twin at 1073; the core table is <code>core-table*</code> at 1145</span></div>
+<div><code>rt/wasm/natives.lg:359</code><button data-c="dev/lower-wasm/rt/wasm/natives.lg:359">copy</button><span><code>resolve</code>: the current ns's lookup, then a referred var, then <code>let-go.core</code>; <code>find-var</code> at 340, <code>current-ns</code> at 486, <code>ns-resolve</code> at 496 (native's core.lg:1654)</span></div>
+<div><code>src/driver.lg:579</code><button data-c="dev/lower-wasm/src/driver.lg:579">copy</button><span>the program-table header comment: the table's shape, <code>__lw_pvar</code>, <code>__lw_ptab</code>, <code>__lw_m_&lt;name&gt;</code>; <code>hidden-defn!</code> at 601</span></div>
+<div><code>src/driver.lg:709</code><button data-c="dev/lower-wasm/src/driver.lg:709">copy</button><span><code>registry-boot-forms</code>: the in-ns and the <code>install-program-table!</code> call, gated on <code>@eval-reached</code> (set at 106) and <code>LW_NO_EVAL</code></span></div>
+<div><code>src/lw_rt.lg:162</code><button data-c="dev/lower-wasm/src/lw_rt.lg:162">copy</button><span><code>no-eval?</code>: the flag that removes <code>wasm.eval</code>'s twins from the table (D163)</span></div>
+<div><code>src/lw_ext.lg:45</code><button data-c="dev/lower-wasm/src/lw_ext.lg:45">copy</button><span><code>calling-throw</code>: the <code>calling f</code> layer for an uncaught CompileError (D166)</span></div>
+<div><code>host/repl.html:39</code><button data-c="dev/lower-wasm/host/repl.html:39">copy</button><span>the 13 REPL examples; <code>keyCapacity: Infinity, coalesceKeys: false</code> at 61 (typed text, not game keys: D98 would fold <code>((</code> into one key); the Enter handler that sends a line key by key at 66 to 72; <a href="corpus/host/repl.lg">corpus/host/repl.lg</a> is the 29-line program on the other side</span></div>
+<div><code>corpus/review5/README.md</code><button data-c="dev/lower-wasm/corpus/review5/README.md">copy</button><span>the ranked bug table, the probes that matched, and the named limits it confirmed</span></div>
+</div>
+
+<h3>Round 3: what is open</h3>
+<ul>
+<li><b>Named limits of the evaluator</b> (D160 to D166, all in the eval.lg header or the decision): tail calls between evaluated fns are not trampolined (deep non-loop recursion grows the wasm stack); <code>catch</code> does not dispatch on the class, the first clause catches everything; no <code>go</code> or channels (Phase 8); no host interop, <code>deftype</code>, <code>defprotocol</code>, <code>defmulti</code>, <code>macroexpand</code>; a future is never pending (D162); the core table is a subset, so other core names are <code>Can't resolve</code>.</li>
+<li><b>Redefinition does not reach compiled callers</b>: evaluation never writes a program var, so after an evaluated <code>(defn mine ..)</code> a compiled caller of <code>mine</code> still calls the original. <code>binding</code>, <code>set!</code>, <code>var-get</code> and <code>alter-var-root</code> of a program var raise a named limit.</li>
+<li><b>An <code>eval</code> reached only through a macro expansion gets no table</b> (D161), and table stand-ins carry only <code>:name</code> and <code>:ns</code>.</li>
+<li><b>p06</b> (D166): a top-level <code>(eval '(in-ns 'x))</code> does not move the statically compiled forms after it; each form compiles in the ns the driver saw. Probably inherent to static compilation, so recorded rather than fixed.</li>
+<li><b>e07</b> (D166): <code>(eval *ns*)</code> resolves the namespace stand-in as a symbol (<code>Can't resolve &lt;ns user&gt;</code>) where native refuses with <code>cannot compile a value of type let-go.lang.Namespace as a form</code>. eval.lg, not taken this round.</li>
+<li><b>The macro error frames</b> (D165): apart from <code>let</code>/<code>loop</code> destructure frames and <code>when-let</code>/<code>when-first</code>'s <code>calling throw</code>, an error inside a macro carries only the root message, where native inserts its per-call <code>caused by ExecutionError: calling X</code> frames.</li>
+<li><b>Smaller, recorded</b>: <code>swap!</code> with 19 or more extra args (D164); gensym numbering differs; an evaluated <code>(resolve 'a/priv)</code> from another ns may still return the var where native gives nil (open, unverified, D165); the wasmtime adapter does not export <code>env.getenv</code> yet (D159); the legmacs files commands and vibe stay at 0 (no file system; builtin namespaces' publics).</li>
+<li><b>Decisions for Matt</b>: the public surface of <code>eval</code> is undecided, and Track B (repo split, README, demo page, upstream issues) waits for him after the test-drive.</li>
+</ul>
+
+<h3>Round 3: test-drive</h3>
+<p>legmacs under node first, from <code>dev/lower-wasm/</code>. In <code>*scratch*</code> type a defn, press C-x C-e, then type a call and press C-x C-e again: the echo area shows <code>=&gt; #'legmacs.main/f</code>, then <code>=&gt; 42</code>. C-x C-c quits.</p>
+<pre><code>cd ~/projects-new/3p/joint-xsofy/dev/lower-wasm
+# compiles legmacs main.lg with the evaluator linked, then wasm-opt; cached by content
+host/build-legmacs-module.sh /tmp/lw-play/legmacs.wasm
+# type (defn f [x] (* x 2)), C-x C-e, then (f 21), C-x C-e; C-x C-c quits
+node host/node-host.mjs /tmp/lw-play/legmacs.wasm</code></pre>
+<p>The same in the browser at :8261, on let-go's stock xterm shell. No cross-origin isolation is needed.</p>
+<pre><code>host/build-legmacs-serve.sh /tmp/lw-legmacs /tmp/lw-play/legmacs.wasm
+# the page's default module name
+cp /tmp/lw-legmacs/legmacs.wasm /tmp/lw-legmacs/module.wasm
+python3 -m http.server 8261 -d /tmp/lw-legmacs
+open 'http://localhost:8261/index.html'</code></pre>
+<p>To see the opt-out, build the module with the flag and drive it the same way: C-x C-e then echoes <code>Eval error: lower-wasm: core/eval has no twin</code>.</p>
+<pre><code># the evaluator and program table left out, a different cache key
+LW_NO_EVAL=1 host/build-legmacs-module.sh /tmp/lw-play/legmacs-noeval.wasm
+node host/node-host.mjs /tmp/lw-play/legmacs-noeval.wasm</code></pre>
+<p>The REPL page at :8262 is a let-go REPL in the browser: <a href="host/repl.html">host/repl.html</a> sends each typed line to <a href="corpus/host/repl.lg">corpus/host/repl.lg</a> a key at a time, which evaluates every form on the line with the in-module evaluator and prints the last value (an error prints its message). The module keeps state between lines, so a defn stays defined; Up and Down walk the history. The picker offers 13 examples as of 2026-10-02: fib, fizzbuzz, primes, factorial of 20 in int64, a lazy <code>for</code> over an infinite range (review5's bug 14), iterate, frequencies, an atom with a closure, destructuring, reduce into a map, catching an error, string building, and the namespace you are in.</p>
+<pre><code># a prebuilt dir exists on this machine as of 2026-10-02: repl.html, lg-wasm-host.js, repl.wasm
+# repl.wasm is corpus/host/repl.lg through the backend; there is no build script for it yet
+python3 -m http.server 8262 -d /tmp/lw-repl
+open 'http://localhost:8262/repl.html'
+# the headless check: waits for the banner, runs the fib example, picks "frequencies"
+node checks/repl-page-check.mjs</code></pre>
+
 <script>
 const T0=Date.parse('2026-09-30T22:46:00-07:00'), T1=Date.parse('2026-10-01T21:03:00-07:00');
 const C=[
@@ -417,6 +567,37 @@ C2.forEach(([when,ph,msg,g])=>{
   const slot=Math.round((t-T0)/600e3);lanes[slot]=(lanes[slot]||0)+1;
   const d=document.createElement('div');d.className='dot'+(g?' gate':'');d.style.left=x(t);d.style.bottom=(22+(lanes[slot]-1)*13)+'px';d.style.background=col[ph];
   d.addEventListener('mousemove',e=>{tip.style.display='block';tip.innerHTML='<b>'+when+'</b> '+msg;tip.style.left=Math.min(e.clientX+12,innerWidth-440)+'px';tip.style.top=(e.clientY+14)+'px';});
+  d.addEventListener('mouseleave',()=>tip.style.display='none');
+  bar.appendChild(d);
+});
+})();
+// Round-3 bar: ordered by the board, not the clock (only a few rows recorded a time)
+(function(){
+const bar=document.getElementById('bar3');
+const R=[
+['D159','p0','os/getenv reaches the host; XSOFY_DEV=1 opens xsofy\'s dev console under node (D159)'],
+['P7.5','p4','node, Chromium and legmacs C-x C-e reach the evaluator the same way; echo shows =&gt; 42 (green 2026-10-02 09:00)'],
+['P7.0','p2','corpus/eval 13/13 against native eval; native tier 122 tests (D160)'],
+['P7.1','p3','28/30 (repl 7/7, letgo 21/23); whole legmacs suite 252 to 316 of 373 (D162)'],
+['P7.2','p3','script 6 byte-identical, native versus module (D162)'],
+['P7.3','p3','comment.lg loaded by eval defines comment-dwim (D162)'],
+['table','p1','program table: +24 KB brotli, eval.lg +23 KB; xsofy output byte-identical (D161)'],
+['P7.6','p4','LW_NO_EVAL=1: legmacs 166 KB to 120 KB brotli; eval-free modules unchanged (D163)'],
+['P7.4','p4','legmacs 166 KB brotli with eval, 120 KB without, round 2 119 KB; xsofy 115 KB, behaviour unchanged'],
+['P7.R','pr','review5: 72 probes, 28 bugs, 30 probes matched'],
+['P7.7','pr','evaluator fixes: fix-eval 22/22 (D165)'],
+['P7.8','pr','runtime fixes: fix-rt 7/7 (D164)'],
+['P7.9','pr','backend fixes: fix-backend 7/7 (D166)'],
+['P7.GATE','p4','gate 7 11/11 green; gates 1-6: see the line under the table','gate']
+];
+const n=R.length,x=i=>(((i+0.5)/n)*100).toFixed(2)+'%';
+const chaps=[['seam, hosts',0],['evaluator, wiring, table',2],['opt-out, sizes',7],['review5 and fixes',9],['gate',13]];
+chaps.forEach(([nm,i],k)=>{const e=document.createElement('div');e.className='chap';e.style.left=(i/n*100)+'%';const nx=chaps[k+1]?chaps[k+1][1]:n;e.style.width=((nx-i)/n*100)+'%';e.textContent=nm;bar.appendChild(e);});
+R.forEach(([id,ph,msg,g],i)=>{
+  const l=document.createElement('div');l.className='tl';l.style.left=x(i);bar.appendChild(l);
+  if(innerWidth>640||i%2===0){const k=document.createElement('div');k.className='tick';k.style.left=x(i);k.textContent=id;bar.appendChild(k);}
+  const d=document.createElement('div');d.className='dot'+(g?' gate':'');d.style.left=x(i);d.style.bottom='28px';d.style.background=col[ph];
+  d.addEventListener('mousemove',e=>{tip.style.display='block';tip.innerHTML='<b>'+id+'</b> '+msg;tip.style.left=Math.min(e.clientX+12,innerWidth-440)+'px';tip.style.top=(e.clientY+14)+'px';});
   d.addEventListener('mouseleave',()=>tip.style.display='none');
   bar.appendChild(d);
 });
