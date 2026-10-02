@@ -50,3 +50,5 @@
 | P2.14 | done 19:11 | opus | 265/273 (97%), 38/44 files; run.sh P2.14 exit 0; corpus/wasm 14/14; P3.2 20/20; gold 3/7 |
 | P2.4 | GREEN 2026-10-01 | — | 14/14 after array-map twin |
 | P2.5 | GREEN 2026-10-01 | — | corpus/seqs 4/4 |
+| P2.14 | re-verified 2026-10-01 | — | 265/273, 38/44 on the settled tree |
+| P2.7 | GREEN 2026-10-01 (scoped) | — | 2/2 in scope; 10 skipped with reasons |

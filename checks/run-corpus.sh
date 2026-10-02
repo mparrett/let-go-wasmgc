@@ -53,7 +53,7 @@ files=()
 for d in "${dirs[@]}"; do
   [ -d "$d" ] || { echo "no such dir: $d" >&2; exit 2; }
   # A SKIP file in the dir lists basenames to leave out (D15: div-* until Phase 2).
-  skip=""; [ -f "$d/SKIP" ] && skip=$(grep -v '^#' "$d/SKIP" | tr '\n' ' ')
+  skip=""; [ -f "$d/SKIP" ] && skip=$(sed -e 's/#.*//' "$d/SKIP" | tr '\n' ' ')
   while IFS= read -r f; do
     case " $skip " in *" $(basename "$f") "*) echo "SKIP            $f"; continue;; esac
     files+=("$f")
