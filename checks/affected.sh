@@ -81,6 +81,13 @@ P6.R	corpus/review4/
 P6.6	oracle corpus/review4/fix-traps/ checks/run-corpus.sh
 P6.7	oracle corpus/review4/fix-twins/ checks/run-corpus.sh rt/ corpus/natives/ checks/native-twins.sh tools/ legmacs
 P6.8	oracle corpus/review4/fix-backend/ checks/run-corpus.sh
+P7.0	oracle corpus/eval/ checks/run-corpus.sh
+P7.1	oracle corpus/legmacs-eval-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg legmacs
+P7.2	oracle checks/legmacs-parity.sh corpus/legmacs/ legmacs
+P7.3	oracle corpus/eval-buffer/ checks/run-corpus.sh legmacs
+P7.4	oracle host/ checks/size-boot.sh legmacs xsofy
+P7.5	oracle host/ checks/eval-hosts.sh checks/browser-boot.mjs legmacs
+P7.R	corpus/review5/
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

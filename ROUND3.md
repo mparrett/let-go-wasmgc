@@ -1,4 +1,4 @@
-# Round 3 plan (revised 2026-10-02 morning after Matt's read; nothing started)
+# Round 3 plan (revised 2026-10-02 morning after Matt's read; Track A STARTED 2026-10-02 ~08:00 PDT under /loop; Track B HOLD)
 
 Track A is Phase 7, in-module `eval`: Matt wants to test-drive the interpreter
 before deciding anything about the public surface. Track B (out of this
@@ -74,6 +74,125 @@ Dispatch shape: one Opus on `rt/wasm/eval.lg` (+ reader additions) with the P7.0
 
 Test-drive for Matt when P7.5 is green: `node host/node-host.mjs /tmp/lw-play/legmacs.wasm`, type `(defn f [x] (* x 2))` then `C-x C-e`, then `(f 21)` `C-x C-e` → `42` in the echo area; and the browser at :8261 the same way.
 
+
+## Phase 7 seam (binding for agents A and B; written 2026-10-02 before dispatch)
+
+Two builders work in parallel on opposite sides of one interface. A owns
+`rt/` (and `corpus/eval/`, `corpus/intrinsics/eval_test.lg`); B owns `src/`
+(and `corpus/eval/program/`). Neither edits the other's files; the runner
+integrates. Everything below is the contract; anything not here is the
+owner's call, recorded in the file header.
+
+**Where and in what dialect.** `rt/wasm/eval.lg`, namespace `wasm.eval`, in
+PLAIN lg as `rt/wasm/natives.lg` is (load order 17 in the README table, which
+`src/lw_rt.lg` reads; requires wasm.natives, wasm.reader, wasm.core, wasm.seq,
+wasm.str, wasm.phm). Plain lg because none of it is a hot path and the
+backend links a runtime defn only when the program reaches it: a program
+that never calls `eval` (xsofy) pays nothing. Twins are claimed the usual way
+(`^{:twin "core/eval"}`), so no src change is needed to route `eval`.
+
+**Evaluator shape.** Closure-compiling: `(compile form cenv)` turns a form
+into an lg fn of the run-time environment once; evaluation runs the closures.
+Evaluated fns are ordinary lg `fn` closures (multi-arity and `&` dispatch
+inside), so they are `Fn` values and work wherever a fn works (atoms, `map`,
+key bindings, `apply`). `loop`/`recur` and fn-tail `recur` through a Recur
+marker and a loop in the compiled closure. `try`/`catch`/`finally` over lg's
+try (finally = run after catch and rethrow). Tail calls between evaluated fns
+are NOT trampolined in the first cut (named limit: deep non-loop recursion in
+evaluated code grows the wasm stack); add trampolines only if P7.1 needs
+them. Working first; P7.4 records the cost.
+
+**Namespaces and vars live in wasm.natives' registry** (`:cur`, `:nss`,
+`:cells`, `:aliases`), A extends it:
+- `(wasm.natives/current-ns)` → the stand-in `<ns cur>`; B routes reads of
+  `*ns*` to it. `in-ns` already sets `:cur`; `(ns foo (:require [a :as b]))`
+  in evaluated code = add-ns! + set `:cur` + record aliases/refers under
+  `[:aliases "foo"]` / `[:refers "foo"]`; `(require '[a :as b])` the same for
+  `:cur`. `ns-resolve` becomes a twin (legmacs' tests call it).
+- `def`/`defn`/`defmacro` in evaluated code intern a cell `cur/name` (value,
+  meta, `:macro` flag). **Evaluation never writes a program var**: a
+  redefinition shadows it for evaluated code only; compiled callers keep the
+  old definition (named limit, same family as with-redefs').
+
+**Symbol resolution** for `s` evaluated in `cur`, in order: local env → cell
+`cur/s` → program table `cur` `:vars s` → program table `cur` `:refers s` →
+core table `s` (unqualified only) → for `a/s`: `a` through registry aliases of
+`cur`, then program-table `:aliases` of `cur`, then as a full ns name →
+cells/program table of that ns; `core/s`, `clojure.core/s`, `let-go.core/s`,
+`user/s` → core table. Not found → raise native's text exactly: `Can't
+resolve s in this context` (native wraps it in `CompileError: compiling
+function position` for a call; match what `(ex-message e)` shows, which P7.0
+pins per case). Arity errors use native's `function <fn ...> expected N
+args, got M` shape only where the oracle can compare (the fn address cannot
+match; the corpus avoids printing it).
+
+**The core table is A's, in eval.lg**: a map from name (Str) → fn value for
+the REPL core set (arithmetic/compare, seq and collection fns, strings,
+atoms, printing, `apply`, `str`, `pr-str`, `read-string`, `eval` itself,
+`type`, `instance?`-free predicates, `ex-info`/`ex-message`, …; aim ≥150).
+Written as plain lg values (`{"map" map "reduce" reduce ...}`), so the
+backend links each twin because eval.lg names it. `ns-publics`/`all-ns`
+need not list it.
+
+**The program table is B's, built by the backend when the program reaches
+`core/eval`** and installed from ns-init after every library ns-init:
+
+```
+(wasm.eval/install-program-table!
+  {"legmacs.main" {:aliases {"buf" "legmacs.buffer" ...}
+                   :refers  {"vibe" "legmacs.vibe"}
+                   :vars    {"x" <var stand-in> ...}
+                   :macros  {"defcommand" <macro fn> ...}}
+   "legmacs.buffer" {...} ...})
+```
+
+Keys are Str. A var stand-in is the `#'ns/name` meta'd Symbol with the
+`:lw/var` 0-arg getter that `wasm.core/var-value` already reads
+(var-const-form), with meta cut to `:lw/var` (+ `:name`, `:ns`) to keep the
+table small; B may instead emit one dispatch fn and lazy stand-ins if the
+eager map costs more than ~40 KB brotli on legmacs (P7.4 decides; either way
+A only ever calls `wasm.core/var-value`). `:macros` holds each program
+`defmacro` compiled as a hidden fn of its forms (its body is list/seq/symbol
+code; syntax-quote expands to list/concat/seq calls the runtime has); A calls
+it with the unevaluated args (`&form`/`&env` as nil) and evaluates the
+expansion. `:macros` is P7.3's dependency and B's second deliverable; the
+table with `:aliases`/`:refers`/`:vars` is the first. Every program ns is
+listed (legmacs' aliases are in `legmacs.main`, the tests' in their own ns).
+
+**Core macros are evaluator built-ins** (expanders in eval.lg, not program
+macros): defn defn- fn (named, multi-arity, `&`, destructuring in vector and
+map forms with :keys :as :or) let letfn loop if if-not if-let when when-not
+when-let cond condp case and or -> ->> as-> some-> some->> doto dotimes doseq
+(with :let/:when) for (basic) while do quote var def defmacro (non
+syntax-quote bodies) binding set! (on a cell) try catch finally throw
+lazy-seq delay comment with-out-str (through `core/with-out-str*` with a
+thunk) deftest-free. Everything else is a call. Record each omission as a
+limit in the header.
+
+**Reader.** `read-string` must read code: `'x`, `#'x`, `@x`, `^{..} x` and
+`^:kw x`, `#(... % %1 %&)` → `(fn* [...] ...)`, `::kw` in `:cur`; the
+existing reader_test stays green; new limits named. `read-all-string` is
+lw-ext's; it must return the same forms.
+
+**Oracle for A: `corpus/eval/`**, plain programs that print the result of
+`(eval (read-string "..."))` or `(eval 'form)`, grouped by directory
+(special/, macros/, fns/, errors/, ns/, reader/); 200+ forms; each file
+MATCHes native lg through `checks/run-corpus.sh corpus/eval`. The native tier
+(`checks/run-intrinsics-native.sh`, `corpus/intrinsics/eval_test.lg`) covers
+the compile step under native lg. `corpus/eval/program/` (B's) needs the
+program table: programs with their own defns, aliases and a macro that
+evaluated code calls.
+
+**Routes B owns in src** (one src item in flight, as always): `*ns*` read →
+`wasm.natives/current-ns`; the program-table emission and its ns-init call;
+program macros compiled as hidden fns; nothing else in src unless A names a
+backend gap in a report (then B takes it; A never edits src).
+
+**Entry points legmacs uses** (`legmacs/modes/letgo.lg`, `vibe.lg`):
+`(eval form)`, `(read-string s)`, `(read-all-string s)`, `(in-ns sym)`,
+`(ns-name *ns*)`, `(ns-resolve ns sym)`, `with-out-str` + `(binding [*err*
+*out*] ...)` around eval. P7.1's tests also `deref` a resolved var and call
+it.
 
 ## Track B (HOLD): upstream path and demo page
 
