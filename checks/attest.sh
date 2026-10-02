@@ -69,10 +69,17 @@ case ${1:-selftest} in
     probe2=.attest-probe-$$.md; echo x >"$probe2"; k3=$(key P1.0); rm -f "$probe2"
     [ "$k0" = "$k3" ] && echo "ok   key ignores a file outside the row's inputs" || { echo "FAIL key moved for $probe2"; fail=1; }
     [ $fail = 0 ] || exit 1
+    # The self-test exercises the mechanism, so it runs its gates WITH attestation
+    # even when the caller (a phase-gate decision, D129) has LW_ATTEST=0.
+    export LW_ATTEST=1
     stale=()
     while IFS= read -r id; do checks/attest.sh fresh "$id" || stale+=("$id"); done \
       < <(awk -F'\t' '$1 !~ /^#/ && $2==2 && $1 !~ /GATE/{print $1}' checks/items.tsv)
-    if [ ${#stale[@]} -gt 0 ]; then echo "phase-2 rows not attested fresh: ${stale[*]}"; echo "run checks/gate.sh 2 once on this tree, then rerun"; exit 1; fi
+    if [ ${#stale[@]} -gt 0 ]; then
+      echo "phase-2 rows not attested fresh (${stale[*]}): running gate.sh 2 once to attest them"
+      t0=$(date +%s); checks/gate.sh 2 >/dev/null 2>&1; rc=$?; echo "first gate.sh 2: $(( $(date +%s) - t0 ))s exit $rc"
+      [ $rc = 0 ] || { echo "first gate.sh 2 failed; the attestation claim cannot be tested on a red tree"; exit 1; }
+    fi
     t0=$(date +%s); out=$(checks/gate.sh 2 2>/dev/null); rc=$?; dt=$(( $(date +%s) - t0 ))
     echo "$out"; echo "second gate.sh 2: ${dt}s exit $rc"
     [ $rc = 0 ] && [ $dt -lt 60 ] && ! printf '%s' "$out" | grep -q FAIL ;;

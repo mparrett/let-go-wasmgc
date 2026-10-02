@@ -59,6 +59,12 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   `af2658dc35afa6b1e`; P6.8 (opus, src/) agent `abc1f402d1fd02b09`. After both land: rerun P6.3/P6.4/P6.5, raise P6.2 bar,
   P5.GATE then P6.GATE with LW_ATTEST=0, cost line, TOUR/previews regen, release pulse claim with --outcome handoff.
 
+- 04:30 PDT 2026-10-02 (REAL clock; the earlier round-2 bullets' times ran ~9 h fast, round 2 began 2026-10-01 22:30):
+  every Phase 5 and Phase 6 row is green individually (HEAD a5e81e5). Running now in the background: `LW_ATTEST=0 gate.sh 5 6 3 2 4 1`
+  (log: scratchpad task bloru4wsv). No agents in flight. TOUR.html has the round-2 section drafted with three placeholders
+  (GATE_END, GATE_SUMMARY, GATE_COMMITS) to fill from the gate result, then: previews/2026-10-02 (preview-diff 1fc6164~1..HEAD),
+  campaign summary round-2 section, D-entry for the gates, STATUS cost line, memory, release pulse claim --outcome handoff.
+
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
 
 ## (historical) In flight at 13:05
