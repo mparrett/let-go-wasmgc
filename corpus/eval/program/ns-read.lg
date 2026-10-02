@@ -1,0 +1,6 @@
+;; P7 (B): an eval-free program reading *ns*: native's ns form leaves *ns*
+;; at the program's namespace, and in-ns moves it.
+(ns read.only.prog)
+(println (ns-name *ns*))
+(in-ns 'elsewhere)
+(println (ns-name *ns*))

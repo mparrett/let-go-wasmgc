@@ -97,12 +97,38 @@
         [[:find (second (second form))]]
         :else (mapcat var-ref-syms form)))
 
+;; P7 (ROUND3 "Phase 7 seam"): does the program reach the runtime's ns
+;; registry? `eval` anywhere (program or library, unquoted) makes the backend
+;; emit the program table; `eval` or a read of `*ns*` makes _main start with
+;; an in-ns of the program's namespace, as native's ns form leaves *ns*.
+;; Syntactic, on the forms as read: an eval that only a macro expansion
+;; produces is missed (named limit).
+(def eval-reached (atom false))
+(def ns-read (atom false))
+
+(defn note-registry-refs! [form]
+  (cond (symbol? form)
+        (when (#{"eval" "*ns*"} (name form))
+          (let [v (try (resolve form) (catch e nil))]
+            (cond (= v #'eval) (reset! eval-reached true)
+                  (= v #'*ns*) (reset! ns-read true))))
+        (map? form) (run! note-registry-refs! (mapcat identity form))
+        (or (vector? form) (set? form)) (run! note-registry-refs! form)
+        (and (seq? form) (= 'quote (first form))) nil
+        (seq? form) (run! note-registry-refs! form)))
+
 (defn note-var-refs!
   "Resolve form's var-ref-syms in the current ns into rooted-vars."
   [form]
+  (note-registry-refs! form)
   (doseq [[k s] (var-ref-syms form)]
     (when-let [v (try (if (= k :var) (resolve s) (find-var s)) (catch e nil))]
       (when (var? v) (swap! rooted-vars conj v)))))
+
+;; P7: each program namespace's defmacro forms, in source order (ns-sym ->
+;; [form ...]), for the program table's :macros.
+(def program-macros (atom {}))
+(defn note-macro! [ns-sym form] (swap! program-macros update ns-sym (fnil conj []) form))
 
 (defn nested-def-syms [form] (map first (nested-defs form)))
 (defn thunk-def-syms [form] (keep (fn [[s t]] (when t s)) (nested-defs form)))
@@ -492,7 +518,8 @@
           (fn index! [form]
             (let [head (when (seq? form) (first form))]
               (cond
-                (#{'ns 'defmacro 'declare} head) nil
+                (#{'ns 'declare} head) nil
+                (= 'defmacro head) (note-macro! ns-sym form)
                 (#{'defn 'defn-} head)
                 (let [[nm _] (lw-rt/strip-meta-name (second form))
                       v (lw-rt/ns-var ns-sym nm)]
@@ -540,6 +567,129 @@
     (let [inits (doall (for [[n path] order]
                          (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
       (when (seq inits) (apply list 'do (map list inits))))))
+
+;; ---------------------------------------------------------------------------
+;; P7 (ROUND3 "Phase 7 seam"): the program table in-module eval resolves
+;; program vars, aliases, refers and macros through:
+;;   (wasm.eval/install-program-table!
+;;     {"ns" {:aliases {"a" "full.ns"} :refers {"name" "full.ns"}
+;;            :vars {"name" <var stand-in>} :macros {"name" <macro fn>}} ...})
+;; Emitted only when the program reaches eval, so an eval-free module is
+;; unchanged. Each namespace gets two hidden library defns, compiled in that
+;; namespace (so private vars and its aliases resolve):
+;;   __lw_pvar [k]  the value of the namespace's k-th table var, a binary
+;;                  search on k over qualified var reads (one if per level)
+;;   __lw_ptab []   the namespace's entry; a :vars stand-in is the Symbol
+;;                  #'ns/name meta'd {:lw/var getter :name :ns}, its getter
+;;                  one shared closure (fn [] (__lw_pvar k)), so the table
+;;                  costs a name string and a branch per var, not a closure
+;;                  template each (the var-const-form shape, meta cut).
+;; Program macros are __lw_m_<name> defns of the macro's own params and body
+;; (&form/&env bound to nil), the unevaluated args passed as is: let-go's
+;; macro fns take no &form/&env arguments ((@#'when true 1) expands).
+
+(def core-nss #{"let-go.core" "core" "clojure.core" "let-go.types"})
+
+(defn hidden-defn!
+  "Register a library defn ns-sym/nm with these source arities (compiled
+   on demand like any library defn); its qualified symbol."
+  [ns-sym nm arities]
+  (let [v (intern ns-sym nm (fn [& _] nil))]
+    (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name nm :lib true :arities arities})
+    (symbol (str ns-sym) (str nm))))
+
+(defn var-ns-name [v] (namespace (symbol v)))
+
+(defn table-var-names
+  "The names of ns-sym's vars the module holds (defs, defns, library
+   defns), driver-internal __ names left out, sorted."
+  [ns-sym var-globals main-defn-vars]
+  (let [nsn (str ns-sym)
+        vs (concat (keys var-globals) main-defn-vars
+                   (map :var (filter #(= ns-sym (:ns %)) (vals @lw-rt/lib-defns))))]
+    (vec (sort (distinct (for [v vs
+                               :when (and (var? v) (= nsn (var-ns-name v)))
+                               :let [nm (name (symbol v))]
+                               :when (not (clojure.string/starts-with? nm "__"))]
+                           nm))))))
+
+(defn bsearch-form
+  "A form of k returning the var syms[k], for lo <= k < hi."
+  [syms lo hi]
+  (if (= 1 (- hi lo))
+    (syms lo)
+    (let [mid (quot (+ lo hi) 2)]
+      (list 'if (list 'clojure.core/< '__lw_k mid) (bsearch-form syms lo mid) (bsearch-form syms mid hi)))))
+
+(defn mentions? [syms form]
+  (some #(and (symbol? %) (contains? syms %)) (tree-seq coll? seq form)))
+
+(defn macro-fn-arities
+  "A defmacro form's arities as a fn's: [[params & body] ...]."
+  [form]
+  (let [[_ _ & more] form]
+    (vec (for [[params & body] (lw-rt/arities more)]
+           (if (mentions? '#{&form &env} body)
+             [params (list* 'let* '[&form nil &env nil] body)]
+             (into [params] body))))))
+
+(defn ns-table-entry!
+  "Register ns-sym's hidden table defns; the form _main calls for its entry."
+  [ns-sym var-globals main-defn-vars]
+  (let [nsn (str ns-sym)
+        all-names (table-var-names ns-sym var-globals main-defn-vars)
+        ;; a var the program also names by #'x keeps that constant (the
+        ;; var-const-form one, full meta) so (= (resolve 'x) #'x) holds
+        rooted? (fn [nm] (contains? @rooted-vars (lw-rt/ns-var ns-sym (symbol nm))))
+        names (vec (remove rooted? all-names))
+        rooted (filter rooted? all-names)
+        ns-obj (the-ns ns-sym)
+        aliases (into {} (sort (for [[a n] (ns-aliases ns-obj)] [(str a) (str (ns-name n))])))
+        refers (into {} (sort (for [[s v] (ns-refers ns-obj)
+                                    :let [tn (when (var? v) (some-> (var-ns-name v) symbol find-ns ns-name str))]
+                                    :when (and tn (not (core-nss tn)))]
+                                [(str s) tn])))
+        macros (into {} (for [form (get @program-macros ns-sym)
+                              :let [nm (first (lw-rt/strip-meta-name (second form)))]]
+                          [(str nm) (hidden-defn! ns-sym (symbol (str "__lw_m_" (lw/munge-id (str nm)))) (macro-fn-arities form))]))
+        pvar (hidden-defn! ns-sym '__lw_pvar
+                           [['[__lw_k] (when (seq names)
+                                         (bsearch-form (mapv #(symbol nsn %) names) 0 (count names)))]])
+        getter (list 'fn* [] (list pvar '__lw_k))
+        tab (hidden-defn! ns-sym '__lw_ptab
+              [[[] (list 'let* ['__lw_nsy (list 'clojure.core/symbol (str "<ns " nsn ">"))
+                                '__lw_names names]
+                         {:aliases aliases
+                          :refers refers
+                          :vars (list 'loop* ['__lw_k 0 '__lw_m {}]
+                                      (list 'if (list 'clojure.core/< '__lw_k (count names))
+                                            (list 'let* ['__lw_n (list 'clojure.core/nth '__lw_names '__lw_k)]
+                                                  (list 'recur (list 'clojure.core/inc '__lw_k)
+                                                        (list 'clojure.core/assoc '__lw_m '__lw_n
+                                                              (list 'clojure.core/with-meta
+                                                                    (list 'clojure.core/symbol (list 'clojure.core/str (str "#'" nsn "/") '__lw_n))
+                                                                    {:lw/var getter
+                                                                     :name (list 'clojure.core/symbol '__lw_n)
+                                                                     :ns '__lw_nsy}))))
+                                            (reduce (fn [m nm] (list 'clojure.core/assoc m nm (list 'var (symbol nsn nm))))
+                                                    '__lw_m rooted)))
+                          :macros macros})]])]
+    [nsn (list tab)]))
+
+(defn registry-boot-forms
+  "The forms _main starts with (P7): the in-ns native's ns form leaves
+   behind, and the program table when eval is reached and the runtime has
+   install-program-table!."
+  [main-ns nss var-globals main-defn-vars]
+  (concat
+   (when (or @eval-reached @ns-read)
+     [(list 'clojure.core/in-ns (list 'quote main-ns))])
+   ;; LW_NO_PROGRAM_TABLE=1: diagnostic, leaves the table out (P7.4 sizes
+   ;; the evaluator and the table separately)
+   (when (and @eval-reached (lw-rt/ns-var 'wasm.eval 'install-program-table!)
+              (not= "1" (os/getenv "LW_NO_PROGRAM_TABLE")))
+     [(list 'wasm.eval/install-program-table!
+            (into {} (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
 
 (defn -main [& argv]
   (let [sp-arg (second (drop-while #(not= "-source-paths" %) argv))
@@ -620,7 +770,7 @@
                                        (doseq [s (thunk-def-syms e)] (swap! thunk-vars conj (resolve s)))))
                                    (swap! body conj form))
               ;; a macro only matters at expansion time, in this process
-              (and (seq? form) (= 'defmacro (first form))) (native! form)
+              (and (seq? form) (= 'defmacro (first form))) (do (native! form) (note-macro! (ns-name *ns*) form))
               (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
               (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               ;; P6.1: a def below the top of the form (in a let/when/if)
@@ -674,7 +824,11 @@
                            [(list '__t-run-all (vec (map str ts)) (vec ts))])
                          ['(__t-summary)])
                  @body)
-          main-src (apply list 'defn '_main [] (concat (map expand-top body) [nil]))
+          ;; P7: the registry boot (in-ns, program table) runs first; the
+          ;; table's stand-ins read their vars only when eval derefs them
+          boot (registry-boot-forms (ns-name *ns*) (conj (vec (sort @lib-loaded)) (ns-name *ns*))
+                                    var-globals (keep #(resolve (second %)) @defns))
+          main-src (apply list 'defn '_main [] (concat (map expand-top boot) (map expand-top body) [nil]))
           ss (lw/new-session {} var-globals opts)]
       (lw/with-session*
        ss

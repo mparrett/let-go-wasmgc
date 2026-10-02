@@ -1,0 +1,11 @@
+;; P7 program table (B): run with LG_ARGS="-source-paths corpus/eval/program/multi/lib".
+;; Evaluated code in the main ns reaches a library's vars and macro through
+;; the ns form's alias and refer, and by the library's full name.
+(ns eval.multi (:require [evlib.util :as u :refer [vibe]] [clojure.string :as s]))
+(println (ns-name *ns*))
+(println (eval '(u/twice 3)) (eval '(vibe)) (eval '(evlib.util/twice 4)))
+(println (eval '(u/mm 1 2 3)))
+(println (eval '(s/upper-case "abc")))
+(println ((resolve 'u/twice) 5))
+(in-ns 'evlib.util)
+(println (eval 'hidden) (eval '(twice 6)))

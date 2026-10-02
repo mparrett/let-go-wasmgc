@@ -38,6 +38,10 @@
     (wasm.core/raise (wasm.str/str-bytes (str "array-map requires an even number of arguments, got " (count kvs))))
     (apply hash-map-v kvs)))
 (defn hash-set-v [& xs] (into #{} xs))
+;; P7: core/concat*, what the reader expands syntax-quote to ((apply concat*
+;; [[(quote a)] [x] ys])): a program macro compiled for the program table
+;; runs it. Native's always returns a PersistentList, () when empty.
+(defn concat*-v [& xs] (if (nil? xs) () (apply list (apply concat xs))))
 
 ;; P3.2: natives xsofy's world dump reaches that rt/ has no twin for (lw_rt's
 ;; ext-twins routes the native's var here).

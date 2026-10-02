@@ -1642,6 +1642,14 @@
 (defn core-fn-global [v]
   (or (get @*fn-values* v)
       (let [[n body] (core-fn-impls v)
+            ;; P7 (agent A's gap report): inc/dec have no runtime twin, and
+            ;; the Int-only body traps on a non-Int arg; with the runtime
+            ;; compiled in they go through its generic +/- (native's text,
+            ;; `cannot add nil and let-go.lang.Int`, and floats)
+            body (if (and *rt* (#{#'inc #'dec} v))
+                   (rt-call-expr (if (= v #'inc) #'wasm.core/add #'wasm.core/sub)
+                                 ["(local.get $p0)" "(call $rt_box_int (i64.const 1))"])
+                   body)
             op (core-var-ops v)
             nm (op-names op)
             cname (str "core_" (name op))
@@ -1732,10 +1740,20 @@
         ;; P2.14: *file* is the program's path (native binds it while the
         ;; file loads; here the whole run is the load)
         (and *rt* (= v #'*file*) *program-file*) (str-wat *program-file*)
+        ;; P7 (Phase 7 seam): *ns* is the runtime registry's current
+        ;; namespace, so it follows in-ns and evaluated ns forms. Guarded
+        ;; while the runtime lacks current-ns. Named limit: a read inside
+        ;; (binding [*ns* ..]) still sees the registry, not the binding.
+        (and *rt* (= v #'*ns*) (lw-rt/ns-var 'wasm.natives 'current-ns))
+        (rt-call-expr (lw-rt/ns-var 'wasm.natives 'current-ns) [])
         ;; P2.14: a native var holding a scalar constant (math/PI, math/E):
         ;; its value, as native reads it
         (and *rt* (native-scalar-const? v)) (scalar-const-wat @v)
         (and *rt* (value-substs v)) (str "(global.get " (defn-fn-global (value-substs v)) ")")
+        ;; P7 (agent A's gap report): core.lg's inc/dec are typed-param
+        ;; defns, so as a value their $Fn unboxed a nil/String/float arg
+        ;; into the Int-slot trap; core-fn-global's generic +/- body instead
+        (and *rt* (#{#'inc #'dec} v)) (str "(global.get " (core-fn-global v) ")")
         (and *rt* (rt-target v) (callee-sig v)) (str "(global.get " (defn-fn-global v) ")")
         (core-fn-impls v) (str "(global.get " (core-fn-global v) ")")
         (callee-sig v) (str "(global.get " (defn-fn-global v) ")")

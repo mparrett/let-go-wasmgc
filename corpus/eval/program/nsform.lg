@@ -1,0 +1,18 @@
+;; P7 program table (B): with an ns form *ns* starts as the program's ns
+;; (native's ns form), follows in-ns, and evaluated code resolves the
+;; program's vars, qualified and not, private ones in their own ns.
+(ns my.prog)
+(println (ns-name *ns*))
+(defn f [x] (+ x 100))
+(def ^:private secret 42)
+(defmacro unless [c & body] `(if ~c nil (do ~@body)))
+(println (eval '(f 1)) (eval 'secret) (eval '(unless false :ran)))
+(println (eval '(my.prog/f 2)))
+(in-ns 'other.place)
+(println (ns-name *ns*))
+(println (eval '(my.prog/f 3)))
+(eval '(def here 5))
+(println (eval 'here))
+(in-ns 'my.prog)
+(println (ns-name *ns*))
+(println (eval '(do (defn h [] (f 0)) (h))))
