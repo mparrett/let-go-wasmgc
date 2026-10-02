@@ -53,6 +53,12 @@ Read this first after compaction. Durable state is on disk: `STATUS.md`
   set its `#bar` from the measured run), P6.R reviewer dispatch, then P5.GATE and P6.GATE. Cost line per gate: sum message.usage over
   the session JSONL + subagents/ (see the summary doc's method).
 
+- 11:10 state (HEAD 1f51b18 + P6.2 bar commit pending in a background job): Phase 5 rows ALL DONE except P5.GATE
+  (run `LW_ATTEST=0 checks/gate.sh 5 && gate.sh 1..4` on a settled tree). Phase 6: P6.0 P6.1 P6.R done; P6.2 at 252/373 (bar 252,
+  ceiling 262 after P6.6); P6.3-P6.5 built, were red at the *err* blocker now fixed, NOT yet rerun; P6.6+P6.7 (opus, rt/) agent
+  `af2658dc35afa6b1e`; P6.8 (opus, src/) agent `abc1f402d1fd02b09`. After both land: rerun P6.3/P6.4/P6.5, raise P6.2 bar,
+  P5.GATE then P6.GATE with LW_ATTEST=0, cost line, TOUR/previews regen, release pulse claim with --outcome handoff.
+
 ## CAMPAIGN COMPLETE 2026-10-01 20:30 (D127). Nothing in flight. Pulse claim released.
 
 ## (historical) In flight at 13:05
