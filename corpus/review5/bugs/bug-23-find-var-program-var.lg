@@ -1,0 +1,3 @@
+;; native (LG_ARGS="-source-paths <abs>/corpus/review5/lib"): "#'r5lib.a/pub #'r5lib.a/pub" -- find-var sees a LIBRARY program var, as resolve does (module: nil; the main ns's own vars work)
+(ns r5.fv (:require [r5lib.a :as a]))
+(println (eval '(resolve 'r5lib.a/pub)) (eval '(find-var 'r5lib.a/pub)))

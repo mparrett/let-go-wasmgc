@@ -1,0 +1,21 @@
+(def r5-rv 3) => #'user/r5-rv
+#'r5-rv => #'user/r5-rv
+@#'r5-rv => 3
+(:foo (meta ^:foo (fn [] 1))) => nil
+(meta ^{:a 1} [1 2]) => {:a 1}
+(meta '^{:a 1} [1 2]) => {:a 1}
+(meta ^:k {:x 1}) => {:k true}
+(meta (with-meta [1] {:b 2})) => {:b 2}
+(let [x 1] (meta ^{:v x} [x])) => {:v 1}
+::foo => :user/foo
+(in-ns 'r5.kw) => <ns r5.kw>
+::foo => :r5.kw/foo
+(ns r5.kw2 (:require [r5.kw :as k])) => nil
+::k/bar => :r5.kw/bar
+::nope/bar => ERR "Syntax error reading source at (<read-string>:1:11).\ninvalid token: ::nope/bar, namespace alias nope not found"
+(in-ns 'user) => <ns user>
+::foo => :user/foo
+{::a 1} => {:user/a 1}
+(= ::x :user/x) => true
+#'nope-var => ERR "CompileError: Can't resolve nope-var in this context"
+(var r5-rv 1) => #'user/r5-rv

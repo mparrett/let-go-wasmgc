@@ -1,0 +1,13 @@
+(do (defmacro r5-qm [x] (list 'quote x)) (r5-qm foo)) => ERR "CompileError: compiling do member\n\tcaused by CompileError: compiling arguments foo\n\tcaused by CompileError: Can't resolve foo in this context"
+(r5-qm foo) => ERR "CompileError: compiling arguments foo\n\tcaused by CompileError: Can't resolve foo in this context"
+(do (in-ns 'r5.ct) (def ctv 1)) => #'r5.ct/ctv
+(ns-name *ns*) => r5.ct
+(in-ns 'user) => <ns user>
+(resolve 'ctv) => nil
+(resolve 'r5.ct/ctv) => #'r5.ct/ctv
+(do (def r5-a 1) (def r5-b (inc r5-a)) [r5-a r5-b]) => [1 2]
+(let [x (def r5-inlet 3)] [x r5-inlet]) => [#'user/r5-inlet 3]
+(defn r5-defs-inside [] (def r5-inner 9) r5-inner) => #'user/r5-defs-inside
+(r5-defs-inside) => 9
+r5-inner => 9
+(do (defn r5-h [] (r5-h2)) (defn r5-h2 [] :h2) (r5-h)) => ERR "CompileError: compiling do member\n\tcaused by CompileError: compiling def value\n\tcaused by CompileError: compiling fn body\n\tcaused by CompileError: compiling function position\n\tcaused by CompileError: Can't resolve r5-h2 in this context"

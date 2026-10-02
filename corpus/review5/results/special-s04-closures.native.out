@@ -1,0 +1,14 @@
+(let [fs (atom [])] (dotimes [i 3] (swap! fs conj (fn [] i))) (map (fn [f] (f)) @fs)) => (0 1 2)
+(let [fs (atom [])] (doseq [x [:a :b]] (swap! fs conj (fn [] x))) (mapv (fn [f] (f)) @fs)) => [:a :b]
+(loop [i 0 fs []] (if (< i 3) (recur (inc i) (conj fs (fn [] (* i i)))) (mapv (fn [f] (f)) fs))) => [0 1 4]
+(let [f (try (throw (ex-info "m" {})) (catch Exception e (fn [] (ex-message e))))] (f)) => "m"
+(((fn [a b c d e] (fn [] [a b c d e])) 1 2 3 4 5)) => [1 2 3 4 5]
+((((fn [a] (fn [b] (fn [c] [a b c]))) 1) 2) 3) => [1 2 3]
+(let [y 10] (letfn [(g [x] (+ x y))] (g 1))) => 11
+(let [fs (for [i (range 3) j [:a :b]] (fn [] [i j]))] (map (fn [f] (f)) fs)) => ([0 :a] [0 :b] [1 :a] [1 :b] [2 :a] [2 :b])
+(let [mk (fn [n] (let [a (atom n)] [(fn [] (swap! a inc)) (fn [] @a)])) [i1 g1] (mk 0) [i2 g2] (mk 100)] (i1) (i1) (i2) [(g1) (g2)]) => [2 101]
+(let [x 1] (let [f (fn [] x)] (let [x 2] (f)))) => 1
+(let [v (vec (map (fn [i] (fn [j] (+ i j))) (range 4)))] ((v 3) 10)) => 13
+(let [a 1 b 2 c 3 d 4 e 5 f 6 g 7] ((fn [] (+ a b c d e f g)))) => 28
+(let [adders (into {} (map (fn [k] [k (fn [x] (str k x))]) [:p :q]))] ((adders :q) 1)) => ":q1"
+(let [r (atom nil)] (loop [i 0] (when (< i 3) (reset! r (fn [] i)) (recur (inc i)))) (@r)) => 2

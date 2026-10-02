@@ -1,0 +1,13 @@
+(a/helper 2) => 200
+a/secret => 42
+(var a/secret) => #'r5lib.a/secret
+(binding [a/*dyn* 2] a/*dyn*) => ERR "lower-wasm: push-binding! of #'r5lib.a/*dyn*: a program var's value is not reachable from its stand-in (named limit)"
+(alter-var-root #'a/plain inc) => ERR "lower-wasm: alter-var-root of #'r5lib.a/plain: a program var's value is not reachable from its stand-in (named limit)"
+(:arglists (meta (resolve 'a/pub))) => nil
+(:name (meta (resolve 'a/pub))) => pub
+(var-get (resolve 'a/plain)) => ERR "lower-wasm: var-get of #'r5lib.a/plain: a program var's value is not reachable from its stand-in (named limit)"
+@(resolve 'a/plain) => 7
+(in-ns 'r5lib.a) => <ns r5lib.a>
+(helper 1) => 100
+secret => 42
+(in-ns 'r5.prog2) => <ns r5.prog2>

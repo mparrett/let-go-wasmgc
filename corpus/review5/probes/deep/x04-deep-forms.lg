@@ -1,0 +1,10 @@
+;; native: compiling a 1000-deep nested form and a 3000-element vector literal works
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(println (eval (reduce (fn [f _] (list 'inc f)) 0 (range 1000))))
+(println (count (eval (vec (map (fn [i] (list '* i 2)) (range 3000))))))
+(println (eval (reduce (fn [f _] (list 'let ['x f] 'x)) 1 (range 300))))
+(println (eval (list* 'do (map (fn [i] (list 'def (symbol (str "dd" i)) i)) (range 300)))))
+(println (eval 'dd299))

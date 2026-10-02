@@ -1,0 +1,15 @@
+(let [x 1] (set! x 2)) => ERR "ExecutionError: SET_VAR invalid Var"
+(set! r5-nowhere 1) => ERR "ExecutionError: SET_VAR invalid Var"
+'(inc 1) => (inc 1)
+'[a (b) {c d}] => [a (b) {c d}]
+(let [x 1] (var x)) => ERR "CompileError: compiling let body\n\tcaused by CompileError: Can't resolve x in this context"
+(do (do (do (do 1)))) => 1
+(let [a 1] (let [b 2] (let [c 3] (let [d 4] (let [e 5] [a b c d e]))))) => [1 2 3 4 5]
+(((fn [] (let [x 1] (fn [] x))))) => 1
+(let [f (fn [] (throw (ex-info "t" {})))] (try (f) (catch e :c))) => :c
+(let [x (if true 1 2) y (if-not true 1 2)] [x y]) => [1 2]
+(let [v [1 2 3]] (v 1)) => 2
+(let [m {:a 1}] [(m :a) (:a m) (get m :b :d)]) => [1 1 :d]
+((if true + -) 3 2) => 5
+((fn [& [a b]] [a b]) 1) => [1 nil]
+(apply (fn [a b c d e f g h] h) (range 8)) => 7

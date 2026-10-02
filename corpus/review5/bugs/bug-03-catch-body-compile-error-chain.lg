@@ -1,0 +1,3 @@
+;; native: the CompileError chain of an error inside a catch body carries native's two dispatch layers:
+;; "CompileError: compiling if then branch\n\tcaused by CompileError: compiling let body\n\tcaused by CompileError: compiling function position\n\tcaused by CompileError: Can't resolve nope in this context"
+(println (pr-str (try (eval '(try 1 (catch e (nope)))) (catch e (ex-message e)))))

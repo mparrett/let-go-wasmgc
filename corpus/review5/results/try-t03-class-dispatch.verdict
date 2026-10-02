@@ -1,0 +1,6 @@
+MISMATCH stdout
+2,5c2,5
+< (try (assert false) (catch Exception e :exc)) => ERR "Assert failed: false"
+< (try (throw (ex-info "x" {})) (catch String e :str) (catch Exception e :exc)) => :exc
+< (try (/ 1 0) (catch ExceptionInfo e :info) (catch e :bare)) => :bare
+< (try (throw (ex-info "x" {})) (catch Foo.Bar e :foo) (catch e :bare)) => :bare

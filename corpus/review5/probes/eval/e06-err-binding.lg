@@ -1,0 +1,5 @@
+;; native: (binding [*err* *out*] ...) around eval, as legmacs' letgo mode does; *out*/*err* referenced inside evaluated code resolve natively
+(println (pr-str (with-out-str (binding [*err* *out*] (eval '(println "plain"))))))
+(println (pr-str (with-out-str (binding [*err* *out*] (try (eval '(nope)) (catch e (println "caught" (ex-message e))))))))
+(println (pr-str (try (with-out-str (binding [*err* *out*] (eval '(binding [*out* *err*] (println "to err"))))) (catch e (str "ERR " (ex-message e))))))
+(println (pr-str (try (eval '(some? *out*)) (catch e (str "ERR " (ex-message e))))))

@@ -1,0 +1,13 @@
+(try (throw "s") (catch Exception e [:exc e])) => ERR "s"
+(try (assert false) (catch Exception e :exc)) => :exc
+(try (throw (ex-info "x" {})) (catch String e :str) (catch Exception e :exc)) => :str
+(try (/ 1 0) (catch ExceptionInfo e :info) (catch e :bare)) => :info
+(try (throw (ex-info "x" {})) (catch Foo.Bar e :foo) (catch e :bare)) => :foo
+(try (throw (ex-info "x" {})) (catch e :first) (catch Exception e :second)) => :first
+(try (throw (ex-info "x" {})) (catch e x y)) => ERR "CompileError: Can't resolve x in this context"
+(try (throw (ex-info "x" {})) (catch Exception e x y)) => ERR "CompileError: Can't resolve x in this context"
+(let [Exception 5] (try (throw (ex-info "x" {})) (catch Exception e [Exception (ex-message e)]))) => [5 "x"]
+(try 1 (catch Exception e (nope))) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve nope in this context"
+(try (throw (ex-info "x" {})) (catch e (recur))) => ERR "CompileError: recur is only allowed in tail position"
+(try (nope) (catch e :c)) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve nope in this context"
+(try 1 (finally (nope))) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve nope in this context"

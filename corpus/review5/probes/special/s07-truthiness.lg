@@ -1,0 +1,17 @@
+;; native: only nil and false are falsy; when/if-not/not on empty colls, 0 and ""
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "[(if '() :t :f) (if 0 :t :f) (if \"\" :t :f) (if [] :t :f) (if false :t :f) (if nil :t :f)]")
+(show "[(not 0) (not nil) (not false) (not [])]")
+(show "(when [] :t)")
+(show "(if-not 0 :f :t)")
+(show "(and 0 \"\" [] :last)")
+(show "(or false nil)")
+(show "(or false)")
+(show "(cond nil 1 false 2 0 3)")
+(show "(boolean (some #{false} [false]))")
+(show "(let [x false] (if x :t :f))")
+(show "(if (seq []) :t :f)")
+(show "(filter identity [0 nil false \"\" [] :k])")

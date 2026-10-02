@@ -1,0 +1,16 @@
+{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i (inc 8) :j 10} => {:b 2, :g 7, :e 5, :f 6, :j 10, :a 1, :c 3, :h 8, :d 4, :i 9}
+{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10} => {:b 2, :g 7, :e 5, :f 6, :j 10, :a 1, :c 3, :h 8, :d 4, :i 9}
+(keys {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i (inc 8)}) => (:b :g :e :f :a :c :h :d :i)
+(let [x 1] {:a x :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8}) => {:a 1, :b 2, :c 3, :d 4, :e 5, :f 6, :g 7, :h 8}
+(let [x 1] {:a x :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) => {:b 2, :g 7, :e 5, :f 6, :a 1, :c 3, :h 8, :d 4, :i 9}
+(assoc (let [x 1] {:a x :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8}) :i 9) => {:b 2, :g 7, :e 5, :f 6, :a 1, :c 3, :h 8, :d 4, :i 9}
+(seq (let [x 1] {:a x :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10 :k 11 :l 12})) => ([:b 2] [:g 7] [:e 5] [:f 6] [:j 10] [:l 12] [:a 1] [:c 3] [:h 8] [:k 11] [:d 4] [:i 9])
+{(inc 0) :a 1 :b} => {1 :b}
+#{(inc 0) 1} => #{1}
+(let [k :z] (hash-set k :y :x :w :v :u :t :s :r)) => #{:x :r :u :t :z :y :s :w :v}
+(let [k :z] #{k :y :x :w :v :u :t :s :r}) => #{:x :r :u :t :z :y :s :w :v}
+(= (let [x 1] {:a x :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) => true
+(eval '{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10}) => {:b 2, :g 7, :e 5, :f 6, :j 10, :a 1, :c 3, :h 8, :d 4, :i 9}
+(into {} (map (fn [i] [i i]) (range 10))) => {0 0, 8 8, 2 2, 1 1, 3 3, 6 6, 4 4, 5 5, 9 9, 7 7}
+(let [m (let [x 1] {:a x :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9})] (dissoc m :a)) => {:b 2, :g 7, :e 5, :f 6, :c 3, :h 8, :d 4, :i 9}
+[(count {:a 1 :a (inc 1)}) ] => ERR "Syntax error reading source at (<read-string>:1:26).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:26).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:26).\nduplicate key in map literal: :a"

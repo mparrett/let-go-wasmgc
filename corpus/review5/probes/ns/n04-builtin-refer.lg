@@ -1,0 +1,18 @@
+;; native: (require '[clojure.string :refer [...]]) and ns :refer of a builtin namespace make the names resolve unqualified; :refer-clojure :exclude
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(defn run []
+  (show "(require '[clojure.string :refer [join upper-case]])")
+  (show "(join \",\" [1 2])")
+  (show "(upper-case \"a\")")
+  (show "(ns r5.br (:require [clojure.string :as str :refer [blank?]]))")
+  (show "(blank? \"\")")
+  (show "(str/join \"-\" [1 2])")
+  (show "(str 1 2)")
+  (show "(ns r5.ex (:refer-clojure :exclude [map]))")
+  (show "(defn map [] :mine)")
+  (show "(map)")
+  (show "(in-ns 'user)"))
+(run)

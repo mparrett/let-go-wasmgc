@@ -1,0 +1,5 @@
+;; native: ":ok 1" -- defns made in user BEFORE the main file's (ns ...) form compile and run (module: driver "ir/build: unresolved symbol helper", whole program refused)
+(defn helper [] 1)
+(defn user-f [] (helper))
+(ns r5.after)
+(println :ok (user/user-f))

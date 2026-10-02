@@ -1,0 +1,16 @@
+(#(+ % %1) 2) => 4
+(#(vector %) 1 2) => ERR "ExecutionError: function <FN> expected 1 args, got 2"
+(#(%) (fn [] :called)) => :called
+(#(apply + % %&) 1 2 3) => ERR "CompileError: compiling function position\n\tcaused by CompileError: compiling fn body\n\tcaused by CompileError: compiling arguments %&\n\tcaused by CompileError: Can't resolve %& in this context"
+''x => (quote x)
+'~x => (unquote x)
+(read-string "`a") => (quote a)
+[\space \u0041 \tab] => [\space \A \tab]
+(let [a (atom 3)] @a) => 3
+(read-string "#(+ % %&)") => (fn* [%1] (+ %1 %&))
+(read-string "#(%2)") => (fn* [%1 %2] (%2))
+~x => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve unquote in this context"
+(read-string "~@x") => (unquote-splicing x)
+#inst "2020-01-01" => ERR "lower-wasm: read-string: #tag tagged literal (#inst, #uuid, *data-readers*; named limit)"
+(count (read-string "[#_a #_b c]")) => 1
+(read-string "#\"a+\"") => #"a+"

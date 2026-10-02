@@ -1,0 +1,4 @@
+;; review5 library b: requires a with an alias of its own and refers a fn
+(ns r5lib.b (:require [r5lib.a :as aa :refer [two]]))
+(defn bf [x] (two x (aa/pub x)))
+(defmacro bm [x] `(aa/vari ~x ~x))

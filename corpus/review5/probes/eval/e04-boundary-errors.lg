@@ -1,0 +1,18 @@
+;; native: errors crossing the eval boundary in both directions keep message and data; compiled fn errors seen from evaluated catch
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(defn boom [x] (throw (ex-info "compiled boom" {:x x})))
+(defn adds [x] (+ x 1))
+(println (eval '(try (user/boom 1) (catch e [(ex-message e) (ex-data e)]))))
+(println (eval '(try (boom 2) (catch e (ex-data e)))))
+(println (try (eval '(boom 3)) (catch e (ex-data e))))
+(println (eval '(try (adds "s") (catch e :caught))))
+(println (try (doall (eval '(try (map boom [1]) (catch e :not-yet)))) (catch e [:outer (ex-message e)])))
+(println (try (doall (eval '(map boom [4]))) (catch e (ex-data e))))
+(def ev (eval '(fn [] (throw (ex-info "evald" {:k :v})))))
+(println (try (ev) (catch e [(ex-message e) (ex-data e)])))
+(println (try (eval '(throw (ex-info "o" {} (ex-info "cause" {:c 1})))) (catch e (ex-data (ex-cause e)))))
+(println (eval '(let [e (ex-info "m" {:a 1})] (identical? e (try (throw e) (catch x x))))))
+(println (try (eval '(do (println "side") (throw (ex-info "after side" {})))) (catch e (ex-message e))))

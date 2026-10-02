@@ -1,0 +1,15 @@
+;; native: #'core-fn names a core var (prints #'core/x or so) and calls/derefs through it
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "#'map")
+(show "(var inc)")
+(show "((var map) inc [1])")
+(show "(@#'inc 1)")
+(show "(var clojure.string/join)")
+(show "(fn? (var-get (var inc)))")
+(show "(= #'inc #'inc)")
+(show "(var string/join)")
+(show "(var clojure.core/str)")
+(show "((var str) 1 2)")

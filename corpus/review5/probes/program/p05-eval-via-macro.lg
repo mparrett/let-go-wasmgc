@@ -1,0 +1,6 @@
+;; native (LG_ARGS=-source-paths corpus/review5/lib): eval reached only through a program macro's expansion still sees program vars (module: NAMED LIMIT, no table)
+(ns r5.prog5)
+(defmacro ev [form] `(eval '~form))
+(defn pf [] :pf)
+(println (try (ev (pf)) (catch e (ex-message e))))
+(println (try (ev (+ 1 2)) (catch e (ex-message e))))

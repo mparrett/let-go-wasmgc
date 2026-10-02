@@ -1,0 +1,3 @@
+;; native: "\"(r5-form 1 2)\"" -- an evaluated defmacro sees the call form in &form
+(eval '(defmacro r5-form [& _] (pr-str &form)))
+(println (pr-str (eval '(r5-form 1 2))))

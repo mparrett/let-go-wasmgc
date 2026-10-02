@@ -1,0 +1,13 @@
+(a/helper 2) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve a/helper in this context"
+a/secret => ERR "CompileError: Can't resolve a/secret in this context"
+(var a/secret) => #'r5lib.a/secret
+(binding [a/*dyn* 2] a/*dyn*) => 2
+(alter-var-root #'a/plain inc) => 8
+(:arglists (meta (resolve 'a/pub))) => ([x])
+(:name (meta (resolve 'a/pub))) => pub
+(var-get (resolve 'a/plain)) => 8
+@(resolve 'a/plain) => 8
+(in-ns 'r5lib.a) => <ns r5lib.a>
+(helper 1) => 100
+secret => 42
+(in-ns 'r5.prog2) => <ns r5.prog2>

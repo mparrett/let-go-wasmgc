@@ -1,0 +1,5 @@
+MISMATCH stdout
+11c11
+< (let [f (binding [*r5* 8] (bound-fn [] *r5*))] (f)) => 8
+---
+> (let [f (binding [*r5* 8] (bound-fn [] *r5*))] (f)) => ERR "CompileError: compiling let binding\n\tcaused by CompileError: compiling do member\n\tcaused by CompileError: compiling do member\n\tcaused by CompileError: compiling function position\n\tcaused by CompileError: Can't resolve bound-fn in this context"

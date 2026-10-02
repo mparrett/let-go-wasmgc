@@ -1,0 +1,15 @@
+(def ^:dynamic *r5* 1) => #'user/*r5*
+(defn r5-read [] *r5*) => #'user/r5-read
+(binding [*r5* 2] (r5-read)) => 2
+*r5* => 1
+(try (binding [*r5* 3] (throw (ex-info "x" {}))) (catch e *r5*)) => 1
+(binding [*r5* 4] (set! *r5* 5) (r5-read)) => 5
+*r5* => 1
+(def r5-nd 1) => #'user/r5-nd
+(binding [r5-nd 2] r5-nd) => 2
+(binding [*r5* 6 *r5* 7] *r5*) => 7
+(let [f (binding [*r5* 8] (bound-fn [] *r5*))] (f)) => 8
+(binding [*r5* 9] (let [p (atom nil)] (reset! p (fn [] *r5*)) (@p))) => 9
+(set! *r5* 10) => #'user/*r5*
+(binding [nope-dyn 1] 1) => ERR "CompileError: compiling do member\n\tcaused by CompileError: compiling arguments (var nope-dyn)\n\tcaused by CompileError: Can't resolve nope-dyn in this context"
+(:dynamic (meta #'*r5*)) => true

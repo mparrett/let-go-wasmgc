@@ -1,0 +1,28 @@
+(a/pub 2) => 200
+(a/with-pub 3) => 300
+(a/with-helper 3) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve r5lib.a/helper in this context"
+(a/multi-m) => :zero
+(a/multi-m 1) => [:one 1]
+(a/multi-m 1 2 3) => [:many 1 2]
+(a/dm [1 2] 3 4) => 10
+(a/uses-fn 41) => 42
+(a/nests 5) => 500
+(apply vari 1 2 [3 4]) => [1 (2 3 4)]
+(apply a/vari []) => ERR "ExecutionError: function <FN> expected at least 1 args, got 0"
+(a/two 1) => ERR "ExecutionError: function <FN> expected 2 args, got 1"
+(local-f 1 2) => ERR "ExecutionError: function <FN> expected 1 args, got 2"
+(pub 5) => 500
+(map local-f [1 2]) => (2 3)
+(r5.prog/local-f 1) => 2
+(b/bf 3) => [3 300]
+(b/bm 4) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve aa/vari in this context"
+(swap! a/counter inc) => 1
+a/plain => 7
+(a/reads-plain) => 7
+(fn? @(resolve 'local-f)) => true
+(= (resolve 'a/pub) (resolve 'r5lib.a/pub)) => true
+(resolve 'a/pub) => #'r5lib.a/pub
+(ns-resolve 'r5lib.a 'pub) => #'r5lib.a/pub
+(find-var 'r5lib.a/pub) => #'r5lib.a/pub
+(ns-name *ns*) => r5.prog
+1

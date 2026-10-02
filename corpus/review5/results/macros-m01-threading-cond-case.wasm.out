@@ -1,0 +1,24 @@
+(-> {:a 1} :a) => 1
+(-> [1 2] (conj 3) count) => 3
+(->> 5 (- 10)) => 5
+(-> 3 #(* 2 %)) => ERR "CompileError: unexpected fn form"
+(-> 1 (+ 2) (- 10)) => -7
+(->> (range 5) (map inc) (reduce +)) => 15
+(cond 1) => nil
+(cond false 1 :else) => nil
+(cond nil 1 false 2) => nil
+(case 1 #{1 2} :set :no) => :no
+(case [1 2] [1 2] :vec :no) => :vec
+(case '(1 2) ((1 2)) :list :no) => :list
+(case nil nil :nil :no) => :nil
+(case 5 1 :a) => ERR "No matching clause: "
+(case "x" ("x" "y") :grp :no) => :grp
+(case 'sym sym :s :no) => :s
+(case 2 (1 2 3) :small :big) => :small
+(case :k :k) => :k
+(case 1) => ERR "No matching clause: "
+(condp some [1 2 3] #{0 4} :>> inc #{2} :>> (fn [x] [:hit x]) :none) => #{2}
+(condp = 3 1 :a 2 :b) => nil
+(condp < 5 10 :a 3 :b) => :b
+(condp = 1 1) => 1
+(case 1.0 1 :int 1.0 :float :no) => :float

@@ -1,0 +1,21 @@
+;; native (LG_ARGS=-source-paths corpus/review5/lib): private library vars from another ns fail to resolve; dynamic binding of a program var works natively (module: named limit); var meta
+(ns r5.prog2 (:require [r5lib.a :as a]))
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(defn run []
+  (show "(a/helper 2)")
+  (show "a/secret")
+  (show "(var a/secret)")
+  (show "(binding [a/*dyn* 2] a/*dyn*)")
+  (show "(alter-var-root #'a/plain inc)")
+  (show "(:arglists (meta (resolve 'a/pub)))")
+  (show "(:name (meta (resolve 'a/pub)))")
+  (show "(var-get (resolve 'a/plain))")
+  (show "@(resolve 'a/plain)")
+  (show "(in-ns 'r5lib.a)")
+  (show "(helper 1)")
+  (show "secret")
+  (show "(in-ns 'r5.prog2)"))
+(run)

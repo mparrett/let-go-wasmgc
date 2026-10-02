@@ -1,0 +1,559 @@
+=== probes/deep/x01-deep-500.lg
+(defn r5-deep [n] (if (zero? n) 0 (inc (r5-deep (dec n))))) => #'user/r5-deep
+(r5-deep 500) => 500
+[exit 0]
+=== probes/deep/x02-deep-5000.lg
+(defn r5-deep [n] (if (zero? n) 0 (inc (r5-deep (dec n))))) => #'user/r5-deep
+(r5-deep 5000) => 5000
+[exit 0]
+=== probes/deep/x03-deep-try.lg
+(defn r5-deep [n] (if (zero? n) 0 (inc (r5-deep (dec n))))) => #'user/r5-deep
+2000
+:after
+[exit 0]
+=== probes/deep/x04-deep-forms.lg
+1000
+3000
+1
+#'user/dd299
+299
+[exit 0]
+=== probes/deep/x05-loop-heavy.lg
+(count (loop [i 0 v []] (if (< i 200000) (recur (inc i) (conj v i)) v))) => 200000
+(reduce + (map (fn [x] (* x x)) (range 100000))) => 333328333350000
+(letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? 1000)) => true
+(count (take 50000 (iterate (fn [x] (inc x)) 0))) => 50000
+(let [a (atom 0)] (dotimes [i 100000] (swap! a inc)) @a) => 100000
+[exit 0]
+=== probes/defs/d01-defs.lg
+(def r5-a 1) => #'user/r5-a
+(def r5-a) => #'user/r5-a
+r5-a => 1
+(def r5-unb) => #'user/r5-unb
+(bound? #'r5-unb) => false
+(str r5-unb) => ""
+(declare r5-d) => #'user/r5-d
+(bound? (var r5-d)) => false
+(if false (def r5-never 1)) => nil
+(bound? #'r5-never) => false
+(def ^{:doc "d"} r5-m 1) => #'user/r5-m
+(:doc (meta #'r5-m)) => "d"
+(def r5-doc "docstring" 2) => #'user/r5-doc
+[(:doc (meta #'r5-doc)) r5-doc] => ["docstring" 2]
+(defn r5-f "doc" {:added 1} [x] x) => #'user/r5-f
+[(:added (meta #'r5-f)) (:doc (meta #'r5-f)) (:name (meta #'r5-f))] => [1 "doc" r5-f]
+(def r5-x 1) => #'user/r5-x
+(defn r5-gx [] r5-x) => #'user/r5-gx
+(def r5-x 2) => #'user/r5-x
+(r5-gx) => 2
+(def r5-s (def r5-t 3)) => #'user/r5-s
+r5-s => #'user/r5-t
+(do (def r5-c 1) (def r5-c (inc r5-c)) r5-c) => 2
+[(= (var r5-f) (var r5-f)) (= #'r5-f (resolve 'r5-f))] => [true true]
+[(deref (var r5-x)) (var-get #'r5-x) @(find-var 'user/r5-x) ((var r5-f) 3)] => [2 2 2 3]
+(def r5-self (fn [] r5-self)) => #'user/r5-self
+(fn? (r5-self)) => true
+(def ^:private r5-pv 1) => #'user/r5-pv
+(:private (meta #'r5-pv)) => true
+[exit 0]
+=== probes/defs/d02-defonce-declare.lg
+(declare r5-o) => #'user/r5-o
+(defonce r5-o 5) => #'user/r5-o
+r5-o => 5
+(def r5-e) => #'user/r5-e
+(defonce r5-e 6) => #'user/r5-e
+r5-e => 6
+(defonce r5-k nil) => #'user/r5-k
+(defonce r5-k 7) => nil
+r5-k => nil
+(defn- r5-priv [] 1) => #'user/r5-priv
+(contains? (ns-publics 'user) 'r5-priv) => false
+(contains? (ns-publics 'user) 'r5-k) => true
+(def r5-cnt (atom 0)) => #'user/r5-cnt
+(defonce r5-once (swap! r5-cnt inc)) => #'user/r5-once
+(defonce r5-once (swap! r5-cnt inc)) => nil
+@r5-cnt => 1
+[exit 0]
+=== probes/defs/d03-def-compile-time.lg
+(do (defmacro r5-qm [x] (list 'quote x)) (r5-qm foo)) => ERR "CompileError: compiling do member\n\tcaused by CompileError: compiling arguments foo\n\tcaused by CompileError: Can't resolve foo in this 
+(r5-qm foo) => ERR "CompileError: compiling arguments foo\n\tcaused by CompileError: Can't resolve foo in this context"
+(do (in-ns 'r5.ct) (def ctv 1)) => #'r5.ct/ctv
+(ns-name *ns*) => r5.ct
+(in-ns 'user) => <ns user>
+(resolve 'ctv) => nil
+(resolve 'r5.ct/ctv) => #'r5.ct/ctv
+(do (def r5-a 1) (def r5-b (inc r5-a)) [r5-a r5-b]) => [1 2]
+(let [x (def r5-inlet 3)] [x r5-inlet]) => [#'user/r5-inlet 3]
+(defn r5-defs-inside [] (def r5-inner 9) r5-inner) => #'user/r5-defs-inside
+(r5-defs-inside) => 9
+r5-inner => 9
+(do (defn r5-h [] (r5-h2)) (defn r5-h2 [] :h2) (r5-h)) => ERR "CompileError: compiling do member\n\tcaused by CompileError: compiling def value\n\tcaused by CompileError: compiling fn body\n\tcaused b
+[exit 0]
+=== probes/eval/e01-eval-in-eval.lg
+(eval '(eval '(+ 1 2))) => 3
+(eval (list 'eval (list 'quote '(* 2 3)))) => 6
+5 "s" :k nil true 1.5 c
+[1 2] {:a 2} #{2}
+2 true
+() ()
+nil
+(+ 1 2)
+3
+3
+3
+3
+3
+7
+3
+6
+3
+CompileError: compiling function position
+	caused by CompileError: Can't resolve let-go.core/+ in this context
+1
+9
+(1 4 9)
+[1;31merror:[0m calling eval
+  [1;34m-->[0m probes/eval/e01-eval-in-eval.lg:27:16
+    [1;34m|[0m
+ [1;34m27[0m [1;34m|[0m (println (eval (vector 'quote 'x)))
+    [1;34m|[0m                [1;31m^^^[0m
+caused by: compiling vector elements
+caused by: Can't resolve quote in this context
+
+[1mstack trace:[0m
+  at  (<unknown>)
+  at eval (probes/eval/e01-eval-in-eval.lg:27:16)
+[exit 0]
+=== probes/eval/e02-out.lg
+"hi\n"
+"1\n\"x\"\n"
+":a:inner:c"
+":a:c"
+":a:c"
+plain 1 :k s
+"plain" 1 :k "s"
+no newline
+sym "s" \c
+"bound"
+""
+"012"
+"1 a nil"
+[1;31merror:[0m calling eval
+  [1;34m-->[0m probes/eval/e02-out.lg:21:18
+    [1;34m|[0m
+ [1;34m21[0m [1;34m|[0m (println (pr-str (eval '(with-out-str (printf "%d-%s" 1 "z")))))
+    [1;34m|[0m                  [1;31m^^^[0m
+caused by: compiling arguments (core/fn [] (printf "%d-%s" 1 "z"))
+caused by: compiling fn body
+caused by: compiling function position
+caused by: Can't resolve printf in this context
+  [1;34m-->[0m probes/eval/e02-out.lg:21:39
+    [1;34m|[0m
+ [1;34m21[0m [1;34m|[0m (println (pr-str (eval '(with-out-str (printf "%d-%s" 1 "z")))))
+    [1;34m|[0m                                       [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at  (<unknown>)
+  at  (<unknown>)
+  at  (<unknown>)
+  at eval (probes/eval/e02-out.lg:21:18)
+[exit 0]
+=== probes/interop/i01-evalfn-in-compiled.lg
+(3 2 1)
+(3 2 1)
+(a bb ccc)
+4
+19
+(11 22)
+([1 2 3])
+{false [0 2 4], true [1 3]}
+45
+:empty
+(0 2 4)
+:done
+[1 7]
+30
+20
+[1 2 3]
+true
+{1 :a, 2 :b}
+true
+2
+(1 10 9)
+ExecutionError: function <FN> expected 1 args, got 0
+ExecutionError: function <FN> doesn't have a 3-arity variant
+[exit 0]
+=== probes/interop/i02-atoms-closures.lg
+12
+[[:k 0 3] [:k 3 4]]
+2 0 2 9 1 nil
+1 2 3
+(1 2)
+6
+:bottom
+28
+21
+{:x 1, :y 2}
+[5 5]
+10
+[exit 0]
+=== probes/macros/m01-threading-cond-case.lg
+(-> {:a 1} :a) => 1
+(-> [1 2] (conj 3) count) => 3
+(->> 5 (- 10)) => 5
+(-> 3 #(* 2 %)) => ERR "CompileError: unexpected fn form"
+(-> 1 (+ 2) (- 10)) => -7
+(->> (range 5) (map inc) (reduce +)) => 15
+(cond 1) => nil
+(cond false 1 :else) => nil
+(cond nil 1 false 2) => nil
+(case 1 #{1 2} :set :no) => :no
+(case [1 2] [1 2] :vec :no) => :vec
+(case '(1 2) ((1 2)) :list :no) => :list
+(case nil nil :nil :no) => :nil
+[1;31merror:[0m "No matching clause: "
+  [1;34m-->[0m probes/macros/m01-threading-cond-case.lg:5:69
+   [1;34m|[0m
+ [1;34m5[0m [1;34m|[0m                        (catch Exception e (str "ERR " (pr-str (norm (ex-message e))))))))
+   [1;34m|[0m                                                                     [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at throw (probes/macros/m01-threading-cond-case.lg:5:69)
+  at show (probes/macros/m01-threading-cond-case.lg:19:1)
+[exit 0]
+=== probes/macros/m02-nested-macros.lg
+(defmacro r5-mx1 [x] (list 'when x :yes)) => #'user/r5-mx1
+(r5-mx1 true) => :yes
+(defmacro r5-and ([] true) ([x] x) ([x & r] (list 'if x (cons 'r5-and r) false))) => #'user/r5-and
+(r5-and 1 2 3) => 3
+(r5-and 1 nil 3) => false
+(r5-and) => true
+(if-let [[a b] [1 2]] [b a] :no) => [2 1]
+(when-let [x nil y 2] 1) => ERR "CompileError: Executing macro #'core/when-let (<FN>) failed\n\tcaused by ExecutionError: calling throw\n\tcaused by when-let requires exactly two forms in binding vect
+(if-let [a 1 b 2] a) => 1
+(if-let [a nil] a) => nil
+(dotimes [i 0] (println i)) => nil
+(doto [1] (conj 2)) => [1]
+(as-> 1 x) => 1
+(some-> nil inc) => nil
+(cond-> 1) => 1
+(take 3 (for [x (range)] (* x x))) => (0 1 4)
+(for [x [1 2] :when false] x) => ()
+(for [x [1 2] y [10 20] :let [z (+ x y)] :when (odd? z)] z) => (11 21)
+(defmacro r5-twice [& body] (cons 'do (concat body body))) => #'user/r5-twice
+(let [a (atom 0)] (r5-twice (swap! a inc)) @a) => 2
+(defmacro r5-m-doc "a doc" [x] x) => #'user/r5-m-doc
+(:doc (meta (var r5-m-doc))) => "a doc"
+(r5-m-doc 5) => 5
+(defmacro r5-dm [[a b] & {:keys [k]}] (list 'quote [a b k])) => #'user/r5-dm
+(r5-dm [1 2] :k 3) => [1 2 3]
+(defmacro r5-uses-local [] 'r5-local-x) => #'user/r5-uses-local
+(let [r5-local-x 42] (r5-uses-local)) => 42
+[exit 0]
+=== probes/macros/m03-misc-macros.lg
+(let [a (atom 0) out (atom [])] (while (< @a 3) (swap! out conj @a) (swap! a inc)) @out) => [0 1 2]
+(with-out-str (doseq [[k v] {:a 1 :b 2}] (print k v))) => ":a 1:b 2"
+(with-out-str (doseq [x [1 2 3] y [:a] :when (odd? x)] (print x y))) => "1 :a3 :a"
+(with-out-str (doseq [x [1 2 3 4] :while (< x 3) y [:a :b]] (print x y))) => "1 :a1 :b2 :a2 :b"
+(with-out-str (doseq [x [] ] (print x))) => ""
+(for [x [1 2 3] :while (< x 2)] x) => (1 2 3)
+(letfn [(a [n] (if (pos? n) (b (dec n)) :a)) (b [n] (if (pos? n) (a (dec n)) :b))] [(a 3) (a 4)]) => [:b :a]
+[1;31merror:[0m Assert failed: false
+  [1;34m-->[0m probes/macros/m03-misc-macros.lg:5:69
+   [1;34m|[0m
+ [1;34m5[0m [1;34m|[0m                        (catch Exception e (str "ERR " (pr-str (norm (ex-message e))))))))
+   [1;34m|[0m                                                                     [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at throw (probes/macros/m03-misc-macros.lg:5:69)
+  at show (probes/macros/m03-misc-macros.lg:13:1)
+[exit 0]
+=== probes/ns/n01-ns-switching.lg
+(in-ns 'r5.a) => <ns r5.a>
+(def v 1) => #'r5.a/v
+(defn- priv [] :p) => #'r5.a/priv
+(def ^:private pv 2) => #'r5.a/pv
+(in-ns 'user) => <ns user>
+r5.a/v => 1
+(r5.a/priv) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve r5.a/priv in this context"
+r5.a/pv => ERR "CompileError: Can't resolve r5.a/pv in this context"
+(var r5.a/pv) => #'r5.a/pv
+(str *ns*) => "<ns user>"
+(ns r5.b) => <ns r5.b>
+(str *ns*) => "<ns r5.b>"
+(ns r5.c "docstring" (:require [clojure.string :as cs])) => nil
+(cs/join "-" [1 2]) => "1-2"
+(ns r5.d (:require [r5.a :as x])) => nil
+x/v => 1
+WARNING: alias al in namespace r5.d already points to r5.a, being repointed to r5.c
+WARNING: alias al in namespace r5.e already points to r5.a, being repointed to r5.c
+(ns r5.e (:require [r5.a :as al] [r5.c :as al])) => nil
+(ns-name *ns*) => r5.e
+(the-ns 'nope.nope) => ERR "the-ns: no namespace: nope.nope found"
+(ns-name (the-ns 'r5.a)) => r5.a
+(find-ns 'r5.a) => <ns r5.a>
+(in-ns 'user) => <ns user>
+(ns-name *ns*) => user
+(in-ns "strs") => ERR "in-ns expected Symbol"
+(in-ns) => ERR "wrong number of arguments 0"
+[exit 0]
+=== probes/ns/n02-resolve-family.lg
+(ns r5.f) => <ns r5.f>
+(def k :f) => #'r5.f/k
+(defn kf [] :kf) => #'r5.f/kf
+(in-ns 'user) => <ns user>
+(resolve 'r5.f/k) => #'r5.f/k
+(find-var 'r5.f/k) => #'r5.f/k
+(ns-resolve 'r5.f 'k) => #'r5.f/k
+(var-get (resolve 'r5.f/k)) => :f
+(deref (find-var 'r5.f/k)) => :f
+((ns-resolve 'r5.f 'kf)) => :kf
+(= (resolve 'r5.f/k) (find-var 'r5.f/k)) => true
+(find-var 'r5.f/nothing) => nil
+(find-var 'nope.ns/x) => nil
+(resolve 'nope.ns/x) => nil
+(find-var 'k) => ERR "find-var expects a fully-qualified symbol: k"
+(resolve 'k) => nil
+(ns-resolve 'r5.f 'map) => nil
+(resolve "x") => ERR "resolve expected Symbol"
+(ns-resolve 'nope.ns 'k) => nil
+(def r5-here 1) => #'user/r5-here
+(ns-resolve *ns* 'r5-here) => #'user/r5-here
+(ns-resolve 'user 'r5.f/k) => nil
+(intern 'r5.f 'iv 10) => #'r5.f/iv
+r5.f/iv => 10
+(intern 'r5.f 'k 99) => #'r5.f/k
+r5.f/k => 99
+(alter-var-root (var r5.f/k) inc) => 100
+r5.f/k => 100
+[exit 0]
+=== probes/ns/n03-alias-refer.lg
+(ns r5.g) => <ns r5.g>
+(def k :g) => #'r5.g/k
+(defn gf [] :gf) => #'r5.g/gf
+(ns r5.h) => <ns r5.h>
+(def k :h) => #'r5.h/k
+(ns r5.i (:require [r5.g :as x :refer [gf]])) => nil
+[x/k (gf)] => [:g :gf]
+WARNING: alias x in namespace r5.i already points to r5.g, being repointed to r5.h
+(require '[r5.h :as x]) => nil
+x/k => :h
+(defn gf [] :local-gf) => #'r5.i/gf
+(gf) => :local-gf
+r5.g/gf => <fn gf 0x610656238780>
+(require '[r5.g :refer [nothing-here]]) => nil
+(require '[r5.g :refer :all]) => nil
+(require 'r5.g 'r5.h) => nil
+(require '[r5.g]) => nil
+(require "r5.g") => ERR "require expected Symbol or Vector, got let-go.lang.String"
+(alias 'zz 'r5.g) => nil
+zz/k => :g
+(in-ns 'user) => <ns user>
+[exit 0]
+=== probes/reader/r01-code-forms.lg
+#(+ % #(inc %)) => <fn 0x499bf779b3c0>
+(#(vector %&)) => ERR "CompileError: compiling function position\n\tcaused by CompileError: compiling fn body\n\tcaused by CompileError: compiling arguments %&\n\tcaused by CompileError: Can't resolve
+(#(do %&) 1 2) => ERR "CompileError: compiling function position\n\tcaused by CompileError: compiling fn body\n\tcaused by CompileError: compiling do member\n\tcaused by CompileError: Can't resolve %&
+(#(vector %1 %3) 1 2 3) => [1 3]
+(#(str %) :a) => ":a"
+(#(vector %2) 1 2) => [2]
+`(a b ~(inc 1) ~@[3 4]) => (a b 2 3 4)
+`[~@(range 3) :x] => [0 1 2 :x]
+`{:a ~(inc 1)} => {:a 2}
+`#{~(inc 1)} => #{2}
+(let [[a b c] `(x# x# y#)] [(= a b) (= a c)]) => [true false]
+`~'x => x
+`(1 ~@nil 2) => (1 2)
+`(~@[1] ~@[2 3]) => (1 2 3)
+(let [x 5] `(a ~x)) => (a 5)
+`(if ~(= 1 1) :t :f) => (if true :t :f)
+``(a ~~(inc 1)) => (apply concat* [[(quote a)] [2]])
+(re-find #"(?i)ABC" "xabcx") => "abc"
+(re-find #"a\d+" "xa12") => "a12"
+(re-seq #"\w+" "ab cd") => ("ab" "cd")
+[(list? ()) (= '() ()) (pr-str ()) (seq? ())] => [true true "()" true]
+`[a ^:m b] => [a (with-meta b {:m true})]
+`(~@"ab") => (\a \b)
+[exit 0]
+=== probes/reader/r02-read-string.lg
+"" => ERR "Syntax error reading source at (<read-string>:1:1).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:1).\nunexpected error\n\tcaused by EOF"
+"   " => ERR "Syntax error reading source at (<read-string>:1:4).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:4).\nunexpected error\n\tcaused by EOF"
+";comment" => ERR "Syntax error reading source at (<read-string>:1:9).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:9).\nunexpected error\n\tcaused by EOF"
+"1 2" => 1
+"(1 2" => ERR "Syntax error reading source at (<read-string>:1:5).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:5).\nunexpected error\n\tcaused by EOF"
+"1)" => 1
+"#_ 1 2" => 2
+"#_1" => ERR "Syntax error reading source at (<read-string>:1:4).\nunexpected error\n\tcaused by Syntax error reading source at (<read-string>:1:4).\nunexpected error\n\tcaused by EOF"
+"0x1F" => 31
+"1e3" => 1000.0
+"-0.0" => -0.0
+"9223372036854775807" => 9223372036854775807
+"9223372036854775808" => 9223372036854775808N
+"1/2" => 1/2
+"##Inf" => +Inf
+"\"\\u00e9\"" => "é"
+"\\a" => \a
+"\\newline" => \newline
+"{:a}" => ERR "Syntax error reading source at (<read-string>:1:5).\nmap literal must contain even number of forms"
+"#{1 1}" => ERR "Syntax error reading source at (<read-string>:1:7).\nDuplicate key: 1"
+"{:a 1 :a 2}" => ERR "Syntax error reading source at (<read-string>:1:12).\nduplicate key in map literal: :a"
+":" => ERR "Syntax error reading source at (<read-string>:1:2).\ninvalid token: :"
+"::" => ERR "Syntax error reading source at (<read-string>:1:3).\ninvalid token: ::"
+"#?(:clj 1 :lg 2)" => 2
+"'()" => (quote ())
+"@" => ERR "Syntax error reading source at (<read-string>:1:2).\nreading deref form\n\tcaused by Syntax error reading source at (<read-string>:1:2).\nunexpected error\n\tcaused by Syntax error reading
+"^:k" => ERR "Syntax error reading source at (<read-string>:1:4).\nreading meta"
+"#'" => ERR "Syntax error reading source at (<read-string>:1:3).\nreading quoted var\n\tcaused by Syntax error reading source at (<read-string>:1:3).\nunexpected error\n\tcaused by Syntax error readin
+"foo/" => foo/
+"a.b/c.d" => a.b/c.d
+"\"unterminated" => ERR "Syntax error reading source at (<read-string>:1:14).\nunexpected error\n\tcaused by EOF"
+[exit 0]
+=== probes/reader/r03-meta-var-kw.lg
+(def r5-rv 3) => #'user/r5-rv
+#'r5-rv => #'user/r5-rv
+@#'r5-rv => 3
+(:foo (meta ^:foo (fn [] 1))) => nil
+(meta ^{:a 1} [1 2]) => {:a 1}
+(meta '^{:a 1} [1 2]) => {:a 1}
+(meta ^:k {:x 1}) => {:k true}
+(meta (with-meta [1] {:b 2})) => {:b 2}
+(let [x 1] (meta ^{:v x} [x])) => {:v 1}
+::foo => :user/foo
+(in-ns 'r5.kw) => <ns r5.kw>
+::foo => :r5.kw/foo
+(ns r5.kw2 (:require [r5.kw :as k])) => nil
+::k/bar => :r5.kw/bar
+::nope/bar => ERR "Syntax error reading source at (<read-string>:1:11).\ninvalid token: ::nope/bar, namespace alias nope not found"
+(in-ns 'user) => <ns user>
+::foo => :user/foo
+{::a 1} => {:user/a 1}
+(= ::x :user/x) => true
+#'nope-var => ERR "CompileError: Can't resolve nope-var in this context"
+(var r5-rv 1) => #'user/r5-rv
+[exit 0]
+=== probes/special/s05-arity.lg
+((fn [& xs] (count xs)) 1 2 3) => 3
+((fn [a & xs] [a xs]) 1) => [1 nil]
+((fn ([a] :fixed) ([a & r] :var)) 1) => :fixed
+((fn ([a b] :two) ([a & r] :var)) 1 2) => :two
+((fn ([a b] :two) ([a & r] :var)) 1 2 3) => :var
+((fn [a] a)) => ERR "ExecutionError: function <FN> expected 1 args, got 0"
+((fn [a] a) 1 2) => ERR "ExecutionError: function <FN> expected 1 args, got 2"
+((fn [a b & r] a) 1) => ERR "ExecutionError: function <FN> expected at least 2 args, got 1"
+((fn ([a] 1) ([a b] 2)) 1 2 3) => ERR "ExecutionError: function <FN> doesn't have a 3-arity variant"
+((fn ([] 0) ([a b] 2)) 1) => ERR "ExecutionError: function <FN> doesn't have a 1-arity variant"
+(apply (fn [& xs] (reduce + xs)) (range 20)) => 190
+((fn [a b c d e f] (+ a b c d e f)) 1 2 3 4 5 6) => 21
+((fn [a b c d e f & g] [f g]) 1 2 3 4 5 6 7 8) => [6 (7 8)]
+(fn? (fn ([& a] 1) ([x & b] 2))) => true
+((fn ([a] 1) ([b] 2)) 0) => 2
+(defn r5-ar ([] (r5-ar 1)) ([x] (r5-ar x 2)) ([x y] [x y])) => #'user/r5-ar
+(r5-ar) => [1 2]
+(r5-ar 1 2 3) => ERR "ExecutionError: function <FN> doesn't have a 3-arity variant"
+(apply r5-ar []) => [1 2]
+((fn [a & {:keys [b]}] [a b]) 1 :b) => ERR "kwargs call has an odd number of arguments and no trailing map"
+[exit 0]
+=== probes/special/s06-destructure.lg
+(let [{:keys [a] :or {a 5}} {:a nil}] a) => nil
+(let [{:keys [a] :or {a 5}} {:a false}] a) => false
+(let [{:keys [a] :or {a 5}} nil] a) => 5
+(let [[{:keys [x]} {y :y}] [{:x 1} {:y 2}]] [x y]) => [1 2]
+(let [[a & {:keys [b]}] [1 :b 2]] [a b]) => [1 nil]
+(let [[a & [b & [c]]] [1 2 3]] [a b c]) => [1 2 3]
+(let [{:keys [:a/b]} {:a/b 1}] b) => nil
+(let [{:keys [a/b c]} {:a/b 1 :c 2}] [b c]) => [nil 2]
+(let [[a :as v] nil] [a v]) => [nil nil]
+(let [{:as m} {:a 1}] m) => {:a 1}
+(let [[a b c] "xy"] [a b c]) => [\x \y nil]
+(let [{a 0 b 1} [:p :q]] [a b]) => [:p :q]
+((fn [& {:keys [a b] :or {b 2}}] [a b]) :a 1) => [1 2]
+((fn [& {:as opts}] opts) :a 1 :b 2) => {:a 1, :b 2}
+(let [{:strs [a] :syms [b] :keys [c]} {"a" 1 'b 2 :c 3}] [a b c]) => [1 2 3]
+(let [[a a] [1 2]] a) => 2
+(let [{:keys [a b] :or {b a}} {:a 7}] b) => 7
+(let [[a b] (list 1 2 3)] [a b]) => [1 2]
+(let [[a b :as all] (range 5)] [a b all]) => [0 1 (0 1 2 3 4)]
+(let [{{c :c} :b} {:b {:c 9}}] c) => 9
+(let [[[a] [[b]]] [[1] [[2]]]] [a b]) => [1 2]
+(let [{:keys [a]} [1 2]] a) => nil
+(let [[a b] {:x 1}] a) => [:x 1]
+(loop [{:keys [n acc]} {:n 3 :acc 0}] (if (pos? n) (recur {:n (dec n) :acc (+ acc n)}) acc)) => 6
+[exit 0]
+=== probes/try/t01-try-order.lg
+(with-out-str (try (print :body) (throw (ex-info "x" {})) (catch Exception e (print :catch)) (finally (print :fin)))) => ":body:catch:fin"
+(let [a (atom [])] (try (try (swap! a conj 1) (finally (swap! a conj 2))) (finally (swap! a conj 3))) @a) => [1 2 3]
+(try 1 (finally 2)) => 1
+(try (throw (ex-info "inner" {})) (catch Exception e (throw (ex-info "outer" {:cause (ex-message e)}))) (finally nil)) => ERR "outer"
+(try (throw (ex-info "a" {})) (finally (throw (ex-info "b" {})))) => ERR "b"
+(let [a (atom 0)] [(try (try (throw (ex-info "a" {})) (catch Exception e (throw (ex-info "b" {}))) (finally (swap! a inc))) (catch Exception e (ex-message e))) @a]) => ["b" 1]
+(+ 1 (try (throw (ex-info "x" {})) (catch Exception e 10))) => 11
+(try 1 2 3) => 3
+(try (finally 1)) => nil
+(let [e 1] [(try (throw (ex-info "x" {})) (catch Exception e :c)) e]) => [:c 1]
+(let [a (atom [])] (try (swap! a conj :b) (catch Exception e (swap! a conj :c)) (finally (swap! a conj :f))) @a) => [:b :f]
+(try (throw (ex-info "x" {})) (catch Exception e)) => nil
+(try (throw (ex-info "x" {})) (catch Exception e 1 2 3)) => 3
+(with-out-str (try (try (throw (ex-info "x" {})) (finally (print :f1))) (catch Exception e (print :c2)) (finally (print :f2)))) => ":f1:c2:f2"
+(let [a (atom 0)] (dotimes [i 5] (try (when (odd? i) (throw (ex-info "o" {}))) (swap! a + 10) (catch Exception e (swap! a inc)))) @a) => 32
+(try (throw (ex-info "x" {})) (catch :default e :default-caught)) => ERR "CompileError: catch requires a binding symbol"
+(try (throw (ex-info "x" {})) (catch Throwable e :throwable)) => :throwable
+(try (throw (ex-info "x" {})) (catch ExceptionInfo e (ex-message e))) => "x"
+[exit 0]
+=== probes/try/t02-throw-values.lg
+[1;31merror:[0m "str"
+  [1;34m-->[0m probes/try/t02-throw-values.lg:5:69
+   [1;34m|[0m
+ [1;34m5[0m [1;34m|[0m                        (catch Exception e (str "ERR " (pr-str (norm (ex-message e))))))))
+   [1;34m|[0m                                                                     [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at throw (probes/try/t02-throw-values.lg:5:69)
+  at show (probes/try/t02-throw-values.lg:6:1)
+[exit 0]
+=== probes/values/v01-numbers.lg
+(* 9223372036854775807 2) => ERR "ExecutionError: integer overflow"
+(+ 9223372036854775807 1) => ERR "ExecutionError: integer overflow"
+(- -9223372036854775808 1) => ERR "ExecutionError: integer overflow"
+(/ 1 3) => 1/3
+(/ 4 2) => 2
+(/ 1.0 3) => 0.3333333333333333
+[(str 1.0) (str 1e21) (str 0.1) (pr-str 1.5e-7) (str 100.0) (str 1e7) (str -0.0)] => ["1.0" "1000000000000000000000.0" "0.1" "1.5e-07" "100.0" "10000000.0" "-0.0"]
+[(quot -7 2) (rem -7 2) (mod -7 2) (mod 7 -2)] => [-3 -1 1 -1]
+[(int 3.9) (long -3.9) (double 1) (int \a)] => [3 -3 1.0 97]
+[(max 1 2.0) (= 1 1.0) (== 1 1.0) (compare 1 2.0)] => [2.0 false true -1]
+(sort [3 1.5 2]) => (1.5 2 3)
+(format "%5.1f|%-4d|%s" 3.14159 7 nil) => "  3.1|7   |%!s(<nil>)"
+(/ 1 0) => ERR "divide by zero"
+(/ 1.0 0) => +Inf
+(/ 0.0 0) => NaN
+[(inc 1.5) (dec 0) (* 1.5 2) (+ 0.1 0.2)] => [2.5 -1 3.0 0.30000000000000004]
+(apply + (range 100000)) => 4999950000
+(reduce * (range 1 21)) => 2432902008176640000
+(reduce * (range 1 22)) => ERR "integer overflow"
+[(bit-and 12 10) (bit-or 12 10)] => [8 14]
+(Math/abs -5) => 5
+[(min) ] => ERR "wrong number of arguments 0"
+[exit 0]
+=== probes/values/v02-strings-symbols.lg
+[(str nil) (str :a/b) (str 'a/b) (str \c) (pr-str nil "a" \b)] => ["" ":a/b" "a/b" "c" "nil \"a\" \\b"]
+[(count "héllo") (subs "héllo" 1 2)] => [5 "é"]
+(keyword (apply str (repeat 300 "k"))) => :kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+(count (name (symbol (apply str (repeat 1000 "s"))))) => 1000
+(let [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+'a.b.c => a.b.c
+'a.b/c => a.b/c
+(namespace 'a.b/c.d) => "a.b"
+(def a.b 1) => #'user/a.b
+a.b => 1
+(let [x.y 2] x.y) => 2
+'/ => /
+(symbol "a/b") => a/b
+(namespace (symbol "a/b")) => "a"
+(keyword "a/b") => :a/b
+(name :a/b/c) => "b/c"
+(str (symbol "has space")) => "has space"
+[(symbol? 'x) (symbol? :x) (keyword? ::x)] => [true false true]
+(pr-str "tab\there" "nl\n" "q\"") => "\"tab\\there\" \"nl\\n\" \"q\\\"\""
+(str [1 "a" nil] {:a "b"} '("c")) => "[1 \"a\" nil]{:a \"b\"}(\"c\")"
+(pr-str (symbol "")) => ""
+[exit 0]

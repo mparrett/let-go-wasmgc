@@ -1,0 +1,14 @@
+(def r5.other/x 1) => #'user/r5.other/x
+(def user/r5-own 2) => #'user/user/r5-own
+r5-own => ERR "CompileError: Can't resolve r5-own in this context"
+(defn r5.q/f [] 1) => #'user/r5.q/f
+(def :kw 1) => ERR "CompileError: def: first argument must be a symbol, got (:kw)"
+(def "s" 1) => ERR "CompileError: def: first argument must be a symbol, got (s)"
+(def r5-two 1 2 3) => ERR "CompileError: def: wrong number of forms (4), need 1, 2 or 3"
+(defn) => ERR "CompileError: Executing macro #'core/defn (<FN>) failed\n\tcaused by ExecutionError: function <FN> expected at least 1 args, got 0"
+(defn r5-nobody) => #'user/r5-nobody
+(defn r5-nobody2 []) => #'user/r5-nobody2
+(r5-nobody2) => nil
+(defn 5 [] 1) => ERR "CompileError: def: first argument must be a symbol, got (5)"
+(defmacro) => ERR "CompileError: Executing macro #'core/defmacro (<FN>) failed\n\tcaused by ExecutionError: function <FN> expected at least 1 args, got 0"
+(fn 5 [] 1) => nil

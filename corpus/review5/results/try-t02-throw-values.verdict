@@ -1,0 +1,6 @@
+MISMATCH stdout
+5,7c5,7
+< (try (throw "s") (catch e (ex-message e))) => "s"
+< (try (throw {:a 1}) (catch e (ex-data e))) => nil
+< (try (throw 42) (catch e [(ex-message e) (ex-data e)])) => ["42" nil]
+---

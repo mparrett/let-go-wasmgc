@@ -1,0 +1,2 @@
+;; native: "(0 1 4)" -- evaluated `for` is lazy, so an infinite source works (module: for is eager via concat-list: uncatchable "Maximum call stack size exceeded" here; a 20000-element for runs past 300 s, probes/deep/x08)
+(println (eval '(take 3 (for [x (range)] (* x x)))))

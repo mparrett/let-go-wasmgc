@@ -1,0 +1,7 @@
+;; native: 5000-deep non-tail evaluated recursion returns 5000
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "(defn r5-deep [n] (if (zero? n) 0 (inc (r5-deep (dec n)))))")
+(show "(r5-deep 5000)")

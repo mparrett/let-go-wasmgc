@@ -1,0 +1,10 @@
+;; native: 200000-iteration evaluated loop with vector building; lazy seq of 100000; mutual recursion 1000 deep
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "(count (loop [i 0 v []] (if (< i 200000) (recur (inc i) (conj v i)) v)))")
+(show "(reduce + (map (fn [x] (* x x)) (range 100000)))")
+(show "(letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? 1000))")
+(show "(count (take 50000 (iterate (fn [x] (inc x)) 0)))")
+(show "(let [a (atom 0)] (dotimes [i 100000] (swap! a inc)) @a)")

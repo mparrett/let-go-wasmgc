@@ -1,0 +1,15 @@
+;; native: a REPL-style read-all-string + eval loop over a multi-form string, as legmacs C-x C-e does
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(defn repl [s] (doseq [f (read-all-string s)] (println (pr-str f) "=>" (try (pr-str (eval f)) (catch e (str "ERR " (ex-message e)))))))
+(repl "(def a 1) (defn b [] (+ a 1)) (b) (def a 10) (b)")
+(repl "(ns r5.repl) (def z :z) z (in-ns 'user) r5.repl/z")
+(repl "(defmacro twice [x] (list 'do x x)) (let [c (atom 0)] (twice (swap! c inc)) @c)")
+(repl "(nope) 1 (+ 1 :a) 2")
+(repl "")
+(repl ";; just a comment")
+(repl "#_(ignored) :kept")
+(repl "'a `b ::c")
+(repl "(def ^:private hidden 1) (:private (meta #'hidden))")

@@ -1,0 +1,8 @@
+;; native: 20000-deep non-tail evaluated recursion (whatever native does: value or catchable stack error)
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "(defn r5-deep [n] (if (zero? n) 0 (inc (r5-deep (dec n)))))")
+(show "(r5-deep 20000)")
+(println :after)

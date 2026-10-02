@@ -1,0 +1,18 @@
+;; native: var objects are identical per var: = and map lookup by var hold for core vars, evaluated vars and program vars
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(defn prog-f [] 1)
+(show "(def r5-v 1)")
+(show "[(= #'r5-v #'r5-v) (= (resolve 'r5-v) (var r5-v)) (identical? #'r5-v #'r5-v)]")
+(show "[(= #'inc #'inc) (= (var inc) (var clojure.core/inc)) (identical? #'inc #'inc)]")
+(show "(get {#'inc :found} #'inc)")
+(show "(count (set [#'inc #'inc #'dec]))")
+(show "(= #'prog-f #'prog-f)")
+(show "(= (resolve 'prog-f) (resolve 'prog-f))")
+(show "(= #'prog-f (resolve 'prog-f))")
+(show "(get {#'r5-v :hit} (resolve 'r5-v))")
+(show "(= #'str (var str))")
+(show "(= (hash #'inc) (hash #'inc))")
+(println (= #'prog-f (eval '#'prog-f)) (= #'inc (eval '(var inc))))

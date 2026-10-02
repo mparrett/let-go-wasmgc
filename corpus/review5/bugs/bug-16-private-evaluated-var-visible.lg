@@ -1,0 +1,7 @@
+;; native: both lines "CompileError: ... Can't resolve r5.a/priv in this context" / "CompileError: Can't resolve r5.a/pv in this context" -- a private var defined by evaluated code is not reachable qualified from another ns
+(eval '(in-ns 'r5.a))
+(eval '(defn- priv [] :p))
+(eval '(def ^:private pv 2))
+(eval '(in-ns 'user))
+(println (try (eval '(r5.a/priv)) (catch e (ex-message e))))
+(println (try (eval 'r5.a/pv) (catch e (ex-message e))))

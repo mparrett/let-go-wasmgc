@@ -1,0 +1,26 @@
+(let [a (atom 0) out (atom [])] (while (< @a 3) (swap! out conj @a) (swap! a inc)) @out) => [0 1 2]
+(with-out-str (doseq [[k v] {:a 1 :b 2}] (print k v))) => ":a 1:b 2"
+(with-out-str (doseq [x [1 2 3] y [:a] :when (odd? x)] (print x y))) => "1 :a3 :a"
+(with-out-str (doseq [x [1 2 3 4] :while (< x 3) y [:a :b]] (print x y))) => "1 :a1 :b2 :a2 :b"
+(with-out-str (doseq [x [] ] (print x))) => ""
+(for [x [1 2 3] :while (< x 2)] x) => (1 2 3)
+(letfn [(a [n] (if (pos? n) (b (dec n)) :a)) (b [n] (if (pos? n) (a (dec n)) :b))] [(a 3) (a 4)]) => [:b :a]
+(assert false) => ERR "Assert failed: false"
+(assert (= 1 2) "custom") => ERR "Assert failed: custom\n(= 1 2)"
+((fn [x] {:pre [(pos? x)]} x) -1) => ERR "Assert failed: (pos? x)"
+((fn [x] {:post [(neg? %)]} x) 1) => ERR "Assert failed: (neg? %)"
+((fn [x] {:post [(pos? %)]} x) 1) => 1
+(def r5-wr 1) => #'user/r5-wr
+(defn r5-wrf [] r5-wr) => #'user/r5-wrf
+(with-redefs [r5-wr 2] (r5-wrf)) => 2
+r5-wr => 1
+(comment (nope)) => nil
+(do (comment 1) 2) => 2
+(declare r5-a1 r5-a2) => #'user/r5-a2
+(defn r5-a1 [] (r5-a2)) => #'user/r5-a1
+(defn r5-a2 [] :a2) => #'user/r5-a2
+(r5-a1) => :a2
+forced
+(let [d (delay (println "forced") 5)] [@d @d]) => [5 5]
+realized
+(let [s (lazy-seq (println "realized") [1 2])] (first s)) => 1

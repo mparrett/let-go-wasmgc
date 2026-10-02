@@ -1,0 +1,13 @@
+(defn mine [] :redef) => #'r5.prog3/mine
+(mine) => :redef
+(calls-mine) => :redef
+(defn pub [x] :redefined-pub) => #'r5.prog3/pub
+(pub 1) => :redefined-pub
+(in-ns 'r5lib.a) => <ns r5lib.a>
+(def plain 8) => #'r5lib.a/plain
+(reads-plain) => 8
+plain => 8
+(in-ns 'r5.prog3) => <ns r5.prog3>
+a/plain => 8
+(a/calls-pub 2) => 200
+:redef :redef 8

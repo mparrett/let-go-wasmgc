@@ -1,0 +1,9 @@
+;; native: compiled reduce calling an evaluated fn that recurses 3000 deep through map/apply
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(def f (eval '(fn walk [n] (if (zero? n) 0 (+ 1 (apply walk [(dec n)]))))))
+(println (try (f 1000) (catch e (ex-message e))))
+(println (try (f 3000) (catch e (ex-message e))))
+(println :after)

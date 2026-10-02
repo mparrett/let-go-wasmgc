@@ -1,0 +1,5 @@
+;; native: "1,2" then "true" -- a :refer from a builtin namespace (clojure.string) makes the name resolve unqualified in evaluated code
+(eval '(require '[clojure.string :refer [join]]))
+(println (eval '(join "," [1 2])))
+(eval '(ns r5.br (:require [clojure.string :refer [blank?]])))
+(println (eval '(blank? "")))

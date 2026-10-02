@@ -1,0 +1,4 @@
+;; native: "false true" -- ns-publics leaves out a var defined private by evaluated code
+(eval '(defn- r5-priv [] 1))
+(eval '(defn r5-pub [] 1))
+(println (contains? (ns-publics 'user) 'r5-priv) (contains? (ns-publics 'user) 'r5-pub))

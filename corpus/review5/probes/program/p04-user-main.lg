@@ -1,0 +1,15 @@
+;; native (LG_ARGS=-source-paths corpus/review5/lib): a main without an ns form (user) requiring a library at top level; evaluated code reaches it by alias and full name
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(require '[r5lib.a :as a])
+(defn mine [x] [:mine x])
+(println (ns-name *ns*))
+(show "(a/pub 1)")
+(show "(r5lib.a/two 1 2)")
+(show "(mine 3)")
+(show "(user/mine 4)")
+(show "(a/multi-m 9)")
+(show "(resolve 'mine)")
+(show "(resolve 'a/two)")

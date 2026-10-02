@@ -1,0 +1,14 @@
+(defn r5-th [^String s ^long n] (str s n)) => #'user/r5-th
+(r5-th "a" 1) => "a1"
+(let [^String s "x"] s) => "x"
+((fn ^String [x] (str x)) 1) => "1"
+(defn ^String r5-th2 [] "y") => #'user/r5-th2
+(r5-th2) => "y"
+(defn r5-th3 ^long [x] x) => #'user/r5-th3
+(r5-th3 4) => 4
+^{:tag String} [1] => [1]
+(count ^String [1 2]) => 2
+(let [v ^:const [1 2]] v) => [1 2]
+(let [m ^{:k 1} {:a 1}] (meta m)) => {:k 1}
+(loop [^long i 0] (if (< i 3) (recur (inc i)) i)) => 3
+(.length ^String "abc") => 3

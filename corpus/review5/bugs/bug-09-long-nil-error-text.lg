@@ -1,0 +1,4 @@
+;; native: both lines "nil can't be coerced to long" (evaluated and compiled)
+(println (try (eval '(long nil)) (catch e (ex-message e))))
+(def x nil)
+(println (try (long x) (catch e (ex-message e))))

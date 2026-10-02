@@ -1,0 +1,5 @@
+(count (loop [i 0 v []] (if (< i 200000) (recur (inc i) (conj v i)) v))) => 200000
+(reduce + (map (fn [x] (* x x)) (range 100000))) => 333328333350000
+(letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? 1000)) => true
+(count (take 50000 (iterate (fn [x] (inc x)) 0))) => 50000
+(let [a (atom 0)] (dotimes [i 100000] (swap! a inc)) @a) => 100000

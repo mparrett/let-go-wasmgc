@@ -1,0 +1,12 @@
+[(if '() :t :f) (if 0 :t :f) (if "" :t :f) (if [] :t :f) (if false :t :f) (if nil :t :f)] => [:t :t :t :t :f :f]
+[(not 0) (not nil) (not false) (not [])] => [false true true false]
+(when [] :t) => :t
+(if-not 0 :f :t) => :t
+(and 0 "" [] :last) => :last
+(or false nil) => nil
+(or false) => false
+(cond nil 1 false 2 0 3) => 3
+(boolean (some #{false} [false])) => false
+(let [x false] (if x :t :f)) => :f
+(if (seq []) :t :f) => :f
+(filter identity [0 nil false "" [] :k]) => (0 "" [] :k)

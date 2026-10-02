@@ -1,0 +1,18 @@
+;; native: threading through keyword chains, #() and fn forms, as->/cond->/some-> edge cases
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "(-> {:a {:b 1}} :a :b)")
+(show "(->> [1 2] (map #(* % %)))")
+(show "(some-> {:a nil} :a inc)")
+(show "(as-> [1] v (conj v 2) (map inc v))")
+(show "(cond-> [] true (conj 1) false (conj 2) (= 1 1) (conj 3))")
+(show "(-> 5 (as-> x (* x 2)))")
+(show "(fn? (->> 5 (fn [x])))")
+(show "(-> 1 inc (inc) ((fn [x] (* x 10))))")
+(show "(-> [1 2 3] (->> (map inc)))")
+(show "(some->> nil (map inc))")
+(show "(cond->> 1 true (- 10))")
+(show "(-> 1 'inc)")
+(show "(-> {:a 1} (get :a) (+ 1))")

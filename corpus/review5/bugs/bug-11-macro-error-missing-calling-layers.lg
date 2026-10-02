@@ -1,0 +1,2 @@
+;; native: "CompileError: Executing macro #'core/let (<fn ...>) failed\n\tcaused by ExecutionError: calling destructure*\n\tcaused by ExecutionError: calling empty?\n\tcaused by ExecutionError: calling seq\n\tcaused by seq expected Seqable" (address normalised)
+(println (pr-str (clojure.string/replace (try (eval '(let x 1)) (catch e (ex-message e))) #"<m?fn[^>]*>" "<FN>")))

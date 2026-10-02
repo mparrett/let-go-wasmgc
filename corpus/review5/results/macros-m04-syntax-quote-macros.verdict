@@ -1,0 +1,5 @@
+MISMATCH stdout
+22c22
+< (macroexpand-1 '(r5-unless false 1)) => (if false nil (do 1))
+---
+> (macroexpand-1 '(r5-unless false 1)) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve macroexpand-1 in this context"

@@ -1,0 +1,16 @@
+(declare r5-o) => #'user/r5-o
+(defonce r5-o 5) => nil
+r5-o => nil
+(def r5-e) => #'user/r5-e
+(defonce r5-e 6) => nil
+r5-e => nil
+(defonce r5-k nil) => #'user/r5-k
+(defonce r5-k 7) => nil
+r5-k => nil
+(defn- r5-priv [] 1) => #'user/r5-priv
+(contains? (ns-publics 'user) 'r5-priv) => true
+(contains? (ns-publics 'user) 'r5-k) => true
+(def r5-cnt (atom 0)) => #'user/r5-cnt
+(defonce r5-once (swap! r5-cnt inc)) => #'user/r5-once
+(defonce r5-once (swap! r5-cnt inc)) => nil
+@r5-cnt => 1

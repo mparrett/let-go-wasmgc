@@ -1,0 +1,23 @@
+(def a 1) => #'user/a
+(defn b [] (+ a 1)) => #'user/b
+(b) => 2
+(def a 10) => #'user/a
+(b) => 11
+(ns r5.repl) => <ns r5.repl>
+(def z :z) => #'r5.repl/z
+z => :z
+(in-ns (quote user)) => <ns user>
+r5.repl/z => :z
+(defmacro twice [x] (list (quote do) x x)) => #'user/twice
+(let [c (atom 0)] (twice (swap! c inc)) (deref c)) => 2
+(nope) => ERR CompileError: compiling function position
+	caused by CompileError: Can't resolve nope in this context
+1 => 1
+(+ 1 :a) => ERR cannot add let-go.lang.Int and let-go.lang.Keyword
+2 => 2
+:kept => :kept
+(quote a) => a
+(quote user/b) => user/b
+:user/c => :user/c
+(def (with-meta hidden {:private true}) 1) => #'user/hidden
+(:private (meta (var hidden))) => true

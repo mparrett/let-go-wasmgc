@@ -1,0 +1,17 @@
+(let [and__x 5] (and true and__x)) => true
+(let [or__x 7] (or false or__x)) => false
+(let [args__ 3] (letfn [(f [] args__)] (f))) => 3
+(fn? ((fn f [f] f) 5)) => true
+((fn f [x] (if (fn? f) [:self x] :shadowed)) 1) => [:self 1]
+(defmacro r5-form [& _] (pr-str &form)) => #'user/r5-form
+(r5-form 1 2) => "(r5-form 1 2)"
+(defmacro r5-env [] (nil? &env)) => #'user/r5-env
+(r5-env) => true
+(def r5-sv 1) => #'user/r5-sv
+(set! r5-sv 2) => #'user/r5-sv
+r5-sv => 2
+(case 1 1 :a 1 :b) => :a
+(case 1 (1 2) :a 2 :b :c) => :a
+(let [case__1 9] (case 1 1 case__1)) => 9
+(let [x 1] (if-let [x (inc x)] x :no)) => 2
+(let [temp__1 4] (when-let [y temp__1] y)) => 4

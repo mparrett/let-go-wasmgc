@@ -1,0 +1,12 @@
+(def r5-v 1) => #'user/r5-v
+[(= #'r5-v #'r5-v) (= (resolve 'r5-v) (var r5-v)) (identical? #'r5-v #'r5-v)] => [true true true]
+[(= #'inc #'inc) (= (var inc) (var clojure.core/inc)) (identical? #'inc #'inc)] => [false false false]
+(get {#'inc :found} #'inc) => nil
+(count (set [#'inc #'inc #'dec])) => 3
+(= #'prog-f #'prog-f) => true
+(= (resolve 'prog-f) (resolve 'prog-f)) => true
+(= #'prog-f (resolve 'prog-f)) => true
+(get {#'r5-v :hit} (resolve 'r5-v)) => :hit
+(= #'str (var str)) => false
+(= (hash #'inc) (hash #'inc)) => true
+true false

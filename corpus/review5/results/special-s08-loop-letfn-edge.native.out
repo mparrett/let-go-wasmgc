@@ -1,0 +1,16 @@
+(loop [x 1]) => nil
+(loop [a 1 b (inc a)] [a b]) => [1 2]
+(loop [[a b] [1 2] n 0] (if (< n 2) (recur [b a] (inc n)) [a b])) => [1 2]
+(loop [i 0] (let [i (* 10 i)] (if (< i 100) (recur (inc i)) i))) => 110
+(loop [i 0 out []] (if (< i 2) (recur (inc i) (conj out (loop [i 10] (if (< i 12) (recur (inc i)) i)))) out)) => [12 12]
+(letfn [(f ([] (f 1)) ([x] (* x 10)))] [(f) (f 2)]) => [10 20]
+(let [f (fn [] :outer)] (letfn [(f [] :inner)] (f))) => :inner
+(letfn [(f [] (g)) (g [] :g)] (map (fn [h] (h)) [f g])) => (:g :g)
+(letfn [(f [n] (if (pos? n) (f (dec n)) :done))] (f 500)) => :done
+(letfn [] 5) => 5
+(letfn [(f [& xs] (count xs))] (apply f (range 10))) => 10
+(loop [x 1 y] x) => ERR "CompileError: loop bindings must have even number of forms"
+(loop [x] x) => ERR "CompileError: loop bindings must have even number of forms"
+(loop x 1) => ERR "CompileError: Executing macro #'core/loop (<FN>) failed\n\tcaused by ExecutionError: calling destructure\n\tcaused by ExecutionError: calling empty?\n\tcaused by ExecutionError: calling seq\n\tcaused by seq expected Seqable"
+(let [x] x) => nil
+(let x 1) => ERR "CompileError: Executing macro #'core/let (<FN>) failed\n\tcaused by ExecutionError: calling destructure*\n\tcaused by ExecutionError: calling empty?\n\tcaused by ExecutionError: calling seq\n\tcaused by seq expected Seqable"

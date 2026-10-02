@@ -1,0 +1,11 @@
+(require '[clojure.string :refer [join upper-case]]) => nil
+(join "," [1 2]) => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve join in this context"
+(upper-case "a") => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve upper-case in this context"
+(ns r5.br (:require [clojure.string :as str :refer [blank?]])) => nil
+(blank? "") => ERR "CompileError: compiling function position\n\tcaused by CompileError: Can't resolve blank? in this context"
+(str/join "-" [1 2]) => "1-2"
+(str 1 2) => "12"
+(ns r5.ex (:refer-clojure :exclude [map])) => <ns r5.ex>
+(defn map [] :mine) => #'r5.ex/map
+(map) => :mine
+(in-ns 'user) => <ns user>

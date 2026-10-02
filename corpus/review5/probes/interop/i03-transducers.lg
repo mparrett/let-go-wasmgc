@@ -1,0 +1,15 @@
+;; native: evaluated fns in transducer pipelines, comp of transducers, sort that throws inside a comparator
+(defn norm [m] (if (string? m) (clojure.string/replace m #"<m?fn[^>]*>" "<FN>") m))
+(defn show [s]
+  (println s "=>" (try (pr-str (eval (read-string s)))
+                       (catch e (str "ERR " (pr-str (norm (ex-message e))))))))
+(show "(into [] (map (fn [x] (* x 3))) [1 2])")
+(show "(transduce (map inc) + [1 2])")
+(show "(sequence (filter odd?) (range 5))")
+(show "(into [] (comp (map inc) (filter even?)) (range 5))")
+(show "(reduce-kv (fn [acc k v] (+ acc v)) 0 {:a 1 :b 2})")
+(show "(sort (fn [a b] (throw (ex-info \"cmp\" {}))) [2 1])")
+(show "(transduce (comp (map inc) (take 2)) conj [] (range 10))")
+(show "(into #{} (keep (fn [x] (when (odd? x) x))) (range 6))")
+(show "(sort-by :k (fn [a b] (compare b a)) [{:k 1} {:k 3} {:k 2}])")
+(show "(apply max-key (fn [x] (- x)) [3 1 2])")
