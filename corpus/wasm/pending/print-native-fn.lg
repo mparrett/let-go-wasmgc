@@ -1,0 +1,15 @@
+;; Status 2026-10-01 (P5.3): MISMATCH, needs src. A Go native used as a value
+;; prints as native's NativeFn String(): `<native-fn NAME 0x...>`, and some
+;; natives have an empty name (`<native-fn 0x...>` for conj and str), while
+;; lg-defined core fns print `<fn inc 0x...>` / `<mfn map 0x...>`. The backend's
+;; values for natives are lw-ext or runtime fns whose FnInfo names the Go-side
+;; function (`<mfn add 0x0>` for +). Matching needs the backend to record, per
+;; native var, the prefix native lg prints (e.g. `(str @#'+)` with the address
+;; cut, taken at compile time) and its type (NativeFn). Split out of
+;; gaps/gap-print-fn.lg.
+
+(require '[clojure.string :as string])
+(defn shape [s] (string/replace s #"0x[0-9a-f]+" "ADDR"))
+(println "natives" (shape (str +)) (shape (str max)) (shape (str conj)) (shape (str str)))
+(println "lg-core" (shape (str map)) (shape (str inc)))
+(println "type" (type +) (type inc))

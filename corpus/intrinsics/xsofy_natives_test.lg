@@ -475,7 +475,7 @@
             :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
                   vname (str v)]
             :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/"))
-                                 ["arrays" "math" "xxhash" "host" "lang" "core" "seq" "pvec" "str" "phm" "phs"])
+                                 ["arrays" "math" "xxhash" "host" "lang" "core" "seq" "pvec" "str" "phm" "phs" "sorted"])
                            (and (string/starts-with? vname "#'wasm.intrinsics/")
                                 (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
                            (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))
@@ -487,9 +487,12 @@
                                             ["rt/wasm/math.lg" 'wasm.math #{"#'core//"} 40]
                                             ["rt/wasm/xxhash.lg" 'wasm.xxhash #{} 15]
                                             ["rt/wasm/host.lg" 'wasm.host #{} 20]
-                                            ["rt/wasm/lang.lg" 'wasm.lang #{} 10]]]
+                                            ["rt/wasm/lang.lg" 'wasm.lang #{} 10]
+                                            ["rt/wasm/sorted.lg" 'wasm.sorted #{} 20]]]
     (let [[n bad] (offending file ns-sym extra-ok)]
       (is (<= min-defns n) (str file " defns"))
       (is (empty? bad) (str file " non-dialect references: " (pr-str bad)))))
   (testing "arrays.lg must not require wasm.core (it loads first; the type-name hook covers it)"
-    (is (not (string/includes? (slurp "rt/wasm/arrays.lg") "[wasm.core")))))
+    (is (not (string/includes? (slurp "rt/wasm/arrays.lg") "[wasm.core"))))
+  (testing "sorted.lg must not require wasm.core (it loads first; the compare hook covers it)"
+    (is (not (string/includes? (slurp "rt/wasm/sorted.lg") "[wasm.core")))))

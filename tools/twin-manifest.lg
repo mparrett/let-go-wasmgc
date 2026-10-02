@@ -10,6 +10,16 @@
 ;;
 ;;   lg tools/twin-manifest.lg [rt-dir]
 ;;       → TSV  twin  runtime-var  file:line         (the real manifest)
+;; The backend also routes some natives to code that carries no marker: its
+;; own fills in src/lw_ext.lg (lw_rt's `ext-twins`, which wins over a runtime
+;; twin), wasm.core defns kept unmarked (lw_rt's `extra-twins`), and the
+;; constructors the backend builds inline whose values are lw-ext fns
+;; (lower_wasm's `value-substs`). Those routes are claims too, read from the
+;; same source the backend loads, and printed with the table they come from
+;; in the file:line column (`src/lw_rt.lg:ext-twins`), so the report can
+;; tell a marker from a route. LW_SRC overrides the src dir (default the
+;; rt dir's ../../src).
+;;
 ;;   lg tools/twin-manifest.lg --propose [rt-dir] [inventory.tsv]
 ;;       → TSV  twin  runtime-var  file:line  confidence  runtime-arities
 ;;              native-arities  note
@@ -61,9 +71,52 @@
 (defn claims [d]
   (let [t (:twin d)] (cond (nil? t) [] (string? t) [t] :else (vec t))))
 
+(def src-dir (let [d (os/getenv "LW_SRC")]
+              (cond (seq d) d
+                    (= rt-dir "rt/wasm") "src"
+                    :else (str rt-dir "/../../src"))))
+
+(defn- qual
+  "A var's name as the inventory spells it: unqualified means core."
+  [s] (let [t (str s)] (if (str/includes? t "/") t (str "core/" t))))
+
+(defn- var-name
+  "(var x) or (resolve (quote x)) as read, else nil."
+  [f]
+  (when (seq? f)
+    (cond (and (= 'var (first f)) (symbol? (second f))) (qual (second f))
+          (and (= 'resolve (first f)) (seq? (second f)) (= 'quote (first (second f)))) (qual (second (second f)))
+          :else nil)))
+
+(defn- def-form [path nm]
+  (let [forms (try (read-string (str "[" (slurp path) "\n]")) (catch e []))]
+    (some #(when (and (seq? %) (= 'def (first %)) (= nm (second %))) %) forms)))
+
+(defn backend-routes
+  "[[twin runtime-var where] ...] from the backend's routing tables."
+  []
+  (let [lw-rt (str src-dir "/lw_rt.lg") lw (str src-dir "/lower_wasm.lg")
+        map-routes (fn [path nm]
+                     (let [f (def-form path nm)]
+                       (for [m (filter map? (tree-seq coll? seq f))
+                             [k v] m
+                             :let [tk (var-name k) rv (var-name v)]
+                             :when (and tk rv)]
+                         [tk rv (str path ":" nm)])))
+        ;; extra-twins: [['core/ex-message 'wasm.core/ex-message] ...]
+        pair-routes (fn [path nm]
+                      (let [f (def-form path nm)]
+                        (for [p (filter vector? (tree-seq coll? seq f))
+                              :when (and (= 2 (count p)) (every? #(and (seq? %) (= 'quote (first %)) (symbol? (second %))) p))]
+                          [(qual (second (first p))) (qual (second (second p))) (str path ":" nm)])))]
+    (distinct (concat (map-routes lw-rt 'ext-twins) (pair-routes lw-rt 'extra-twins) (map-routes lw 'value-substs)))))
+
 (if-not propose?
-  (doseq [d defns, t (claims d)]
-    (println (str/join "\t" [t (str (:ns d) "/" (:name d)) (str (:path d) ":" (:line d))])))
+  (do
+    (doseq [d defns, t (claims d)]
+      (println (str/join "\t" [t (str (:ns d) "/" (:name d)) (str (:path d) ":" (:line d))])))
+    (doseq [r (backend-routes)]
+      (println (str/join "\t" r))))
 
   ;; ---- --propose: name-match the runtime's public defns to the inventory ----
   (let [inv (into {} (for [l (str/split-lines (slurp inventory-path))

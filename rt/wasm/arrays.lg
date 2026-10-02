@@ -6,11 +6,14 @@
 ;; pkg/rt/lang.go (buildArray :5046, CoreAgetf :9036, CoreAsetf :9074,
 ;; CoreAlengthf :9098, CoreAclonef :9111, CoreBytesf :9124).
 ;;
-;; An array is `Arr`: element kind (0 byte, 1 int: ArrayByte/ArrayInt) and
-;; the backing wasm array (wasm/Bytes, or I64s), mutable in place and never
-;; resized. Only the two kinds xsofy builds exist; double-array and
-;; object-array (and conj/empty, which make an object-array) are named
-;; limits. Loaded before wasm.core, which refines kind 18 to 37 for an Arr
+;; An array is `Arr`: element kind (0 byte, 1 int, 2 object: ArrayByte/
+;; ArrayInt/ArrayObject) and the backing store (wasm/Bytes, I64s, or for an
+;; object array a wasm.pvec/PVec whose leaves are written in place by
+;; pv/vset!), mutable and never resized. An object array keeps a PVec so that
+;; `vec` of it can share the leaves: native's vec returns an ArrayVector over
+;; the same []Value (lang.go:2068), so a later aset shows through the vector
+;; (transient_test's vec-object-array-alias). double-array and conj/empty
+;; (which make an object-array) are named limits. Loaded before wasm.core, which refines kind 18 to 37 for an Arr
 ;; and routes type/count/seq/print/get/nth here; the messages that name an
 ;; argument's type ("aget expects array, got let-go.lang.Int") need
 ;; wasm.core's type-name, which this namespace reaches through the hook
@@ -20,7 +23,7 @@
 ;; Calling convention as seq.lg (D37); errors raise the backend's exception
 ;; value as wasm.core does (D68), msg = cmsg (natives called as values).
 (ns wasm.arrays
-  (:refer-clojure :exclude [aget aset alength aclone bytes int-array byte-array])
+  (:refer-clojure :exclude [aget aset alength aclone bytes int-array byte-array to-array object-array vec])
   (:require [wasm.intrinsics :as wasm]
             [wasm.pvec :as pv]
             [wasm.seq :as sq]
@@ -38,9 +41,11 @@
 (defn arr? [x] (if (wasm/null? x) false (wasm/is? Arr x)))
 (defn akind [a] (wasm/get Arr 0 a))
 (defn adata [a] (wasm/get Arr 1 a))
-(defn alen* [a] (wasm/alen (adata a)))
-(defn aget* "Element i of Arr a as a boxed Int (TypedArray.Get)." [a i]
-  (if (= 0 (akind a)) (sq/box-int (wasm/bget (adata a) i)) (sq/box-int (wasm/aget I64s (adata a) i))))
+(defn alen* [a] (if (= 2 (akind a)) (pv/vcount (adata a)) (wasm/alen (adata a))))
+(defn aget* "Element i of Arr a, boxed (TypedArray.Get)." [a i]
+  (cond (= 0 (akind a)) (sq/box-int (wasm/bget (adata a) i))
+        (= 1 (akind a)) (sq/box-int (wasm/aget I64s (adata a) i))
+        :else (pv/vnth (adata a) i)))
 
 (defn- lit [bs] (s/mk-str bs))
 (defn- raise [bs] (throw (wasm/new sq/Err 1 bs bs (wasm/null) (wasm/null))))
@@ -53,17 +58,23 @@
 ;; ---------------------------------------------------------------------------
 ;; Construction (buildArray)
 
-(defn- new-arr [k n] (wasm/new Arr k (if (= k 0) (wasm/bytes-new n) (wasm/array-new I64s n 0))))
+(defn- nil-vec [n]                                     ; NewObjectArray: n nils
+  (loop [i 0 v (pv/empty-vec)] (if (< i n) (recur (inc i) (pv/vconj v (wasm/null))) (pv/varray v))))
+(defn- new-arr [k n]
+  (wasm/new Arr k (cond (= k 0) (wasm/bytes-new n) (= k 1) (wasm/array-new I64s n 0) :else (nil-vec n))))
 
-;; TypedArray.Set: a byte element keeps the low 8 bits (byte(n)).
+;; TypedArray.Set: a byte element keeps the low 8 bits (byte(n)); an object
+;; element is stored as is.
 (defn- set-elem! [a i v]
+  (if (= 2 (akind a))
+    (pv/vset! (adata a) i v)
   (if (int-val? v)
     (if (= 0 (akind a))
       (wasm/bset! (adata a) i (sq/unbox-int v))
       (wasm/aset! I64s (adata a) i (sq/unbox-int v)))
     (raise-got (if (= 0 (akind a)) (wasm/bytes-of-string "byte-array expects Int, got ")
                    (wasm/bytes-of-string "int-array expects Int, got "))
-               v)))
+               v))))
 
 (defn- build-sized [k n init fill?]
   (if (< n 0)
@@ -72,7 +83,12 @@
       (when fill? (loop [i 0] (when (< i n) (set-elem! a i init) (recur (inc i)))))
       a)))
 
+(defn- fresh-vec [coll]                                  ; coll's elements in a vector no one else holds
+  (loop [q (sq/seq coll) acc (pv/empty-vec)] (if (wasm/null? q) (pv/varray acc) (recur (sq/next q) (pv/vconj acc (sq/first q))))))
+
 (defn- build-seq [k coll]                                ; the whole seq first, then the element checks, as Go does
+  (if (= k 2)
+    (wasm/new Arr 2 (fresh-vec coll))                    ; never coll's own leaves: aset must not reach the source
   (let [v (if (= 11 (sq/kind coll))
             coll
             (loop [q (sq/seq coll) acc (pv/empty-vec)] (if (wasm/null? q) acc (recur (sq/next q) (pv/vconj acc (sq/first q))))))
@@ -87,7 +103,7 @@
                            (wasm/bytes-of-string "int-array element must be Int, got "))
                        x))
           (recur (inc i)))
-        a))))
+        a)))))
 
 ;; seqOf's message for the scalars (Bool, Fn, Char, Keyword, Symbol, Float,
 ;; Reduced, Atom, Volatile, Err): seq.lg's own seq traps on them.
@@ -110,6 +126,26 @@
   ([x] (build 0 x (wasm/null) false))
   ([x init] (build 0 x init true))
   ([x init c] (raise-arity 3)))
+
+(defn ^{:twin "core/object-array"} object-array          ; CoreObjectArrayf = buildArray(ArrayObject)
+  ([] (raise-arity 0))
+  ([x] (build 2 x (wasm/null) false))
+  ([x init] (build 2 x init true))
+  ([x init c] (raise-arity 3)))
+
+;; to-array (lang.go:4208): seqOf, so an Int is "don't know how to create
+;; ISeq from", not a size; nil and () give an empty array.
+(defn ^{:twin "core/to-array"} to-array [x]
+  (if (if (int-val? x) true (scalar-kind? (sq/kind x)))
+    (raise-got (wasm/bytes-of-string "don't know how to create ISeq from ") x)
+    (build-seq 2 x)))
+
+;; vec (lang.go:2054) is wasm.seq/vec except on an object array, whose
+;; storage the vector shares (lang.go:2068).
+(defn ^{:twin "core/vec"} vec [x]
+  (if (arr? x)
+    (if (= 2 (akind x)) (pv/varray (adata x)) (sq/vec x))
+    (sq/vec x)))
 
 ;; ---------------------------------------------------------------------------
 ;; Access
@@ -159,11 +195,14 @@
 (defn ^{:twin "core/aclone"} aclone                       ; TypedArray.Clone: a shallow copy, same kind
   ([] (raise-arity 0))
   ([a] (if (arr? a)
-         (let [n (alen* a) b (new-arr (akind a) n)]
-           (if (= 0 (akind a))
-             (wasm/array-copy wasm/Bytes (adata b) 0 (adata a) 0 n)
-             (wasm/array-copy I64s (adata b) 0 (adata a) 0 n))
-           b)
+         (let [n (alen* a) k (akind a)]
+           (if (= k 2)
+             (wasm/new Arr 2 (fresh-vec (adata a)))
+             (let [b (new-arr k n)]
+               (if (= 0 k)
+                 (wasm/array-copy wasm/Bytes (adata b) 0 (adata a) 0 n)
+                 (wasm/array-copy I64s (adata b) 0 (adata a) 0 n))
+               b)))
          (raise-got (wasm/bytes-of-string "aclone expects array, got ") a)))
   ([a b] (raise-arity 2)))
 
@@ -202,10 +241,13 @@
     (let [i (sq/unbox-int key)] (if (if (< i 0) true (>= i (alen* a))) nf (aget* a i)))
     nf))
 
-;; String(): #int-array[0 7 0] / #byte-array[1 2]; the same in every mode.
+;; String(): #int-array[0 7 0] / #byte-array[1 2] / #object-array[1 "a"]
+;; (elements by their String()); the same in every mode.
 (defn print-arr [a]
-  (let [n (alen* a)]
-    (loop [i 0 acc (lit (if (= 0 (akind a)) (wasm/bytes-of-string "#byte-array[") (wasm/bytes-of-string "#int-array[")))]
+  (let [n (alen* a) k (akind a)]
+    (loop [i 0 acc (lit (cond (= 0 k) (wasm/bytes-of-string "#byte-array[") (= 1 k) (wasm/bytes-of-string "#int-array[")
+                              :else (wasm/bytes-of-string "#object-array[")))]
       (if (< i n)
-        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (wasm/bytes-of-string " "))) acc) (aget* a i)))
+        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (wasm/bytes-of-string " "))) acc)
+                              (if (= 2 k) (s/value-string (aget* a i)) (aget* a i))))
         (s/str acc (lit (wasm/bytes-of-string "]")))))))

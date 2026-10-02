@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Thirteen namespaces that load together under native lg as one runtime (P2.9, P3.1),
+Fourteen namespaces that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go 4e769212. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -16,13 +16,14 @@ Ground truth is let-go 4e769212. Each file's header states its dialect; the
 | 5 | `phm.lg` | `wasm.phm` | 1 2 3 | the persistent/transient map (array-map + HAMT), map hooks (slot 0) |
 | 6 | `phs.lg` | `wasm.phs` | 1 2 3 5 | the persistent/transient set, set hooks (slot 1) |
 | 7 | `arrays.lg` | `wasm.arrays` | 1-4 | let-go's typed arrays (`int-array` `byte-array` `aget` `aset` `alength` `aclone` `bytes`), the `Arr` struct, and the count/seq/print/get view wasm.core routes to it (kind 37) |
-| 8 | `core.lg` | `wasm.core` | 1-7 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
-| 9 | `reader.lg` | `wasm.reader` | 1-8 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
-| 10 | `math.lg` | `wasm.math` | 1 3 4 8 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `rand-int`, math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
-| 11 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
-| 12 | `host.lg` | `wasm.host` | 1 3 4 7 8 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
-| 13 | `lang.lg` | `wasm.lang` | 1-4 8 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
-| 14 | `term.lg` | `wasm.term` | 1-4 8 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
+| 8 | `sorted.lg` | `wasm.sorted` | 1-6 | `sorted-map` / `sorted-set` (default comparator) as key-ordered arrays: `SMap`, `SSet`, which wasm.core routes here (kinds 38, 39); the comparator is wasm.core's, through a hook `install!` sets |
+| 9 | `core.lg` | `wasm.core` | 1-8 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
+| 10 | `reader.lg` | `wasm.reader` | 1-9 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
+| 11 | `math.lg` | `wasm.math` | 1 3 4 9 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `rand-int`, math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
+| 12 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
+| 13 | `host.lg` | `wasm.host` | 1 3 4 7 9 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
+| 14 | `lang.lg` | `wasm.lang` | 1-4 9 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
+| 15 | `term.lg` | `wasm.term` | 1-4 9 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the
@@ -48,7 +49,7 @@ backend (why the XXH3 file is `xxhash.lg`).
 Runtime globals (D39), one per namespace that has state: `wasm.seq/hooks`
 (three Handler slots, the hashing printer, the seqable and ifn hooks, the type namer), `wasm.str/globals` (intern
 table, its count, the print hook), `wasm.core/globals` (gensym counter,
-interned types), `wasm.arrays/globals` (the type-name hook),
+interned types), `wasm.arrays/globals` (the type-name hook), `wasm.sorted/globals` (the comparator hook),
 `wasm.math/globals` (rand-int's xorshift state), `wasm.xxhash/globals` (the
 default secret, built on first use) and `wasm.host/globals` (the stdout and
 stderr handles).

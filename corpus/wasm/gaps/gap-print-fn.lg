@@ -1,0 +1,25 @@
+;; P5.3 gap: printing a fn. Native (lg 4e769212) prints a fn as
+;; `<fn NAME 0x...>`, an anonymous one as `<fn 0x...>`, a multi-arity (or
+;; self-named) one as `<mfn NAME 0x...>` / `<mfn  0x...>`, the same in str,
+;; pr-str and print-str (println-str/prn-str are unbound natives in the
+;; backend, a separate gap). The hex is the heap address, different on every run, so this program replaces it before printing;
+;; everything else must match. Not here: println/prn of a fn straight to stdout
+;; (native's address can never match), with-out-str around println (the
+;; backend's inlined println ignores *out* for every value, a separate limit),
+;; and Go natives as values, which print `<native-fn + 0x...>` (some with an
+;; empty name): pending/print-native-fn.lg.
+
+(require '[clojure.string :as string])
+(defn f [] 1)
+(defn mf ([] 1) ([x] x))
+(defn vf [& xs] xs)
+(defn shape [s] (string/replace s #"0x[0-9a-f]+" "ADDR"))
+(println "str" (shape (str f)) (shape (str mf)) (shape (str vf)))
+(println "pr-str" (shape (pr-str f)))
+(println "anon" (shape (str (fn [x] x))) (shape (str (fn ([] 1) ([x] x)))))
+(println "named" (shape (str (fn named [x] x))))
+(println "core" (shape (str inc)))
+(println "with-meta" (shape (str (with-meta f {:a 1}))))
+(println "nested" (shape (str [f {:g mf}])) (shape (pr-str (list f))))
+(println "print-str" (pr-str (shape (print-str f mf))))
+(println "prefix" (subs (str f) 0 6) (boolean (re-find #"^<fn f 0x[0-9a-f]+>$" (str f))))

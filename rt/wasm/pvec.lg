@@ -60,6 +60,14 @@
   (check-index v i)
   (wasm/aget Node (array-for v i) (bit-and i 31)))
 
+;; In place, unlike every other op here: element i of v's leaf is replaced,
+;; so every vector sharing that leaf sees it. Only an object array
+;; (wasm.arrays kind 2) owns a PVec it mutates; `vec` of one shares the
+;; leaves, which is how native's ArrayVector aliases the []Value (lang.go:2068).
+(defn vset! [v i x]
+  (check-index v i)
+  (wasm/aset! Node (array-for v i) (bit-and i 31) x))
+
 (defn- new-path [level node]
   (if (= level 0)
     node

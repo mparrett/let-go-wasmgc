@@ -1,0 +1,200 @@
+;; wasm.sorted — let-go's sorted-map and sorted-set (pkg/vm/sorted_map.go,
+;; sorted_set.go at 4e769212) in the runtime dialect of seq.lg (IR special
+;; forms, IR-op core fns on :int, wasm.intrinsics, the runtime namespaces it
+;; requires).
+;;
+;; Native keeps a left-leaning red-black tree; here a sorted collection is an
+;; immutable pv/Node array kept in key order (binary search, copy on write),
+;; which gives the same seq order, lookups and printing for any set of
+;; mutually comparable keys. Insertion is O(n). Keys native cannot compare
+;; fall back to hash order on both sides (rbNode.insert/find/delete); where
+;; such keys are mixed with comparable ones the tree's shape decides native's
+;; order and this array's may differ (named limit). Only the default
+;; comparator exists: sorted-map-by / sorted-set-by and rseq/subseq are not
+;; here.
+;;
+;; The comparator is wasm.core's (compare* with the hash fallback), which this
+;; namespace cannot require (wasm.core requires it): wasm.core/install! sets
+;; it through set-compare-hook!, as it does wasm.arrays' type-name hook.
+;; wasm.core routes kinds 38 (SMap) and 39 (SSet) here.
+;;
+;; Calling convention as seq.lg (D37).
+(ns wasm.sorted
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.pvec :as pv]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.phm :as m]
+            [wasm.phs :as hs]))
+
+;; items: a pv/Node array in key order (a map's are MapEntry), meta (null = none)
+(wasm/defstruct SMap [:ref :ref])
+(wasm/defstruct SSet [:ref :ref])
+;; The one runtime global (D39): the Fn (f a b) -> Int ordering two keys.
+(wasm/defstruct SGlobals [[:mut :ref]])
+(def globals (wasm/new SGlobals (wasm/null)))
+
+(defn set-compare-hook! [f] (wasm/set! SGlobals 0 globals f))
+(defn- cmp [a b] (sq/unbox-int (sq/invoke2 (wasm/get SGlobals 0 globals) a b)))
+
+(defn smap? [x] (if (wasm/null? x) false (wasm/is? SMap x)))
+(defn sset? [x] (if (wasm/null? x) false (wasm/is? SSet x)))
+
+(defn- no-items [] (wasm/array-new pv/Node 0 (wasm/null)))
+(defn empty-smap [] (wasm/new SMap (no-items) (wasm/null)))   ; EmptySortedMap
+(defn empty-sset [] (wasm/new SSet (no-items) (wasm/null)))   ; EmptySortedSet
+
+(defn- m-items [x] (wasm/get SMap 0 x))
+(defn- s-items [x] (wasm/get SSet 0 x))
+(defn smeta [x] (wasm/get SMap 1 x))
+(defn ssmeta [x] (wasm/get SSet 1 x))
+(defn smap-with-meta [x mt] (wasm/new SMap (m-items x) mt))
+(defn sset-with-meta [x mt] (wasm/new SSet (s-items x) mt))
+
+;; ---------------------------------------------------------------------------
+;; The ordered array
+
+(defn- entry-key [e] (wasm/get sq/MapEntry 0 e))
+(defn- entry-val [e] (wasm/get sq/MapEntry 1 e))
+
+;; Index of k in items, else -(insertion point)-1. Native compares
+;; cmp(key, node.key) on the way down; so does this.
+(defn- search [items is-map k]
+  (loop [lo 0 hi (dec (wasm/alen items))]
+    (if (> lo hi)
+      (- -1 lo)
+      (let [mid (unsigned-bit-shift-right (+ lo hi) 1)
+            x (wasm/aget pv/Node items mid)
+            c (cmp k (if is-map (entry-key x) x))]
+        (cond (< c 0) (recur lo (dec mid))
+              (> c 0) (recur (inc mid) hi)
+              :else mid)))))
+
+(defn- insert-at [items i x]
+  (let [n (wasm/alen items) out (wasm/array-new pv/Node (inc n) (wasm/null))]
+    (wasm/array-copy pv/Node out 0 items 0 i)
+    (wasm/aset! pv/Node out i x)
+    (wasm/array-copy pv/Node out (inc i) items i (- n i))
+    out))
+
+(defn- remove-at [items i]
+  (let [n (wasm/alen items) out (wasm/array-new pv/Node (dec n) (wasm/null))]
+    (wasm/array-copy pv/Node out 0 items 0 i)
+    (wasm/array-copy pv/Node out i items (inc i) (- n (inc i)))
+    out))
+
+(defn- replace-at [items i x]
+  (let [n (wasm/alen items) out (wasm/array-new pv/Node n (wasm/null))]
+    (wasm/array-copy pv/Node out 0 items 0 n)
+    (wasm/aset! pv/Node out i x)
+    out))
+
+;; ---------------------------------------------------------------------------
+;; SortedMap
+
+(defn smap-count [x] (wasm/alen (m-items x)))
+
+;; assocImpl: an equal key keeps the stored key and takes the new value; the
+;; result never carries meta (sorted_map.go:324).
+(defn smap-assoc [x k v]
+  (let [items (m-items x) i (search items true k)]
+    (if (>= i 0)
+      (wasm/new SMap (replace-at items i (wasm/new sq/MapEntry (entry-key (wasm/aget pv/Node items i)) v)) (wasm/null))
+      (wasm/new SMap (insert-at items (- -1 i) (wasm/new sq/MapEntry k v)) (wasm/null)))))
+
+(defn smap-dissoc [x k]                                  ; Dissoc: a missing key gives x itself, else no meta
+  (let [items (m-items x) i (search items true k)]
+    (if (< i 0) x (wasm/new SMap (remove-at items i) (wasm/null)))))
+
+(defn smap-get [x k nf]
+  (let [items (m-items x) i (search items true k)]
+    (if (< i 0) nf (entry-val (wasm/aget pv/Node items i)))))
+
+(defn smap-contains? [x k] (>= (search (m-items x) true k) 0))
+
+(defn smap-seq "A MapSeq of the entries in key order, null when empty." [x]
+  (sq/arr-seq (m-items x) 0))
+
+;; String(): {k v, k v} with the elements' String(), in every print mode.
+(defn smap-print [x]
+  (let [items (m-items x) n (wasm/alen items)]
+    (loop [i 0 acc (s/mk-str (wasm/bytes-of-string "{"))]
+      (if (< i n)
+        (let [e (wasm/aget pv/Node items i)]
+          (recur (inc i) (s/str (s/str (if (> i 0) (s/str acc (s/mk-str (wasm/bytes-of-string ", "))) acc)
+                                       (s/value-string (entry-key e)))
+                                (s/str (s/mk-str (wasm/bytes-of-string " ")) (s/value-string (entry-val e))))))
+        (s/str acc (s/mk-str (wasm/bytes-of-string "}")))))))
+
+(defn smap-hash [x]                                      ; mixFinish(sum of hash(k) ^ hash(v)): a hash-map's
+  (let [items (m-items x) n (wasm/alen items)]
+    (loop [i 0 h 0]
+      (if (< i n)
+        (let [e (wasm/aget pv/Node items i)]
+          (recur (inc i) (bit-and (+ h (bit-xor (sq/unbox-int (sq/hash (entry-key e))) (sq/unbox-int (sq/hash (entry-val e)))))
+                                  0xffffffff)))
+        (m/mix-finish h)))))
+
+;; A map's count and its lookup with a not-found sentinel, for the
+;; cross-type comparison (crossMapEquals / mapEquals, lang.go).
+(defn- map-count [o] (cond (wasm/null? o) -1 (smap? o) (smap-count o) (wasm/is? m/HMap o) (m/mcount o) :else -1))
+(defn- map-lookup [o k nf] (if (smap? o) (smap-get o k nf) (m/mget o k nf)))
+
+(defn smap-equiv? "x a SortedMap, o anything: = as maps (SortedMap/PersistentMap)." [x o]
+  (let [n (smap-count x)]
+    (if (= n (map-count o))
+      (let [items (m-items x)]
+        (loop [i 0]
+          (if (< i n)
+            (let [e (wasm/aget pv/Node items i) ov (map-lookup o (entry-key e) globals)]
+              (if (wasm/ref-eq ov globals) false (if (sq/equiv? (entry-val e) ov) (recur (inc i)) false)))
+            true)))
+      false)))
+
+;; ---------------------------------------------------------------------------
+;; SortedSet: conj and disj keep meta (sorted_set.go:118-135)
+
+(defn sset-count [x] (wasm/alen (s-items x)))
+
+(defn sset-conj [x v]
+  (let [items (s-items x) i (search items false v)]
+    (if (>= i 0) x (wasm/new SSet (insert-at items (- -1 i) v) (ssmeta x)))))
+
+(defn sset-disj [x v]
+  (let [items (s-items x) i (search items false v)]
+    (if (< i 0) x (wasm/new SSet (remove-at items i) (ssmeta x)))))
+
+(defn sset-contains? [x v] (>= (search (s-items x) false v) 0))
+
+(defn sset-get [x v nf] (if (sset-contains? x v) v nf))  ; ValueAtOr returns the key asked with
+
+(defn sset-seq "A SetSeq of the elements in order, null when empty." [x]
+  (sq/arr-seq (s-items x) 1))
+
+(defn sset-print [x]                                     ; String(): #{a b}, elements' String()
+  (let [items (s-items x) n (wasm/alen items)]
+    (loop [i 0 acc (s/mk-str (wasm/bytes-of-string "#{"))]
+      (if (< i n)
+        (recur (inc i) (s/str (if (> i 0) (s/str acc (s/mk-str (wasm/bytes-of-string " "))) acc)
+                              (s/value-string (wasm/aget pv/Node items i))))
+        (s/str acc (s/mk-str (wasm/bytes-of-string "}")))))))
+
+(defn sset-hash [x]                                      ; mixFinish(sum of hash(e)): a hash-set's
+  (let [items (s-items x) n (wasm/alen items)]
+    (loop [i 0 h 0]
+      (if (< i n)
+        (recur (inc i) (bit-and (+ h (sq/unbox-int (sq/hash (wasm/aget pv/Node items i)))) 0xffffffff))
+        (m/mix-finish h)))))
+
+(defn- set-count [o] (cond (wasm/null? o) -1 (sset? o) (sset-count o) (wasm/is? hs/HSet o) (hs/scount o) :else -1))
+
+(defn sset-equiv? "x a SortedSet, o anything: = as sets (setEquals)." [x o]
+  (let [n (sset-count x)]
+    (if (= n (set-count o))
+      (let [items (s-items x)]
+        (loop [i 0]
+          (if (< i n)
+            (let [v (wasm/aget pv/Node items i)]
+              (if (if (sset? o) (sset-contains? o v) (hs/scontains? o v)) (recur (inc i)) false))
+            true)))
+      false)))

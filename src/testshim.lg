@@ -25,16 +25,41 @@
   (swap! __t-tests inc)
   (reset! __t-name nm))
 
+;; Reports print through the runtime's `print`, not an inline println: a
+;; probe run under `quiet` (with-out-str*) must have them captured, and only
+;; the runtime's printers write to the *out* fd stack (lw_ext's capture).
 (defn __t-report [r]
   (if (= r :__t-error)
-    (do (swap! __t-error inc) (println (str "\nERROR in (" @__t-name ")")))
+    (do (swap! __t-error inc) (print (str "\nERROR in (" @__t-name ")\n")))
     (if r
       (swap! __t-pass inc)
-      (do (swap! __t-fail inc) (println (str "\nFAIL in (" @__t-name ")"))))))
+      (do (swap! __t-fail inc) (print (str "\nFAIL in (" @__t-name ")\n"))))))
 
 (defn __t-uncaught [e]
   (swap! __t-error inc)
-  (println (str "\nERROR in (" @__t-name ")")))
+  (print (str "\nERROR in (" @__t-name ")\n")))
+
+;; set-test probes (thrown_test, run_test_var_test): the driver's set-test
+;; macro registers the body here by var name, and its run-test-var macro
+;; calls __t-run-probe, which runs it as native's run-test-var does: on
+;; fresh counters (the enclosing test's are restored after), printing the
+;; begin line and summary, returning the summary map.
+(def __t-probes (atom {}))
+
+(defn __t-run-probe [nm ns-name]
+  (let [saved [@__t-pass @__t-fail @__t-error @__t-tests @__t-name]
+        f (get @__t-probes nm)]
+    (reset! __t-pass 0) (reset! __t-fail 0) (reset! __t-error 0) (reset! __t-tests 0)
+    (print (str "\nTesting " ns-name "\n"))
+    (when f
+      (__t-begin (str nm))
+      (try (f) (catch Throwable e (__t-uncaught e))))
+    (let [r {:test @__t-tests :pass @__t-pass :fail @__t-fail :error @__t-error :type :summary}]
+      (print (str "\nRan " @__t-tests " tests containing " (+ (+ @__t-pass @__t-fail) @__t-error) " assertions.\n"
+                  @__t-fail " failures, " @__t-error " errors.\n"))
+      (reset! __t-pass (nth saved 0)) (reset! __t-fail (nth saved 1)) (reset! __t-error (nth saved 2))
+      (reset! __t-tests (nth saved 3)) (reset! __t-name (nth saved 4))
+      r)))
 
 (defn __t-summary []
   (println (str "\nRan " @__t-tests " tests containing " (+ (+ @__t-pass @__t-fail) @__t-error) " assertions."))

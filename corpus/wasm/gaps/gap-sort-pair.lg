@@ -1,0 +1,26 @@
+;; P5.3 gap: the message when sort meets an incomparable pair. Native sort is
+;; Go's sort.SliceStable (insertion sort in blocks of 20, then SymMerge) over
+;; compareValues, and stops at the first pair compare rejects, so the message
+;; names the two types of that pair in the order the algorithm asked:
+;; (sort [1 2 "x" 3]) asks ("x" 2) first, giving "String and Int". Round 1's
+;; merge sort asked (3 "x") and named "Int and String".
+
+(defn msg [coll] (try (sort coll) (catch Exception e (ex-message e))))
+(defn msg-by [f coll] (try (sort f coll) (catch Exception e (ex-message e))))
+(println "two-a" (msg [1 :a]))
+(println "two-b" (msg [:a 1]))
+(println "mid" (msg [1 2 "x" 3]))
+(println "tail" (msg [3 1 2 :k]))
+(println "nil-first" (msg [nil 1 :a]))
+(println "str-kw" (msg ["a" :b]))
+(println "list" (msg '(5 4 3 "s" 2 1)))
+(println "block-edge" (msg (concat (range 20 0 -1) [:k])))
+(println "merge-phase" (msg (concat (range 25) [:k] (range 30))))
+(println "deep" (msg (concat (range 100 0 -1) ["x"] (range 50))))
+;; a comparator with side effects sees the same calls in the same order
+(let [log (atom [])]
+  (sort (fn [x y] (swap! log conj [x y]) (compare x y)) [5 3 9 1 7 2 8 6 4 0 11 13 12 10 15 14 19 17 16 18 21 20 23 22])
+  (println "calls" (count @log) @log))
+(println "bool-cmp" (msg-by < [3 1 "x"]))
+(println "ok" (sort [3 1 2]) (sort > (range 30)))
+(sort [1 2 "x" 3])

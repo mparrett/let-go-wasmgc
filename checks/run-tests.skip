@@ -1,7 +1,10 @@
 # checks/run-tests.sh: deftests left out on BOTH sides of the comparison.
 # <ns> <deftest> <why>. Only tests that cannot mean anything under the
 # backend belong here: they inspect the runtime's own source or vars through
-# the native IR pipeline (expand-all, resolve, ns-interns, var metadata).
+# the native IR pipeline (expand-all, resolve, ns-interns, var metadata), or
+# (P5.1) need what the module cannot have by construction: host file I/O,
+# or a side effect of macro expansion, which happens in the compiler.
+# `--corpus` counts these as skipped, never as passing (run-tests.sh).
 pvec-test dialect expands rt/wasm/pvec.lg through ir.passes.pipeline and resolves its vars (native-only meta-test)
 seq-test dialect expands rt/wasm/seq.lg through ir.passes.pipeline (native-only meta-test)
 str-test dialect expands rt/wasm/str.lg through ir.passes.pipeline (native-only meta-test)
@@ -10,3 +13,5 @@ phs-test dialect expands rt/wasm/phs.lg through ir.passes.pipeline (native-only 
 core-test dialect expands rt/wasm/core.lg through ir.passes.pipeline (native-only meta-test)
 reader-test dialect expands rt/wasm/reader.lg through ir.passes.pipeline (native-only meta-test)
 intrinsics-test intrinsic-coverage reads wasm.intrinsics' var metadata and this file's own source (native-only meta-test)
+test.quality-cost-test a-core-call-on-non-parameter-data-is-constant-in-the-input quality/cost.lg reads cost-catalog.edn with slurp; host file I/O is not in the module ABI, so the catalog is {} and `sort` of a literal has no cost entry (P5.1)
+test.try-finally-test finally-macro-expands-once a macro's side effect at expansion time: counting-noop runs in the compiler and bumps the compiler's atom, the module's expansion-count atom stays 0 (P5.1)

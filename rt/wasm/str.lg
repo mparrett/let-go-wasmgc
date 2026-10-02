@@ -564,8 +564,8 @@
                         (buf-byte! b 91)
                         (loop [i 0] (when (< i n) (when (> i 0) (buf-byte! b 32)) (write-val b (sq/nth x (sq/box-int i)) 0) (recur (inc i))))
                         (buf-byte! b 93)))
-          ;; foreign kinds and the P2.7 boxes (atom, volatile, exception) print through wasm.core
-          (if (= k 18) true (>= k 24)) (let [h (wasm/get Globals 2 globals)]
+          ;; foreign kinds, fns and the P2.7 boxes (atom, volatile, exception) print through wasm.core
+          (if (= k 18) true (if (= k 16) true (>= k 24))) (let [h (wasm/get Globals 2 globals)]
                      (if (wasm/null? h)
                        (wasm/trap "wasm.str: printing a foreign value and no print hook installed")
                        (buf-bytes! b (str-bytes (sq/invoke2 h x (sq/box-int mode))))))

@@ -1,0 +1,27 @@
+;; P5.3 gap: with-meta on a variadic fn. Native (lg 4e769212, vm.NewMetaFn)
+;; keeps every arity of the wrapped fn, the variadic one included: calls with
+;; 0, 1, 3 and 7 args reach `& rest`, apply spreads any count, meta reads the
+;; map back, vary-meta/with-meta replace it, and the original fn keeps nil meta.
+;; Round 1's runtime copied only the inner fn's fixed code slots, so the
+;; variadic arity was lost.
+
+(require '[clojure.string :as string])
+
+(defn v [& xs] (count xs))
+(def w (with-meta v {:tag :x}))
+(println "single-variadic" (w) (w 1) (w 1 2 3) (w 1 2 3 4 5 6 7))
+(println "meta" (meta w) (meta v))
+(println "apply" (apply w []) (apply w [1 2]) (apply w (range 10)))
+
+(defn m ([] :zero) ([a & r] [a (count r)]))
+(def mw (with-meta m {:k 1}))
+(println "multi" (mw) (mw 1) (mw 1 2 3) (mw 1 2 3 4 5 6 7) (meta mw))
+
+(def anon (with-meta (fn [a b & r] [a b (vec r)]) {:a 1}))
+(println "fixed-plus-rest" (anon 1 2) (anon 1 2 3) (anon 1 2 3 4 5 6 7) (meta anon))
+(println "too-few" (try (anon 1) (catch Exception e (string/replace (ex-message e) #"0x[0-9a-f]+" "ADDR"))))
+
+(def ww (vary-meta w assoc :y 2))
+(println "vary" (meta ww) (ww 1 2 3 4 5 6 7) (meta (with-meta ww {:z 3})))
+(println "hof" (map w [1 2] [3 4]) (reduce (with-meta + {:p 1}) [1 2 3 4 5 6 7]))
+(println "eq" (= w w) (= w v) (= w (with-meta v {:tag :x})))

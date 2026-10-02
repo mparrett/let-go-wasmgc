@@ -967,7 +967,7 @@
                               (wasm/null)))]
                   (if (wasm/null? hit) (recur (cnext cs)) (wasm/get Cons 0 hit)))))))))
 
-(defn ^{:twin "core/vec"} vec [x]                                            ; vec (lang.go:2054): element-wise, not chunked
+(defn vec [x]                         ; vec (lang.go:2054): element-wise, not chunked; core/vec's twin is wasm.arrays/vec (object arrays)
   (cond (seq-empty? x) (pv/empty-vec)
         (if (can-seq? x) false true) (no-iseq x)
         :else (loop [s (force-seq (seq-of x)) v (pv/empty-vec)]  ; always an ArrayVector, at any size
@@ -1046,7 +1046,12 @@
       (if (scalar-kind? ka) true (scalar-kind? kb)) (if (= ka kb) (scalar-equiv? ka a b) false)
       (wasm/ref-eq a b) true
       (if (= ka 1) (= kb 1) false) (= (unbox-int a) (unbox-int b))
-      (= ka 18) (truthy? (invoke2 (hook 3 a) a b))
+      ;; two foreign values claimed by different handlers: either side's may
+      ;; know the pair (wasm.core's sorted map = a phm map), so ask b's too
+      (= ka 18) (let [ha (hook 3 a)]
+                  (if (truthy? (invoke2 ha a b))
+                    true
+                    (if (= kb 18) (let [hb (hook 3 b)] (if (wasm/ref-eq ha hb) false (truthy? (invoke2 hb a b)))) false)))
       (= kb 18) (truthy? (invoke2 (hook 3 b) a b))
       (if (= (type-group ka) (type-group kb)) false true)
       (if (if (sequential-kind? ka) (sequential-kind? kb) false) (walk-equal? (to-seq a) (to-seq b)) false)

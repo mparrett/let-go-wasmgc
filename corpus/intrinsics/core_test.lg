@@ -781,7 +781,7 @@
               sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
               :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
                     vname (str v)]
-              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["core" "seq" "pvec" "str" "phm" "phs" "arrays"])
+              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["core" "seq" "pvec" "str" "phm" "phs" "arrays" "sorted"])
                              (and (string/starts-with? vname "#'wasm.intrinsics/")
                                   (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]

@@ -1,0 +1,22 @@
+;; P5.3 gap: identity hash of atoms, volatiles and fns. Native (lg 4e769212)
+;; hashes them by pointer: the value changes from run to run, so this prints
+;; only what is stable: an object hashes equal to itself every time, two
+;; distinct objects of the same kind hash apart, `=` is identity, and sets and
+;; maps keyed by them keep one entry per object. Round 1's runtime gave every
+;; atom (and every fn) one per-kind constant, so distinct objects hashed equal.
+
+(def a (atom 1)) (def b (atom 1))
+(defn f [] 1) (defn g [] 1)
+(def h (fn [x] x)) (def k (fn [x] x))
+(def va (volatile! 1)) (def vb (volatile! 1))
+
+(println "self" (= (hash a) (hash a)) (= (hash f) (hash f)) (= (hash h) (hash h)) (= (hash va) (hash va)))
+(println "after-swap" (let [h0 (hash a)] (swap! a inc) (= h0 (hash a))))
+(println "distinct-atoms" (not= (hash a) (hash b)))
+(println "distinct-fns" (not= (hash f) (hash g)) (not= (hash h) (hash k)))
+(println "distinct-volatiles" (not= (hash va) (hash vb)))
+(println "distinct-many" (count (set (map (fn [_] (hash (atom 0))) (range 50)))))
+(println "eq" (= a a) (= a b) (= f f) (= f g))
+(println "sets" (count (hash-set a b a)) (count (hash-set f g f h k)) (contains? (hash-set a) b))
+(println "maps" (get {a :a b :b} b) (get (hash-map f 1 g 2) g) (count (assoc {} a 1 b 2 a 3)))
+(println "int" (int? (hash a)) (int? (hash f)))

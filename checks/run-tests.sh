@@ -28,9 +28,13 @@
 # --corpus <list>: lines `file<TAB>deftests` (# comments), files relative to
 # LETGO_TEST. Runs every file (P at a time, each under checks/sem.sh with a
 # 300 s timeout), regenerates corpus/core-tests-results.tsv, and prints
-# `files MATCH M/F` and `deftests N/T`. A deftest passes when the backend run
-# printed its summary and no FAIL/ERROR line names it (a whole-program abort
-# counts the file 0). Exit 0 iff N >= 90% of T (the P2.GATE bar, D112).
+# `files MATCH M/F` and `deftests N/T (skipped S, bar B)`. A deftest passes
+# when the backend run printed its summary and no FAIL/ERROR line names it (a
+# whole-program abort counts the file 0). A deftest named in run-tests.skip
+# (and defined in its file) is not run and is NOT a pass: it is counted in S.
+# --bar B (default ceil(90% of T), the P2.GATE bar, D112) is met when
+# N >= B - S, so each skip excuses exactly one deftest and is printed with its
+# reason; `--bar T` means every deftest not named in run-tests.skip passes.
 #
 # Source paths: files under a let-go checkout's test/ dir get the checkout
 # root, test/ and scripts/ (what language_test.go's resolver searches:
@@ -43,11 +47,12 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
 LETGO_TEST=${LETGO_TEST:-$HOME/projects-new/3p/let-go/test}
-filter=""; files=(); corpus=""; one=""
+filter=""; files=(); corpus=""; one=""; bar_arg=""
 while [ $# -gt 0 ]; do
   case $1 in
     --filter) filter=$2; shift 2 ;;
     --corpus) corpus=$2; shift 2 ;;
+    --bar) bar_arg=$2; shift 2 ;;
     --one) one=$2; shift 2 ;;   # internal: --one <result file> <test file>
     -*) echo "unknown flag $1" >&2; exit 2 ;;
     # a list line may carry a deftest count after a tab; a bare name is
@@ -75,27 +80,35 @@ if [ -n "$corpus" ]; then
     "$here/checks/sem.sh" timeout -k 5 300 env KEEP= "$here/checks/run-tests.sh" --one "$t/{}.res" "$LETGO_TEST/{}" >/dev/null 2>&1
   tsv=$here/corpus/core-tests-results.tsv
   [ -n "$filter" ] && tsv=$t/results.tsv
-  printf 'file\tdeftests\toracle\tbackend_passing_deftests\tnative_tests\tnative_assertions\tnative_failures\tnative_errors\tbackend_tests\tbackend_assertions\tbackend_failures\tbackend_errors\twall_s\texterns\tfailing_deftests\tfirst_failure\tcause\n' >"$tsv"
-  match=0 nfiles=0 ok=0 total=0
+  printf 'file\tdeftests\toracle\tbackend_passing_deftests\tnative_tests\tnative_assertions\tnative_failures\tnative_errors\tbackend_tests\tbackend_assertions\tbackend_failures\tbackend_errors\twall_s\texterns\tfailing_deftests\tfirst_failure\tcause\tskipped_deftests\n' >"$tsv"
+  match=0 nfiles=0 ok=0 total=0 skipped=0; : >"$t/skipped"
   while IFS=$'\t' read -r f n; do
     nfiles=$((nfiles+1)); total=$((total+n))
     r=$t/$f.res
+    # skips of this file's ns that name one of its deftests (a stale entry excuses nothing)
+    fns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$LETGO_TEST/$f" | head -1)
+    sk=$(awk -v ns="$fns" '$1==ns{print $2}' "$here/checks/run-tests.skip" | while read -r d; do
+           awk -v d="$d" '$1=="(deftest" && $2==d {f=1} END {exit !f}' "$LETGO_TEST/$f" && echo "$d"; done | paste -sd, -)
+    ns_sk=$(printf '%s' "$sk" | tr ',' '\n' | grep -c . || true)
+    skipped=$((skipped+ns_sk))
+    [ -n "$sk" ] && awk -v ns="$fns" '$1==ns' "$here/checks/run-tests.skip" >>"$t/skipped"
     [ -s "$r" ] || printf 'MISMATCH\tnone\t\t\t\t\t\t\t\t\t\t\t\ttimeout or crash (no result)\ttimeout or crash (no result)\n' >"$r"
     oracle=$(cut -f1 "$r"); bt=$(cut -f2 "$r"); fails=$(cut -f3 "$r")
     # passing = deftests minus distinct failing names; 0 without a backend summary
     if [ "$bt" = none ]; then pd=0; else
       nf=$(printf '%s' "$fails" | tr ',' '\n' | grep -c . || true)
-      pd=$((n - nf)); [ $pd -lt 0 ] && pd=0
+      pd=$((n - nf - ns_sk)); [ $pd -lt 0 ] && pd=0
     fi
     [ "$oracle" = MATCH ] && match=$((match+1))
     ok=$((ok+pd))
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$f" "$n" "$oracle" "$pd" "$(cut -f4-13 "$r")" "$fails" "$(cut -f14-15 "$r")" >>"$tsv"
-    printf '%-40s %-8s %3s/%-3s %s\n' "$f" "$oracle" "$pd" "$n" "$(cut -f15 "$r" | cut -c1-110)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$f" "$n" "$oracle" "$pd" "$(cut -f4-13 "$r")" "$fails" "$(cut -f14-15 "$r")" "$sk" >>"$tsv"
+    printf '%-40s %-8s %3s/%-3s %s%s\n' "$f" "$oracle" "$pd" "$n" "${sk:+[skipped $sk] }" "$(cut -f15 "$r" | cut -c1-110)"
   done <"$t/list"
-  bar=$(( (total * 9 + 9) / 10 ))
+  bar=${bar_arg:-$(( (total * 9 + 9) / 10 ))}
+  if [ -s "$t/skipped" ]; then echo "skipped (checks/run-tests.skip):"; sed 's/^/  /' "$t/skipped"; fi
   echo "files MATCH $match/$nfiles"
-  echo "deftests $ok/$total (bar $bar)"
-  [ "$ok" -ge "$bar" ]
+  echo "deftests $ok/$total (skipped $skipped, bar $bar: need $((bar - skipped)) passing)"
+  [ "$ok" -ge $((bar - skipped)) ]
   exit
 fi
 

@@ -213,6 +213,7 @@
   "core/disj (lang.go): nil stays nil, a set drops each key in turn."
   ([s] s)
   ([s x] (cond (nil? s) nil
+               (= 39 (wasm.core/ckind s)) (wasm.sorted/sset-disj s x)
                (set? s) (wasm.phs/sdisj s x)
                :else (raise-lit "disj expected Set")))
   ([s x & xs] (loop [r (disj-v s x) xs xs] (if xs (recur (disj-v r (first xs)) (next xs)) r))))
@@ -794,8 +795,26 @@
         keep (fn [e] (if (nil? m) e (with-meta e m)))]
     (cond (nil? x) nil
           (map-entry?-v x) []
+          ;; Collection.Empty() is the shared EmptySorted*: no meta (sorted_map.go:397)
+          (= 38 (wasm.core/ckind x)) (wasm.sorted/empty-smap)
+          (= 39 (wasm.core/ckind x)) (wasm.sorted/empty-sset)
           (vector? x) (keep [])
           (map? x) (keep {})
           (set? x) (keep #{})
           (seq? x) (keep ())
           :else nil)))
+
+(defn sorted-map-v
+  "core/sorted-map (CoreSortedMap, lang.go:5598): pairs assoc'd in turn into
+   the empty sorted map; an odd count is an error."
+  [& kvs]
+  (if (odd? (count kvs))
+    (raise-lit (str "sorted-map requires even number of arguments, got " (count kvs)))
+    (loop [m (wasm.sorted/empty-smap) s (seq kvs)]
+      (if s (recur (wasm.sorted/smap-assoc m (first s) (second s)) (nnext s)) m))))
+
+(defn sorted-set-v
+  "core/sorted-set (CoreSortedSet, lang.go:5607): each element conj'd in turn."
+  [& xs]
+  (loop [r (wasm.sorted/empty-sset) s (seq xs)]
+    (if s (recur (wasm.sorted/sset-conj r (first s)) (next s)) r)))

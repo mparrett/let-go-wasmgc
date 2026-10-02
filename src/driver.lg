@@ -182,10 +182,22 @@
            :else `(__t-report (try (if ~form true false) (catch Throwable e# :__t-error))))))
       ([form msg] `(is ~form)))
     (defmacro testing [s & body] `(do ~@body))
-    ;; P2.14: a set-test probe only runs through run-test-var (test-ns
-    ;; reflection), which the shim does not have; the deftests that drive one
-    ;; report their own ERROR
-    (defmacro set-test [nm & body] nil)])
+    ;; P5.1: a set-test probe is registered by name; run-test-var of
+    ;; (var name) runs it (testshim's __t-run-probe). Native keeps the body
+    ;; as the var's :test meta; the shim has no test-var reflection, so a
+    ;; run-test-var whose argument is not a literal (var x) is refused.
+    (defmacro set-test [nm & body] `(swap! __t-probes assoc '~nm (fn [] ~@body)))
+    (defmacro run-test-var [v]
+      (if (and (seq? v) (= 'var (first v)) (symbol? (second v)))
+        `(__t-run-probe '~(second v) ~(str (ns-name *ns*)))
+        (throw (ex-info (str "lower-wasm --test: run-test-var of " (pr-str v) " (only a literal (var x) is supported)") {}))))])
+
+;; P5.1: quiet-helper/quiet routes clojure.test's *test-out* into
+;; with-out-str*'s buffer; the shim reports to *out* (no *test-out*, and a
+;; library dynamic var cannot be bound), so under --test quiet is
+;; with-out-str* alone. Installed only where the file refers the helper's.
+(def quiet-macro
+  '(defmacro quiet [f] `(let [r# (atom nil)] (with-out-str* (fn [] (reset! r# (~f)))) @r#)))
 
 (defn stub-deftest
   "P2.14: the defn for a deftest that fails to compile natively (thrown at
@@ -417,8 +429,10 @@
                        form)]
             (cond
               (= form ::install-test-macros)
-              (do (doseq [s '[deftest is testing set-test]] (ns-unmap *ns* s))
-                  (doseq [m test-macros] (eval m)))
+              (let [quiet? (try (= (resolve 'quiet) (resolve 'quiet-helper/quiet)) (catch e false))]
+                (doseq [s '[deftest is testing set-test run-test-var]] (ns-unmap *ns* s))
+                (doseq [m test-macros] (eval m))
+                (when (and quiet? (some? (resolve 'quiet))) (ns-unmap *ns* 'quiet) (eval quiet-macro)))
               (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defns into (expand-defn form)))
               (decl-form? form) (do (native! form) (swap! decls conj (resolve (second form))))
               (and (seq? form) (= 'ns (first form)))
