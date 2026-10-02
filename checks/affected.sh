@@ -99,3 +99,5 @@ table | expand | while IFS=$'\t' read -r id inputs; do
   done
   [ $hit = 1 ] && echo "$id"
 done
+# the loop above exits with the LAST row's hit test; the script's own status is "ran"
+exit 0
