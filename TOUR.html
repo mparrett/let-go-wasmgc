@@ -69,7 +69,8 @@ table{border-collapse:collapse;width:100%;margin:8px 0 14px}td,th{padding:5px 8p
 <p>The emitted lane needs no cross-origin isolation, so any static server works. From <code>dev/lower-wasm/</code>:</p>
 <pre><code>host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # ~80 s compile + wasm-opt, cached by content
 host/build-xsofy-serve.sh  /tmp/lw-serve /tmp/lw-play/xsofy.wasm
-cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm      # the adapter's default module name
+# the adapter's default module name
+cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm
 python3 -m http.server 8260 -d /tmp/lw-serve
 open 'http://localhost:8260/index.html?seed=424242'</code></pre>
 <p>That is the real <code>xsofy-shell.html</code>, copied unchanged, driving the WasmGC module through <code>window.LetGoHost</code>. Seed 424242 is the one lane 5 proves byte-identical to the stock lane. <code>?module=&lt;name&gt;.wasm</code> picks another module in the same directory.</p>

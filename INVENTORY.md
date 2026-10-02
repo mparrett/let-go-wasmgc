@@ -12,20 +12,27 @@ only, never pushed. Skunkworks rule: `AGENTS.md` and memory
 ```sh
 cd ~/projects-new/3p/joint-xsofy/dev/lower-wasm
 # 1. xsofy in the browser from the emitted module, real shell, Playwright-driven
-checks/browser-boot.sh --xsofy            # title + map, prints timings
-checks/lane5.sh                           # byte-identical to the stock lane at seed 424242
+# title + map, prints timings
+checks/browser-boot.sh --xsofy
+# byte-identical to the stock lane at seed 424242
+checks/lane5.sh
 # 2. open it yourself: build the serve dir and serve it (no COI needed)
-host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm      # compiles xsofy main.lg (~80 s) + wasm-opt, cached by content
-host/build-xsofy-serve.sh /tmp/lw-serve /tmp/lw-play/xsofy.wasm   # real xsofy-shell.html + adapter + module
-cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm    # adapter's default module name (or pass ?module=xsofy.wasm)
-python3 -m http.server 8260 -d /tmp/lw-serve   # then http://localhost:8260/index.html?seed=424242
+# compiles xsofy main.lg (~80 s) + wasm-opt, cached by content
+host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm
+# real xsofy-shell.html + adapter + module
+host/build-xsofy-serve.sh /tmp/lw-serve /tmp/lw-play/xsofy.wasm
+# adapter's default module name (or pass ?module=xsofy.wasm)
+cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm
+# then http://localhost:8260/index.html?seed=424242
+python3 -m http.server 8260 -d /tmp/lw-serve
 # 2b. play in the terminal instead (node host goes raw on a TTY; --url feeds ?seed=)
 node host/node-host.mjs /tmp/lw-play/xsofy.wasm --url seed=424242
 # 3. legmacs in the browser (round 2, P6.4)
 host/build-legmacs-module.sh /tmp/lw-play/legmacs.wasm
 host/build-legmacs-serve.sh /tmp/lw-legmacs /tmp/lw-play/legmacs.wasm
 cp /tmp/lw-legmacs/legmacs.wasm /tmp/lw-legmacs/module.wasm
-python3 -m http.server 8261 -d /tmp/lw-legmacs   # http://localhost:8261/index.html
+python3 -m http.server 8261 -d /tmp/lw-legmacs
+# then open http://localhost:8261/index.html
 # 3. a plain program through the backend vs native lg
 WASM_RUN=checks/wasm-run.sh checks/oracle.sh corpus/wasm/maps.lg
 # 4. the whole board

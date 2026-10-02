@@ -43,6 +43,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--url') opts.url = args[++i];
   else if (a === '--coalesce') opts.coalesce = true;
   else if (a === '--size') { const [c, r] = args[++i].split('x').map(Number); opts.cols = c; opts.rows = r; }
+  else if (a.startsWith('-')) { console.error(`node-host.mjs: unknown flag ${a}`); process.exit(2); }
+  else if (opts.wasm) { console.error(`node-host.mjs: unexpected argument '${a}' after the module path (a trailing shell comment pasted into zsh does this)`); process.exit(2); }
   else opts.wasm = a;
 }
 if (!opts.wasm) { console.error('usage: node-host.mjs <module.wasm> [--keys STR] [--env K=V] [--size CxR]'); process.exit(2); }
