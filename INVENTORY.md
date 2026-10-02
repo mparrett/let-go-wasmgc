@@ -27,6 +27,8 @@ cp /tmp/lw-serve/xsofy.wasm /tmp/lw-serve/module.wasm
 python3 -m http.server 8260 -d /tmp/lw-serve
 # 2b. play in the terminal instead (node host goes raw on a TTY; --url feeds ?seed=)
 node host/node-host.mjs /tmp/lw-play/xsofy.wasm --url seed=424242
+# 2c. with the dev console (backtick): os/getenv reads the node process's environment
+XSOFY_DEV=1 node host/node-host.mjs /tmp/lw-play/xsofy.wasm --url seed=424242
 # 3. legmacs in the browser (round 2, P6.4)
 host/build-legmacs-module.sh /tmp/lw-play/legmacs.wasm
 host/build-legmacs-serve.sh /tmp/lw-legmacs /tmp/lw-play/legmacs.wasm

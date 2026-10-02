@@ -3,9 +3,10 @@
 //
 //   node host/node-host.mjs <module.wasm> [--keys abq] [--env K=V ...] [--url seed=42&x=y] [--size 100x30] [--coalesce]
 //
-// --url feeds js/url-param (what xsofy reads ?seed= through); --env feeds
-// env.getenv, which the runtime does not import yet (os/getenv is nil in the
-// module), so --url is the way to seed xsofy off-browser.
+// --url feeds js/url-param (what xsofy reads ?seed= through). os/getenv
+// reads the host's own environment (process.env), as native lg does, so
+// `XSOFY_DEV=1 node host/node-host.mjs xsofy.wasm` unlocks the dev console;
+// --env K=V adds or overrides a single name on top of it.
 //
 // Keys: each character of --keys is one key, sent once the module is
 // running, then end of input; otherwise piped stdin feeds keys one character
@@ -50,7 +51,7 @@ for (let i = 0; i < args.length; i++) {
 if (!opts.wasm) { console.error('usage: node-host.mjs <module.wasm> [--keys STR] [--env K=V] [--size CxR]'); process.exit(2); }
 
 const host = new LgWasmHost({
-  env: opts.env, cols: opts.cols, rows: opts.rows,
+  env: { ...process.env, ...opts.env }, cols: opts.cols, rows: opts.rows,
   urlParams: opts.url == null ? null : new URLSearchParams(opts.url),
   // piped/--keys input arrives faster than a human types; queue all of it
   keyCapacity: Infinity,

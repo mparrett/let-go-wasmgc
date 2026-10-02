@@ -139,9 +139,8 @@ export class LgWasmHost {
         return new Promise((r) => setTimeout(r, n > 0 ? n : 0));
       }),
       nanotime: () => BigInt(Math.round(now() * 1e6)),
-      // Not imported by any module yet (host-getenv is stubbed to nil in the
-      // backend); defined so the runtime can switch to it without a host
-      // change. Copies the value into [buf, buf+cap); returns its byte length
+      // os/getenv over `env` ({} in the browser, process.env under node).
+      // Copies the value into [buf, buf+cap); returns its byte length
       // (> cap means "retry with a bigger buffer") or -1 when unset.
       getenv: (nptr, nlen, buf, cap) => {
         const name = h.str(nptr, nlen);

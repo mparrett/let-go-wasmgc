@@ -1,0 +1,8 @@
+;; os/getenv reaches the host (env.getenv, 2026-10-02): an unset name reads
+;; as "" (os.Getenv), a set one as its value. The oracle runs native lg and
+;; the node host in the same environment, so both see HOME.
+(ns getenv-probe (:require [os]))
+(println (pr-str (os/getenv "LW_SURELY_UNSET_NAME_42")))
+(println (= "" (os/getenv "LW_SURELY_UNSET_NAME_42")))
+(println (pos? (count (os/getenv "HOME"))))
+(println (pr-str (os/getenv 7)))

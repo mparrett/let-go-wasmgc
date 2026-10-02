@@ -1309,8 +1309,10 @@
                          (cast-ref "$Bytes" (a 1)) "))") :int]
       "host-sleep" [(str "(call $host_sleep " (arg-as (a 0) :int) ")") :void]
       "host-nanotime" ["(call $host_nanotime)" :int]
-      ;; the reference's *host-env* is {} (deterministic, D27): every name is unset
-      "host-getenv" [(str "(block (result (ref null eq)) (drop " (arg-as (a 0) :box) ") (ref.null none))") :box]
+      ;; env.getenv, getenv's copy contract (host/ABI.md); the reference's
+      ;; *host-env* is {} (D27) and the browser host's env is {} too, so a
+      ;; program only sees an environment under node (process.env) and WASI
+      "host-getenv" [(str "(call $rt_host_getenv " (cast-ref "$Bytes" (a 0)) ")") :box]
       ;; D97: the term host intrinsics (rt/wasm/term.lg, host/ABI.md)
       "term-read-key" ["(call $rt_term_read_key)" :box]
       "term-key-pending" ["(call $term.key_pending)" :bool]
@@ -2590,6 +2592,26 @@
     (local.set $i (i32.add (local.get $i) (i32.const 1)))
     (br $l)))
   (local.get $r))
+;; host-getenv: the same contract (env.getenv): -1 = absent (null); a
+;; length past the buffer grows memory and asks again
+(func $rt_host_getenv (param $nm (ref $Bytes)) (result (ref null eq))
+  (local $bo i32) (local $cap i32) (local $len i32) (local $i i32) (local $r (ref null $Bytes))
+  (local.set $bo (i32.add (i32.const 32) (array.len (local.get $nm))))
+  (call $rt_mem_put (i32.const 32) (local.get $nm))
+  (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+  (local.set $len (call $host_getenv (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))
+  (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (ref.null none))))
+  (if (i32.gt_u (local.get $len) (local.get $cap))
+    (then (drop (memory.grow (i32.add (i32.shr_u (i32.sub (local.get $len) (local.get $cap)) (i32.const 16)) (i32.const 1))))
+          (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+          (local.set $len (call $host_getenv (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))))
+  (local.set $r (array.new_default $Bytes (local.get $len)))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+    (array.set $Bytes (local.get $r) (local.get $i) (i32.load8_u (i32.add (local.get $bo) (local.get $i))))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (local.get $r))
 ;; host-write: copy to linear memory, hand ptr+len to env.write
 (func $rt_host_write (param $fd i32) (param $b (ref $Bytes)) (result i32) (local $i i32) (local $n i32) (local $need i32)
   (local.set $n (array.len (local.get $b)))
@@ -3014,6 +3036,7 @@
          ;; D100: js/emit, js/url-param
          "(import \"env\" \"emit\" (func $host_emit (param i32 i32 i32 i32)))\n"
          "(import \"env\" \"url_param\" (func $host_url_param (param i32 i32 i32 i32) (result i32)))\n"
+         "(import \"env\" \"getenv\" (func $host_getenv (param i32 i32 i32 i32) (result i32)))\n"
          ;; D88/D97: the term imports (read_key suspends under JSPI)
          "(import \"term\" \"read_key\" (func $term.read_key (param i32 i32) (result i32)))\n"
          "(import \"term\" \"key_pending\" (func $term.key_pending (result i32)))\n"

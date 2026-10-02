@@ -52,6 +52,15 @@ if (isMainThread) {
       if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
       return b.length;
     },
+    // os/getenv: the runner's own environment, as native lg's (2026-10-02);
+    // -1 = unset, which the runtime reads as "" (os.Getenv)
+    getenv: (nptr, nlen, buf, cap) => {
+      const name = Buffer.from(new Uint8Array(mem.buffer, nptr, nlen)).toString('utf8');
+      if (!Object.prototype.hasOwnProperty.call(process.env, name)) return -1;
+      const b = Buffer.from(process.env[name]);
+      if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
+      return b.length;
+    },
   };
 
   // D97 term imports: node has no terminal input here, so this host reads as
