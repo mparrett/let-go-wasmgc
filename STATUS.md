@@ -184,3 +184,5 @@ TOTAL ≈ $1,227
 - 2026-10-03: final GC gate 1 passed all 8 rows with LW_ATTEST=0, after required linear corpus acceptance.
 
 - 2026-10-03: configured P7.4 and P7.5 passed individually and again within the ongoing final gate. Regenerated dated GC browser size/boot reports are in corpus/legmacs/size-boot.md and corpus/xsofy/size-boot.md; complete gate 7 is still pending.
+
+- 2026-10-03: final GC gate 7 passed all 11 rows with LW_ATTEST=0 and configured external browser tools; initial dependency-resolution failures are recorded under D179. P7.1 retains its existing 28/30 threshold with 2 known mismatches.
