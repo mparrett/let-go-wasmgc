@@ -135,3 +135,9 @@ TOTAL ≈ $1,227
 | P7.6 | done 2026-10-02 (D163) | opus B | LW_NO_EVAL=1: legmacs 166 KB -> 120 KB brotli, eval-free modules unchanged |
 | P7.4 | done 2026-10-02 11:30 | runner | legmacs bundle 173 KB brotli (round 2: 119 KB module, bundle not recorded with eval), boot median 378 ms at load ~20 (round 2: 264 ms); xsofy 430,781 opt / 115,109 brotli (round 2: 417 KB / 112 KB; inc/dec value fix), title 4571 ms |
 | P7.R | running | opus R | adversarial review, corpus/review5 |
+| P7.7 | done 2026-10-02 (D165) | opus | 22/22 evaluator fixes |
+| P7.8 | done 2026-10-02 (D164) | opus | 7/7 + 1/1 runtime fixes |
+| P7.9 | done 2026-10-02 (D166, D167) | opus B + runner | 7/7 backend fixes; _main ns tag regression caught by gate 5 and fixed |
+| P7.GATE | GREEN 2026-10-02 ~20:05 (D168) | runner | gate 7 11/11; gates 1-6 8/13/3/4/14/10, all LW_ATTEST=0 on d953b83 |
+| REPL page | done 2026-10-02 | runner | host/repl.html, 285 KB opt / 77 KB brotli, 13 examples, :8262 in lw-play |
+| cost round 3 | estimate 2026-10-02 | runner | ~1.9 M subagent tokens (9 Opus + 1 Sonnet dispatches) + runner; list-price estimate ~$1.5k (round 2 ~$1.26k, round 1 ~$4.5k); session total 558 M in / 1.45 M out across rounds 2-3 |
