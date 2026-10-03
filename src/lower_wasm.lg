@@ -4502,6 +4502,9 @@
 (swap! linear-instructions assoc "struct.set"
   (fn [node args] ["call" (linear-struct-set! (second node) (nth node 2)) (nth args 2) (nth args 3)]))
 
+(swap! linear-instructions assoc "call_ref"
+  (fn [node args] (into ["call" (linear-indirect! (second node) false)] (rest args))))
+
 ))
 (def linear-representation-ready (atom false))
 

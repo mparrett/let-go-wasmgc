@@ -8,7 +8,7 @@
 - D172-D176 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- Census family struct.set: passed structural execution, target checks and all frozen GC comparisons (2026-10-03).
+- Census family call_ref: passed structural execution, target checks and all frozen GC comparisons (2026-10-03).
 - Exact next command (2026-10-03): `git push origin linear-target-m1`
 - Sequential checkpoint command: `/tmp/linear-m1-next-functions.sh`; stop on any failure (2026-10-03).
 - Remaining census drafts, imported function signatures, cast branches and host-buffer retries passed GC-disabled preflight (2026-10-03).

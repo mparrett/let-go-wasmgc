@@ -55,6 +55,8 @@
   (func $same-fixnum (export "same-fixnum") (result i32) (ref.eq (ref.i31 (i32.const 7)) (ref.i31 (i32.const 7))))
   (func $different-box (export "different-box") (result i32) (ref.eq (struct.new $Int (i64.const 7)) (struct.new $Int (i64.const 7))))
   (func $set-field (export "set-field") (result i64) (local $a (ref $Atom)) (local.set $a (struct.new $Atom (ref.null none) (i64.const 0))) (struct.set $Atom 1 (local.get $a) (i64.const 42)) (struct.get $Atom 1 (local.get $a)))
+  (func $call-code (export "call-code") (result (ref null eq)) (call_ref $Code0 (ref.i31 (i32.const 11)) (ref.func $code)))
+  (func $call-nil-error (export "call-nil-error") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (drop (call_ref $Code0 (ref.null none) (ref.null nofunc)))) (ref.null none))))
 ])
 
 (defn form-wat [node]
