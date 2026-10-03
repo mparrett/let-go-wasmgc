@@ -97,6 +97,7 @@ P8.0	src/ rt/ checks/gc-byte-identity.sh corpus/scalar/ corpus/eval/
 P8.1	src/ rt/ checks/target-check.sh checks/linear-refuse-check.lg checks/fixtures/linear-target.lg checks/wasm-run.sh corpus/refused/linear/
 P8.2	src/ rt/ checks/linear-layout-check.sh checks/linear-layout-check.lg
 P8.3	src/ rt/ checks/linear-representation-check.sh checks/linear-representation-check.lg
+P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 EOF
 }

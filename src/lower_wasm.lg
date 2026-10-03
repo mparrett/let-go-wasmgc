@@ -1865,6 +1865,9 @@
       ;; a stack-VM marker cleanup strips; nothing to emit if one survives
       (= op :pop) nil
       (= op :set-var) (set-var-wat nid)
+      ;; D177: a general integer division may need absent Ratio/BigInt values.
+      (if (= *target* :linear) (if (= op :div) (not-any? #{:float} (map ty refs)) false) false)
+      (fail "unsupported op :div under linear (Ratio/BigInt result)" {:nid nid :fn *fname*})
       ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
       (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
@@ -4620,6 +4623,8 @@
 ;; Per-function temporaries preserve single operand evaluation (2026-10-03).
 (def ^:dynamic *linear-function-locals* nil)
 (defn linear-function [node]
+  (when (and (string? (second node)) (str/starts-with? (second node) "$wasm.math/div"))
+    (fail "unsupported op :div under linear (Ratio/BigInt result)" {}))
   (binding [*linear-function-locals* (atom [])]
     (let [parts (mapv linear-node (rest node))
           declaration? (fn [slot]
