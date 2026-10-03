@@ -31,4 +31,9 @@
      " (func $null-yes (export \"null-yes\") (result i32) (ref.is_null (ref.null none)))"
      " (func $null-zero (export \"null-zero\") (result i32) (ref.is_null (ref.i31 (i32.const 0))))"
      " (func $null-bool (export \"null-bool\") (result i32) (ref.is_null (i32.const 65560)))"
+     " (func $nonnull-zero (export \"nonnull-zero\") (result (ref eq)) (ref.as_non_null (ref.i31 (i32.const 0))))"
+     " (func $nonnull-bool (export \"nonnull-bool\") (result (ref eq)) (ref.as_non_null (i32.const 65560)))"
+     " (func $nonnull-error-kind (export \"nonnull-error-kind\") (result i32)"
+     " (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught)"
+     " (drop (ref.as_non_null (ref.null none)))) (ref.null none))))"
      " (func $failed (export \"failed\") (result i32) (ref.cast (ref $Bool) (i32.const 3))))")))))

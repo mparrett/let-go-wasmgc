@@ -4386,6 +4386,14 @@
 (swap! linear-instructions assoc "ref.is_null"
   (fn [node args] (into ["i32.eqz"] args)))
 
+(defn linear-non-null! []
+  (linear-helper! "$lin_non_null"
+    (fn []
+      (str "(func $lin_non_null (param $p0 i32) (result i32)"
+           " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") ")) (local.get $p0))"))))
+(swap! linear-instructions assoc "ref.as_non_null"
+  (fn [node args] (into ["call" (linear-non-null!)] args)))
+
 ))
 (def linear-representation-ready (atom false))
 

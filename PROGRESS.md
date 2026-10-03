@@ -2,36 +2,19 @@
 
 ## Done
 - Read README.md, docs/READING-GUIDE.md and docs/LINEAR-TARGET-SPEC.md in order.
-- Target selection, isolated caches and frozen GC byte guard are pushed as `06e9eed` (2026-10-03).
-- Shared representation boundary is pushed as `36f9463`; publish CI passed (2026-10-03).
-- Linear module/type skeleton and leaking allocator are validated; target check and default/explicit GC identity over all scalar/eval programs passed (2026-10-03).
-- Allocator prototype passed memory growth under the specified wazero fork; structural evidence, no oracle MATCH claim (2026-10-03).
-- Draft PR: https://github.com/mparrett/let-go-wasmgc/pull/1 .
-- D172-D176 record layout, representation, cache-state and host-buffer decisions (2026-10-03).
+- Branch `linear-target-m1`; draft PR https://github.com/mparrett/let-go-wasmgc/pull/1 .
+- Target/cache, frozen GC guard, shared representation, numeric module and leaking allocator are pushed (2026-10-03).
+- Instruction families through ref.is_null are pushed as `59c41d4`; publish CI passed (2026-10-03).
+- ref.as_non_null passed structural execution, target checks and all frozen default/explicit GC comparisons (2026-10-03).
+- D172-D176 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- Type/allocator foundation is pushed as `636af5b` (2026-10-03).
-- ref.cast passed structural, target and frozen GC byte checks; its fixnum/nullable/Boolean paths and catchable named error passed the wazero prototype (2026-10-03).
-- ref.cast is pushed as `f15afa4` (2026-10-03).
-- struct.get and the corrected `illegal cast` diagnostic passed structural, target and frozen byte checks (2026-10-03).
-- struct.get is pushed as `b968734` (2026-10-03).
-- ref.null passed structural, target and frozen GC byte checks (2026-10-03).
-- ref.null is pushed as `75b1cc3` (2026-10-03).
-- ref.test passed structural execution, target checks and the frozen byte guard (2026-10-03).
-- ref.test is pushed as `89d127e` (2026-10-03).
-- struct.new passed structural execution, target checks and the frozen byte guard (2026-10-03).
-- struct.new is pushed as `a1021dc` (2026-10-03).
-- array.len passed structural validation, target checks and the frozen byte guard (2026-10-03).
-- array.len is pushed as `3c574be` (2026-10-03).
-- ref.i31 passed structural execution, target checks and the frozen byte guard (2026-10-03).
-- D176 is pushed as `7d54297`; publish CI passed (2026-10-03).
-- ref.i31 is pushed as `67e2960` (2026-10-03).
-- ref.is_null passed structural execution, target checks and the frozen byte guard (2026-10-03).
-- Pinned first refusal: array.new_data. Next instruction family: ref.as_non_null.
-- Cast-family draft is preserved in `/tmp/linear-cast-family.lg`.
-- Exact next command: `git push origin linear-target-m1 && gh pr checks 1`
-- Commit and push ref.is_null, then install `/tmp/linear-ref-as-non-null-family.lg` and repeat structural/target/byte checks. Actual array allocation probes follow with array.new_default. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
+- Checkpoint ref.as_non_null, then install `/tmp/linear-array-new-default-family.lg` in census order.
+- Exact next command (2026-10-03): `git push origin linear-target-m1 && gh pr checks 1`
+- Array allocation preflight passed GC-disabled validation and wazero length/zeroing/type/growth probes (2026-10-03).
+- Remaining family drafts: `/tmp/linear-*-family.lg`; structural Go probe: `/tmp/linear-m1-go-probe/values.go`.
+- Current pinned first refusal: array.new_data in corpus/refused/linear/null.lg.
 
 ## Open questions
-- Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output. The team is investigating.
-- All linear oracle corpora, runner and final gates remain pending.
+- Original runtime cache omits variadic dispatch state on restore; reported in the PR, the team is investigating. Keep GC output unchanged.
+- Runner, linear oracle corpora, host-buffer twins, README paragraph and final GC gates remain pending.
