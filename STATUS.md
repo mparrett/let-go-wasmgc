@@ -145,3 +145,10 @@ TOTAL ≈ $1,227
 | D182 | done 2026-10-03 | runner | (println os/args) MATCH on the GC lane; regression corpus/scalar/os-args.lg under P1.1; run.mjs argv[0] = lg path |
 | REPL page | done 2026-10-02 | runner | host/repl.html, 285 KB opt / 77 KB brotli, 13 examples, :8262 in lw-play |
 | cost round 3 | estimate 2026-10-02 | runner | ~1.9 M subagent tokens (9 Opus + 1 Sonnet dispatches) + runner; list-price estimate ~$1.5k (round 2 ~$1.26k, round 1 ~$4.5k); session total 558 M in / 1.45 M out across rounds 2-3 |
+
+## Linear target — 2026-10-03
+
+| item | state | note |
+|---|---|---|
+| P8.0 | PASS | 2026-10-03: frozen pre-change scalar and eval GC binary guard; compare default and explicit GC |
+| P8.1 | PASS | 2026-10-03: driver target selection, precedence and isolated runtime cache keys; unfinished linear output refused by op name |

@@ -20,6 +20,7 @@
             [ir.passes.purity] [ir.passes.licm] [ir.passes.cse] [ir.passes.constfold] [ir.lattice :as lat] [ir.passes.infer-arg-types]
             [clojure.string :as str] [lw-rt]))
 
+(def ^:dynamic *target* :gc)
 (def ^:dynamic *f* nil)
 ;; per-*f* memo of src-of (an atom, rebound wherever *f* is): src-of walks
 ;; block-arg chains and runs for every value many times; unmemoised, a
@@ -3800,7 +3801,7 @@
    compiles every runtime defn and keeps every helper (size measurement)."
   ([sigs var-globals] (new-session sigs var-globals {}))
   ([sigs var-globals opts]
-   {:sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+   {:target (or (:target opts) :gc) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
     :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
@@ -3813,7 +3814,7 @@
 
 
 (defn with-session* [ss thunk]
-  (binding [*sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
+  (binding [*target* (or (:target ss) :gc) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
@@ -4098,6 +4099,7 @@
   (binding [*top-forms-cache* (atom {})]
     (with-session* ss
       (fn []
+        (when (= *target* :linear) (fail "unsupported op ref.null under linear" {}))
         (when *rt* (rt-fixpoint! fns))
         (let [{:keys [fixed items live program]} (module-parts fns)
               ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
@@ -4155,7 +4157,7 @@
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
                             (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
-                            [(if lw-rt/no-eval? "|no-eval" "")]))))
+                            [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")]))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
@@ -4218,7 +4220,8 @@
   "Start the current session from the cached runtime library, building and
    saving it first if the runtime or the backend changed."
   []
-  (let [f (str rtlib-dir "/rtlib-" (rtlib-key) ".edn")]
+  (let [prefix (str "rtlib-" (name *target*) "-")
+        f (str rtlib-dir "/" prefix (rtlib-key) ".edn")]
     (if (some? (try (os/stat f) (catch e nil)))
       (rtlib-restore! (read-string (slurp f)))
       (let [fails (build-rtlib!)
@@ -4228,6 +4231,6 @@
         (os/rename tmp f)
         ;; a library for older sources is dead weight (~3.5 MB each)
         (doseq [old (os/ls rtlib-dir)
-                :when (and (str/starts-with? old "rtlib-") (str/ends-with? old ".edn")
+                :when (and (str/starts-with? old prefix) (str/ends-with? old ".edn")
                            (not= (str rtlib-dir "/" old) f))]
           (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))

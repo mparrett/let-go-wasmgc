@@ -728,8 +728,23 @@
      [(list 'wasm.eval/install-program-table!
             (into {} (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
 
+(defn target-args
+  "Validate the target before reading the program. The flag wins over LW_TARGET."
+  [argv]
+  (loop [xs argv out [] target (or (not-empty (os/getenv "LW_TARGET")) "gc")]
+    (if (empty? xs)
+      (if (contains? #{"gc" "linear"} target)
+        [out (keyword target)]
+        (throw (ex-info (str "lower-wasm: unsupported target " target) {})))
+      (if (= "--target" (first xs))
+        (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
+          (recur (drop 2 xs) out (second xs))
+          (throw (ex-info "lower-wasm: --target needs gc or linear" {})))
+        (recur (rest xs) (conj out (first xs)) target)))))
+
 (defn -main [& argv]
-  (let [sp-arg (second (drop-while #(not= "-source-paths" %) argv))
+  (let [[argv target] (target-args argv)
+        sp-arg (second (drop-while #(not= "-source-paths" %) argv))
         _ (reset! source-paths (if sp-arg (vec (remove empty? (clojure.string/split sp-arg #":"))) []))
         argv (if sp-arg (remove #{"-source-paths" sp-arg} argv) argv)
         skip-arg (second (drop-while #(not= "--skip" %) argv))
@@ -737,7 +752,7 @@
         argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
         flags (set (filter #(clojure.string/starts-with? % "--") argv))
         [in out] (remove flags argv)
-        opts {:rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
+        opts {:target target :rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
         rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))

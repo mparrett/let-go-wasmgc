@@ -93,6 +93,8 @@ P7.R	corpus/review5/
 P7.7	oracle corpus/review5/fix-eval/ checks/run-corpus.sh
 P7.8	oracle corpus/review5/fix-rt/ checks/run-corpus.sh
 P7.9	oracle corpus/review5/fix-backend/ checks/run-corpus.sh
+P8.0	src/ rt/ checks/gc-byte-identity.sh corpus/scalar/ corpus/eval/
+P8.1	src/ rt/ checks/target-check.sh checks/wasm-run.sh corpus/refused/linear/
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 EOF
 }
