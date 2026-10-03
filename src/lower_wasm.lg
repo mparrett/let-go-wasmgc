@@ -4383,6 +4383,9 @@
 (swap! linear-instructions assoc "ref.i31"
   (fn [node args] ["i32.or" ["i32.shl" (first args) ["i32.const" "1"]] ["i32.const" "1"]]))
 
+(swap! linear-instructions assoc "ref.is_null"
+  (fn [node args] (into ["i32.eqz"] args)))
+
 ))
 (def linear-representation-ready (atom false))
 
