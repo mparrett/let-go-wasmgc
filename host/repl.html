@@ -51,7 +51,7 @@ const history = []; let hi = 0;
 const EXAMPLES = [
   ['fib', '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 25)'],
   ['fizzbuzz', '(doseq [i (range 1 16)] (println (cond (zero? (mod i 15)) "FizzBuzz" (zero? (mod i 3)) "Fizz" (zero? (mod i 5)) "Buzz" :else i)))'],
-  ['primes', '(defn prime? [k] (and (> k 1) (every? #(pos? (mod k %)) (range 2 k)))) (filter prime? (range 60))'],
+  ['primes', '(defn prime? [k] (and (> k 1) (every? #(pos? (mod k %)) (range 2 (inc (int (Math/sqrt k))))))) (filter prime? (range 60))'],
   ['factorial of 20 (int64)', '(loop [i 20 acc 1] (if (zero? i) acc (recur (dec i) (* acc i))))'],
   ['lazy for over an infinite range', '(take 5 (for [x (range) :when (odd? x)] (* x x)))'],
   ['iterate', '(take 10 (iterate #(* 2 %) 1))'],
@@ -61,6 +61,11 @@ const EXAMPLES = [
   ['reduce with a map', '(reduce (fn [m w] (update m (count w) (fnil conj []) w)) {} ["a" "bb" "cc" "ddd"])'],
   ['catch an error', '(try (/ 1 0) (catch e (str "caught: " (ex-message e))))'],
   ['string building', '(apply str (interpose "-" (map clojure.string/upper-case ["wasm" "gc" "let-go"])))'],
+  ['10 PRINT maze (Rosetta Code)', '(dotimes [_ 16] (println (apply str (repeatedly 60 #(rand-nth ["╱" "╲"])))))'],
+  ['Sierpinski from bit-and (Rosetta Code)', '(doseq [y (range 24)] (println (str (apply str (repeat (- 23 y) " ")) (apply str (for [x (range (inc y))] (if (zero? (bit-and x y)) "██" "  "))))))'],
+  ['rule 30 cellular automaton', '(let [rule 30 width 79 step (fn [row] (mapv (fn [x] (let [pattern (+ (* 4 (get row (dec x) 0)) (* 2 (get row x 0)) (get row (inc x) 0))] (bit-and 1 (bit-shift-right rule pattern)))) (range width))) seed (assoc (vec (repeat width 0)) (quot width 2) 1)] (doseq [row (take 30 (iterate step seed))] (println (apply str (map #(if (zero? %) " " "█") row)))))'],
+  ['rule 110', '(let [rule 110 width 79 step (fn [row] (mapv (fn [x] (let [pattern (+ (* 4 (get row (dec x) 0)) (* 2 (get row x 0)) (get row (inc x) 0))] (bit-and 1 (bit-shift-right rule pattern)))) (range width))) seed (assoc (vec (repeat width 0)) (dec width) 1)] (doseq [row (take 30 (iterate step seed))] (println (apply str (map #(if (zero? %) " " "█") row)))))'],
+  ['fib, timed', '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (let [t (System/nanoTime)] {:fib27 (fib 27) :ms (quot (- (System/nanoTime) t) 1000000)})'],
   ['the namespace you are in', '(do (defn twice [x] (* 2 x)) [(ns-name *ns*) (resolve (quote twice)) (twice 21)])'],
 ];
 const picker = document.getElementById('examples');

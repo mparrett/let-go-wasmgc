@@ -69,7 +69,8 @@
             [wasm.str :as s]
             [wasm.core :as c]
             [wasm.reader :as rd]
-            [wasm.natives :as n]))
+            [wasm.natives :as n]
+            [clojure.math]))
 
 ;; ---------------------------------------------------------------------------
 ;; Host layer: the only module-specific calls
@@ -1193,7 +1194,20 @@
    "string/includes?" string/includes? "string/starts-with?" string/starts-with?
    "string/ends-with?" string/ends-with? "string/replace" string/replace "string/split-lines" string/split-lines
    "string/index-of" string/index-of "string/capitalize" string/capitalize "string/triml" string/triml
-   "string/trimr" string/trimr "string/reverse" string/reverse})
+   "string/trimr" string/trimr "string/reverse" string/reverse
+   ;; bit ops, math and clock natives, randomness (REPL demo snippets, 2026-10-02).
+   ;; Math/* is keyed to clojure.math's twins (the Math/ natives have none);
+   ;; rand-nth is lg over rand-int (core/rand-nth is a Go native with no twin);
+   ;; floor/ceil/round/log/rand/shuffle stay out: no twin.
+   "bit-and" bit-and "bit-or" bit-or "bit-xor" bit-xor "bit-not" bit-not "bit-and-not" bit-and-not
+   "bit-shift-left" bit-shift-left "bit-shift-right" bit-shift-right
+   "unsigned-bit-shift-right" unsigned-bit-shift-right "bit-test" bit-test
+   "Math/sqrt" clojure.math/sqrt "Math/pow" clojure.math/pow "Math/exp" clojure.math/exp "Math/abs" clojure.math/abs
+   "clojure.math/sqrt" clojure.math/sqrt "clojure.math/pow" clojure.math/pow "clojure.math/exp" clojure.math/exp
+   "clojure.math/abs" clojure.math/abs "clojure.math/sin" clojure.math/sin "clojure.math/cos" clojure.math/cos
+   "clojure.math/hypot" clojure.math/hypot "clojure.math/cbrt" clojure.math/cbrt "abs" clojure.math/abs
+   "System/nanoTime" System/nanoTime "System/currentTimeMillis" System/currentTimeMillis
+   "rand-nth" (fn [coll] (nth coll (rand-int (count coll))))})
 
 (def ^:private core-cache (atom nil))
 (defn- core-table [] (or @core-cache (reset! core-cache (core-table*))))
