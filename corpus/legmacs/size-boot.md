@@ -6,24 +6,13 @@ from navigation: boot = first text in xterm, first frame = the *scratch* mode li
 
 | lane | bundle raw | brotli -q 11 | gzip -9 | boot | first frame |
 |---|---|---|---|---|---|
-| lower-wasm (emitted) | 696 KB | 174 KB | 211 KB | 463 ms | 463 ms |
+| lower-wasm (emitted) | 706 KB | 178 KB | 215 KB | 180 ms | 180 ms |
 | stock Go (lg -w, let-go 4e769212) | 9.04 MB | 6.60 MB | 6.70 MB | does not boot | does not boot |
 
-lower-wasm module alone: 2,225,682 B as emitted, 677,218 B after `wasm-opt -O3` (served), 167,483 B brotli, 203,188 B gzip.
-Runs (ms) lower-wasm: boot [556, 282, 463, 498, 282], first frame [556, 282, 463, 498, 283].
+lower-wasm module alone: 2,265,456 B as emitted, 686,520 B after `wasm-opt -O3` (served), 170,699 B brotli, 206,570 B gzip.
+Runs (ms) lower-wasm: boot [218, 156, 180, 241, 166], first frame [218, 156, 180, 241, 166].
 stock boot: run 0: program ended before the first frame: error: getwd: not implemented on js --> main.lg:85:35 stack trace: at cwd (main.lg:85:35) at load-file-or-scratch (main.lg:156:45) at build-workspace (main.lg:168:19) at main (main.lg:179:27) 
 
 The stock lane builds but does not boot legmacs: under js/wasm let-go's `os/cwd` raises "getwd: not implemented on js",
 and main.lg calls it to set up the *scratch* buffer, so its boot column is empty and the comparison is bundle size only.
 The lower-wasm runtime returns "" for `os/cwd` (D138: no file system in the module).
-
-## P7.6: the evaluator opt-out (measured 2026-10-02, checks/eval-optout.sh)
-
-legmacs 187fea2 `main.lg`, lg 4e769212, tree at 871be67 + the P7.6 src change. `LW_NO_EVAL=1` leaves rt/wasm/eval.lg
-and the program table out (C-x C-e then echoes `Eval error: lower-wasm: core/eval has no twin`); the default build
-links both because legmacs calls `eval`.
-
-| legmacs main.lg | raw | wasm-opt -O3 | brotli |
-|---|---|---|---|
-| evaluator (default) | 2,199,454 B | 671,302 B | 166,284 B |
-| LW_NO_EVAL=1 | 1,614,250 B | 461,803 B | 119,844 B |

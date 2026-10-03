@@ -28,9 +28,9 @@ differential check (see "Checks"), and the design record is
   the two remaining ones skipped by name.
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
-- Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0`. The evaluator's
-  core table gained entries afterwards (bit ops, `Math/*`, clocks), and
-  gate 7 has not been rerun since (D169).
+- Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0`; gate 7 was rerun
+  green the same evening after the evaluator's core table gained bit ops,
+  `Math/*` and clocks (D169, D170).
 
 Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-02:
 
