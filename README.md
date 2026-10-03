@@ -45,6 +45,12 @@ Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-02:
 | xsofy | 115 KB |
 | REPL page module | 77 KB |
 
+Browsers: the hosts need WebAssembly JSPI. As of 2026-10-03 that is Chrome and
+Edge 137 or newer on desktop; Safari 27 ships it (iOS included) and Firefox
+plans it for 153, so the gap closes on its own. Binaryen's Asyncify cannot
+stand in, because it spills locals to linear memory and these modules hold
+GC references in locals (`wasm-opt --asyncify` asserts on them).
+
 Named limits, as of 2026-10-02: Ratio and BigInt results are named errors
 (D15); `go` blocks and channels are not supported, and `future` runs its
 body at the call (D162); the evaluator has no interop, `deftype`,
@@ -222,6 +228,25 @@ Candidates, none started (as of 2026-10-02):
 - A baseline compiler as a second output of the evaluator's front end, so a
   module can compile code at run time without porting the optimizing
   compiler.
+
+## How this repository is maintained
+
+The code is developed inside a larger private workspace and published from
+there with `git subtree push`; this repository is the published view, not a
+mirror of that workspace. In practice:
+
+- Issues and pull requests are welcome here. A merged PR is brought back
+  into the workspace with `git subtree pull`, so it is not lost when the
+  next round is pushed.
+- Every push runs `checks/publish-check.sh` as CI. It refuses material that
+  belongs to the workspace (its layout names and working notes); the
+  pattern is held in a repository secret, so a failure on a PR means the
+  text matched something the maintainers keep out of this tree, and the
+  CI log shows the line.
+- The demos at https://matt.parrett.us/let-go-wasmgc/ are the `gh-pages`
+  branch, built by `host/build-pages.sh` on a machine with the
+  prerequisites above and pushed by hand after a round.
+- Design decisions keep landing in `DECISIONS.md` with the next number.
 
 ## Checks
 
