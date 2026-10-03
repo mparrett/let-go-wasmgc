@@ -63,6 +63,7 @@
   (func $data-bounds (export "data-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (drop (array.new_data $Bytes $probe-data (i32.const 4) (i32.const 1)))) (ref.null none))))
   (func $filled-byte (export "filled-byte") (result i32) (i32.load8_u offset=19 (array.new $Bytes (i32.const 251) (i32.const 4))))
   (func $filled-ref (export "filled-ref") (result i32) (i32.load offset=20 (array.new $Refs (ref.i31 (i32.const 17)) (i32.const 2))))
+  (func $get-ref (export "get-ref") (result (ref null eq)) (array.get $Refs (array.new $Refs (ref.i31 (i32.const 17)) (i32.const 2)) (i32.const 1)))
 ])
 
 (defn form-wat [node]

@@ -4543,6 +4543,11 @@
 (swap! linear-instructions assoc "array.new"
   (fn [node args] (into ["call" (linear-array-fill! (second node))] (rest args))))
 
+(swap! linear-instructions assoc "array.get"
+  (fn [node args]
+    (let [tn (second node) tp (:elem (get (:layouts *linear-state*) tn))]
+      [(str tp ".load") ["call" (linear-array-address! tn) (nth args 1) (nth args 2)]])))
+
 ))
 (def linear-representation-ready (atom false))
 
