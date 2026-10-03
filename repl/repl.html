@@ -1,0 +1,109 @@
+<!doctype html>
+<!-- A let-go REPL in the browser (round 3 demo): repl.wasm is
+     corpus/host/repl.lg compiled by the backend; the page echoes each line
+     typed, sends it to the module one key at a time (term/read-key), and
+     shows what the module prints. ?module=<url> picks the .wasm
+     (default repl.wasm). Serve with host/lg-wasm-host.js beside it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>let-go REPL</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root { --bg: #0a0e14; --panel: #0f1520; --line: #1f2937; --fg: #d4c5a0; --dim: #7c8594; --in: #9ecbff; --err: #ff6b6b; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body { min-height: 100vh; font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace; display: flex; flex-direction: column; align-items: center; }
+  main { width: min(880px, 100% - 32px); margin: 24px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .02em; color: var(--fg); }
+  h1 small { color: var(--dim); font-weight: 400; margin-left: 8px; }
+  #status { color: var(--dim); font-size: 12px; }
+  #out { margin: 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 240px; max-height: 60vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .in { color: var(--in); }
+  .err { color: var(--err); }
+  #line { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  #line:focus-within { border-color: #3b82f6; }
+  #prompt { color: var(--in); user-select: none; }
+  #input { flex: 1; min-width: 0; background: transparent; color: var(--fg); border: 0; font: inherit; outline: none; padding: 2px 0; }
+  #input::placeholder { color: var(--dim); opacity: .7; }
+  #input:disabled { opacity: .5; }
+  #hint { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--dim); font-size: 12px; }
+  #examples { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+<h1>let-go REPL <small>WasmGC module, evaluated in your browser</small></h1>
+<div id="status">loading…</div>
+<pre id="out"></pre>
+<div id="line"><span id="prompt">lg&gt;</span><input id="input" autocomplete="off" spellcheck="false" placeholder="(defn f [x] (* x 2))" disabled></div>
+<div id="hint">Up/Down for history. The module keeps state between lines: a defn stays defined.
+  <span>Examples: <select id="examples"><option value="">pick one…</option></select></span></div>
+</main>
+<script type="module">
+import { LgWasmHost, hasJSPI } from './lg-wasm-host.js';
+const status = document.getElementById('status'), out = document.getElementById('out'), input = document.getElementById('input');
+const url = new URLSearchParams(location.search).get('module') || 'repl.wasm';
+const history = []; let hi = 0;
+// Small, meaningful snippets. Each is one line of forms (several forms are
+// fine: the module evaluates them in order and prints the last value). Add
+// freely; everything here must use only what the evaluator's core table has.
+const EXAMPLES = [
+  ['fib', '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 25)'],
+  ['fizzbuzz', '(doseq [i (range 1 16)] (println (cond (zero? (mod i 15)) "FizzBuzz" (zero? (mod i 3)) "Fizz" (zero? (mod i 5)) "Buzz" :else i)))'],
+  ['primes', '(defn prime? [k] (and (> k 1) (every? #(pos? (mod k %)) (range 2 (inc (int (Math/sqrt k))))))) (filter prime? (range 60))'],
+  ['factorial of 20 (int64)', '(loop [i 20 acc 1] (if (zero? i) acc (recur (dec i) (* acc i))))'],
+  ['lazy for over an infinite range', '(take 5 (for [x (range) :when (odd? x)] (* x x)))'],
+  ['iterate', '(take 10 (iterate #(* 2 %) 1))'],
+  ['frequencies', '(sort-by val > (frequencies (map str "mississippi")))'],
+  ['an atom and a closure', '(def counter (atom 0)) (defn tick! [] (swap! counter inc)) (dotimes [_ 5] (tick!)) @counter'],
+  ['destructuring', '(let [{:keys [a b] :or {b 10}} {:a 1} [x & more] [1 2 3]] {:a a :b b :x x :more more})'],
+  ['reduce with a map', '(reduce (fn [m w] (update m (count w) (fnil conj []) w)) {} ["a" "bb" "cc" "ddd"])'],
+  ['catch an error', '(try (/ 1 0) (catch e (str "caught: " (ex-message e))))'],
+  ['string building', '(apply str (interpose "-" (map clojure.string/upper-case ["wasm" "gc" "let-go"])))'],
+  ['10 PRINT maze (Rosetta Code)', '(dotimes [_ 16] (println (apply str (repeatedly 60 #(rand-nth ["╱" "╲"])))))'],
+  ['Sierpinski from bit-and (Rosetta Code)', '(doseq [y (range 24)] (println (str (apply str (repeat (- 23 y) " ")) (apply str (for [x (range (inc y))] (if (zero? (bit-and x y)) "██" "  "))))))'],
+  ['rule 30 cellular automaton', '(let [rule 30 width 79 step (fn [row] (mapv (fn [x] (let [pattern (+ (* 4 (get row (dec x) 0)) (* 2 (get row x 0)) (get row (inc x) 0))] (bit-and 1 (bit-shift-right rule pattern)))) (range width))) seed (assoc (vec (repeat width 0)) (quot width 2) 1)] (doseq [row (take 30 (iterate step seed))] (println (apply str (map #(if (zero? %) " " "█") row)))))'],
+  ['rule 110', '(let [rule 110 width 79 step (fn [row] (mapv (fn [x] (let [pattern (+ (* 4 (get row (dec x) 0)) (* 2 (get row x 0)) (get row (inc x) 0))] (bit-and 1 (bit-shift-right rule pattern)))) (range width))) seed (assoc (vec (repeat width 0)) (dec width) 1)] (doseq [row (take 30 (iterate step seed))] (println (apply str (map #(if (zero? %) " " "█") row)))))'],
+  ['fib, timed', '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (let [t (System/nanoTime)] {:fib27 (fib 27) :ms (quot (- (System/nanoTime) t) 1000000)})'],
+  ['the namespace you are in', '(do (defn twice [x] (* 2 x)) [(ns-name *ns*) (resolve (quote twice)) (twice 21)])'],
+];
+const picker = document.getElementById('examples');
+for (const [name, code] of EXAMPLES) { const o = document.createElement('option'); o.value = code; o.textContent = name; picker.append(o); }
+picker.addEventListener('change', () => { if (picker.value) { input.value = picker.value; input.focus(); } picker.selectedIndex = 0; });
+const append = (text, cls) => { const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = text; out.append(s); out.scrollTop = out.scrollHeight; };
+const host = new LgWasmHost({
+  // typed text, not game keys: no 16-key cap and no coalescing of repeated
+  // keys (D98 would fold "((" into one key), the same as node-host's defaults
+  keyCapacity: Infinity, coalesceKeys: false,
+  onOutput(text, fd) { append(text, fd === 2 ? 'err' : null); },
+});
+window.__lgrepl = { stdout: '', done: false };          // what a Playwright check reads back
+const origAppend = append;
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const line = input.value; input.value = '';
+    if (line.trim()) { history.push(line); hi = history.length; }
+    append(`lg> ${line}\n`, 'in');
+    for (const ch of line) host.sendInput(ch);
+    host.sendInput('\n');
+  } else if (e.key === 'ArrowUp' && hi > 0) { hi -= 1; input.value = history[hi]; e.preventDefault(); }
+  else if (e.key === 'ArrowDown') { hi = Math.min(history.length, hi + 1); input.value = history[hi] ?? ''; e.preventDefault(); }
+});
+try {
+  const t0 = performance.now();
+  const bytes = await (await fetch(url)).arrayBuffer();
+  status.textContent = `${url} · ${(bytes.byteLength / 1024).toFixed(0)} KB · JSPI ${hasJSPI ? 'yes' : 'NO'}`;
+  const done = host.run(bytes);
+  // the module's first output (its banner) marks boot: keys sent before the
+  // module runs are dropped (as in let-go), so the input opens only then
+  const tick = setInterval(() => { if (out.textContent.length) { status.textContent += ` · booted in ${(performance.now() - t0).toFixed(0)} ms`; input.disabled = false; input.focus(); clearInterval(tick); } }, 20);
+  const r = await done;
+  window.__lgrepl.done = true;
+  status.textContent += ` · exit ${r.code}`;
+} catch (e) {
+  status.textContent += ` · host error: ${String((e && e.message) || e)}`; status.className = 'err';
+}
+</script>
+</body>
+</html>
