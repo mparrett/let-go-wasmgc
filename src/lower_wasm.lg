@@ -4219,11 +4219,14 @@
   (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" node)
     (fail (str "unsupported op " node " (flat instruction) under linear") {})
     (repr-value-type node)))
+(declare linear-function)
 (defn linear-node [node]
   (if-not (vector? node)
     (linear-flat-value node)
-    (if (= "ref" (first node))
-      (repr-value-type node)
+    (cond
+      (= "func" (first node)) (linear-function node)
+      (= "ref" (first node)) (repr-value-type node)
+      :else
       (let [op (first node) args (mapv linear-node (rest node))]
         (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" op)
           (if-let [lower (get @linear-instructions op)]
@@ -4611,6 +4614,33 @@
                      " " (repr-write body) ")"))))
           (into ["call" nm] operands))))
     (lower node args)))
+
+;; Per-function temporaries preserve single operand evaluation (2026-10-03).
+(def ^:dynamic *linear-function-locals* nil)
+(defn linear-function [node]
+  (binding [*linear-function-locals* (atom [])]
+    (let [parts (mapv linear-node (rest node))
+          declaration? (fn [slot]
+                         (or (and (string? slot) (str/starts-with? slot "$"))
+                             (and (vector? slot) (contains? #{"export" "type" "param" "result" "local"} (first slot)))))
+          header (take-while declaration? parts)
+          body (drop (count header) parts)]
+      (into ["func"] (concat header @*linear-function-locals* body)))))
+(defn linear-cast-branch [fail?]
+  (fn [node args]
+    (when-not *linear-function-locals* (fail "unsupported op br_on_cast outside function under linear" {}))
+    (let [temp (str "$lin_cast_" (count @*linear-function-locals*))
+          value ["local.get" temp]
+          label (second node)
+          label (if (str/starts-with? label "$") label (str (+ 2 (parse-long label))))
+          test ["call" (linear-type-test! (nth node 3)) value]]
+      (swap! *linear-function-locals* conj ["local" temp "i32"])
+      (into ["block"]
+        (concat (when (empty? (drop 3 args)) [["param" "i32"]])
+                [["result" "i32"] (into ["local.set" temp] (drop 3 args))
+                 ["if" (if fail? ["i32.eqz" test] test) ["then" ["br" label value]]]
+                 value])))))
+(swap! linear-instructions assoc "br_on_cast" (linear-cast-branch false) "br_on_cast_fail" (linear-cast-branch true))
 
 ))
 (def linear-representation-ready (atom false))

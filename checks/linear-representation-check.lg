@@ -82,6 +82,14 @@
   (func $stack-byte (export "stack-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (local.get $a) (i32.const 2) (i32.const 253) (array.set $Bytes) (local.get $a) (i32.const 2) (array.get_u $Bytes))
   (func $mixed-stack-byte (export "mixed-stack-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (local.get $a) (array.set $Bytes (i32.const 1) (i32.const 252)) (local.get $a) (array.get_u $Bytes (i32.const 1)))
   (func $stack-ref (export "stack-ref") (result (ref null eq)) (local $a (ref $Refs)) (local.set $a (array.new_default $Refs (i32.const 2))) (local.get $a) (i32.const 1) (ref.i31 (i32.const 17)) (array.set $Refs) (local.get $a) (i32.const 1) (array.get $Refs))
+  (func $cast-branch-hit (export "cast-branch-hit") (result i32) (ref.test (ref $Bytes) (block $hit (result (ref null any)) (drop (br_on_cast $hit (ref null any) (ref $Bytes) (array.new_default $Bytes (i32.const 0)))) (ref.i31 (i32.const 5)))))
+  (func $cast-branch-miss (export "cast-branch-miss") (result i32) (ref.test (ref i31) (block $hit (result (ref null any)) (drop (br_on_cast $hit (ref null any) (ref $Bytes) (ref.i31 (i32.const 7)))) (ref.i31 (i32.const 5)))))
+  (func $cast-branch-index (export "cast-branch-index") (result i32) (ref.test (ref $Bytes) (block $hit (result (ref null any)) (drop (br_on_cast 0 (ref null any) (ref $Bytes) (array.new_default $Bytes (i32.const 0)))) (ref.i31 (i32.const 5)))))
+  (func $cast-fail-branch (export "cast-fail-branch") (result i32) (ref.test (ref i31) (block $hit (result (ref null any)) (drop (br_on_cast_fail $hit (ref null any) (ref $Bytes) (ref.i31 (i32.const 7)))) (ref.null none))))
+  (global $operand-count (mut i32) (i32.const 0))
+  (func $cast-operand (result (ref null any)) (global.set $operand-count (i32.add (global.get $operand-count) (i32.const 1))) (array.new_default $Bytes (i32.const 0)))
+  (func $cast-evaluate-once (export "cast-evaluate-once") (result i32) (drop (block $hit (result (ref null any)) (drop (br_on_cast $hit (ref null any) (ref $Bytes) (call $cast-operand))) (ref.null none))) (global.get $operand-count))
+  (func $cast-stack-branch (export "cast-stack-branch") (result i32) (ref.test (ref $Bytes) (block $hit (result (ref null any)) (array.new_default $Bytes (i32.const 0)) (drop (br_on_cast $hit (ref null any) (ref $Bytes))) (ref.null none))))
 ])
 
 (defn form-wat [node]
