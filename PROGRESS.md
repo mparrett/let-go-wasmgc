@@ -2,17 +2,19 @@
 
 ## Done
 - Read README.md, docs/READING-GUIDE.md and docs/LINEAR-TARGET-SPEC.md in order.
-- Driver target selection and isolated caches are committed and pushed as `06e9eed` (2026-10-03).
-- GC byte guard and target-selection row passed (2026-10-03).
-- Draft PR is open: https://github.com/mparrett/let-go-wasmgc/pull/1 . Publish CI passed (2026-10-03).
-- D172 records the nominal-header amendment; D173 records original cache-state byte variance (2026-10-03).
+- Target selection, isolated caches and frozen GC byte guard are pushed as `06e9eed` (2026-10-03).
+- Shared representation boundary is pushed as `36f9463`; publish CI passed (2026-10-03).
+- Linear module/type skeleton and leaking allocator are validated; target check and default/explicit GC identity over all scalar/eval programs passed (2026-10-03).
+- Allocator prototype passed memory growth under the specified wazero fork; structural evidence, no oracle MATCH claim (2026-10-03).
+- Draft PR: https://github.com/mparrett/let-go-wasmgc/pull/1 .
+- D172-D175 record layout, representation and cache-state decisions (2026-10-03).
 
 ## In progress
-- Route the shared instruction stream through the representation boundary. GC remains verbatim; linear still refuses `ref.null`.
-- Linear parser/layout definitions are loaded only on demand; the full GC byte guard passed again (2026-10-03).
-- Exact next command: `LW_ATTEST=0 checks/run.sh P8.1`
-- Commit and push this green representation foundation.
-- Then add linear instruction families in the spec's census order, followed by the runner and oracle corpora.
+- Checkpoint the type/allocator foundation, then implement instruction families in census order.
+- Cast-family draft is preserved in `/tmp/linear-cast-family.lg`.
+- Exact next command: `git push origin linear-target-m1 && gh pr checks 1`
+- Then install the cast family, run its structural probe and target check, and rerun the GC byte guard before committing.
 
 ## Open questions
-- Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output.
+- Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output. The team is investigating.
+- All linear oracle corpora, runner and final gates remain pending.

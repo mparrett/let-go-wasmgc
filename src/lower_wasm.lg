@@ -4156,6 +4156,125 @@
 (defn repr-const [n] (str "(i32.const " n ")"))
 (defn repr-param [n t] (str " (param $p" n " " t ")"))
 (defn repr-local [n] (str "(local.get $p" n ")"))
+(def ^:dynamic *linear-state* nil)
+(def linear-instructions (atom {}))
+
+(defn linear-word [n width]
+  (mapv (fn [i] (bit-and 255 (unsigned-bit-shift-right n (* 8 i)))) (range width)))
+(defn linear-align [n] (bit-and (+ n 7) -8))
+(defn linear-data [ptr bytes]
+  (str "(data (i32.const " ptr ") \""
+       (apply str (map (fn [b] (format "\\%02x" b)) bytes)) "\")"))
+
+(defn linear-error! [msg]
+  (let [errors (:errors *linear-state*)]
+    (if-let [ptr (get @errors msg)] ptr
+      (let [ptr @(:static-top *linear-state*) b (+ ptr 32)
+            bs (mapv (fn [x] (bit-and x 255)) (.getBytes msg)) size (linear-align (+ 16 (count bs)))
+            layouts (:layouts *linear-state*)
+            words (concat [26 32 (:id (layouts "$Err")) 1 b b 0 0]
+                          [18 size (:id (layouts "$Bytes")) (count bs)])
+            bytes (concat (mapcat (fn [x] (linear-word x 4)) words) bs
+                          (repeat (- size 16 (count bs)) 0))]
+        (when (> (+ b size) 131072) (fail "linear static area exhausted" {}))
+        (swap! (:data *linear-state*) conj (linear-data ptr bytes))
+        (reset! (:static-top *linear-state*) (+ b size))
+        (swap! errors assoc msg ptr)
+        ptr))))
+
+(defn linear-fail [msg] (str "(throw $lgex (i32.const " (linear-error! msg) "))"))
+
+(defn linear-helper! [nm build]
+  (let [helpers (:helpers *linear-state*)]
+    (when-not (contains? @helpers nm)
+      (swap! helpers assoc nm nil)
+      (swap! helpers assoc nm (build)))
+    nm))
+
+(defn linear-allocator! []
+  (linear-helper! "$lin_alloc"
+    (fn []
+      (let [oom (linear-fail "lower-wasm: linear allocator exhausted")]
+        (str "(func $lin_alloc (param $n i32) (result i32) (local $p i32) (local $end i64) (local $pages i32)"
+             " (local.set $p (global.get $heap_top))"
+             " (local.set $end (i64.add (i64.extend_i32_u (local.get $p))"
+             " (i64.and (i64.add (i64.extend_i32_u (local.get $n)) (i64.const 7)) (i64.const -8))))"
+             " (if (i64.gt_u (local.get $end) (i64.const 4294967280)) (then " oom "))"
+             " (local.set $pages (i32.wrap_i64 (i64.shr_u (i64.add (local.get $end) (i64.const 65535)) (i64.const 16))))"
+             " (if (i32.gt_u (local.get $pages) (memory.size))"
+             " (then (if (i32.eq (memory.grow (i32.sub (local.get $pages) (memory.size))) (i32.const -1)) (then " oom "))))"
+             " (global.set $heap_top (i32.wrap_i64 (local.get $end))) (local.get $p))")))))
+
+(defn linear-nodes [node]
+  (if (vector? node) (cons node (mapcat linear-nodes (filter vector? node))) []))
+
+(defn linear-func-signature [node]
+  (let [slots (filter (fn [x] (and (vector? x) (contains? #{"param" "result"} (first x)))) node)
+        ts (fn [slot] (map repr-value-type (remove (fn [x] (and (string? x) (str/starts-with? x "$"))) (rest slot))))]
+    [(vec (mapcat ts (filter (fn [x] (= "param" (first x))) slots)))
+     (vec (mapcat ts (filter (fn [x] (= "result" (first x))) slots)))]))
+
+(defn linear-node [node]
+  (if-not (vector? node)
+    (repr-value-type node)
+    (if (= "ref" (first node))
+      (repr-value-type node)
+      (let [op (first node) args (mapv linear-node (rest node))]
+        (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" op)
+          (if-let [lower (get @linear-instructions op)]
+            (lower node args)
+            (fail (str "unsupported op " op " under linear") {}))
+          (into [op] args))))))
+
+(defn linear-module [text]
+  (let [root (repr-read text) forms (rest root)
+        decls (vec (mapcat (fn [f] (cond (= "rec" (first f)) (rest f)
+                                       (= "type" (first f)) [f] :else [])) forms))
+        layouts (repr-layouts decls)
+        taken (sort (distinct (map second (filter (fn [n] (= "ref.func" (first n))) (linear-nodes root)))))
+        table (into {} (map-indexed (fn [i nm] [nm (inc i)]) taken))
+        state {:layouts layouts :decls decls :table table
+               :functions (into {} (map (fn [f] [(second f) f]) (filter (fn [f] (= "func" (first f))) forms)))
+               :helpers (atom {}) :errors (atom {}) :data (atom []) :static-top (atom 65584)}]
+    (binding [*linear-state* state]
+      (linear-allocator!)
+      (let [starts (map second (filter (fn [f] (= "start" (first f))) forms))
+            boots (atom [])
+            ordinary (remove (fn [f] (contains? #{"rec" "type" "memory" "elem" "start"} (first f))) forms)
+            lower-top (fn [f]
+                        (if (= "global" (first f))
+                          (let [nm (second f) tp (repr-types (nth f 2))]
+                            (cond (= nm "$true") ["global" nm "i32" ["i32.const" "65536"]]
+                                  (= nm "$false") ["global" nm "i32" ["i32.const" "65560"]]
+                                  :else
+                                  (let [init (linear-node (nth f 3))]
+                                    (if (contains? #{"i32.const" "i64.const" "f64.const" "ref.null"} (first init))
+                                      ["global" nm tp init]
+                                      (let [tp (if (and (vector? tp) (= "mut" (first tp))) (second tp) tp)]
+                                        (swap! boots conj ["global.set" nm init])
+                                        ["global" nm ["mut" tp] [(str tp ".const") "0"]])))))
+                          (linear-node f)))
+            lowered (mapv lower-top ordinary)
+            funcs (mapv (fn [d] ["type" (second d) (repr-types (repr-type-body d))])
+                        (filter (fn [d] (= "func" (first (repr-type-body d)))) decls))
+            bool-id (:id (layouts "$Bool"))
+            bool-bytes (fn [v] (concat (mapcat (fn [x] (linear-word x 4)) [15 24 bool-id])
+                                      (linear-word v 8) (repeat 4 0)))
+            has-tag (some (fn [f] (= "tag" (first f))) ordinary)]
+        (str "(module\n"
+             (str/join "\n" (map repr-write (filter (fn [f] (= "import" (first f))) lowered))) "\n"
+             (str/join "\n" (map repr-write funcs)) "\n"
+             "(memory (export \"lw mem\") 3)\n(global $heap_top (mut i32) (i32.const 131072))\n"
+             "(table $lin_functions " (inc (count taken)) " funcref)\n"
+             (when (seq taken) (str "(elem (i32.const 1) func " (str/join " " taken) ")\n"))
+             (when-not has-tag "(tag $lgex (param i32))\n")
+             (str/join "\n" (map repr-write (remove (fn [f] (= "import" (first f))) lowered))) "\n"
+             (linear-data 65536 (bool-bytes 1)) "\n" (linear-data 65560 (bool-bytes 0)) "\n"
+             (str/join "\n" @(:data state)) "\n"
+             (str/join "\n" (map val (sort-by key @(:helpers state)))) "\n"
+             "(func $lin_init " (str/join " " (map repr-write @boots))
+             (apply str (map (fn [nm] (str " (call " nm ")")) starts)) ")\n(start $lin_init)\n)")))))
+
 ))
 (def linear-representation-ready (atom false))
 
@@ -4171,7 +4290,7 @@
   (if (= *target* :gc)
     text
     (do (ensure-linear-representation!)
-        (fail "unsupported op ref.null under linear" {}))))
+        ((resolve 'lower-wasm/linear-module) text))))
 
 (defn session-module
   "The module text for session ss around the lowered program fns `fns`

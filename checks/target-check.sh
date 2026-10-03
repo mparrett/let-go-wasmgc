@@ -17,7 +17,7 @@ for mode in env flag; do
   else
     if LW_TARGET=gc "${driver[@]}" --target linear "$prog" "$t/refused.wat" > "$t/log" 2>&1; then exit 1; fi
   fi
-  grep -q 'lower-wasm: unsupported op ref.null under linear' "$t/log"
+  grep -q 'lower-wasm: unsupported op ref.test under linear' "$t/log"
 done
 for bad in '' invalid; do
   if env -u LW_TARGET "${driver[@]}" --target $bad > "$t/log" 2>&1; then exit 1; fi
