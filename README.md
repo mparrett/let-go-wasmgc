@@ -220,6 +220,10 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
 
 Candidates, none started (as of 2026-10-02):
 
+- A linear-memory target beside WasmGC, specified in
+  [docs/LINEAR-TARGET-SPEC.md](docs/LINEAR-TARGET-SPEC.md): tagged i32
+  values, a bump allocator first and a precise collector second, a wazero
+  runner, and later an Asyncify build for browsers without JSPI.
 - Faster compiles: emit binary wasm directly instead of printing and
   reparsing WAT, and cache IR per namespace keyed by source hash.
 - `go` blocks and channels, with a scheduler on JSPI.
