@@ -4092,6 +4092,87 @@
       (when (seq stmts)
         (str "(func $_rt_init\n  " (str/join "\n  " stmts) ")\n(start $_rt_init)\n")))))
 
+;; The linear representation definitions are quoted and loaded only on demand.
+;; Compiling extra case macros under native lg consumes gensyms and changes
+;; some runtime IR even in the GC lane. Keep that compiler state untouched.
+(def linear-representation-forms
+  '(do
+;; Representation layer. GC text is returned verbatim; the linear lane lowers
+;; the shared instruction stream after shaking, when nominal layouts and the
+;; complete set of taken function addresses are known.
+(defn repr-tokens [text]
+  (remove (fn [token] (str/starts-with? token ";;"))
+          (re-seq #"\"(?:\\.|[^\"\\])*\"|;;[^\n]*|[()]|[^\s()]+" text)))
+
+(defn repr-read [text]
+  (loop [ts (repr-tokens text) stack [] out []]
+    (if (empty? ts)
+      (do (when (seq stack) (fail "unbalanced representation text" {})) (first out))
+      (let [t (first ts)]
+        (case t
+          "(" (recur (rest ts) (conj stack out) [])
+          ")" (recur (rest ts) (pop stack) (conj (peek stack) out))
+          (recur (rest ts) stack (conj out t)))))))
+
+(defn repr-write [node]
+  (if (vector? node) (str "(" (str/join " " (map repr-write node)) ")") node))
+
+(defn repr-value-type [t]
+  (cond (and (vector? t) (= "ref" (first t)) (not= "exn" (last t))) "i32"
+        (= "funcref" t) "i32"
+        :else t))
+
+(defn repr-types [node]
+  (let [t (repr-value-type node)]
+    (if (vector? t) (mapv repr-types t) t)))
+
+(defn repr-type-body [d]
+  (let [b (nth d 2)] (if (= "sub" (first b)) (last b) b)))
+
+(defn repr-width [t] (case t ("i64" "f64") 8 "i8" 1 4))
+(defn repr-field-type [f]
+  (let [t (second f)] (repr-value-type (if (and (vector? t) (= "mut" (first t))) (second t) t))))
+
+(def repr-kind
+  {"$Int" 1 "$List" 3 "$Cons" 4 "$LazySeq" 5 "$ChunkedCons" 6
+   "$Range" 7 "$InfiniteRange" 8 "$Repeat" 9 "$PVecSeq" 10 "$PVec" 11
+   "$ArrayChunk" 12 "$ChunkBuffer" 13 "$Reduced" 14 "$Bool" 15
+   "$Fn" 16 "$FnV" 16 "$FnX" 16 "$Str" 17 "$Char" 19 "$Kw" 20
+   "$Sym" 21 "$Float" 22 "$MapEntry" 23 "$Atom" 24 "$Volatile" 25
+   "$Err" 26 "$ArrSeq" 27})
+
+(defn repr-layouts [decls]
+  (into {}
+        (map-indexed
+          (fn [id d]
+            (let [tn (second d) b (repr-type-body d) fs (mapv repr-field-type (rest b))
+                  offsets (vec (butlast (reductions + 12 (map repr-width fs))))]
+              [tn {:id (inc id) :kind (get repr-kind tn 18) :shape (first b)
+                   :fields fs :offsets offsets :size (reduce + 12 (map repr-width fs))
+                   :elem (when (= "array" (first b)) (repr-field-type ["field" (second b)]))}]))
+          (remove (fn [decl] (= "func" (first (repr-type-body decl)))) decls))))
+
+(defn repr-name [op tn] (str "$lin_" op "_" (subs tn 1)))
+(defn repr-const [n] (str "(i32.const " n ")"))
+(defn repr-param [n t] (str " (param $p" n " " t ")"))
+(defn repr-local [n] (str "(local.get $p" n ")"))
+))
+(def linear-representation-ready (atom false))
+
+(defn ensure-linear-representation! []
+  (when-not @linear-representation-ready
+    (binding [*ns* (the-ns 'lower-wasm)] (eval linear-representation-forms))
+    (reset! linear-representation-ready true)))
+
+(defn representation-wat
+  "Render the shared instruction stream for the selected representation.
+   GC is deliberately verbatim, including instruction and declaration order."
+  [text]
+  (if (= *target* :gc)
+    text
+    (do (ensure-linear-representation!)
+        (fail "unsupported op ref.null under linear" {}))))
+
 (defn session-module
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
@@ -4099,7 +4180,6 @@
   (binding [*top-forms-cache* (atom {})]
     (with-session* ss
       (fn []
-        (when (= *target* :linear) (fail "unsupported op ref.null under linear" {}))
         (when *rt* (rt-fixpoint! fns))
         (let [{:keys [fixed items live program]} (module-parts fns)
               ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
@@ -4108,7 +4188,7 @@
                        info? #(str/starts-with? % "(global $info_")]
                    (concat (filter info? gs) (remove info? gs)))
               elem (filter #(live (str "$" %)) (sort @*elem*))]
-          (str "(module\n"
+          (representation-wat (str "(module\n"
                (str/join "\n" (ordered "(import")) "\n"
                (rec-group)
                (str/join "\n" fixed) "\n"
@@ -4118,7 +4198,7 @@
                (str/join "\n" (ordered "(func")) "\n"
                program "\n"
                (rt-init-wat live items)
-               ")\n"))))))
+               ")\n")))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.

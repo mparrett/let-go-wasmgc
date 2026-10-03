@@ -2,17 +2,17 @@
 
 ## Done
 - Read README.md, docs/READING-GUIDE.md and docs/LINEAR-TARGET-SPEC.md in order.
-- Created branch `linear-target-m1`; verified GitHub access.
-- Added driver target parsing, session target and separate runtime/module cache keys.
-- Target selection check passed; unfinished linear instructions are named compile errors.
-- GC byte guard passed over all scalar and eval programs with default and explicit GC (2026-10-03).
-- Captured pre-change GC binaries; diagnosed pre-existing cold/warm cache byte variance on the original compiler (D173, 2026-10-03).
+- Driver target selection and isolated caches are committed and pushed as `06e9eed` (2026-10-03).
+- GC byte guard and target-selection row passed (2026-10-03).
+- Draft PR is open: https://github.com/mparrett/let-go-wasmgc/pull/1 . Publish CI passed (2026-10-03).
+- D172 records the nominal-header amendment; D173 records original cache-state byte variance (2026-10-03).
 
 ## In progress
-- Exact next command: `git push -u origin linear-target-m1`
-- Commit and push the green WIP foundation, as requested.
-- Representation layer and linear instruction families remain unimplemented.
+- Route the shared instruction stream through the representation boundary. GC remains verbatim; linear still refuses `ref.null`.
+- Linear parser/layout definitions are loaded only on demand; the full GC byte guard passed again (2026-10-03).
+- Exact next command: `LW_ATTEST=0 checks/run.sh P8.1`
+- Commit and push this green representation foundation.
+- Then add linear instruction families in the spec's census order, followed by the runner and oracle corpora.
 
 ## Open questions
-- Original runtime cache omits some variadic dispatch state when restored; report this in the PR without changing GC output.
-- Nominal casts need a type word alongside semantic kind and size (D172, 2026-10-03).
+- Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output.

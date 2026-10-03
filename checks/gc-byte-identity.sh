@@ -32,7 +32,7 @@ while IFS= read -r f; do
   fi
   if [ "${1:-}" != --capture ]; then
     compile "$PWD" "$f" "$t/default.wasm"
-    cmp "$bin" "$t/default.wasm" || { echo "GC BYTE MISMATCH $f" >&2; exit 1; }
+    cmp "$bin" "$t/default.wasm" || { wasm-tools print "$bin" -o "$cache/baseline-failure.wat"; wasm-tools print "$t/default.wasm" -o "$cache/current-failure.wat"; echo "GC BYTE MISMATCH $f (diagnostics retained in baseline cache)" >&2; exit 1; }
     compile "$PWD" "$f" "$t/explicit.wasm" gc
     cmp "$bin" "$t/explicit.wasm" || { echo "EXPLICIT GC BYTE MISMATCH $f" >&2; exit 1; }
     echo "IDENTICAL $f"
