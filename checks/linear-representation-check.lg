@@ -17,4 +17,10 @@
      " (func $test-bool (export \"test-bool\") (result i32) (ref.test (ref $Bool) (i32.const 65536)))"
      " (func $test-wrong (export \"test-wrong\") (result i32) (ref.test (ref $Bytes) (i32.const 65536)))"
      " (func $test-invalid (export \"test-invalid\") (result i32) (ref.test (ref $Bool) (i32.const -8)))"
+     " (func $new-int (export \"new-int\") (result i64) (struct.get $Int 0 (struct.new $Int (i64.const -7))))"
+     " (func $new-list-kind (export \"new-list-kind\") (result i32) (i32.load (struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none))))"
+     " (func $new-list-count (export \"new-list-count\") (result i64) (struct.get $List 2 (struct.new $List (ref.null none) (ref.null none) (i64.const 42) (ref.null none))))"
+     " (func $new-subtype (export \"new-subtype\") (result i32)"
+     " (ref.test (ref $Fn) (struct.new $FnV (ref.null nofunc) (ref.null nofunc) (ref.null nofunc) (ref.null none)"
+     " (ref.null nofunc) (ref.null nofunc) (ref.null none) (i64.const 0) (ref.null nofunc) (i32.const 0))))"
      " (func $failed (export \"failed\") (result i32) (ref.cast (ref $Bool) (i32.const 3))))")))))

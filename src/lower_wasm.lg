@@ -4347,6 +4347,30 @@
 (swap! linear-instructions assoc "ref.test"
   (fn [node args] ["call" (linear-type-test! (second node)) (last args)]))
 
+(defn linear-store [tp offset ptr value]
+  (str "(" (if (= tp "i8") "i32.store8" (str tp ".store")) " offset=" offset " " ptr " " value ")"))
+
+(defn linear-struct-new! [tn]
+  (let [nm (repr-name "new" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn)
+              fields (:fields layout) size (linear-align (:size layout))
+              p "(local.get $obj)"
+              kind (if (= tn "$List")
+                     "(if (result i32) (i64.eqz (local.get $p2)) (then (i32.const 2)) (else (i32.const 3)))"
+                     (repr-const (:kind layout)))]
+          (str "(func " nm (apply str (map-indexed repr-param fields)) " (result i32) (local $obj i32)"
+               " (local.set $obj (call $lin_alloc " (repr-const size) "))"
+               " " (linear-store "i32" 0 p kind)
+               " " (linear-store "i32" 4 p (repr-const size))
+               " " (linear-store "i32" 8 p (repr-const (:id layout)))
+               (apply str (map-indexed (fn [i tp] (str " " (linear-store tp (nth (:offsets layout) i) p (repr-local i)))) fields))
+               " " p ")"))))))
+
+(swap! linear-instructions assoc "struct.new"
+  (fn [node args] (into ["call" (linear-struct-new! (second node))] (rest args))))
+
 ))
 (def linear-representation-ready (atom false))
 
