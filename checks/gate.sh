@@ -22,7 +22,7 @@ ph=${1:?phase}; fail=0
 [ "$ph" = 2 ] && export SLOW=1
 j=${LW_GATE_J:-2}
 case $j in ''|*[!0-9]*|0) echo "LW_GATE_J must be a positive integer (got '$j')" >&2; exit 2;; esac
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 ids=()
 while IFS= read -r id; do ids+=("$id"); done < <(awk -F'\t' -v p="$ph" '$1 !~ /^#/ && $2==p && $1 !~ /GATE/{print $1}' checks/items.tsv)
 if [ -n "${LW_GATE_ROWS:-}" ]; then ids=(); for id in $LW_GATE_ROWS; do ids+=("$id"); done; fi   # test hook (attest.sh)

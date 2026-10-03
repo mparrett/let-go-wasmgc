@@ -14,8 +14,8 @@
 # Exit 0 iff all hold. Env: LG, LEGMACS, KEEP=1.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LEGMACS=${LEGMACS:-$HOME/projects-new/3p/legmacs}
+. "$(dirname "$0")/env.sh"
+LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory
           --enable-tail-call --enable-multivalue)

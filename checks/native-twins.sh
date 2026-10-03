@@ -37,7 +37,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 inv=corpus/natives/inventory.tsv
 
 reach=${1:?usage: checks/native-twins.sh <reach-list> [--manifest FILE] [--exclude REGEX] [--skip FILE]}

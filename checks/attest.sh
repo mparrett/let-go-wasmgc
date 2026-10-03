@@ -31,7 +31,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 store=checks/.attest
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 
 inputs_of() { checks/affected.sh --all | awk -F'\t' -v id="$1" '$1==id{print $2; exit}'; }
 
@@ -45,7 +45,7 @@ key() {
     for tok in $inputs; do
       case $tok in
         xsofy|legmacs)
-          echo "$tok $(git -C "$HOME/projects-new/3p/$tok" rev-parse HEAD 2>/dev/null) $(git -C "$HOME/projects-new/3p/$tok" diff HEAD 2>/dev/null | shasum | cut -c1-40)" ;;
+          echo "$tok $(git -C "$LW_ROOT/$tok" rev-parse HEAD 2>/dev/null) $(git -C "$LW_ROOT/$tok" diff HEAD 2>/dev/null | shasum | cut -c1-40)" ;;
         *)
           # a dir prefix or one file; ls-files is relative to this dir, sorted
           git ls-files -co --exclude-standard -z -- "$tok" 2>/dev/null | sort -z | xargs -0 shasum 2>/dev/null ;;

@@ -17,8 +17,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: build-legmacs-module.sh <out.wasm>}
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LEGMACS=${LEGMACS:-$HOME/projects-new/3p/legmacs}
+. "$(dirname "$0")/../checks/env.sh"
+LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 entry=${LW_LEGMACS_MAIN:-$LEGMACS/main.lg}
 OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory

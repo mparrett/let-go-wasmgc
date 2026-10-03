@@ -15,8 +15,8 @@
 # the legmacs prefix; root them with a second run, prefix test.).
 #
 # Reproduced the probe's lists (same entries, C-sorted) on 2026-10-01 (lg 4e769212):
-#   tools/reach.sh ~/projects-new/3p/xsofy xsofy     > corpus/natives/natives-xsofy.txt    # 71 ns
-#   tools/reach.sh ~/projects-new/3p/legmacs legmacs > corpus/natives/natives-legmacs.txt  # 29 ns
+#   tools/reach.sh $LW_ROOT/xsofy xsofy     > corpus/natives/natives-xsofy.txt    # 71 ns
+#   tools/reach.sh $LW_ROOT/legmacs legmacs > corpus/natives/natives-legmacs.txt  # 29 ns
 #   comm -12 corpus/natives/natives-{xsofy,legmacs}.txt > corpus/natives/natives-shared.txt
 #
 # --extra <ns>=<file> adds a namespace whose file is NOT where require looks
@@ -41,8 +41,8 @@
 # indexed; should be at the SHA the lg was built from).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LETGO=${LETGO:-$HOME/projects-new/3p/let-go}
+. "$(dirname "$0")/../checks/env.sh"
+LETGO=${LETGO:-$LW_ROOT/let-go}
 reach_lg=$here/../emit-wasm-probe/reach.lg
 
 extras=() exclude_ns=() deftests=0

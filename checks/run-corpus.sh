@@ -35,7 +35,7 @@
 #              instead of oversubscribing the machine.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 export LG
 update=0 both=0
 dirs=()

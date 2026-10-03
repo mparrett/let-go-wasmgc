@@ -13,7 +13,7 @@
 # (the falsification run uses a scratch copy with a fix reverted).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 RT=${RT:-rt}
 SEEDS=${FUZZ_SEEDS:-300}; FROM=${FUZZ_FROM:-1000}; SHARDS=${FUZZ_SHARDS:-6}
 allow=corpus/review2/known-diffs.txt

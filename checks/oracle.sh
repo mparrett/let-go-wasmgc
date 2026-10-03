@@ -18,7 +18,7 @@
 #      behaves like lg on stdout/stderr/exit; unset = NOT IMPLEMENTED, exit 2),
 #      KEEP=1 to leave the scratch dir behind.
 set -uo pipefail
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 prog=$1; shift
 [ -n "${WASM_RUN:-}" ] || { echo "NOT IMPLEMENTED: WASM_RUN unset (backend runner missing)"; exit 2; }
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] || rm -rf "$t"' EXIT

@@ -49,16 +49,19 @@ let-go behaviours we met along the way.
 
 ## Prerequisites
 
-The checks and build scripts assume a specific machine layout. Defaults
-are hard-coded to paths under `$HOME/projects-new/3p/`; most can be
-overridden by an environment variable, one cannot (noted below).
+The checks and build scripts find their inputs under one root, `LW_ROOT`,
+resolved by `checks/env.sh`: it is the directory holding `let-go/`,
+`xsofy/`, `legmacs/` and `lg-bin/`. It is found automatically when this
+repository is cloned beside those checkouts; otherwise set `LW_ROOT`, or
+override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 
-- **Native lg built from let-go commit 4e76921.** The default is
-  `$HOME/projects-new/3p/lg-bin/lg-4e76921230`; set `LG` to use another
-  path. The driver runs under this lg and uses let-go's IR passes from it.
-- **A let-go git checkout at `$HOME/projects-new/3p/let-go`** that contains
-  commit 4e769212. `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg` at that
-  commit with `git show`; this path is not overridable yet.
+- **Native lg built from let-go commit 4e76921**, at
+  `$LW_ROOT/lg-bin/lg-4e76921230` or wherever `LG` points. The driver runs
+  under this lg and uses let-go's IR passes from it.
+- **A let-go git checkout** (`$LETGO`, default `$LW_ROOT/let-go`) that
+  contains commit 4e769212: `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg`
+  at that commit with `git show`, and fails with a message naming the path
+  when it cannot.
 - **wasm-tools** on `PATH` (WAT to binary).
 - **binaryen's wasm-opt** at `/opt/homebrew/opt/binaryen/bin/wasm-opt`, used
   by the module build scripts in `host/`. `LW_NO_OPT=1` skips it.
@@ -69,16 +72,16 @@ overridden by an environment variable, one cannot (noted below).
   (`checks/browser-boot.sh`, `checks/repl-page-check.mjs`). These currently
   resolve Playwright from `../../../local-scripts/browser-smoke-playwright`
   relative to `checks/`, a path outside this repo.
-- **xsofy and legmacs checkouts** for those corpora, defaulting to
-  `$HOME/projects-new/3p/xsofy` and `$HOME/projects-new/3p/legmacs`
-  (`XSOFY`, `LEGMACS`). Multi-namespace programs name their source roots
-  through `LG_ARGS`, as row P7.3 in `checks/items.tsv` does:
-  `env LG_ARGS="-source-paths $HOME/projects-new/3p/legmacs" checks/run-corpus.sh corpus/eval-buffer`.
+- **xsofy and legmacs checkouts** (`$XSOFY`, `$LEGMACS`) for those corpora.
+  Multi-namespace programs name their source roots through `LG_ARGS`, as
+  row P7.3 in `checks/items.tsv` does:
+  `env LG_ARGS="-source-paths $LW_ROOT/legmacs" checks/run-corpus.sh corpus/eval-buffer`.
 
 Environment variables that matter:
 
 | variable | effect |
 |---|---|
+| `LW_ROOT` | the root holding `let-go/`, `xsofy/`, `legmacs/`, `lg-bin/` (`checks/env.sh`) |
 | `LG` | native lg used by the driver and as the oracle's reference |
 | `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |
 | `LW_NO_EVAL=1` | build without the evaluator and the program table (D163) |
@@ -87,7 +90,7 @@ Environment variables that matter:
 | `LW_RTLIB_DIR=<abs dir>` | where the compiled runtime library is cached (default `src/.rtlib`) |
 | `LW_ATTEST=0` | make `checks/gate.sh` rerun every row instead of skipping attested ones |
 | `XSOFY_DEV=1` | read by xsofy through `os/getenv`; under `host/node-host.mjs` it opens xsofy's dev console |
-| `XSOFY`, `LEGMACS`, `LETGO` | checkout locations for the corpora and some host scripts |
+| `LETGO`, `XSOFY`, `LEGMACS` | the three checkouts; default `$LW_ROOT/<name>` |
 
 ## Quick start
 

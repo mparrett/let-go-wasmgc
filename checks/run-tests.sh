@@ -47,11 +47,11 @@
 # with test/ as cwd (quality_cost reads ../scripts/quality). Other files get
 # their own dir.
 # Env: LG, KEEP=1 (keep the scratch dir), SRC_PATHS (override the source
-# paths), LETGO_TEST (default ~/projects-new/3p/let-go/test), P (default 3).
+# paths), LETGO_TEST (default $LW_ROOT/let-go/test), P (default 3).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LETGO_TEST=${LETGO_TEST:-$HOME/projects-new/3p/let-go/test}
+. "$(dirname "$0")/env.sh"
+LETGO_TEST=${LETGO_TEST:-$LW_ROOT/let-go/test}
 filter=""; files=(); corpus=""; one=""; bar_arg=""
 while [ $# -gt 0 ]; do
   case $1 in

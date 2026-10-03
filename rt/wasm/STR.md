@@ -5,7 +5,7 @@ Strings, chars, keywords, symbols and floats as values, `str`/`pr-str`/
 (`str.lg`, ns `wasm.str`). Checked against native lg by
 `corpus/intrinsics/str_test.lg` via `checks/run-intrinsics-native.sh`. Ground
 truth: let-go 4e769212 built with go1.27.1. Paths are under
-`~/projects-new/3p/let-go/pkg/` unless they start with `go:` (Go's
+let-go's `pkg/` unless they start with `go:` (Go's
 `internal/strconv`).
 
 ## Representation (D38)

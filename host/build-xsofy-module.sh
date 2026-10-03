@@ -14,8 +14,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: build-xsofy-module.sh <out.wasm>}
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-XSOFY=${XSOFY:-$HOME/projects-new/3p/xsofy}
+. "$(dirname "$0")/../checks/env.sh"
+XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory
           --enable-tail-call --enable-multivalue)

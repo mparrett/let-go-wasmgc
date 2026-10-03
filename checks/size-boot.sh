@@ -25,8 +25,8 @@ for a in "$@"; do case "$a" in
 esac; done
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-XSOFY=${XSOFY:-$HOME/projects-new/3p/xsofy}
+. "$(dirname "$0")/env.sh"
+XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 REPS=${REPS:-5}
 pw=$ws/local-scripts/browser-smoke-playwright
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
@@ -71,7 +71,7 @@ bs, bl = load('boot-stock.json'), load('boot-lw.json')
 ok = all('titleMedian' in b and len(b.get('screenMs', [])) == reps for b in (bs, bl))
 mb = lambda n: f'{n/1e6:.2f} MB' if n >= 1e6 else f'{n/1e3:.0f} KB'
 ms = lambda b, k: f"{b[k]} ms" if k in b else 'FAIL'
-xs = subprocess.run(['git', '-C', __import__('os').path.expanduser('~/projects-new/3p/xsofy'), 'rev-parse', '--short', 'HEAD'],
+xs = subprocess.run(['git', '-C', __import__('os').environ['XSOFY'], 'rev-parse', '--short', 'HEAD'],
                     capture_output=True, text=True).stdout.strip()
 today = datetime.date.today().isoformat()
 rows = [

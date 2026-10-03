@@ -23,7 +23,7 @@
 # default to light), because the run is bounded by the slowest file.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 export LG
 par=${LW_PAR:-4}
 case $par in ''|*[!0-9]*|0) echo "LW_PAR must be a positive integer (got '$par')" >&2; exit 2;; esac

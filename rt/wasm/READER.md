@@ -4,7 +4,7 @@
 `wasm.reader`, loaded after `core.lg`). D70: let-go's `edn.lg` wraps a Go
 native, so there is no lg reader to compile; this is a port of the Go one.
 Ground truth is let-go 4e769212 built with go1.27.1. Citations are
-`~/projects-new/3p/let-go/pkg/compiler/reader.go` unless stated.
+let-go's `pkg/compiler/reader.go` unless stated.
 
 xsofy calls `core/read-string` (not `edn/read-string`) at `xsofy/seed.lg:27`
 and `xsofy/console.lg:94`. That native is `newDataReaderWithResolvers` +

@@ -7,7 +7,7 @@
 # Env: LG, REPS (default 5).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$here/corpus/scalar/fib.clj" "$t/backend.wat" >"$t/drv.log" 2>&1 \
   || { cat "$t/drv.log"; exit 1; }

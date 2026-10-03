@@ -14,7 +14,7 @@
 # keyed by the program, its source roots, src/ and rt/; args are run-time).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 prog=${1:?usage: wasm-run.sh <prog.lg> [args...]}; shift
 sp=""
 read -r -a lgargs <<<"${LG_ARGS:-}"

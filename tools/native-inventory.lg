@@ -15,7 +15,7 @@
 (require '[clojure.string :as str])
 
 (def argv (vec (rest (drop-while #(not (str/ends-with? % "native-inventory.lg")) os/args))))
-(def letgo (get argv 0 (str (os/getenv "HOME") "/projects-new/3p/let-go")))
+(def letgo (get argv 0 (or (os/getenv "LETGO") (when-let [r (os/getenv "LW_ROOT")] (str r "/let-go")) "../let-go")))
 
 (defn sh-out [& cmd]
   (let [r (apply os/sh cmd)]

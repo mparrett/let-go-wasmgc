@@ -16,7 +16,7 @@
 # Exit: 0 = every row matches; 1 = at least one miss; 2 = hook missing.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 
 self=0
 if [ "${1:-}" = --self ]; then self=1; shift; fi

@@ -18,8 +18,8 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LEGMACS=${LEGMACS:-$HOME/projects-new/3p/legmacs}
+. "$(dirname "$0")/env.sh"
+LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT

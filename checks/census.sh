@@ -41,7 +41,7 @@
 # (default 4; 1 = one process, serial), FRESH=1, KEEP=1.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 fallbacks=0; corpora=()
 for a in "$@"; do
   case $a in
@@ -98,7 +98,7 @@ census_key() {
 
 fail=0
 for c in "${corpora[@]}"; do
-  root=$HOME/projects-new/3p/$c
+  root=$LW_ROOT/$c
   [ -d "$root" ] || { echo "no corpus at $root" >&2; exit 2; }
   # same file lists as ../emit-wasm-probe/census/coverage-report.md
   case $c in

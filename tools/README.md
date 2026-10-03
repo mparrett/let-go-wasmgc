@@ -2,7 +2,7 @@
 
 The question these answer: which Go natives does a program reach that the
 wasm runtime does not provide yet? Four pieces, run from `dev/lower-wasm/`
-with the pinned lg (`~/projects-new/3p/lg-bin/lg-4e76921230`):
+with the pinned lg (`$LG`, resolved by `checks/env.sh`):
 
 | Tool | Output |
 |---|---|

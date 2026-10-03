@@ -18,7 +18,8 @@ cd "$(dirname "$0")/.."
 KEYS=wait
 if [ "${1:-}" = --keys ]; then KEYS=$2; shift 2; fi
 N=${1:-20}; TURNS=${2:-60}
-XSOFY=${XSOFY:-$HOME/projects-new/3p/xsofy}
+. "$(dirname "$0")/env.sh"
+XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 [ -x checks/wasm-run.sh ] || { echo "NOT IMPLEMENTED: checks/wasm-run.sh missing"; exit 2; }
 dots=$(printf '%*s' "$TURNS" '' | tr ' ' .)
 case "$KEYS" in

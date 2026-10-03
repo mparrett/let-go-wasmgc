@@ -16,8 +16,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-5}
-LEGMACS=${LEGMACS:-$HOME/projects-new/3p/legmacs}
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
+LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 [ -x checks/wasm-run.sh ] || { echo "NOT IMPLEMENTED: checks/wasm-run.sh missing"; exit 2; }
 [ -f corpus/legmacs/dump-session.lg ] || { echo "NOT IMPLEMENTED: corpus/legmacs/dump-session.lg missing"; exit 2; }
 [ -d "$LEGMACS/legmacs" ] || { echo "FAIL: no legmacs checkout at $LEGMACS"; exit 1; }

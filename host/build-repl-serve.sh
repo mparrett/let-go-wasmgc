@@ -7,7 +7,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: build-repl-serve.sh <dir>}
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/../checks/env.sh"
 OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 "$here/checks/sem.sh" "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$here/corpus/host/repl.lg" "$t/repl.wat" >"$t/drv.log" 2>&1 || { grep -v catalog "$t/drv.log" >&2; exit 1; }

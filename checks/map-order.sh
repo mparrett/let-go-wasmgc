@@ -21,8 +21,8 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LETGO=${LETGO:-$HOME/projects-new/3p/let-go}
+. "$(dirname "$0")/env.sh"
+LETGO=${LETGO:-$LW_ROOT/let-go}
 export LG
 dir=corpus/maporder
 

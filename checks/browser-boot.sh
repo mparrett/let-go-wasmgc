@@ -54,7 +54,7 @@ mode=default
 case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; --xsofy) mode=xsofy ;; --legmacs) mode=legmacs ;; "") ;; *) echo "usage: browser-boot.sh [--xsofy-shell|--xsofy|--legmacs]"; exit 2 ;; esac
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 MERGE=/opt/homebrew/opt/binaryen/bin/wasm-merge
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }

@@ -9,7 +9,8 @@
 # canonical checkout), LG_COMMIT (default 4e769212, the plan's lg).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-LETGO=${LETGO:-$HOME/projects-new/3p/let-go}
+. "$(dirname "$0")/../checks/env.sh"
+LETGO=${LETGO:-$LW_ROOT/let-go}
 LG_COMMIT=${LG_COMMIT:-4e769212}
 out=${1:?usage: build-legmacs-serve.sh <out-dir> [module.wasm ...]}; shift
 mkdir -p "$out"

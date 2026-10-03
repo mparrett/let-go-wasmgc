@@ -22,7 +22,7 @@
 # NO-HEADER (ambiguous).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
+. "$(dirname "$0")/env.sh"
 dir=${1:?usage: refuse.sh <dir>}
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 n=0; ok=0

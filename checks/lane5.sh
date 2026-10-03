@@ -39,9 +39,9 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-XSOFY=${XSOFY:-$HOME/projects-new/3p/xsofy}
-LETGO=${LETGO:-$HOME/projects-new/3p/let-go}
+. "$(dirname "$0")/env.sh"
+XSOFY=${XSOFY:-$LW_ROOT/xsofy}
+LETGO=${LETGO:-$LW_ROOT/let-go}
 COMMIT=4e769212
 SEED=${SEED:-424242}
 pw=$ws/local-scripts/browser-smoke-playwright

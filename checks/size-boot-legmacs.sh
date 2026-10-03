@@ -26,9 +26,9 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
-LG=${LG:-$HOME/projects-new/3p/lg-bin/lg-4e76921230}
-LEGMACS=${LEGMACS:-$HOME/projects-new/3p/legmacs}
-LETGO=${LETGO:-$HOME/projects-new/3p/let-go}
+. "$(dirname "$0")/env.sh"
+LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
+LETGO=${LETGO:-$LW_ROOT/let-go}
 COMMIT=4e769212
 REPS=${REPS:-5}
 t=$(mktemp -d); pids=()

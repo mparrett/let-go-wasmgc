@@ -200,7 +200,9 @@
 ;; Variadic arities compile too since P2.12 (D83, amending D78).
 
 (def letgo-commit "4e769212")
-(def letgo-dir (str (os/getenv "HOME") "/projects-new/3p/let-go"))
+;; LETGO (exported by checks/env.sh), else $LW_ROOT/let-go, else a sibling of
+;; the current directory; embedded-forms says so loudly when it cannot read it.
+(def letgo-dir (or (os/getenv "LETGO") (when-let [r (os/getenv "LW_ROOT")] (str r "/let-go")) "../let-go"))
 
 (defn embedded-forms
   "The forms of let-go's embedded pkg/rt/core/<file> at letgo-commit, read in
@@ -210,7 +212,9 @@
     (if (and r (= 0 (:exit r)))
       (do (require ns-sym)
           (binding [*ns* (the-ns ns-sym)] (read-string (str "[" (:out r) "\n]"))))
-      [])))
+      (throw (ex-info (str "lw-rt: cannot read pkg/rt/core/" file " at let-go commit " letgo-commit
+                           " from " letgo-dir " (set LETGO, or LW_ROOT with let-go/ under it; see checks/env.sh)")
+                      {:file file :dir letgo-dir})))))
 
 (def core-forms (embedded-forms "core.lg" 'core))
 

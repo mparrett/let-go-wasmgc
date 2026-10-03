@@ -4,6 +4,7 @@
 # yet (the implementer builds the check with the feature; the reviewer runs
 # this, never the implementer's own ad-hoc command).
 set -uo pipefail
+. "$(dirname "$0")/env.sh"
 cd "$(dirname "$0")/.."
 id=${1:?item id}
 line=$(awk -F'\t' -v id="$id" '$1==id{print; exit}' checks/items.tsv)
