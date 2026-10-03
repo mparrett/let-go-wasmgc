@@ -182,3 +182,5 @@ TOTAL ≈ $1,227
 - 2026-10-03: identical-source-snapshot helper-selection comparison for the linear argv fixture: raw unoptimized module 12032 to 277084 bytes, both validating with GC disabled and independent fresh caches. The earlier minimal-printer selection is the reported reachability error; its size is not a behavioral MATCH claim.
 
 - 2026-10-03: final GC gate 1 passed all 8 rows with LW_ATTEST=0, after required linear corpus acceptance.
+
+- 2026-10-03: configured P7.4 and P7.5 passed individually and again within the ongoing final gate. Regenerated dated GC browser size/boot reports are in corpus/legmacs/size-boot.md and corpus/xsofy/size-boot.md; complete gate 7 is still pending.

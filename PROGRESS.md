@@ -21,8 +21,9 @@
 - Final GC gate 1: 8 rows passed with LW_ATTEST=0 (2026-10-03).
 
 ## In progress
-- Configured P7.4 and P7.5 passed in full (2026-10-03).
-- Exact next command (2026-10-03): `git diff --check`, commit/push the external tools configuration, verify publish CI, then `/tmp/linear-m1-gate7-rerun.sh`.
+- Configured P7.4 and P7.5 passed; browser tools fix is pushed (2026-10-03).
+- Exact next command (2026-10-03): `LW_BROWSER_TOOLS=<installed-local-scripts> LW_ATTEST=0 checks/gate.sh 7`, GC lane with LW_TARGET, WASM_RUN and LW_GATE_ROWS unset.
+- Active final gate exec session: 10634. Exact next action: poll it before starting any other gate; log /tmp/linear-m1-final-gate-7.log (2026-10-03).
 
 ## Open questions
 - Original runtime cache omits variadic dispatch state on restore; reported in the PR, the team is investigating. Keep GC output unchanged.
