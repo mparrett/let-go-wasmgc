@@ -8,9 +8,9 @@
 - D172-D178 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- host-twins: imports and quoted output now use allocator-owned payloads; structural buffer checks, target checks and all frozen GC comparisons passed (2026-10-03).
-- Exact next command (2026-10-03): `/tmp/linear-m1-remaining.sh`
-- Sequential checkpoint script: `/tmp/linear-m1-post-census.sh` (2026-10-03).
+- runtime-paths: passed structural verification, target checks and all frozen GC comparisons (2026-10-03).
+- Exact next command (2026-10-03): `/tmp/linear-m1-remaining.sh division-refuse entry-runner`
+- Sequential checkpoint script: `/tmp/linear-m1-remaining.sh` (2026-10-03).
 - Temporary full-runtime oracle preflight is separate from committed corpus acceptance (2026-10-03).
 
 ## Open questions
