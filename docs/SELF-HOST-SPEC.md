@@ -99,10 +99,16 @@ This is a tier, not a replacement.
    the host module is byte-identical to today (acceptance item 1).
 6. **Vars, not patching.** A compiled fn is installed by writing it into the
    program var it defines, exactly as `eval` of a `defn` does today. Making
-   already-compiled callers see a redefinition is ROUND4 item 3 (calls
-   through var-table slots) and is out of scope here; the oracle therefore
-   compares behaviour reached through the var, not through earlier direct
-   calls.
+   already-compiled callers see a redefinition (calls through var-table
+   slots) is out of this milestone; the oracle therefore compares behaviour
+   reached through the var, not through earlier direct calls. It is not
+   optional in the long run: let-go's stated semantics are that compiled code
+   observes var redefinition unless the var is `^:const` or `^:inline`, with
+   `^:dynamic`, `^:redef` and `with-redefs` always indirect, so var slots are
+   the first item after stage 4. Likewise, if any of this ever faces
+   upstream, it must be presented as a tier of the one compiler, under its
+   `lg.compiler.*` layout, because a second permanent compiler architecture
+   beside `ir.*` was explicitly rejected there.
 7. **Opt-in, additive.** New runtime file `rt/wasm/emit.lg` (load order
    after `eval.lg` in `rt/wasm/README.md`'s table), loaded only when
    `LW_RUNTIME_COMPILE=1`; `eval.lg` is not modified except for one hook
