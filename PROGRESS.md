@@ -19,10 +19,10 @@
 
 ## In progress
 - Representation families, cast refinements, host twins and runner are pushed with GC byte identity green (2026-10-03).
-- Exact next command (2026-10-03): `LW_PAR=1 LW_ATTEST=0 checks/run.sh P8.10`
+- Exact next command (2026-10-03): `/tmp/linear-m1-final-gates.sh` (GC gates only; LW_ATTEST=0)
 - Corpus rows are acceptance checks, not current MATCH claims (2026-10-03).
 - Final GC gates remain pending until every required linear corpus passes (2026-10-03).
 
 ## Open questions
 - Original runtime cache omits variadic dispatch state on restore; reported in the PR, the team is investigating. Keep GC output unchanged.
-- Required linear corpus acceptance and final GC gates remain pending.
+- Required linear corpora passed; helper-size measurement and final GC gates remain pending (2026-10-03).

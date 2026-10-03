@@ -178,3 +178,5 @@ TOTAL ≈ $1,227
 - 2026-10-03 P8.9: 13/13 MATCH under the linear runner, using native lg through checks/oracle.sh.
 
 - 2026-10-03 P8.10: 4/4 MATCH under the linear runner, using native lg through checks/oracle.sh.
+
+- 2026-10-03: identical-source-snapshot helper-selection comparison for the linear argv fixture: raw unoptimized module 12032 to 277084 bytes, both validating with GC disabled and independent fresh caches. The earlier minimal-printer selection is the reported reachability error; its size is not a behavioral MATCH claim.
