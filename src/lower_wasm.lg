@@ -4412,6 +4412,21 @@
 (swap! linear-instructions assoc "array.new_default"
   (fn [node args] ["call" (linear-array-new! (second node)) (last args)]))
 
+(defn linear-array-address! [tn]
+  (let [nm (repr-name "array_address" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) tn)))]
+          (str "(func " nm " (param $p0 i32) (param $p1 i32) (result i32)"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " (if (i32.ge_u (local.get $p1) (i32.load offset=12 (local.get $p0))) (then " (linear-fail "array index out of bounds") "))"
+               " (i32.add (i32.add (local.get $p0) (i32.const 16)) (i32.mul (local.get $p1) (i32.const " width "))))"))))))
+(swap! linear-instructions assoc "array.set"
+  (fn [node args]
+    (let [tn (second node) tp (:elem (get (:layouts *linear-state*) tn))]
+      [(if (= tp "i8") "i32.store8" (str tp ".store"))
+       ["call" (linear-array-address! tn) (nth args 1) (nth args 2)] (nth args 3)])))
+
 ))
 (def linear-representation-ready (atom false))
 

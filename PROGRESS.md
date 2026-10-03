@@ -4,13 +4,13 @@
 - Read README.md, docs/READING-GUIDE.md and docs/LINEAR-TARGET-SPEC.md in order.
 - Branch `linear-target-m1`; draft PR https://github.com/mparrett/let-go-wasmgc/pull/1 .
 - Target/cache, frozen GC guard, shared representation, numeric module and leaking allocator are pushed (2026-10-03).
-- Instruction families through ref.as_non_null are pushed as `353ce33` (2026-10-03).
+- Instruction families through array.new_default are pushed as `348e0e0` (2026-10-03).
 - ref.as_non_null passed structural execution, target checks and all frozen default/explicit GC comparisons (2026-10-03).
 - D172-D176 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
 - array.new_default passed validation, wazero allocation probes, target checks and the frozen byte guard (2026-10-03).
-- Next instruction family: array.set.
+- array.set passed GC-disabled validation, byte/reference/bounds execution probes, target checks and all frozen GC comparisons (2026-10-03).
 - Exact next command (2026-10-03): `git push origin linear-target-m1 && gh pr checks 1`
 - Array allocation preflight passed GC-disabled validation and wazero length/zeroing/type/growth probes (2026-10-03).
 - Remaining family drafts: `/tmp/linear-*-family.lg`; structural Go probe: `/tmp/linear-m1-go-probe/values.go`.

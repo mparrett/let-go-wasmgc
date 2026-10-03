@@ -35,6 +35,10 @@
   (func $new-arr-type (export "new-arr-type") (result i32) (ref.test (ref $Bytes) (array.new_default $Bytes (i32.const 0))))
   (func $new-arr-grow (export "new-arr-grow") (result i32) (array.len (array.new_default $Bytes (i32.const 65536))))
   (func $failed (export "failed") (result i32) (ref.cast (ref $Bool) (i32.const 3)))
+  (type $Refs (array (mut (ref null eq))))
+  (func $set-byte (export "set-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (array.set $Bytes (local.get $a) (i32.const 2) (i32.const 253)) (i32.load8_u offset=18 (local.get $a)))
+  (func $set-ref (export "set-ref") (result i32) (local $a (ref $Refs)) (local.set $a (array.new_default $Refs (i32.const 2))) (array.set $Refs (local.get $a) (i32.const 1) (ref.i31 (i32.const 13))) (i32.load offset=20 (local.get $a)))
+  (func $set-bounds (export "set-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (array.set $Bytes (array.new_default $Bytes (i32.const 1)) (i32.const 1) (i32.const 3))) (ref.null none))))
 ])
 
 (defn form-wat [node]
