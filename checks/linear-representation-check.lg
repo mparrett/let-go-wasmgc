@@ -66,6 +66,14 @@
   (func $get-ref (export "get-ref") (result (ref null eq)) (array.get $Refs (array.new $Refs (ref.i31 (i32.const 17)) (i32.const 2)) (i32.const 1)))
   (func $fixed-byte (export "fixed-byte") (result i32) (array.get_u $Bytes (array.new_fixed $Bytes 3 (i32.const 1) (i32.const 2) (i32.const 253)) (i32.const 2)))
   (func $fixed-ref (export "fixed-ref") (result (ref null eq)) (array.get $Refs (array.new_fixed $Refs 2 (ref.null none) (ref.i31 (i32.const 21))) (i32.const 1)))
+  (func $test-abstract-array (export "test-abstract-array") (result i32) (ref.test (ref array) (array.new_default $Bytes (i32.const 0))))
+  (func $test-abstract-struct (export "test-abstract-struct") (result i32) (ref.test (ref struct) (i32.const 65536)))
+  (func $test-array-reject-struct (export "test-array-reject-struct") (result i32) (ref.test (ref array) (i32.const 65536)))
+  (func $test-struct-reject-array (export "test-struct-reject-array") (result i32) (ref.test (ref struct) (array.new_default $Bytes (i32.const 0))))
+  (func $test-array-nullable (export "test-array-nullable") (result i32) (ref.test (ref null array) (ref.null none)))
+  (func $cast-array-length (export "cast-array-length") (result i32) (array.len (ref.cast (ref array) (array.new_default $Bytes (i32.const 3)))))
+  (func $numeric-code (param $p i32) (result i32) (local.get $p))
+  (func $test-function-value-domain (export "test-function-value-domain") (result i32) (ref.test (ref $Code0) (ref.func $numeric-code)))
 ])
 
 (defn form-wat [node]
