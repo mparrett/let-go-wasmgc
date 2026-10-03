@@ -8,7 +8,7 @@ Every link pins commit e17fc75, so later changes to the tree will not move the l
 
 `src/driver.lg` runs under native lg. It reads the program, evaluates each top-level defn in-process so let-go's IR builder resolves self and mutual calls to real vars, and collects every other top-level form into the body of a synthetic `_main` defn (D10). It then analyses each defn and `_main` through let-go's IR pipeline inside one lowering session, lowers them, and writes a single WAT module. The lowering runs in a loop: a parameter stays an unboxed i64 only while every call passes an int, so when lowering reports a call that does not, that defn is re-analysed with boxed parameters until nothing new needs boxing. `analyze-program!` is the per-defn step; it also registers each signature before the next defn is analysed, so later callers are lowered against it.
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/driver.lg#L861-L913
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/driver.lg#L860-L913
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/driver.lg#L233-L262
 
@@ -26,7 +26,7 @@ An int is a `ref.i31` when it fits 31 bits signed and an `$Int` box otherwise (D
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/lower_wasm.lg#L183-L212
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/lower_wasm.lg#L3066-L3080
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/lower_wasm.lg#L3070-L3083
 
 ## 4. Exceptions
 
@@ -40,7 +40,7 @@ Native lg eliminates every tail call, including mutual and through fn values, so
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/lower_wasm.lg#L1884-L1918
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/lower_wasm.lg#L1995-L2029
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/src/lower_wasm.lg#L1995-L2027
 
 ## 6. Twin routing
 
@@ -72,13 +72,13 @@ https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5ce
 
 `rt/wasm/eval.lg` gives a compiled module a working `eval` (D160). `compile` turns a form into a let-go closure over a vector of local values, once, and `eval` calls it. `comp-seq` is the dispatch: a special form from the `specials` map, then a call of a local, then a macro expander, then an ordinary call. Core macros are ported as expanders that build the same forms native's macros do, so the nested `CompileError` chains come out identical. Unqualified symbols resolve in the order local, a cell of the current namespace, program vars, refers, cells interned into `let-go.core`, then the core table; qualified ones go through aliases. Locals are handled in `comp-sym`, the rest in `resolve-global`. The core table is a fn rather than a def so the backend links each twin it names.
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/rt/wasm/eval.lg#L1027-L1037
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/rt/wasm/eval.lg#L1027-L1036
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/rt/wasm/eval.lg#L1141-L1160
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/rt/wasm/eval.lg#L979-L994
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/rt/wasm/eval.lg#L162-L185
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/rt/wasm/eval.lg#L162-L181
 
 ## 10. The program table
 
@@ -96,7 +96,7 @@ A module talks to its host only through the imports in `host/ABI.md` (D88): outp
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/host/ABI.md#L25-L48
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/host/lg-wasm-host.js#L166-L201
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/host/lg-wasm-host.js#L165-L201
 
 ## 12. The match relation and the row table
 
@@ -130,4 +130,4 @@ https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5ce
 
 https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/STATUS.md#L5-L20
 
-https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/FINDINGS.md#L1-L12
+https://github.com/mparrett/let-go-wasmgc/blob/e17fc750c435335c20fbd6a1a1724a5cec736cc4/FINDINGS.md#L1-L11

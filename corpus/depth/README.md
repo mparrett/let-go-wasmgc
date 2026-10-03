@@ -18,7 +18,7 @@ change: `measure.lg load corpus/dump-world.lg 1 200` and the plain
 `dump-world.lg 1 200` print byte-identical dumps (20,831 bytes, checked with
 `cmp`).
 
-Run: `lg -source-paths ~/projects-new/3p/xsofy corpus/depth/measure.lg depth 20 200`
+Run: `lg -source-paths $LW_ROOT/xsofy corpus/depth/measure.lg depth 20 200`
 (about 12 min). Raw output: `results-2026-10-01.txt`. Coverage: 20 seeds × 200
 turns × three fixtures (bench/native.lg's `:wait`, `:autoex`, `:descend`), each
 starting with `make-world 79 30 seed` (so world generation is included). Every

@@ -2,7 +2,7 @@
 
 Every `.lg` here is generated; don't edit by hand. Regenerate, from `dev/lower-wasm/`:
 
-    ~/projects-new/3p/lg-bin/lg-4e76921230 corpus/gen-opmatrix.lg corpus/opmatrix/
+    $LW_ROOT/lg-bin/lg-4e76921230 corpus/gen-opmatrix.lg corpus/opmatrix/
     checks/run-corpus.sh --update-expected corpus/opmatrix
 
 There is one program per IR builtin op from the `builtin-ops` table in let-go's

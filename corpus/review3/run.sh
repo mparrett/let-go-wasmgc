@@ -10,7 +10,8 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 : "${LW_TREE:?set LW_TREE to the frozen dev/lower-wasm copy}"
 : "${OUT:=$here/results}"; mkdir -p "$OUT"
-LGBIN=$HOME/projects-new/3p/lg-bin/lg-4e76921230
+. "$(dirname "$0")/../../checks/env.sh"
+LGBIN=$LW_ROOT/lg-bin/lg-4e76921230
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
 cat >"$w/lg" <<X
 #!/usr/bin/env bash

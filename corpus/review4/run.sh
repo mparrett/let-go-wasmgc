@@ -10,7 +10,8 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 : "${LW_TREE:=/private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/ws/dev/lower-wasm}"
 : "${OUT:=$here/results}"; mkdir -p "$OUT"
-LGBIN=$HOME/projects-new/3p/lg-bin/lg-4e76921230
+. "$(dirname "$0")/../../checks/env.sh"
+LGBIN=$LW_ROOT/lg-bin/lg-4e76921230
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
 cat >"$w/lg" <<X
 #!/usr/bin/env bash

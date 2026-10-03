@@ -1,6 +1,6 @@
 # let-go map/set iteration order: port spec
 
-Source: `~/projects-new/3p/let-go` at `4e769212`; paths are under `pkg/vm/`
+Source: `$LW_ROOT/let-go` at `4e769212`; paths are under `pkg/vm/`
 unless marked. Hashing is `../hash/SPEC.md`; everything here assumes the
 port's `hashValue` is bit-exact (D19), because past 8 entries order is a
 function of key hashes.

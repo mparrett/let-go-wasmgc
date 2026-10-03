@@ -1,6 +1,6 @@
 # let-go value hashing: port spec
 
-Source: `~/projects-new/3p/let-go` at `4e769212`; paths below are under
+Source: `$LW_ROOT/let-go` at `4e769212`; paths below are under
 `pkg/vm/` unless marked. All arithmetic is wrapping `uint32` unless a step
 says `uint64`. `rotl32(x,r) = (x<<r)|(x>>(32-r))`. Test vectors:
 `vectors.tsv` (regenerate with `go run . > vectors.tsv`). These algorithms

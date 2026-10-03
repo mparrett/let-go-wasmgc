@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # oracle.sh's WASM_RUN: $W/checks/wasm-run.sh, outputs kept in $R5_OUT.wasm.* (300 s cap)
-LG=$HOME/projects-new/3p/lg-bin/lg-4e76921230 gtimeout 300 "$W/checks/wasm-run.sh" "$@" >"$R5_OUT.wasm.out" 2>"$R5_OUT.wasm.err"; x=$?
+. "$(dirname "$0")/../../checks/env.sh"
+LG=$LW_ROOT/lg-bin/lg-4e76921230 gtimeout 300 "$W/checks/wasm-run.sh" "$@" >"$R5_OUT.wasm.out" 2>"$R5_OUT.wasm.err"; x=$?
 echo "exit $x" >>"$R5_OUT.wasm.err"
 cat "$R5_OUT.wasm.out"; cat "$R5_OUT.wasm.err" >&2; exit $x

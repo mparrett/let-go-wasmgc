@@ -140,7 +140,7 @@ actual practice of one row + an occasional gate.
 (`p213/lw/corpus`, 574 `.lg`/`.expected`); `$TMPDIR` 33 files (27 Chromium
 profile). `$TMPDIR` also holds 281 leaked `tmp.*` dirs (31 from the last 12 h,
 438 MB total) from `KEEP=1` or killed oracle runs. Time Machine includes
-`~/projects-new` and excludes `/private/tmp`; the `.rtlib` under the live tree is
+the home workspace and excludes `/private/tmp`; the `.rtlib` under the live tree is
 therefore backed up (4.3 MB rewritten on every key change), the scratch ones not.
 
 ## Ready-to-apply snippets (all in `$SCRATCH`)

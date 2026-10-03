@@ -88,13 +88,13 @@ Native lg matches every `.out` (exit 0). Strict stdout+exit: 0 / 7; stdout only:
 S=/private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/p23
 cp -R dev/lower-wasm $S/snap          # frozen tree; md5 above
 # per file, from let-go/test (cwd matters for quality_cost's ../scripts), 3 in parallel:
-cd ~/projects-new/3p/let-go/test
+cd $LW_ROOT/let-go/test
 KEEP=1 checks/sem.sh timeout -k 5 300 env KEEP=1 \
-  SRC_PATHS=$S/snap/rt:~/projects-new/3p/let-go:~/projects-new/3p/let-go/test:~/projects-new/3p/let-go/scripts \
-  $S/snap/checks/run-tests.sh ~/projects-new/3p/let-go/test/<file>.lg
+  SRC_PATHS=$S/snap/rt:$LW_ROOT/let-go:$LW_ROOT/let-go/test:$LW_ROOT/let-go/scripts \
+  $S/snap/checks/run-tests.sh $LW_ROOT/let-go/test/<file>.lg
 # (chunked_seq_test.lg: same command on a copy named test/chunked_seq.lg)
 # gold:
-checks/sem.sh checks/wasm-run.sh ~/projects-new/3p/let-go/test/gold/<x>.cljc | cmp - <x>.out
+checks/sem.sh checks/wasm-run.sh $LW_ROOT/let-go/test/gold/<x>.cljc | cmp - <x>.out
 ```
 `run-tests.sh` as shipped sets native `-source-paths` to `rt:<test dir>` only, which cannot resolve `test.<ns>` names
 (`unable to load namespace test.conditionals-test`); the `SRC_PATHS` env override above is required for this corpus
