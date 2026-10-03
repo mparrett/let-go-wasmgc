@@ -4380,6 +4380,9 @@
 (swap! linear-instructions assoc "array.len"
   (fn [node args] (into ["call" (linear-array-len!)] args)))
 
+(swap! linear-instructions assoc "ref.i31"
+  (fn [node args] ["i32.or" ["i32.shl" (first args) ["i32.const" "1"]] ["i32.const" "1"]]))
+
 ))
 (def linear-representation-ready (atom false))
 

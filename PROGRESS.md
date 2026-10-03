@@ -7,7 +7,7 @@
 - Linear module/type skeleton and leaking allocator are validated; target check and default/explicit GC identity over all scalar/eval programs passed (2026-10-03).
 - Allocator prototype passed memory growth under the specified wazero fork; structural evidence, no oracle MATCH claim (2026-10-03).
 - Draft PR: https://github.com/mparrett/let-go-wasmgc/pull/1 .
-- D172-D175 record layout, representation and cache-state decisions (2026-10-03).
+- D172-D176 record layout, representation, cache-state and host-buffer decisions (2026-10-03).
 
 ## In progress
 - Type/allocator foundation is pushed as `636af5b` (2026-10-03).
@@ -22,10 +22,13 @@
 - struct.new passed structural execution, target checks and the frozen byte guard (2026-10-03).
 - struct.new is pushed as `a1021dc` (2026-10-03).
 - array.len passed structural validation, target checks and the frozen byte guard (2026-10-03).
-- The first refusal remains ref.is_null. Next instruction family: ref.i31.
+- array.len is pushed as `3c574be` (2026-10-03).
+- ref.i31 passed structural execution, target checks and the frozen byte guard (2026-10-03).
+- D176 is pushed as `7d54297`; publish CI passed (2026-10-03).
+- Next instruction family and pinned first refusal: ref.is_null.
 - Cast-family draft is preserved in `/tmp/linear-cast-family.lg`.
 - Exact next command: `git push origin linear-target-m1 && gh pr checks 1`
-- Commit and push array.len, then install `/tmp/linear-ref-i31-family.lg` and repeat structural/target/byte checks. Actual array allocation probes follow with array.new_default. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
+- Commit and push ref.i31, then install `/tmp/linear-ref-is-null-family.lg` and update the first refusal before repeating structural/target/byte checks. Actual array allocation probes follow with array.new_default. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
 
 ## Open questions
 - Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output. The team is investigating.
