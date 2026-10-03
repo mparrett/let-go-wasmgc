@@ -8,11 +8,11 @@
 - D172-D178 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- entry-runner: structural execution passed; argv oracle caught missing String box in the host argument twin, now corrected (2026-10-03).
-- Exact next command (2026-10-03): `python3 /tmp/linear-m1-corpus-rows.py`
-- Sequential checkpoint script: `/tmp/linear-m1-remaining.sh` (2026-10-03).
-- Temporary full-runtime oracle preflight is separate from committed corpus acceptance (2026-10-03).
+- Representation families, cast refinements, host twins and runner are pushed with GC byte identity green (2026-10-03).
+- Exact next command (2026-10-03): `LW_PAR=1 /tmp/linear-m1-corpus-acceptance.sh`
+- Corpus rows are acceptance checks, not current MATCH claims (2026-10-03).
+- Final GC gates remain pending until every required linear corpus passes (2026-10-03).
 
 ## Open questions
 - Original runtime cache omits variadic dispatch state on restore; reported in the PR, the team is investigating. Keep GC output unchanged.
-- Runner, linear oracle corpora, README paragraph and final GC gates remain pending.
+- Required linear corpus acceptance and final GC gates remain pending.

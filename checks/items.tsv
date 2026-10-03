@@ -79,4 +79,9 @@ P8.11	8	checks/linear-division-check.sh	2026-10-03: unsupported general integer 
 P8.12	8	checks/linear-runner-abi-check.sh	2026-10-03: argv flags and large host inputs/output MATCH native lg through checks/oracle.sh
 P8.4	8	checks/linear-host-check.sh	2026-10-03: growing host inputs retain their name pointer, retry capacity and shrink logical length with GC disabled
 P8.5	8	env WASM_RUN=checks/wasm-run-linear.sh checks/oracle.sh corpus/scalar/fib.clj	2026-10-03: native-oracle MATCH through the GC-disabled Go runner
+P8.6	8	env WASM_RUN=checks/wasm-run-linear.sh checks/run-corpus.sh corpus/scalar	2026-10-03: every scalar program MATCH under the GC-disabled Go runner
+P8.7	8	env WASM_RUN=checks/wasm-run-linear.sh checks/run-corpus.sh corpus/opmatrix corpus/typed	2026-10-03: existing P1.1 selection MATCH; division exclusions remain visible under D177 under the GC-disabled Go runner
+P8.8	8	env WASM_RUN=checks/wasm-run-linear.sh checks/run-corpus.sh corpus/control	2026-10-03: every control program MATCH under the GC-disabled Go runner
+P8.9	8	env WASM_RUN=checks/wasm-run-linear.sh checks/run-corpus.sh corpus/closure	2026-10-03: every closure program MATCH under the GC-disabled Go runner
+P8.10	8	env WASM_RUN=checks/wasm-run-linear.sh checks/run-corpus.sh corpus/seqs	2026-10-03: every sequence benchmark MATCH under the GC-disabled Go runner
 P9.0	9	checks/rtlib-cold-warm.sh	2026-10-03 (D181): the runtime-library cache is transparent: cold and warm compiles of the D181 regression produce byte-identical module text
