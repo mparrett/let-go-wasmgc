@@ -4461,6 +4461,11 @@
 (swap! linear-instructions assoc "i31.get_s"
   (fn [node args] (into ["call" (linear-i31-get!)] args)))
 
+(swap! linear-instructions assoc "array.get_u"
+  (fn [node args]
+    (let [tn (second node)]
+      ["i32.load8_u" ["call" (linear-array-address! tn) (nth args 1) (nth args 2)]])))
+
 ))
 (def linear-representation-ready (atom false))
 

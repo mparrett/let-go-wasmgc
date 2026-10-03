@@ -8,7 +8,7 @@
 - D172-D176 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- Census family i31.get_s: passed structural execution, target checks and all frozen GC comparisons (2026-10-03).
+- Census family array.get_u: passed structural execution, target checks and all frozen GC comparisons (2026-10-03).
 - Exact next command (2026-10-03): `git push origin linear-target-m1`
 - Sequential checkpoint command: `/tmp/linear-m1-next-reads.sh`; stop on any failure (2026-10-03).
 - All upcoming read/copy probes passed GC-disabled wazero preflight (2026-10-03).
