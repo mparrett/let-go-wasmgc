@@ -231,7 +231,7 @@ Candidates, none started (as of 2026-10-02):
   compiled callers.
 - A baseline compiler as a second output of the evaluator's front end, so a
   module can compile code at run time without porting the optimizing
-  compiler.
+  compiler: specified in [docs/SELF-HOST-SPEC.md](docs/SELF-HOST-SPEC.md).
 
 ## How this repository is maintained
 
