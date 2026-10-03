@@ -37,6 +37,9 @@ python3 -m http.server 8261 -d /tmp/lw-legmacs
 # 4. test-drive the evaluator (round 3, P7.5): in *scratch* type a defn, C-x C-e, then a call, C-x C-e
 #    (echo area shows => #'legmacs.main/f, then => 42); C-x C-c quits. Same in the browser at :8261.
 node host/node-host.mjs /tmp/lw-play/legmacs.wasm
+# 5. the let-go REPL page (round 3): build + serve dir, then http://localhost:8262/repl.html
+host/build-repl-serve.sh /tmp/lw-repl
+python3 -m http.server 8262 -d /tmp/lw-repl
 # then open http://localhost:8261/index.html
 # 3. a plain program through the backend vs native lg
 WASM_RUN=checks/wasm-run.sh checks/oracle.sh corpus/wasm/maps.lg
