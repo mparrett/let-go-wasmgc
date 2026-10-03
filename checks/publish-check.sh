@@ -18,7 +18,7 @@ base=${1:-}
 # truncate long lines and hide a match.
 files=$(git ls-files -z | grep -z -v -E '\.(wasm|png|woff2?)$' | xargs -0 grep -n -i -E -e "$PUBLISH_CHECK_TERMS" 2>/dev/null | grep -v -E -e "$allow")
 range=HEAD; [ -n "$base" ] && range="$base..HEAD"
-msgs=$(git log --format='%h %s%n%b' "$range" -- . 2>/dev/null | grep -n -i -E -e "$PUBLISH_CHECK_TERMS")
+msgs=$(git log --format='%h %s%n%b' "$range" -- . 2>/dev/null | grep -n -i -E -e "$PUBLISH_CHECK_TERMS" | grep -v -E -e "$allow")
 rc=0
 if [ -n "$files" ]; then echo "publish-check: files:" >&2; echo "$files" | cut -c1-200 >&2; rc=1; fi
 if [ -n "$msgs" ]; then echo "publish-check: commit messages ($range):" >&2; echo "$msgs" | cut -c1-200 >&2; rc=1; fi
