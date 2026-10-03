@@ -1,0 +1,26 @@
+name: publish-check
+# Refuses material that belongs to the workspace this tree is developed in:
+# a pattern over tracked files and commit messages, held in the repository
+# secret PUBLISH_CHECK_TERMS (see checks/publish-check.sh).
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  publish-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+      - name: publish check
+        env:
+          PUBLISH_CHECK_TERMS: ${{ secrets.PUBLISH_CHECK_TERMS }}
+          PUBLISH_CHECK_ALLOW: ${{ secrets.PUBLISH_CHECK_ALLOW }}
+        run: |
+          base=""
+          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then base="${{ github.event.before }}"; fi
+          checks/publish-check.sh "$base"
