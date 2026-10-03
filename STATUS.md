@@ -168,3 +168,5 @@ TOTAL ≈ $1,227
 - 2026-10-03: linear division-refuse checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
 
 - 2026-10-03: production linear runner passed executable GC-disabled representation and host-buffer probes; fib, argv flags, and large direct/quoted output MATCH native through checks/oracle.sh. Target checks and all frozen GC comparisons passed. Directory acceptance remains pending.
+
+- 2026-10-03 P8.6: 4/4 MATCH under the linear runner, using native lg through checks/oracle.sh.

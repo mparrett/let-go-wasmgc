@@ -7,9 +7,11 @@
 - All census families, cast branches, stack operands and owned host buffers are pushed through `fe58ec9`; runtime-helper selection is pushed as `d29334f`. GC byte checks and publish CI passed (2026-10-03).
 - D172-D178 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
+- P8.6: 4/4 MATCH (2026-10-03).
+
 ## In progress
 - Representation families, cast refinements, host twins and runner are pushed with GC byte identity green (2026-10-03).
-- Exact next command (2026-10-03): `LW_PAR=1 /tmp/linear-m1-corpus-acceptance.sh`
+- Exact next command (2026-10-03): `LW_PAR=1 LW_ATTEST=0 checks/run.sh P8.6`
 - Corpus rows are acceptance checks, not current MATCH claims (2026-10-03).
 - Final GC gates remain pending until every required linear corpus passes (2026-10-03).
 
