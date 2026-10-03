@@ -54,6 +54,7 @@
   (func $same-nil (export "same-nil") (result i32) (ref.eq (ref.null none) (ref.null none)))
   (func $same-fixnum (export "same-fixnum") (result i32) (ref.eq (ref.i31 (i32.const 7)) (ref.i31 (i32.const 7))))
   (func $different-box (export "different-box") (result i32) (ref.eq (struct.new $Int (i64.const 7)) (struct.new $Int (i64.const 7))))
+  (func $set-field (export "set-field") (result i64) (local $a (ref $Atom)) (local.set $a (struct.new $Atom (ref.null none) (i64.const 0))) (struct.set $Atom 1 (local.get $a) (i64.const 42)) (struct.get $Atom 1 (local.get $a)))
 ])
 
 (defn form-wat [node]
