@@ -43,6 +43,9 @@
   (func $copy-ref (export "copy-ref") (result i32) (local $a (ref $Refs)) (local.set $a (array.new_default $Refs (i32.const 2))) (array.set $Refs (local.get $a) (i32.const 0) (ref.i31 (i32.const 17))) (array.copy $Refs $Refs (local.get $a) (i32.const 1) (local.get $a) (i32.const 0) (i32.const 1)) (i32.load offset=20 (local.get $a)))
   (func $copy-bounds (export "copy-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (array.copy $Bytes $Bytes (array.new_default $Bytes (i32.const 1)) (i32.const 0) (array.new_default $Bytes (i32.const 1)) (i32.const 0) (i32.const 2))) (ref.null none))))
   (func $copy-empty-end (export "copy-empty-end") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 1))) (array.copy $Bytes $Bytes (local.get $a) (i32.const 1) (local.get $a) (i32.const 1) (i32.const 0)) (array.len (local.get $a)))
+  (func $signed-max (export "signed-max") (result i32) (i31.get_s (ref.i31 (i32.const 1073741823))))
+  (func $signed-min (export "signed-min") (result i32) (i31.get_s (ref.i31 (i32.const -1073741824))))
+  (func $signed-minus-one (export "signed-minus-one") (result i32) (i31.get_s (ref.i31 (i32.const -1))))
 ])
 
 (defn form-wat [node]

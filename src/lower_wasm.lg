@@ -4452,6 +4452,15 @@
 (swap! linear-instructions assoc "array.copy"
   (fn [node args] (into ["call" (linear-array-copy! (second node) (nth node 2))] (drop 2 args))))
 
+(defn linear-i31-get! []
+  (linear-helper! "$lin_i31_get"
+    (fn []
+      (str "(func $lin_i31_get (param $p0 i32) (result i32)"
+           " (if (i32.eqz (i32.and (local.get $p0) (i32.const 1))) (then " (linear-fail "illegal cast") "))"
+           " (i32.shr_s (local.get $p0) (i32.const 1)))"))))
+(swap! linear-instructions assoc "i31.get_s"
+  (fn [node args] (into ["call" (linear-i31-get!)] args)))
+
 ))
 (def linear-representation-ready (atom false))
 
