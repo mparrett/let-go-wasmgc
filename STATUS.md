@@ -160,3 +160,5 @@ TOTAL ≈ $1,227
 - 2026-10-03: linear stack-ops checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
 
 - 2026-10-03: linear br-cast checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
+
+- 2026-10-03: linear host imports and quoted output use owned payloads; growing/shrinking host-buffer structural checks, target checks and all frozen GC comparisons passed. Corpus acceptance remains pending.

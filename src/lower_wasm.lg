@@ -4234,6 +4234,7 @@
             (fail (str "unsupported op " op " under linear") {}))
           (into [op] args))))))
 
+(declare linear-host-twin)
 (defn linear-module [text]
   (let [root (repr-read text) forms (rest root)
         decls (vec (mapcat (fn [f] (cond (= "rec" (first f)) (rest f)
@@ -4261,7 +4262,7 @@
                                       (let [tp (if (and (vector? tp) (= "mut" (first tp))) (second tp) tp)]
                                         (swap! boots conj ["global.set" nm init])
                                         ["global" nm ["mut" tp] [(str tp ".const") "0"]])))))
-                          (linear-node f)))
+                          (linear-node (linear-host-twin f))))
             lowered (mapv lower-top ordinary)
             funcs (mapv (fn [d] ["type" (second d) (repr-types (repr-type-body d))])
                         (filter (fn [d] (= "func" (first (repr-type-body d)))) decls))
@@ -4641,6 +4642,71 @@
                  ["if" (if fail? ["i32.eqz" test] test) ["then" ["br" label value]]]
                  value])))))
 (swap! linear-instructions assoc "br_on_cast" (linear-cast-branch false) "br_on_cast_fail" (linear-cast-branch true))
+
+;; Direct payload pointers and allocator-owned copy buffers (D176, 2026-10-03).
+(defn linear-host-copy-twin [name host arg?]
+  (let [params (if arg? "(param $i i32)" "(param $nm i32)")
+        input (if arg? "(local.get $i)" "(i32.add (local.get $nm) (i32.const 16)) (i32.load offset=12 (local.get $nm))")
+        invoke (fn [buf cap] (str "(call " host " " input " " buf " " cap ")"))]
+    (str "(func " name " " params " (result i32) (local $cap i32) (local $len i32) (local $r i32)"
+         (when-not arg? " (drop (call $lin_array_len (local.get $nm)))")
+         " (local.set $len " (invoke "(i32.const 0)" "(i32.const 0)") ")"
+         " (loop $retry"
+         " (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (i32.const 0))))"
+         " (local.set $cap (local.get $len))"
+         " (local.set $r (call " (linear-array-new! "$Bytes") " (local.get $cap)))"
+         " (local.set $len " (invoke "(i32.add (local.get $r) (i32.const 16))" "(local.get $cap)") ")"
+         " (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (i32.const 0))))"
+         " (br_if $retry (i32.gt_u (local.get $len) (local.get $cap)))"
+         " (i32.store offset=12 (local.get $r) (local.get $len))) (local.get $r))")))
+(declare linear-quoted-output)
+(defn linear-host-twin [f]
+  (if-not (= "func" (first f)) f
+    (let [nm (second f) twin
+          (cond
+            (= nm "$rt_print_quoted") (repr-write (linear-quoted-output f))
+            (= nm "$rt_print_bytes")
+            "(func $rt_print_bytes (param $s i32) (call $print_str (i32.add (local.get $s) (i32.const 16)) (call $lin_array_len (local.get $s))))"
+            (= nm "$rt_host_emit")
+            "(func $rt_host_emit (param $n i32) (param $j i32) (call $host_emit (i32.add (local.get $n) (i32.const 16)) (call $lin_array_len (local.get $n)) (i32.add (local.get $j) (i32.const 16)) (call $lin_array_len (local.get $j))))"
+            (= nm "$rt_host_write")
+            "(func $rt_host_write (param $fd i32) (param $b i32) (result i32) (local $n i32) (local.set $n (call $lin_array_len (local.get $b))) (if (i32.eq (local.get $fd) (i32.const -2)) (then (call $rt_capture_append (local.get $b)) (return (local.get $n)))) (call $host_write (local.get $fd) (i32.add (local.get $b) (i32.const 16)) (local.get $n)))"
+            (= nm "$rt_host_getenv") (linear-host-copy-twin nm "$host_getenv" false)
+            (= nm "$rt_host_url_param") (linear-host-copy-twin nm "$host_url_param" false)
+            (= nm "$rt_host_arg") (linear-host-copy-twin nm "$host_arg" true)
+            :else nil)]
+      (if twin (do (linear-array-len!) (repr-read twin)) f))))
+
+;; Quoted output owns its escaped payload instead of writing below the heap (D178, 2026-10-03).
+(defn linear-quote-node [node]
+  (if-not (vector? node) node
+    (let [op (first node) buf ["local.get" "$lin_quote_buffer"]
+          payload (fn [off address] ["i32.add" ["i32.add" buf ["i32.const" (str (+ 16 off))]] address])]
+      (cond
+        (= node ["local" "$need" "i32"]) ["local" "$need" "i64"]
+        (and (= op "local.set") (= (second node) "$need"))
+        ["local.set" "$need" ["i64.add" ["i64.mul" ["i64.extend_i32_u" ["local.get" "$n"]] ["i64.const" "6"]] ["i64.const" "2"]]]
+        (and (= op "if") (= (get-in node [1 1]) ["local.get" "$need"]))
+        ["block"
+         ["if" ["i64.gt_u" ["local.get" "$need"] ["i64.const" "4294967264"]]
+          ["then" (repr-read (linear-fail "lower-wasm: linear allocator exhausted"))]]
+         ["local.set" "$lin_quote_buffer" ["call" (linear-array-new! "$Bytes") ["i32.wrap_i64" ["local.get" "$need"]]]]]
+        (and (= op "i32.store8") (string? (second node)) (str/starts-with? (second node) "offset="))
+        (let [off (parse-long (subs (second node) 7))]
+          (when-not (<= 32 off 37) (fail "unsupported op quoted output store under linear" {}))
+          [op (payload (- off 32) (linear-quote-node (nth node 2))) (linear-quote-node (nth node 3))])
+        (and (= op "call") (= (second node) "$print_str") (= (nth node 2) ["i32.const" "32"]))
+        (let [len (linear-quote-node (nth node 3))]
+          ["block" ["i32.store" "offset=12" buf len]
+           ["call" "$print_str" (payload 0 ["i32.const" "0"]) len]])
+        :else (into [op] (mapv linear-quote-node (rest node)))))))
+(defn linear-quoted-output [f]
+  (let [parts (mapv linear-quote-node (rest f))
+        declaration? (fn [slot]
+                       (or (and (string? slot) (str/starts-with? slot "$"))
+                           (and (vector? slot) (contains? #{"export" "type" "param" "result" "local"} (first slot)))))
+        header (take-while declaration? parts)]
+    (into ["func"] (concat header [["local" "$lin_quote_buffer" "i32"]] (drop (count header) parts)))))
 
 ))
 (def linear-representation-ready (atom false))
