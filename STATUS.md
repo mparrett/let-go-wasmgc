@@ -148,41 +148,31 @@ TOTAL ≈ $1,227
 
 ## Linear target — 2026-10-03
 
-| item | state | note |
-|---|---|---|
-| P8.0 | PASS | 2026-10-03: frozen pre-change scalar and eval GC binary guard; compare default and explicit GC |
-| P8.1 | PASS | 2026-10-03: driver target selection, precedence and isolated runtime cache keys; unfinished linear output refused by op name |
-| P8.2 | PASS | 2026-10-03: linear module skeleton and bump allocator; validate with GC disabled |
-| P8.3 | PASS | 2026-10-03: completed families through array.new_fixed validate with GC disabled; wazero prototypes exercise field reads and caught named errors |
+Milestone implementation and the existing corpus selection are complete (2026-10-03). WasmGC remains the default. Every MATCH below comes from native lg through checks/oracle.sh and checks/wasm-run-linear.sh.
 
-- 2026-10-03: linear cast-types checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
+| date | item | result | evidence |
+|---|---|---|---|
+| 2026-10-03 | P8.0 | PASS | All 18 frozen scalar/eval programs byte-identical with default and explicit GC after every emitter checkpoint. |
+| 2026-10-03 | P8.1 | PASS | Target precedence, invalid targets, named refusals and target-separated caches. |
+| 2026-10-03 | P8.2 | PASS | Numeric types, memory, table, nominal headers and leaking allocator validate with GC disabled. |
+| 2026-10-03 | P8.3 | PASS | Completed census families, cast branches and stack operands validate and execute under GC-disabled wazero. |
+| 2026-10-03 | P8.4 | PASS | Host-buffer growth/retry/shrink probe preserves input names and final payload. |
+| 2026-10-03 | P8.5 | MATCH | Native oracle for scalar/fib through the production linear runner. |
+| 2026-10-03 | P8.6 | 4/4 MATCH | corpus/scalar |
+| 2026-10-03 | P8.7 | 40/40 MATCH | corpus/opmatrix 39/39; corpus/typed 1/1; 3 existing division SKIPs under D177. |
+| 2026-10-03 | P8.8 | 16/16 MATCH | corpus/control |
+| 2026-10-03 | P8.9 | 13/13 MATCH | corpus/closure |
+| 2026-10-03 | P8.10 | 4/4 MATCH | corpus/seqs |
+| 2026-10-03 | P8.11 | PASS | Direct/function-value general integer division refused by :div; typed floating division compile check. |
+| 2026-10-03 | P8.12 | MATCH | Native argv flags and 70000-byte host inputs with direct, vector-quoted and direct prn output. |
 
-- 2026-10-03: linear stack-ops checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
-
-- 2026-10-03: linear br-cast checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
-
-- 2026-10-03: linear host imports and quoted output use owned payloads; growing/shrinking host-buffer structural checks, target checks and all frozen GC comparisons passed. Corpus acceptance remains pending.
-
-- 2026-10-03: linear runtime-paths checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
-
-- 2026-10-03: linear division-refuse checkpoint passed structural validation, target checks and all frozen GC comparisons. Corpus acceptance remains pending.
-
-- 2026-10-03: production linear runner passed executable GC-disabled representation and host-buffer probes; fib, argv flags, and large direct/quoted output MATCH native through checks/oracle.sh. Target checks and all frozen GC comparisons passed. Directory acceptance remains pending.
-
-- 2026-10-03 P8.6: 4/4 MATCH under the linear runner, using native lg through checks/oracle.sh.
-
-- 2026-10-03 P8.7: 40/40 MATCH under the linear runner, using native lg through checks/oracle.sh.
-
-- 2026-10-03 P8.8: 16/16 MATCH under the linear runner, using native lg through checks/oracle.sh.
-
-- 2026-10-03 P8.9: 13/13 MATCH under the linear runner, using native lg through checks/oracle.sh.
-
-- 2026-10-03 P8.10: 4/4 MATCH under the linear runner, using native lg through checks/oracle.sh.
-
-- 2026-10-03: identical-source-snapshot helper-selection comparison for the linear argv fixture: raw unoptimized module 12032 to 277084 bytes, both validating with GC disabled and independent fresh caches. The earlier minimal-printer selection is the reported reachability error; its size is not a behavioral MATCH claim.
-
-- 2026-10-03: final GC gate 1 passed all 8 rows with LW_ATTEST=0, after required linear corpus acceptance.
-
-- 2026-10-03: configured P7.4 and P7.5 passed individually and again within the ongoing final gate. Regenerated dated GC browser size/boot reports are in corpus/legmacs/size-boot.md and corpus/xsofy/size-boot.md; complete gate 7 is still pending.
-
-- 2026-10-03: final GC gate 7 passed all 11 rows with LW_ATTEST=0 and configured external browser tools; initial dependency-resolution failures are recorded under D179. P7.1 retains its existing 28/30 threshold with 2 known mismatches.
+- 2026-10-03: GC gate 1 passed all 8 rows with LW_ATTEST=0; only the required GC gates ran.
+- 2026-10-03: GC gate 7 passed all 11 rows with LW_ATTEST=0; only the required GC gates ran.
+- 2026-10-03: named compile refusals are pinned in corpus/refused/linear/: array.fill, flat ref.null, direct :div and function-value :div. Unsupported operations produce no GC fallback.
+- 2026-10-03: div-1.lg, div-2.lg and recip.lg remain excluded by the existing opmatrix/SKIP selection (D177); they are not MATCH claims. General Ratio/BigInt division is a compile limit. Allocation is non-moving and leaking; exhaustion is a managed error.
+- 2026-10-03: structural allocator measurements returned addresses 131072 and 201072 and grew memory to 327680 bytes. These are structural measurements, not native-oracle matches.
+- 2026-10-03: D178 helper selection increases the raw, unoptimized linear argv fixture from 12032 to 277084 bytes. Both snapshots use independent fresh runtime caches and validate with GC disabled; only helper selection differs. The earlier selection has the reported printer-reachability error. This is a size comparison, not a behavioral match for the earlier snapshot.
+- 2026-10-03: the initial GC gate 7 failed P7.4 and P7.5 on legacy browser-tool paths. D179 adds explicit LW_BROWSER_TOOLS configuration; focused rows and the complete configured rerun passed with unchanged browser assertions. P7.1 retains its existing 28/30 threshold and 2 known mismatches, which are not MATCH claims.
+- 2026-10-03: existing GC runtime-cache restore variance and the bare os/args printer-reachability issue remain reported in the PR; their GC behavior is preserved. Neither blocked the required final gates.
+- 2026-10-03: GC legmacs boot/size rerun: lower-wasm module alone: 2,265,456 B as emitted, 686,520 B after `wasm-opt -O3` (served), 170,576 B brotli, 206,572 B gzip. Bundle raw/brotli/gzip: 707 KB, 178 KB, 215 KB; median title-or-boot / first frame: 128 ms / 128 ms. Full dated runs: corpus/legmacs/size-boot.md.
+- 2026-10-03: GC xsofy boot/size rerun: Lane 5 module alone: 1,920,368 B as emitted, 430,783 B after `wasm-opt -O3` (served), 115,153 B brotli, 137,162 B gzip. Bundle raw/brotli/gzip: 521 KB, 147 KB, 174 KB; median title-or-boot / first frame: 4060 ms / 5144 ms. Full dated runs: corpus/xsofy/size-boot.md.
