@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
   pull_request:
+concurrency:
+  group: publish-check-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   publish-check:
     runs-on: ubuntu-latest
@@ -13,8 +16,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: install ripgrep
-        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
       - name: publish check
         env:
           PUBLISH_CHECK_TERMS: ${{ secrets.PUBLISH_CHECK_TERMS }}

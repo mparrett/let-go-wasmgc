@@ -14,10 +14,11 @@ cd "$(dirname "$0")/.."
 [ -n "${PUBLISH_CHECK_TERMS:-}" ] || { echo "publish-check: PUBLISH_CHECK_TERMS is unset" >&2; exit 2; }
 allow=${PUBLISH_CHECK_ALLOW:-'^$'}
 base=${1:-}
-# --max-columns=0: a ripgrep config may truncate long lines and hide a match.
-files=$(git ls-files -z | grep -z -v -E '\.(wasm|png|woff2?)$' | xargs -0 rg -n -i --max-columns=0 -e "$PUBLISH_CHECK_TERMS" 2>/dev/null | rg -v --max-columns=0 -e "$allow")
+# grep, not rg: present on every CI runner, and a user ripgrep config could
+# truncate long lines and hide a match.
+files=$(git ls-files -z | grep -z -v -E '\.(wasm|png|woff2?)$' | xargs -0 grep -n -i -E -e "$PUBLISH_CHECK_TERMS" 2>/dev/null | grep -v -E -e "$allow")
 range=HEAD; [ -n "$base" ] && range="$base..HEAD"
-msgs=$(git log --format='%h %s%n%b' "$range" -- . 2>/dev/null | rg -n -i --max-columns=0 -e "$PUBLISH_CHECK_TERMS")
+msgs=$(git log --format='%h %s%n%b' "$range" -- . 2>/dev/null | grep -n -i -E -e "$PUBLISH_CHECK_TERMS")
 rc=0
 if [ -n "$files" ]; then echo "publish-check: files:" >&2; echo "$files" | cut -c1-200 >&2; rc=1; fi
 if [ -n "$msgs" ]; then echo "publish-check: commit messages ($range):" >&2; echo "$msgs" | cut -c1-200 >&2; rc=1; fi
