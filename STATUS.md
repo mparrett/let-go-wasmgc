@@ -172,3 +172,5 @@ TOTAL ≈ $1,227
 - 2026-10-03 P8.6: 4/4 MATCH under the linear runner, using native lg through checks/oracle.sh.
 
 - 2026-10-03 P8.7: 40/40 MATCH under the linear runner, using native lg through checks/oracle.sh.
+
+- 2026-10-03 P8.8: 16/16 MATCH under the linear runner, using native lg through checks/oracle.sh.

@@ -11,9 +11,11 @@
 
 - P8.7: 40/40 MATCH (2026-10-03).
 
+- P8.8: 16/16 MATCH (2026-10-03).
+
 ## In progress
 - Representation families, cast refinements, host twins and runner are pushed with GC byte identity green (2026-10-03).
-- Exact next command (2026-10-03): `LW_PAR=1 LW_ATTEST=0 checks/run.sh P8.7`
+- Exact next command (2026-10-03): `LW_PAR=1 LW_ATTEST=0 checks/run.sh P8.8`
 - Corpus rows are acceptance checks, not current MATCH claims (2026-10-03).
 - Final GC gates remain pending until every required linear corpus passes (2026-10-03).
 
