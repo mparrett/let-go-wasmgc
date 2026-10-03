@@ -4,17 +4,20 @@
 - Read README.md, docs/READING-GUIDE.md and docs/LINEAR-TARGET-SPEC.md in order.
 - Branch `linear-target-m1`; draft PR https://github.com/mparrett/let-go-wasmgc/pull/1 .
 - Target/cache, frozen GC guard, shared representation, numeric module and leaking allocator are pushed (2026-10-03).
-- Census families through call_ref are pushed as `6e8be45`; default/explicit GC byte checks and publish CI passed (2026-10-03).
+- Census families through array.get are pushed as `97e948c`; default/explicit GC byte checks and publish CI passed (2026-10-03).
 - D172-D177 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- Census family array.get: passed structural execution, target checks and all frozen GC comparisons (2026-10-03).
+- Census family array.new_fixed: passed structural execution, target checks and all frozen GC comparisons (2026-10-03).
 - Exact next command (2026-10-03): `git push origin linear-target-m1`
 - Sequential checkpoint command: `/tmp/linear-m1-next-arrays.sh`; stop on any failure (2026-10-03).
 - Remaining census drafts, imported function signatures, cast branches and host-buffer retries passed GC-disabled preflight (2026-10-03).
 - Complete temporary draft with the full runtime produced native-oracle MATCH for corpus/scalar/fib.clj (2026-10-03); committed corpus acceptance remains pending.
 - Remaining family drafts: `/tmp/linear-*-family.lg`; temporary runner draft: `/tmp/linear-m1-runner-draft/` (2026-10-03).
 - Pinned compile refusal: array.fill in corpus/refused/linear/array-fill.wat (2026-10-03).
+
+- Complete temporary draft: selected opmatrix, control, closure and seqs produced 39, 16, 13 and 4 native-oracle MATCH respectively; exclusions were printed separately (2026-10-03).
+- Combined representation execution preflight passed with GC disabled, including implicit cast branches and single evaluation (2026-10-03).
 
 ## Open questions
 - Original runtime cache omits variadic dispatch state on restore; reported in the PR, the team is investigating. Keep GC output unchanged.

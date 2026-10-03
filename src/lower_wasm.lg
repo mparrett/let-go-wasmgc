@@ -4548,6 +4548,18 @@
     (let [tn (second node) tp (:elem (get (:layouts *linear-state*) tn))]
       [(str tp ".load") ["call" (linear-array-address! tn) (nth args 1) (nth args 2)]])))
 
+(defn linear-array-fixed! [tn n]
+  (let [nm (str (repr-name "array_fixed" tn) "_" n)]
+    (linear-helper! nm
+      (fn []
+        (let [tp (:elem (get (:layouts *linear-state*) tn)) width (repr-width tp) argtype (if (= tp "i8") "i32" tp)]
+          (str "(func " nm (apply str (map (fn [i] (repr-param i argtype)) (range n))) " (result i32) (local $obj i32)"
+               " (local.set $obj (call " (linear-array-new! tn) " " (repr-const n) "))"
+               (apply str (map (fn [i] (str " " (linear-store tp (+ 16 (* i width)) "(local.get $obj)" (repr-local i)))) (range n)))
+               " (local.get $obj))"))))))
+(swap! linear-instructions assoc "array.new_fixed"
+  (fn [node args] (into ["call" (linear-array-fixed! (second node) (parse-long (nth node 2)))] (drop 2 args))))
+
 ))
 (def linear-representation-ready (atom false))
 
