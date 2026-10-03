@@ -1,39 +1,49 @@
 ;; Structural probes for completed instruction families (2026-10-03).
 (require 'lower-wasm)
+(require '[clojure.string :as str])
+
+(def probes
+ '[
+  (func $fixnum (export "fixnum") (result i32) (ref.cast (ref i31) (i32.const 3)))
+  (func $nullable (export "nullable") (result i32) (ref.cast (ref null eq) (i32.const 0)))
+  (func $boolean (export "boolean") (result i32) (ref.cast (ref $Bool) (i32.const 65536)))
+  (func $field (export "field") (result i64) (struct.get $Bool 0 (ref.cast (ref $Bool) (i32.const 65536))))
+  (func $nullfield (export "nullfield") (result i64) (struct.get $Bool 0 (i32.const 0)))
+  (func $nil (export "nil") (result i32) (ref.null none))
+  (func $test-fixnum (export "test-fixnum") (result i32) (ref.test (ref i31) (i32.const -1)))
+  (func $test-nil (export "test-nil") (result i32) (ref.test (ref null i31) (ref.null none)))
+  (func $test-bool (export "test-bool") (result i32) (ref.test (ref $Bool) (i32.const 65536)))
+  (func $test-wrong (export "test-wrong") (result i32) (ref.test (ref $Bytes) (i32.const 65536)))
+  (func $test-invalid (export "test-invalid") (result i32) (ref.test (ref $Bool) (i32.const -8)))
+  (func $new-int (export "new-int") (result i64) (struct.get $Int 0 (struct.new $Int (i64.const -7))))
+  (func $new-list-kind (export "new-list-kind") (result i32) (i32.load (struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none))))
+  (func $new-list-count (export "new-list-count") (result i64) (struct.get $List 2 (struct.new $List (ref.null none) (ref.null none) (i64.const 42) (ref.null none))))
+  (func $new-subtype (export "new-subtype") (result i32) (ref.test (ref $Fn) (struct.new $FnV (ref.null nofunc) (ref.null nofunc) (ref.null nofunc) (ref.null none) (ref.null nofunc) (ref.null nofunc) (ref.null none) (i64.const 0) (ref.null nofunc) (i32.const 0))))
+  (func $array-length (export "array-length") (param $a (ref $Bytes)) (result i32) (array.len (local.get $a)))
+  (func $i31-zero (export "i31-zero") (result (ref i31)) (ref.i31 (i32.const 0)))
+  (func $i31-max (export "i31-max") (result (ref i31)) (ref.i31 (i32.const 1073741823)))
+  (func $i31-min (export "i31-min") (result (ref i31)) (ref.i31 (i32.const -1073741824)))
+  (func $i31-wrap (export "i31-wrap") (result (ref i31)) (ref.i31 (i32.const 2147483647)))
+  (func $null-yes (export "null-yes") (result i32) (ref.is_null (ref.null none)))
+  (func $null-zero (export "null-zero") (result i32) (ref.is_null (ref.i31 (i32.const 0))))
+  (func $null-bool (export "null-bool") (result i32) (ref.is_null (i32.const 65560)))
+  (func $nonnull-zero (export "nonnull-zero") (result (ref eq)) (ref.as_non_null (ref.i31 (i32.const 0))))
+  (func $nonnull-bool (export "nonnull-bool") (result (ref eq)) (ref.as_non_null (i32.const 65560)))
+  (func $nonnull-error-kind (export "nonnull-error-kind") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (drop (ref.as_non_null (ref.null none)))) (ref.null none))))
+  (func $new-arr-len (export "new-arr-len") (result i32) (array.len (array.new_default $Bytes (i32.const 7))))
+  (func $new-arr-zero (export "new-arr-zero") (result i64) (i64.load offset=16 (array.new_default $Bytes (i32.const 8))))
+  (func $new-arr-type (export "new-arr-type") (result i32) (ref.test (ref $Bytes) (array.new_default $Bytes (i32.const 0))))
+  (func $new-arr-grow (export "new-arr-grow") (result i32) (array.len (array.new_default $Bytes (i32.const 65536))))
+  (func $failed (export "failed") (result i32) (ref.cast (ref $Bool) (i32.const 3)))
+])
+
+(defn form-wat [node]
+ (if (sequential? node) (str "(" (str/join " " (map form-wat node)) ")")
+  (if (string? node) (str "\"" (lower-wasm/wat-str node) "\"") (str node))))
+
 (lower-wasm/with-session*
  (lower-wasm/new-session {} {} {:target :linear})
  (fn []
   (spit (first *command-line-args*)
    (lower-wasm/representation-wat
-    (str "(module " (lower-wasm/rec-group)
-     " (func $fixnum (export \"fixnum\") (result i32) (ref.cast (ref i31) (i32.const 3)))"
-     " (func $nullable (export \"nullable\") (result i32) (ref.cast (ref null eq) (i32.const 0)))"
-     " (func $boolean (export \"boolean\") (result i32) (ref.cast (ref $Bool) (i32.const 65536)))"
-     " (func $field (export \"field\") (result i64) (struct.get $Bool 0 (ref.cast (ref $Bool) (i32.const 65536))))"
-     " (func $nullfield (export \"nullfield\") (result i64) (struct.get $Bool 0 (i32.const 0)))"
-     " (func $nil (export \"nil\") (result i32) (ref.null none))"
-     " (func $test-fixnum (export \"test-fixnum\") (result i32) (ref.test (ref i31) (i32.const -1)))"
-     " (func $test-nil (export \"test-nil\") (result i32) (ref.test (ref null i31) (ref.null none)))"
-     " (func $test-bool (export \"test-bool\") (result i32) (ref.test (ref $Bool) (i32.const 65536)))"
-     " (func $test-wrong (export \"test-wrong\") (result i32) (ref.test (ref $Bytes) (i32.const 65536)))"
-     " (func $test-invalid (export \"test-invalid\") (result i32) (ref.test (ref $Bool) (i32.const -8)))"
-     " (func $new-int (export \"new-int\") (result i64) (struct.get $Int 0 (struct.new $Int (i64.const -7))))"
-     " (func $new-list-kind (export \"new-list-kind\") (result i32) (i32.load (struct.new $List (ref.null none) (ref.null none) (i64.const 0) (ref.null none))))"
-     " (func $new-list-count (export \"new-list-count\") (result i64) (struct.get $List 2 (struct.new $List (ref.null none) (ref.null none) (i64.const 42) (ref.null none))))"
-     " (func $new-subtype (export \"new-subtype\") (result i32)"
-     " (ref.test (ref $Fn) (struct.new $FnV (ref.null nofunc) (ref.null nofunc) (ref.null nofunc) (ref.null none)"
-     " (ref.null nofunc) (ref.null nofunc) (ref.null none) (i64.const 0) (ref.null nofunc) (i32.const 0))))"
-     " (func $array-length (export \"array-length\") (param $a (ref $Bytes)) (result i32) (array.len (local.get $a)))"
-     " (func $i31-zero (export \"i31-zero\") (result (ref i31)) (ref.i31 (i32.const 0)))"
-     " (func $i31-max (export \"i31-max\") (result (ref i31)) (ref.i31 (i32.const 1073741823)))"
-     " (func $i31-min (export \"i31-min\") (result (ref i31)) (ref.i31 (i32.const -1073741824)))"
-     " (func $i31-wrap (export \"i31-wrap\") (result (ref i31)) (ref.i31 (i32.const 2147483647)))"
-     " (func $null-yes (export \"null-yes\") (result i32) (ref.is_null (ref.null none)))"
-     " (func $null-zero (export \"null-zero\") (result i32) (ref.is_null (ref.i31 (i32.const 0))))"
-     " (func $null-bool (export \"null-bool\") (result i32) (ref.is_null (i32.const 65560)))"
-     " (func $nonnull-zero (export \"nonnull-zero\") (result (ref eq)) (ref.as_non_null (ref.i31 (i32.const 0))))"
-     " (func $nonnull-bool (export \"nonnull-bool\") (result (ref eq)) (ref.as_non_null (i32.const 65560)))"
-     " (func $nonnull-error-kind (export \"nonnull-error-kind\") (result i32)"
-     " (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught)"
-     " (drop (ref.as_non_null (ref.null none)))) (ref.null none))))"
-     " (func $failed (export \"failed\") (result i32) (ref.cast (ref $Bool) (i32.const 3))))")))))
+    (str "(module " (lower-wasm/rec-group) " " (str/join " " (map form-wat probes)) ")")))))

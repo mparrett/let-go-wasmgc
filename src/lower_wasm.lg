@@ -4394,6 +4394,24 @@
 (swap! linear-instructions assoc "ref.as_non_null"
   (fn [node args] (into ["call" (linear-non-null!)] args)))
 
+(defn linear-array-new! [tn]
+  (let [nm (repr-name "array_new" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn) width (repr-width (:elem layout))
+              p "(local.get $obj)"]
+          (str "(func " nm " (param $p0 i32) (result i32) (local $sz i64) (local $obj i32)"
+               " (local.set $sz (i64.add (i64.const 16) (i64.mul (i64.extend_i32_u (local.get $p0)) (i64.const " width "))))"
+               " (if (i64.gt_u (local.get $sz) (i64.const 4294967280)) (then " (linear-fail "lower-wasm: linear allocator exhausted") "))"
+               " (local.set $obj (call $lin_alloc (i32.wrap_i64 (local.get $sz))))"
+               " " (linear-store "i32" 0 p (repr-const (:kind layout)))
+               " " (linear-store "i32" 4 p "(i32.and (i32.add (i32.wrap_i64 (local.get $sz)) (i32.const 7)) (i32.const -8))")
+               " " (linear-store "i32" 8 p (repr-const (:id layout)))
+               " " (linear-store "i32" 12 p (repr-local 0))
+               " " p ")"))))))
+(swap! linear-instructions assoc "array.new_default"
+  (fn [node args] ["call" (linear-array-new! (second node)) (last args)]))
+
 ))
 (def linear-representation-ready (atom false))
 
