@@ -1,34 +1,237 @@
-# lower-wasm — campaign scaffold (2026-09-30)
+# let-go-wasmgc
 
-Plan: `docs/project_incoming/letgo-emit-wasm-plan-2026-09-30.md` (skunkworks;
-see its first section before writing anything outbound). Probe and prep
-measurements: `../emit-wasm-probe/`. P1.0 moves the probe's walker in here.
+An experimental backend for [let-go](https://github.com/nooga/let-go), a
+Clojure dialect, that compiles let-go's optimizer IR to WebAssembly GC
+(WasmGC). A program becomes one wasm module whose functions are real wasm
+functions over GC structs, with the let-go runtime it needs compiled in.
+The runtime is itself written in let-go (`rt/wasm/*.lg`) and goes through
+the same backend. A closure-compiling evaluator in that runtime gives
+compiled programs a working `eval`.
 
-- `checks/items.tsv` — the work queue and the definition of done: one row per
-  item, with the exact command whose exit 0 means done. `checks/run.sh <id>`
-  runs one; `checks/gate.sh <phase>` runs a phase. Exit 2 = the check is not
-  built yet, which is the implementer's job alongside the feature.
-- `checks/oracle.sh` — the single match relation (stdout bytes + exit class +
-  normalised first error line). Every "MATCH" in items.tsv means this script.
-- Check speed (D106): `checks/sem.sh <cmd>` is a machine-wide pool of
-  `LW_SLOTS` (default 4) heavy-process slots under `${TMPDIR:-/tmp}/lw-sem`
-  (set `LW_SEM` to one path if agents' TMPDIRs differ); wrap leaves, not
-  orchestrators. `run-corpus.sh` (`LW_PAR`, default 3, 1 = serial),
-  `run-intrinsics-native.sh` (`LW_PAR`, default 4, one lg per test file, count
-  guard per file and in total), `census.sh` (`CENSUS_SHARDS`, default 4; cache
-  keyed by a content hash in `corpus/census/<corpus>.key`) and `gate.sh`
-  (`LW_GATE_J`, default 2; each row's output kept in
-  `${TMPDIR}/lw-gate-<phase>/<id>.log`) fan out through it and print what the
-  serial runs printed. `checks/affected.sh` lists the rows a diff touches
-  (advisory; gates stay full). `LW_RTLIB_DIR=<absolute dir>` moves the runtime
-  library cache off `src/.rtlib` so tree copies on the same sources share one
-  build (content-addressed; a build prunes other keys in that dir, so copies
-  on different sources evict each other).
-- `corpus/` — materialised inputs: `scalar/` (let-go's fib, tak, loop-recur),
-  `closure/closures.lg` (passes under native lg, 2026-09-30), `core-tests.txt`
-  (44 let-go test files / 273 deftests selected by `select-core-tests.sh`,
-  rerun when let-go moves), `dump-world.lg` (the Phase 3 canonical world dump:
-  reproducible, 0 opaque values, ~0.7 s and ~21 KB per 60-turn world under
-  native lg on 2026-09-30).
-- `STATUS.md`, `DECISIONS.md` — created by the orchestrator at P1.0; the
-  only two files it owns besides the plan.
+This is an experiment, not part of let-go. Stock `lg -w` builds a wasm
+module that runs let-go's bytecode VM inside wasm; this backend does not use
+the VM at all. Every result here is measured against native `lg` by a
+differential check (see "Checks"), and the design record is
+[DECISIONS.md](DECISIONS.md), numbered D10 to D169.
+
+## Status (as of 2026-10-02)
+
+- **xsofy** (a roguelike) is playable from the emitted module in the browser
+  and in a terminal under node. Its world dumps for seeds 1 to 20 at 60 turns
+  are byte-identical to native lg, and a scripted screen dump matches the
+  stock build at seed 424242.
+- **legmacs** (an Emacs-like editor) boots in the browser and under node.
+  316 of its 373 deftests pass under the backend, and 28 of its 30 eval
+  tests pass with the in-module evaluator. Typing a `defn` into `*scratch*`
+  and evaluating it with `C-x C-e` works.
+- **let-go's own core tests**: 271 of the 273 selected deftests pass, with
+  the two remaining ones skipped by name.
+- **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
+  the module.
+- Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0`. The evaluator's
+  core table gained entries afterwards (bit ops, `Math/*`, clocks), and
+  gate 7 has not been rerun since (D169).
+
+Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-02:
+
+| module | brotli |
+|---|---|
+| legmacs, with the evaluator | 166 KB |
+| legmacs, `LW_NO_EVAL=1` | 120 KB |
+| xsofy | 115 KB |
+| REPL page module | 77 KB |
+
+Named limits, as of 2026-10-02: Ratio and BigInt results are named errors
+(D15); `go` blocks and channels are not supported, and `future` runs its
+body at the call (D162); the evaluator has no interop, `deftype`,
+`defprotocol` or `defmulti` (D160). [FINDINGS.md](FINDINGS.md) lists native
+let-go behaviours we met along the way.
+
+## Prerequisites
+
+The checks and build scripts assume a specific machine layout. Defaults
+are hard-coded to paths under `$HOME/projects-new/3p/`; most can be
+overridden by an environment variable, one cannot (noted below).
+
+- **Native lg built from let-go commit 4e76921.** The default is
+  `$HOME/projects-new/3p/lg-bin/lg-4e76921230`; set `LG` to use another
+  path. The driver runs under this lg and uses let-go's IR passes from it.
+- **A let-go git checkout at `$HOME/projects-new/3p/let-go`** that contains
+  commit 4e769212. `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg` at that
+  commit with `git show`; this path is not overridable yet.
+- **wasm-tools** on `PATH` (WAT to binary).
+- **binaryen's wasm-opt** at `/opt/homebrew/opt/binaryen/bin/wasm-opt`, used
+  by the module build scripts in `host/`. `LW_NO_OPT=1` skips it.
+- **brotli**, for the size lines the build scripts print.
+- **node** with WasmGC, wasm exception handling and JSPI. We develop on
+  node 25. `src/run.mjs` and `host/node-host.mjs` set their own stack sizes.
+- **Chromium through Playwright** for the browser checks
+  (`checks/browser-boot.sh`, `checks/repl-page-check.mjs`). These currently
+  resolve Playwright from `../../../local-scripts/browser-smoke-playwright`
+  relative to `checks/`, a path outside this repo.
+- **xsofy and legmacs checkouts** for those corpora, defaulting to
+  `$HOME/projects-new/3p/xsofy` and `$HOME/projects-new/3p/legmacs`
+  (`XSOFY`, `LEGMACS`). Multi-namespace programs name their source roots
+  through `LG_ARGS`, as row P7.3 in `checks/items.tsv` does:
+  `env LG_ARGS="-source-paths $HOME/projects-new/3p/legmacs" checks/run-corpus.sh corpus/eval-buffer`.
+
+Environment variables that matter:
+
+| variable | effect |
+|---|---|
+| `LG` | native lg used by the driver and as the oracle's reference |
+| `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |
+| `LW_NO_EVAL=1` | build without the evaluator and the program table (D163) |
+| `LW_NO_OPT=1` | skip wasm-opt in the module build scripts in `host/` |
+| `LW_MODULE_CACHE=<dir>` | `checks/wasm-run.sh` reuses the compiled module of an unchanged program |
+| `LW_RTLIB_DIR=<abs dir>` | where the compiled runtime library is cached (default `src/.rtlib`) |
+| `LW_ATTEST=0` | make `checks/gate.sh` rerun every row instead of skipping attested ones |
+| `XSOFY_DEV=1` | read by xsofy through `os/getenv`; under `host/node-host.mjs` it opens xsofy's dev console |
+| `XSOFY`, `LEGMACS`, `LETGO` | checkout locations for the corpora and some host scripts |
+
+## Quick start
+
+Run from the repo root. The first compile after any change to `src/` or
+`rt/` builds the runtime library, which took about 90 s as of 2026-10-02;
+later compiles reuse it.
+
+Compile and run one program under node:
+
+```sh
+checks/wasm-run.sh corpus/scalar/fib.clj
+```
+
+Compare it against native lg (prints `MATCH` or `MISMATCH <what>`):
+
+```sh
+WASM_RUN=checks/wasm-run.sh checks/oracle.sh corpus/scalar/fib.clj
+```
+
+Run a gate (here phase 1), rerunning every row:
+
+```sh
+LW_ATTEST=0 checks/gate.sh 1
+```
+
+Build and serve the REPL page, then open http://localhost:8262/repl.html.
+JSPI needs no cross-origin isolation headers (D91), so a plain static server
+works:
+
+```sh
+host/build-repl-serve.sh /tmp/lw-repl
+python3 -m http.server 8262 -d /tmp/lw-repl
+```
+
+Play xsofy in a terminal, with its dev console enabled (backtick opens it):
+
+```sh
+mkdir -p /tmp/lw-play
+host/build-xsofy-module.sh /tmp/lw-play/xsofy.wasm
+XSOFY_DEV=1 node host/node-host.mjs /tmp/lw-play/xsofy.wasm --url seed=424242
+```
+
+Run legmacs in a terminal (`C-x C-e` evaluates, `C-x C-c` quits):
+
+```sh
+host/build-legmacs-module.sh /tmp/lw-play/legmacs.wasm
+node host/node-host.mjs /tmp/lw-play/legmacs.wasm
+```
+
+## Layout
+
+- `src/` the compiler
+  - `src/driver.lg` reads a program, evaluates its defns in-process so let-go's
+    IR builder resolves vars, runs the IR pipeline per defn and writes one
+    WAT module. Usage: `lg -source-paths src src/driver.lg <prog.lg> <out.wat>`.
+  - `src/lower_wasm.lg` walks the structured IR control tree and emits WasmGC
+    text: values, closures, the var table, exception handling, tail calls.
+  - `src/lw_rt.lg` loads `rt/wasm/*.lg` in load order, indexes its types, defns
+    and twins, and caches the compiled runtime library.
+  - `src/lw_ext.lg` let-go code the backend compiles for natives the runtime has
+    no form for (variadic uses, a regex engine, format, JSON).
+  - `src/run.mjs` runs a module like `lg` runs a program: stdout, exit status,
+    `error: <message>` on an uncaught exception.
+  - `src/testshim.lg` the minimal `test` namespace for compiled test files.
+- `rt/wasm/` the runtime, in let-go. A defn marked `^{:twin "core/first"}`
+  claims the let-go native it replaces, and the backend routes calls to that
+  native to the marked defn (D58). The files load as one runtime under native
+  lg as well, with `intrinsics.lg` as a reference implementation of the wasm
+  instructions, so the runtime is tested natively before it is compiled.
+  `rt/wasm/README.md` has the load-order table, the value kind table and the
+  declared differences from native.
+- `host/` JS hosts (`lg-wasm-host.js`, `node-host.mjs`), the import ABI
+  (`ABI.md`), the REPL, xsofy and legmacs pages, and their build scripts.
+- `checks/` the oracle, the row table `items.tsv`, the gate runner and the
+  check scripts.
+- `corpus/` inputs and expected outputs for every check, one directory per
+  area, plus review corpora and recorded results.
+- `tools/` the native inventory and twin manifest (which natives a program
+  reaches that the runtime does not provide).
+- `DECISIONS.md` the design record. `STATUS.md` the dated row table of work
+  items. `FINDINGS.md` things learned that are not decisions.
+  `EVAL-NATIVE-SPEC.md` a work order for running the evaluator outside wasm.
+
+## Design in brief
+
+- **One module per program** (D10). Top-level defns are exported functions;
+  other top-level forms run in order in an exported `_main`. An op, constant
+  or control shape the backend does not handle is a named compile error, not
+  a fallback; `corpus/refused` pins those.
+- **Integers are hybrid** (D41): `ref.i31` when the value fits 31 bits
+  signed, otherwise an `$Int` box. The form is canonical, so equality and
+  hashing can rely on it. Booleans are two singleton globals (D22).
+- **All runtime types sit in one rec group** (D25), so structs of the same
+  shape stay distinct under `ref.test`. let-go `try`/`throw` lower to wasm
+  exception handling; `wasm/trap` is kept for internal invariants.
+- **Closures** are `$Fn` structs with one code ref per arity and an env
+  field (D52); variadics and arities above 4 extend that layout (D83, D150).
+- **Native quirks are reproduced, not fixed** (D16): the backend matches
+  native lg's overflow, shift and error-text behaviour.
+- **Host imports** are a small ABI (D88, `host/ABI.md`): print and write,
+  sleep, clocks, getenv, and terminal key and size imports. Blocking imports
+  (`sleep`, `read_key`) suspend through JSPI, which needs no COOP/COEP (D91).
+- **The match relation** (D12, D13): `checks/oracle.sh` runs a program under
+  native lg and through the backend and reports MATCH only when stdout is
+  byte-identical, the exit class agrees, and on failure the normalised first
+  error line agrees. `.expected` files are snapshots of native output,
+  checked first so drift in lg is caught.
+- **eval**: `rt/wasm/eval.lg` is a closure-compiling evaluator over reader
+  data with let-go's special forms, its core macros as expanders and a core
+  table (D160). When a program names `eval` or `*ns*`, `_main` switches to
+  the program's namespace and installs a program table of its namespaces,
+  vars and macros, so evaluated code resolves the program's own vars (D161).
+  `LW_NO_EVAL=1` leaves out the evaluator and the table; modules that never
+  reach `eval` are byte-identical either way (D163).
+
+## Where it might go
+
+Candidates, none started (as of 2026-10-02):
+
+- Faster compiles: emit binary wasm directly instead of printing and
+  reparsing WAT, and cache IR per namespace keyed by source hash.
+- `go` blocks and channels, with a scheduler on JSPI.
+- Calls through var-table slots, so an evaluated redefinition reaches
+  compiled callers.
+- A baseline compiler as a second output of the evaluator's front end, so a
+  module can compile code at run time without porting the optimizing
+  compiler.
+
+## Checks
+
+- `checks/items.tsv` has one row per work item: an id, a phase, the exact
+  command whose exit 0 means done, and a one-line definition of done.
+  `checks/run.sh <id>` runs one row. Exit 2 means the check itself is not
+  built yet.
+- `checks/gate.sh <n>` runs every row of phase n (1 to 7). Each row's output
+  is kept in `${TMPDIR:-/tmp}/lw-gate-<n>/<id>.log`. The trimmed logs of the
+  2026-10-02 gate runs are in `corpus/gates/2026-10-02-final/`.
+- `checks/oracle.sh` is the only match relation; every MATCH in `items.tsv`
+  means this script. `checks/run-corpus.sh <dir>...` runs it over a corpus
+  directory.
+- Row P1.GATE's `checks/bench-fib.sh` compares against the original probe at
+  `../emit-wasm-probe`, which is not in this repo; it fails outside the
+  workspace. Gate 1 itself does not depend on it.
+- `LW_ATTEST`: by default a gate skips rows whose inputs are unchanged since
+  their last green run on this machine (`checks/attest.sh`, keyed by the
+  input table in `checks/affected.sh`). Gate decisions are taken with
+  `LW_ATTEST=0`, which reruns everything.
