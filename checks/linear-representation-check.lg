@@ -48,6 +48,8 @@
   (func $signed-minus-one (export "signed-minus-one") (result i32) (i31.get_s (ref.i31 (i32.const -1))))
   (func $get-byte (export "get-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 1))) (array.set $Bytes (local.get $a) (i32.const 0) (i32.const 253)) (array.get_u $Bytes (local.get $a) (i32.const 0)))
   (func $get-bounds (export "get-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (drop (array.get_u $Bytes (array.new_default $Bytes (i32.const 0)) (i32.const 0)))) (ref.null none))))
+  (func $code (param $p (ref null eq)) (result (ref null eq)) (local.get $p))
+  (func $func-index (export "func-index") (result i32) (ref.test (ref $Code0) (ref.func $code)))
 ])
 
 (defn form-wat [node]

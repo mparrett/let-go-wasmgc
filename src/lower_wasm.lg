@@ -4234,7 +4234,7 @@
         taken (sort (distinct (map second (filter (fn [n] (= "ref.func" (first n))) (linear-nodes root)))))
         table (into {} (map-indexed (fn [i nm] [nm (inc i)]) taken))
         state {:layouts layouts :decls decls :table table
-               :functions (into {} (map (fn [f] [(second f) f]) (filter (fn [f] (= "func" (first f))) forms)))
+               :functions (into {} (map (fn [f] [(second f) f]) (filter (fn [f] (and (= "func" (first f)) (string? (second f)) (str/starts-with? (second f) "$"))) (linear-nodes root))))
                :helpers (atom {}) :errors (atom {}) :data (atom []) :static-top (atom 65584)}]
     (binding [*linear-state* state]
       (linear-allocator!)
@@ -4465,6 +4465,12 @@
   (fn [node args]
     (let [tn (second node)]
       ["i32.load8_u" ["call" (linear-array-address! tn) (nth args 1) (nth args 2)]])))
+
+;; On installation, collect every named func node from linear-nodes root in
+;; the :functions map, including imported funcs; top-level funcs alone omit
+;; imported-function signatures needed by code casts (2026-10-03).
+(swap! linear-instructions assoc "ref.func"
+  (fn [node args] ["i32.const" (str (get (:table *linear-state*) (second node)))]))
 
 ))
 (def linear-representation-ready (atom false))
