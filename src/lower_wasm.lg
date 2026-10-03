@@ -4487,6 +4487,9 @@
 (swap! linear-instructions assoc "return_call_ref"
   (fn [node args] (into ["return_call" (linear-indirect! (second node) true)] (rest args))))
 
+(swap! linear-instructions assoc "ref.eq"
+  (fn [node args] (into ["i32.eq"] args)))
+
 ))
 (def linear-representation-ready (atom false))
 
