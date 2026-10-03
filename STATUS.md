@@ -1,5 +1,7 @@
 # STATUS (orchestrator-owned; one line per item)
 
+These records were kept while the backend was built inside a larger workspace. They cite the campaign's plan (D1–D9), round notes (ROUND2–4), the handoff, INVENTORY and TOUR; those are working notes that stayed behind and are not in this repository. D-numbers cited from the code resolve here.
+
 | item | state | by | note |
 |---|---|---|---|
 | P1.1-corpus | done 2026-09-30 | opus | 42 programs / 8430 lines / 314 error lines; regen byte-identical; div-* skipped (D15); blocked on P1.2 for try |
