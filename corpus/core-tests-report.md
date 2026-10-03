@@ -85,7 +85,7 @@ Native lg matches every `.out` (exit 0). Strict stdout+exit: 0 / 7; stdout only:
 ## Commands
 
 ```
-S=/private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/p23
+S=/tmp/scratch/p23
 cp -R dev/lower-wasm $S/snap          # frozen tree; md5 above
 # per file, from let-go/test (cwd matters for quality_cost's ../scripts), 3 in parallel:
 cd $LW_ROOT/let-go/test

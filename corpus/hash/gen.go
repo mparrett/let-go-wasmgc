@@ -23,7 +23,7 @@ import (
 
 // letgoDir must match the replace directive in go.mod; the header records
 // its HEAD so the table names the code that produced it.
-const letgoDir = "/Users/matt/projects-new/3p/let-go"
+const letgoDir = "~/let-go"
 
 type row struct {
 	kind string

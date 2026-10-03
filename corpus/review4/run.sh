@@ -8,7 +8,7 @@
 # Results: $OUT/<name>.verdict (+ .n.out/.w.out for MISMATCHes).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-: "${LW_TREE:=/private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/ws/dev/lower-wasm}"
+: "${LW_TREE:=/tmp/scratch/ws/dev/lower-wasm}"
 : "${OUT:=$here/results}"; mkdir -p "$OUT"
 . "$(dirname "$0")/../../checks/env.sh"
 LGBIN=$LW_ROOT/lg-bin/lg-4e76921230

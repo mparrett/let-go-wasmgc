@@ -7,7 +7,7 @@
 # LG_ARGS as oracle.sh, R5_PAR programs at once (default 3).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-W=${LW_TREE:-/private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/ws/dev/lower-wasm}
+W=${LW_TREE:-/tmp/scratch/ws/dev/lower-wasm}
 export W here
 mkdir -p "$here/results"
 one() {

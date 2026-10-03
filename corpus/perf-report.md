@@ -6,7 +6,7 @@ in a scratch export of HEAD `6f107d7` (the live tree was mid-edit and its driver
 failed to load for part of the hour). Load averages are quoted with every number
 because they dominate: the same check varied **5.8×** with load alone during this
 hour. Snippets live in `$SCRATCH` =
-`/private/tmp/claude-501/-Users-matt-projects-new-3p-joint-xsofy/fca6f592-886f-4b90-9538-46a9d7127210/scratchpad/perf/`.
+`/tmp/scratch/perf/`.
 
 ## Headline
 
