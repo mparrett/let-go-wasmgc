@@ -70,7 +70,7 @@ if [ $update -eq 1 ]; then
   exit 0
 fi
 
-runner=$root/checks/wasm-run.sh
+runner=${WASM_RUN:-$root/checks/wasm-run.sh}
 par=${LW_PAR:-3}
 case $par in ''|*[!0-9]*|0) echo "LW_PAR must be a positive integer (got '$par')" >&2; exit 2;; esac
 t=$(mktemp -d)
@@ -92,7 +92,12 @@ trap 'exit 130' INT; trap 'exit 143' TERM HUP
 rtlib_warm() {
   [ "$par" -gt 1 ] && [ -x "$runner" ] || return 0
   local d=${LW_RTLIB_DIR:-$root/src/.rtlib} newest w
-  newest=$(ls -t "$d"/rtlib-*.edn 2>/dev/null | head -1)
+  # A custom runner warms its own target and owns its cache (2026-10-03).
+  if [ "$runner" != "$root/checks/wasm-run.sh" ]; then
+    "$root/checks/sem.sh" "$runner" "$root/corpus/scalar/fib.clj" >/dev/null 2>&1
+    return $?
+  fi
+  newest=$(ls -t "$d"/rtlib-${LW_TARGET:-gc}-*.edn 2>/dev/null | head -1)
   if [ -n "$newest" ] && [ -z "$(find "$root/src" "$root/rt/wasm" -name '*.lg' -newer "$newest" 2>/dev/null | head -1)" ]; then return 0; fi
   w=$(mktemp -d)
   # background + wait, so a TERM during the (long) build reaches the trap now, not after it

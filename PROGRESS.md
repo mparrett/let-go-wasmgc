@@ -8,8 +8,8 @@
 - D172-D178 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- division-refuse: passed structural verification, target checks and all frozen GC comparisons (2026-10-03).
-- Exact next command (2026-10-03): `/tmp/linear-m1-remaining.sh entry-runner`
+- entry-runner: structural execution passed; argv oracle caught missing String box in the host argument twin, now corrected (2026-10-03).
+- Exact next command (2026-10-03): `python3 /tmp/linear-m1-corpus-rows.py`
 - Sequential checkpoint script: `/tmp/linear-m1-remaining.sh` (2026-10-03).
 - Temporary full-runtime oracle preflight is separate from committed corpus acceptance (2026-10-03).
 

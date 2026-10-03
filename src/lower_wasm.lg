@@ -4239,6 +4239,7 @@
           (into [op] args))))))
 
 (declare linear-host-twin)
+(declare linear-entry-wrapper)
 (defn linear-module [text]
   (let [root (repr-read text) forms (rest root)
         decls (vec (mapcat (fn [f] (cond (= "rec" (first f)) (rest f)
@@ -4285,6 +4286,7 @@
              (linear-data 65536 (bool-bytes 1)) "\n" (linear-data 65560 (bool-bytes 0)) "\n"
              (str/join "\n" @(:data state)) "\n"
              (str/join "\n" (map val (sort-by key @(:helpers state)))) "\n"
+             (linear-entry-wrapper forms)
              "(func $lin_init " (str/join " " (map repr-write @boots))
              (apply str (map (fn [nm] (str " (call " nm ")")) starts)) ")\n(start $lin_init)\n)")))))
 
@@ -4664,7 +4666,9 @@
          " (local.set $len " (invoke "(i32.add (local.get $r) (i32.const 16))" "(local.get $cap)") ")"
          " (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (i32.const 0))))"
          " (br_if $retry (i32.gt_u (local.get $len) (local.get $cap)))"
-         " (i32.store offset=12 (local.get $r) (local.get $len))) (local.get $r))")))
+         " (i32.store offset=12 (local.get $r) (local.get $len))) "
+         (if arg? (str "(call " (linear-struct-new! "$Str") " (local.get $r) (i64.const -1))") "(local.get $r)")
+         ")")))
 (declare linear-quoted-output)
 (defn linear-host-twin [f]
   (if-not (= "func" (first f)) f
@@ -4713,6 +4717,17 @@
                            (and (vector? slot) (contains? #{"export" "type" "param" "result" "local"} (first slot)))))
         header (take-while declaration? parts)]
     (into ["func"] (concat header [["local" "$lin_quote_buffer" "i32"]] (drop (count header) parts)))))
+
+;; Catch managed exceptions inside Wasm so the Go host can format their payload.
+(defn linear-entry-wrapper [forms]
+  (when-let [main (some (fn [f]
+                        (when (and (= "func" (first f))
+                                   (some (fn [slot] (= slot ["export" "\"lw main\""])) f))
+                          (second f))) forms)]
+    (str "(func $lin_run (export \"lw run\") (result i32 i32) (local $error i32)"
+         " (local.set $error (block $caught (result i32) (try_table (catch $lgex $caught)"
+         " (drop (call " main ")) (return (i32.const 0) (i32.const 0))) (i32.const 0)))"
+         " (i32.const 1) (local.get $error))\n")))
 
 ))
 (def linear-representation-ready (atom false))

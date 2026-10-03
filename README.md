@@ -57,6 +57,15 @@ body at the call (D162); the evaluator has no interop, `deftype`,
 `defprotocol` or `defmulti` (D160). [FINDINGS.md](FINDINGS.md) lists native
 let-go behaviours we met along the way.
 
+As of 2026-10-03, `--target linear` (or `LW_TARGET=linear`) selects an
+experimental linear-memory module with a leaking allocator; WasmGC remains
+the default. Run it with `checks/wasm-run-linear.sh`. The Go host uses
+[nooga/wazero](https://github.com/nooga/wazero) pinned at
+`v1.12.1-0.20260911172836-0ec6142ae8c7`, with
+`experimental.CoreFeaturesTailCall` and
+`experimental.CoreFeaturesExceptionHandling` enabled and GC disabled.
+Milestone corpus results and named refusals are recorded in STATUS.md.
+
 ## Prerequisites
 
 The checks and build scripts find their inputs under one root, `LW_ROOT`,
@@ -65,6 +74,7 @@ resolved by `checks/env.sh`: it is the directory holding `let-go/`,
 repository is cloned beside those checkouts; otherwise set `LW_ROOT`, or
 override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 
+- **Go 1.25 or newer** for the linear runner (2026-10-03).
 - **Native lg built from let-go commit 4e76921**, at
   `$LW_ROOT/lg-bin/lg-4e76921230` or wherever `LG` points. The driver runs
   under this lg and uses let-go's IR passes from it.
