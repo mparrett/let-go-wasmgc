@@ -36,6 +36,18 @@ export const WAKE_KEY = new Uint8Array([7]);
 export const hasJSPI = typeof WebAssembly !== 'undefined'
   && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
+// The message a person sees when the browser lacks JSPI; the raw cause
+// (a blocking import returned a Promise) is kept for the console.
+export function noJSPIMessage() {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1);
+  const which = ios ? 'iOS (every browser there uses Safari\'s engine)' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) && !/Chrom/.test(ua) ? 'Safari' : /Edg\//.test(ua) ? 'Edge' : /Chrom/.test(ua) ? 'Chrome' : 'this browser';
+  const ver = ios ? '' : (ua.match(/(?:Chrome|Firefox|Version|Edg)\/(\d+)/) || [])[1];
+  return `this page needs WebAssembly JSPI (JavaScript Promise Integration), which ${which}${ver ? ' ' + ver : ''} does not provide. `
+    + 'Chrome and Edge 137 or newer on desktop ship it; Firefox, Safari and iOS do not yet. '
+    + '(A blocking import returned a Promise with WebAssembly.Suspending undefined.)';
+}
+
 const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -195,7 +207,7 @@ export class LgWasmHost {
     if (hasJSPI) return new WebAssembly.Suspending(fn);
     return (...a) => {
       const r = fn(...a);
-      if (r && typeof r.then === 'function') throw new Error('lower-wasm host: blocking import needs JSPI (WebAssembly.Suspending)');
+      if (r && typeof r.then === 'function') throw new Error(noJSPIMessage());
       return r;
     };
   }
