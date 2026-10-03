@@ -1,0 +1,12 @@
+;; Structural probes for completed instruction families (2026-10-03).
+(require 'lower-wasm)
+(lower-wasm/with-session*
+ (lower-wasm/new-session {} {} {:target :linear})
+ (fn []
+  (spit (first *command-line-args*)
+   (lower-wasm/representation-wat
+    (str "(module " (lower-wasm/rec-group)
+     " (func $fixnum (export \"fixnum\") (result i32) (ref.cast (ref i31) (i32.const 3)))"
+     " (func $nullable (export \"nullable\") (result i32) (ref.cast (ref null eq) (i32.const 0)))"
+     " (func $boolean (export \"boolean\") (result i32) (ref.cast (ref $Bool) (i32.const 65536)))"
+     " (func $failed (export \"failed\") (result i32) (ref.cast (ref $Bool) (i32.const 3))))")))))

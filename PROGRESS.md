@@ -10,10 +10,12 @@
 - D172-D175 record layout, representation and cache-state decisions (2026-10-03).
 
 ## In progress
-- Checkpoint the type/allocator foundation, then implement instruction families in census order.
+- Type/allocator foundation is pushed as `636af5b` (2026-10-03).
+- ref.cast passed structural, target and frozen GC byte checks; its fixnum/nullable/Boolean paths and catchable named error passed the wazero prototype (2026-10-03).
+- Next instruction family: struct.get.
 - Cast-family draft is preserved in `/tmp/linear-cast-family.lg`.
 - Exact next command: `git push origin linear-target-m1 && gh pr checks 1`
-- Then install the cast family, run its structural probe and target check, and rerun the GC byte guard before committing.
+- Commit and push ref.cast, then install `/tmp/linear-struct-get-family.lg`, extend the structural probe and repeat target/byte checks.
 
 ## Open questions
 - Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output. The team is investigating.

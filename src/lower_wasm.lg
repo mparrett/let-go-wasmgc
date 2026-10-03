@@ -4275,6 +4275,55 @@
              "(func $lin_init " (str/join " " (map repr-write @boots))
              (apply str (map (fn [nm] (str " (call " nm ")")) starts)) ")\n(start $lin_init)\n)")))))
 
+(defn linear-descends? [tn ancestor]
+  (if (= tn ancestor) true
+    (let [decl (some (fn [d] (when (= tn (second d)) d)) (:decls *linear-state*))
+          sub (nth decl 2 nil)
+          parent (when (= "sub" (first sub))
+                   (some (fn [x] (when (and (string? x) (str/starts-with? x "$")) x)) (rest sub)))]
+      (and parent (linear-descends? parent ancestor)))))
+
+(defn linear-or [exprs]
+  (reduce (fn [a b] (str "(i32.or " a " " b ")")) "(i32.const 0)" exprs))
+
+(defn linear-type-test! [tp]
+  (let [tn (last tp) nullable (= "null" (second tp))
+        nm (str "$lin_test_" (str/replace tn "$" "") (when nullable "_null"))]
+    (linear-helper! nm
+      (fn []
+        (let [p "(local.get $p0)"
+              layout (get (:layouts *linear-state*) tn)
+              decl (some (fn [d] (when (= tn (second d)) d)) (:decls *linear-state*))
+              fun? (and decl (= "func" (first (repr-type-body decl))))
+              body (cond
+                     (= tn "i31") (str "(i32.and " p " (i32.const 1))")
+                     (contains? #{"none" "nofunc" "noextern"} tn) "(i32.const 0)"
+                     (contains? #{"eq" "any"} tn) "(i32.const 1)"
+                     fun? (linear-or
+                            (for [[fnm idx] (:table *linear-state*)
+                                  :when (= (linear-func-signature (repr-type-body decl))
+                                           (linear-func-signature (get (:functions *linear-state*) fnm)))]
+                              (str "(i32.eq " p " " (repr-const idx) ")")))
+                     layout (str "(if (result i32) (i32.and " p " (i32.const 1)) (then (i32.const 0)) (else "
+                                 (linear-or
+                                   (for [[type info] (:layouts *linear-state*) :when (linear-descends? type tn)]
+                                     (str "(i32.eq (i32.load offset=8 " p ") " (repr-const (:id info)) ")"))) "))")
+                     :else (fail (str "unsupported op ref.cast type " tn " under linear") {}))]
+          (str "(func " nm " (param $p0 i32) (result i32)"
+               " (if (result i32) (i32.eqz " p ") (then " (repr-const (if nullable 1 0)) ") (else " body ")))"))))))
+
+(defn linear-cast! [tp]
+  (let [nm (str "$lin_cast_" (str/replace (last tp) "$" "") (when (= "null" (second tp)) "_null"))]
+    (linear-helper! nm
+      (fn []
+        (let [test (linear-type-test! tp)]
+          (str "(func " nm " (param $p0 i32) (result i32)"
+               " (if (i32.eqz (call " test " (local.get $p0))) (then " (linear-fail "cast failed") "))"
+               " (local.get $p0))"))))))
+
+(swap! linear-instructions assoc "ref.cast"
+  (fn [node args] ["call" (linear-cast! (second node)) (last args)]))
+
 ))
 (def linear-representation-ready (atom false))
 
