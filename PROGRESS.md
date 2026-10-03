@@ -8,7 +8,7 @@
 - D172-D177 record nominal headers, representation placement, cache variance and safe host-buffer ownership (2026-10-03).
 
 ## In progress
-- cast-types: passed structural verification, target checks and all frozen GC comparisons (2026-10-03).
+- stack-ops: passed structural verification, target checks and all frozen GC comparisons (2026-10-03).
 - Exact next command (2026-10-03): `git push origin linear-target-m1`
 - Sequential checkpoint script: `/tmp/linear-m1-post-census.sh` (2026-10-03).
 - Temporary full-runtime oracle preflight is separate from committed corpus acceptance (2026-10-03).

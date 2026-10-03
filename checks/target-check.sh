@@ -21,6 +21,11 @@ wasm-tools parse "$fixture" -o "$t/gc-fixture.wasm"
 wasm-tools validate "$t/gc-fixture.wasm"
 if "$LG" -source-paths "$PWD/src" "$PWD/checks/linear-refuse-check.lg" "$fixture" "$t/refused.wat" > "$t/refused.log" 2>&1; then exit 1; fi
 grep -q 'lower-wasm: unsupported op array.fill under linear' "$t/refused.log"
+fixture=corpus/refused/linear/flat-ref-null.wat
+wasm-tools parse "$fixture" -o "$t/flat-gc.wasm"
+wasm-tools validate "$t/flat-gc.wasm"
+if "$LG" -source-paths "$PWD/src" "$PWD/checks/linear-refuse-check.lg" "$fixture" "$t/flat.wat" > "$t/flat.log" 2>&1; then exit 1; fi
+grep -q 'lower-wasm: unsupported op ref.null (flat instruction) under linear' "$t/flat.log"
 for bad in '' invalid; do
   if env -u LW_TARGET "${driver[@]}" --target $bad > "$t/log" 2>&1; then exit 1; fi
   grep -Eq 'lower-wasm: (--target needs gc or linear|unsupported target invalid)' "$t/log"

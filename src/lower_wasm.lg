@@ -4214,15 +4214,20 @@
     [(vec (mapcat ts (filter (fn [x] (= "param" (first x))) slots)))
      (vec (mapcat ts (filter (fn [x] (= "result" (first x))) slots)))]))
 
+(declare linear-dispatch)
+(defn linear-flat-value [node]
+  (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" node)
+    (fail (str "unsupported op " node " (flat instruction) under linear") {})
+    (repr-value-type node)))
 (defn linear-node [node]
   (if-not (vector? node)
-    (repr-value-type node)
+    (linear-flat-value node)
     (if (= "ref" (first node))
       (repr-value-type node)
       (let [op (first node) args (mapv linear-node (rest node))]
         (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" op)
           (if-let [lower (get @linear-instructions op)]
-            (lower node args)
+            (linear-dispatch node args lower)
             (fail (str "unsupported op " op " under linear") {}))
           (into [op] args))))))
 
@@ -4235,7 +4240,7 @@
         table (into {} (map-indexed (fn [i nm] [nm (inc i)]) taken))
         state {:forms forms :layouts layouts :decls decls :table table
                :functions (into {} (map (fn [f] [(second f) f]) (filter (fn [f] (and (= "func" (first f)) (string? (second f)) (str/starts-with? (second f) "$"))) (linear-nodes root))))
-               :helpers (atom {}) :errors (atom {}) :data (atom []) :static-top (atom 65584)}]
+               :stack-helpers (atom {}) :helpers (atom {}) :errors (atom {}) :data (atom []) :static-top (atom 65584)}]
     (binding [*linear-state* state]
       (linear-allocator!)
       (let [starts (map second (filter (fn [f] (= "start" (first f))) forms))
@@ -4573,6 +4578,39 @@
                " (local.get $obj))"))))))
 (swap! linear-instructions assoc "array.new_fixed"
   (fn [node args] (into ["call" (linear-array-fixed! (second node) (parse-long (nth node 2)))] (drop 2 args))))
+
+;; Folded GC operators can consume operands already on the stack (2026-10-03).
+;; A numeric helper preserves that operand order without a second emitter.
+(defn linear-stack-profile [node]
+  (let [op (first node) tn (second node) layout (get (:layouts *linear-state*) tn)
+        field (fn [] (nth (:fields layout) (parse-long (nth node 2))))
+        numeric (fn [tp] (if (= tp "i8") "i32" tp))]
+    (cond
+      (contains? #{"ref.cast" "ref.test"} op) [1 ["i32"] ["i32"]]
+      (= op "struct.get") [2 ["i32"] [(numeric (field))]]
+      (= op "struct.set") [2 ["i32" (numeric (field))] []]
+      (= op "ref.i31") [0 ["i32"] ["i32"]]
+      (= op "array.set") [1 ["i32" "i32" (numeric (:elem layout))] []]
+      (= op "array.get_u") [1 ["i32" "i32"] ["i32"]]
+      (= op "array.get") [1 ["i32" "i32"] [(numeric (:elem layout))]]
+      :else nil)))
+(defn linear-dispatch [node args lower]
+  (if-let [[immediate params results] (linear-stack-profile node)]
+    (let [operands (drop immediate args)]
+      (if (= (count params) (count operands)) (lower node args)
+        (let [key [(first node) (vec (take immediate (rest node)))]
+              names (:stack-helpers *linear-state*)
+              nm (or (get @names key)
+                     (let [nm (str "$lin_stack_" (count @names))] (swap! names assoc key nm) nm))]
+          (linear-helper! nm
+            (fn []
+              (let [locals (mapv (fn [i] ["local.get" (str "$p" i)]) (range (count params)))
+                    body (lower node (vec (concat (take immediate args) locals)))]
+                (str "(func " nm (apply str (map-indexed repr-param params))
+                     (apply str (map (fn [tp] (str " (result " tp ")")) results))
+                     " " (repr-write body) ")"))))
+          (into ["call" nm] operands))))
+    (lower node args)))
 
 ))
 (def linear-representation-ready (atom false))

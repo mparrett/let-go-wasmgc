@@ -74,6 +74,14 @@
   (func $cast-array-length (export "cast-array-length") (result i32) (array.len (ref.cast (ref array) (array.new_default $Bytes (i32.const 3)))))
   (func $numeric-code (param $p i32) (result i32) (local.get $p))
   (func $test-function-value-domain (export "test-function-value-domain") (result i32) (ref.test (ref $Code0) (ref.func $numeric-code)))
+  (global $true (ref $Bool) (struct.new $Bool (i64.const 1)))
+  (func $stack-bool (export "stack-bool") (result i64) (global.get $true) (ref.cast (ref $Bool)) (struct.get $Bool 0))
+  (func $stack-test (export "stack-test") (result i32) (global.get $true) (ref.test (ref $Bool)))
+  (func $stack-fixnum (export "stack-fixnum") (result i32) (i32.const -7) (ref.i31) (i31.get_s))
+  (func $stack-field-set (export "stack-field-set") (result i64) (local $a (ref $Atom)) (local.set $a (struct.new $Atom (ref.null none) (i64.const 0))) (local.get $a) (i64.const 42) (struct.set $Atom 1) (local.get $a) (struct.get $Atom 1))
+  (func $stack-byte (export "stack-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (local.get $a) (i32.const 2) (i32.const 253) (array.set $Bytes) (local.get $a) (i32.const 2) (array.get_u $Bytes))
+  (func $mixed-stack-byte (export "mixed-stack-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (local.get $a) (array.set $Bytes (i32.const 1) (i32.const 252)) (local.get $a) (array.get_u $Bytes (i32.const 1)))
+  (func $stack-ref (export "stack-ref") (result (ref null eq)) (local $a (ref $Refs)) (local.set $a (array.new_default $Refs (i32.const 2))) (local.get $a) (i32.const 1) (ref.i31 (i32.const 17)) (array.set $Refs) (local.get $a) (i32.const 1) (array.get $Refs))
 ])
 
 (defn form-wat [node]
