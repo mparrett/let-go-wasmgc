@@ -7,7 +7,7 @@
 #      checks/browser-boot.mjs --run, served with COI by
 #      local-scripts/coi-serve.py) must equal native lg's, byte for byte.
 #   2. legmacs' real module (host/build-legmacs-module.sh, cached) under
-#      node-host with the keys Matt's test-drive uses: type
+#      node-host with the keys a manual test-drive uses: type
 #      (defn f [x] (* x 2)) C-x C-e, (f 21) C-x C-e, then C-x C-c. The echo
 #      area must show "=> 42" (and "=> #'legmacs.main/f"), as native legmacs
 #      does on a 100x30 pty with the same keys (host/pty-run.py; native is

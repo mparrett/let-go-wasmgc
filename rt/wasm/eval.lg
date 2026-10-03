@@ -6,7 +6,7 @@
 ;; ("CompileError: compiling if condition\n\tcaused by CompileError: Can't
 ;; resolve x in this context") come out of the same nesting.
 ;;
-;; DIALECT: plain lg, as rt/wasm/natives.lg (ROUND3.md "Phase 7 seam"). The
+;; DIALECT: plain lg, as rt/wasm/natives.lg (the round-3 seam note, kept with the campaign notes). The
 ;; evaluator itself uses only core fns, so it also runs under native lg on
 ;; native values (corpus/intrinsics/eval_test.lg sets `native-tier` and
 ;; compares it with native eval); the few runtime calls (raising, var
@@ -119,7 +119,7 @@
       (swap! n/registry assoc-in [:cells key] {:var (cell-var key nsn nm) :ns nsn :name nm :meta nil :stack ()}))
     key))
 
-(defn ^{:doc "B's program table (ROUND3.md seam), kept in the registry under :program."}
+(defn ^{:doc "B's program table (round-3 seam), kept in the registry under :program."}
   install-program-table! [t]
   (tbl)
   (ensure-hook!)

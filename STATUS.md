@@ -122,10 +122,10 @@ TOTAL ≈ $1,227
 | item | state | by | note |
 |---|---|---|---|
 | P7 rows | appended 2026-10-02 | runner | items.tsv P7.0-P7.GATE exit 2 until built; affected table; seam in ROUND3.md |
-| D159 | done 2026-10-02 | runner | os/getenv reaches the host; XSOFY_DEV=1 under node (Matt's small ask) |
+| D159 | done 2026-10-02 | runner | os/getenv reaches the host; XSOFY_DEV=1 under node (a small ask from us) |
 | A: rt/wasm/eval.lg | running | opus | closure-compiling evaluator, core table, core macros, registry ns/vars, reader code forms, corpus/eval |
 | B: program table | running | opus | backend emits install-program-table! when eval is reached; *ns* route; program macros as hidden fns; corpus/eval/program |
-| P7.5 | green 2026-10-02 09:00 (on B's in-flight src) | runner | eval-hosts.sh PASS: node, Chromium, legmacs C-x C-e => 42; playground legmacs.wasm + :8261 refreshed for Matt's test drive |
+| P7.5 | green 2026-10-02 09:00 (on B's in-flight src) | runner | eval-hosts.sh PASS: node, Chromium, legmacs C-x C-e => 42; playground legmacs.wasm + :8261 refreshed for our test drive |
 | P7.0 | done 2026-10-02 (D160) | opus A | corpus/eval 10/10, native tier 122 tests, P2.1/P4.2 green; program/ waits for B |
 | C: legmacs wiring | running | opus | P7.2 script 6, P7.1 ledger + bar, P7.3 prep, evaluator gaps in rt |
 | P7.1 | done 2026-10-02 (D162) | opus C | 28/30 (repl 7/7, letgo 21/23); whole suite 316/373, bar raised |

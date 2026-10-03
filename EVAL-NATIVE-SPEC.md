@@ -2,7 +2,7 @@
 
 Written 2026-10-02 evening, during round 3's final gate. Standalone so another
 box can pick it up. Status: candidate for round 4 item 4 (ROUND4.md); the
-upstream step (design note, PR) waits for Matt's conversation, as everything
+upstream step (design note, PR) waits for the maintainers' conversation, as everything
 does. This document is the work order up to and including the local proof.
 
 ## Why
@@ -109,6 +109,6 @@ list is part of the upstream story.
 ## After the proof (not part of this task)
 
 A let-go design note (native framing: AOT binaries gain `eval`), the
-discussion with Norman and nnunley, then a PR that places the file where
+discussion with the core maintainers, then a PR that places the file where
 gogen lowers it. The campaign's standing rule: spin-offs never mention the
 wasm backend's internal name; this one can simply say "an evaluator in lg".
