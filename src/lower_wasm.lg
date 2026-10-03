@@ -4318,11 +4318,25 @@
       (fn []
         (let [test (linear-type-test! tp)]
           (str "(func " nm " (param $p0 i32) (result i32)"
-               " (if (i32.eqz (call " test " (local.get $p0))) (then " (linear-fail "cast failed") "))"
+               " (if (i32.eqz (call " test " (local.get $p0))) (then " (linear-fail "illegal cast") "))"
                " (local.get $p0))"))))))
 
 (swap! linear-instructions assoc "ref.cast"
   (fn [node args] ["call" (linear-cast! (second node)) (last args)]))
+
+(defn linear-struct-get! [tn field]
+  (let [nm (str (repr-name "get" tn) "_" field)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn)
+              idx (parse-long field) tp (nth (:fields layout) idx)
+              offset (nth (:offsets layout) idx)]
+          (str "(func " nm " (param $p0 i32) (result " tp ")"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " (" tp ".load offset=" offset " (local.get $p0)))"))))))
+
+(swap! linear-instructions assoc "struct.get"
+  (fn [node args] ["call" (linear-struct-get! (second node) (nth node 2)) (last args)]))
 
 ))
 (def linear-representation-ready (atom false))
