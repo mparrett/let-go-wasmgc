@@ -4530,6 +4530,19 @@
 (swap! linear-instructions assoc "array.new_data"
   (fn [node args] (into ["call" (linear-array-data! (second node) (nth node 2))] (drop 2 args))))
 
+(defn linear-array-fill! [tn]
+  (let [nm (repr-name "array_fill" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [tp (:elem (get (:layouts *linear-state*) tn)) width (repr-width tp) argtype (if (= tp "i8") "i32" tp)]
+          (str "(func " nm " (param $p0 " argtype ") (param $p1 i32) (result i32) (local $obj i32) (local $i i32)"
+               " (local.set $obj (call " (linear-array-new! tn) " " (repr-local 1) "))"
+               " (block $done (loop $fill (br_if $done (i32.ge_u (local.get $i) " (repr-local 1) "))"
+               " " (linear-store tp 16 (str "(i32.add (local.get $obj) (i32.mul (local.get $i) (i32.const " width ")))" ) (repr-local 0))
+               " (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $fill))) (local.get $obj))"))))))
+(swap! linear-instructions assoc "array.new"
+  (fn [node args] (into ["call" (linear-array-fill! (second node))] (rest args))))
+
 ))
 (def linear-representation-ready (atom false))
 
