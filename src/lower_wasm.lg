@@ -4472,6 +4472,21 @@
 (swap! linear-instructions assoc "ref.func"
   (fn [node args] ["i32.const" (str (get (:table *linear-state*) (second node)))]))
 
+(defn linear-indirect! [tn tail?]
+  (let [nm (repr-name (if tail? "tail_indirect" "indirect") tn)]
+    (linear-helper! nm
+      (fn []
+        (let [decl (some (fn [d] (when (= tn (second d)) d)) (:decls *linear-state*))
+              [params results] (linear-func-signature (repr-type-body decl))
+              countp (count params) code (repr-local countp)]
+          (str "(func " nm (apply str (map-indexed repr-param (conj params "i32")))
+               (apply str (map (fn [tp] (str " (result " tp ")")) results))
+               " (if (i32.eqz (call " (linear-type-test! ["ref" tn]) " " code ")) (then " (linear-fail "illegal cast") "))"
+               " (" (if tail? "return_call_indirect" "call_indirect") " (type " tn ")"
+               (apply str (map (fn [i] (str " " (repr-local i))) (range countp))) " " code "))"))))))
+(swap! linear-instructions assoc "return_call_ref"
+  (fn [node args] (into ["return_call" (linear-indirect! (second node) true)] (rest args))))
+
 ))
 (def linear-representation-ready (atom false))
 
