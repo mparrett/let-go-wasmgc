@@ -867,7 +867,11 @@
                              wrap? #(or (= % #'eval) (contains? fns %))]
                          #(calling-wrap % wrap?))
                        identity)
-          main-src (apply list 'defn '_main [] (concat (map expand-top boot) (map (comp wrap-calls expand-top) body) [nil]))
+          ;; tagged like every other defn: a library loaded on demand while the
+          ;; tests were analysed can leave *ns* elsewhere (data_test.lg's `data`),
+          ;; and _main must resolve in the program's namespace (P7.9 follow-up)
+          main-src (vary-meta (apply list 'defn '_main [] (concat (map expand-top boot) (map (comp wrap-calls expand-top) body) [nil]))
+                              assoc ::ns (ns-name *ns*))
           ss (lw/new-session {} var-globals opts)]
       (lw/with-session*
        ss
