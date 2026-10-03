@@ -57,6 +57,10 @@
   (func $set-field (export "set-field") (result i64) (local $a (ref $Atom)) (local.set $a (struct.new $Atom (ref.null none) (i64.const 0))) (struct.set $Atom 1 (local.get $a) (i64.const 42)) (struct.get $Atom 1 (local.get $a)))
   (func $call-code (export "call-code") (result (ref null eq)) (call_ref $Code0 (ref.i31 (i32.const 11)) (ref.func $code)))
   (func $call-nil-error (export "call-nil-error") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (drop (call_ref $Code0 (ref.null none) (ref.null nofunc)))) (ref.null none))))
+  (data $probe-data "ABCD")
+  (func $data-byte (export "data-byte") (result i32) (i32.load8_u offset=16 (array.new_data $Bytes $probe-data (i32.const 1) (i32.const 2))))
+  (func $data-len (export "data-len") (result i32) (array.len (array.new_data $Bytes $probe-data (i32.const 4) (i32.const 0))))
+  (func $data-bounds (export "data-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (drop (array.new_data $Bytes $probe-data (i32.const 4) (i32.const 1)))) (ref.null none))))
 ])
 
 (defn form-wat [node]

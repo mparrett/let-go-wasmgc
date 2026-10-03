@@ -4233,7 +4233,7 @@
         layouts (repr-layouts decls)
         taken (sort (distinct (map second (filter (fn [n] (= "ref.func" (first n))) (linear-nodes root)))))
         table (into {} (map-indexed (fn [i nm] [nm (inc i)]) taken))
-        state {:layouts layouts :decls decls :table table
+        state {:forms forms :layouts layouts :decls decls :table table
                :functions (into {} (map (fn [f] [(second f) f]) (filter (fn [f] (and (= "func" (first f)) (string? (second f)) (str/starts-with? (second f) "$"))) (linear-nodes root))))
                :helpers (atom {}) :errors (atom {}) :data (atom []) :static-top (atom 65584)}]
     (binding [*linear-state* state]
@@ -4504,6 +4504,31 @@
 
 (swap! linear-instructions assoc "call_ref"
   (fn [node args] (into ["call" (linear-indirect! (second node) false)] (rest args))))
+
+;; On installation, add :forms forms to linear-module state so passive data
+;; lengths remain available to the checked memory.init helper (2026-10-03).
+(defn linear-data-size [forms data]
+  (let [decl (some (fn [f] (when (and (= "data" (first f)) (= data (second f))) f)) forms)]
+    (when-not decl (fail "unsupported op array.new_data with missing segment under linear" {:segment data}))
+    (reduce + (map (fn [token]
+                     (reduce + (map (fn [piece] (if (str/starts-with? piece "\\") 1 (count (.getBytes piece))))
+                                    (re-seq #"\\[0-9a-fA-F]{2}|\\.|[^\\]" (subs token 1 (dec (count token)))))))
+                   (filter (fn [token] (and (string? token) (str/starts-with? token "\""))) (drop 2 decl))))))
+
+(defn linear-array-data! [tn data]
+  (let [nm (str (repr-name "array_data" tn) "_" (subs data 1))]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) tn)))
+              size (linear-data-size (:forms *linear-state*) data) bad (linear-fail "data segment index out of bounds")]
+          (str "(func " nm " (param $p0 i32) (param $p1 i32) (result i32) (local $bytes i64) (local $obj i32)"
+               " (local.set $bytes (i64.mul (i64.extend_i32_u " (repr-local 1) ") (i64.const " width ")))"
+               " (if (i64.gt_u (i64.add (i64.extend_i32_u " (repr-local 0) ") (local.get $bytes)) (i64.const " size ")) (then " bad "))"
+               " (local.set $obj (call " (linear-array-new! tn) " " (repr-local 1) "))"
+               " (memory.init " data " (i32.add (local.get $obj) (i32.const 16)) " (repr-local 0) " (i32.wrap_i64 (local.get $bytes)))"
+               " (local.get $obj))"))))))
+(swap! linear-instructions assoc "array.new_data"
+  (fn [node args] (into ["call" (linear-array-data! (second node) (nth node 2))] (drop 2 args))))
 
 ))
 (def linear-representation-ready (atom false))
