@@ -39,6 +39,10 @@
   (func $set-byte (export "set-byte") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (array.set $Bytes (local.get $a) (i32.const 2) (i32.const 253)) (i32.load8_u offset=18 (local.get $a)))
   (func $set-ref (export "set-ref") (result i32) (local $a (ref $Refs)) (local.set $a (array.new_default $Refs (i32.const 2))) (array.set $Refs (local.get $a) (i32.const 1) (ref.i31 (i32.const 13))) (i32.load offset=20 (local.get $a)))
   (func $set-bounds (export "set-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (array.set $Bytes (array.new_default $Bytes (i32.const 1)) (i32.const 1) (i32.const 3))) (ref.null none))))
+  (func $copy-overlap (export "copy-overlap") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 4))) (array.set $Bytes (local.get $a) (i32.const 0) (i32.const 41)) (array.set $Bytes (local.get $a) (i32.const 1) (i32.const 42)) (array.copy $Bytes $Bytes (local.get $a) (i32.const 1) (local.get $a) (i32.const 0) (i32.const 2)) (i32.load8_u offset=18 (local.get $a)))
+  (func $copy-ref (export "copy-ref") (result i32) (local $a (ref $Refs)) (local.set $a (array.new_default $Refs (i32.const 2))) (array.set $Refs (local.get $a) (i32.const 0) (ref.i31 (i32.const 17))) (array.copy $Refs $Refs (local.get $a) (i32.const 1) (local.get $a) (i32.const 0) (i32.const 1)) (i32.load offset=20 (local.get $a)))
+  (func $copy-bounds (export "copy-bounds") (result i32) (i32.load (block $caught (result (ref null eq)) (try_table (catch $lgex $caught) (array.copy $Bytes $Bytes (array.new_default $Bytes (i32.const 1)) (i32.const 0) (array.new_default $Bytes (i32.const 1)) (i32.const 0) (i32.const 2))) (ref.null none))))
+  (func $copy-empty-end (export "copy-empty-end") (result i32) (local $a (ref $Bytes)) (local.set $a (array.new_default $Bytes (i32.const 1))) (array.copy $Bytes $Bytes (local.get $a) (i32.const 1) (local.get $a) (i32.const 1) (i32.const 0)) (array.len (local.get $a)))
 ])
 
 (defn form-wat [node]

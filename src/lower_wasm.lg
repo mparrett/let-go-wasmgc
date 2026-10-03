@@ -4427,6 +4427,31 @@
       [(if (= tp "i8") "i32.store8" (str tp ".store"))
        ["call" (linear-array-address! tn) (nth args 1) (nth args 2)] (nth args 3)])))
 
+(defn linear-array-range! [tn]
+  (let [nm (repr-name "array_range" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) tn))) bad (linear-fail "array index out of bounds")]
+          (str "(func " nm " (param $p0 i32) (param $p1 i32) (param $p2 i32) (result i32) (local $len i32)"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " (local.set $len (i32.load offset=12 (local.get $p0)))"
+               " (if (i32.gt_u (local.get $p1) (local.get $len)) (then " bad "))"
+               " (if (i32.gt_u (local.get $p2) (i32.sub (local.get $len) (local.get $p1))) (then " bad "))"
+               " (i32.add (i32.add (local.get $p0) (i32.const 16)) (i32.mul (local.get $p1) (i32.const " width "))))"))))))
+(defn linear-array-copy! [dst src]
+  (let [nm (str (repr-name "array_copy" dst) "_" (subs src 1))]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) dst)))
+              srcwidth (repr-width (:elem (get (:layouts *linear-state*) src)))]
+          (when-not (= width srcwidth) (fail "unsupported op array.copy with incompatible layouts under linear" {}))
+          (str "(func " nm (apply str (map (fn [i] (repr-param i "i32")) (range 5)))
+               " (memory.copy (call " (linear-array-range! dst) " " (repr-local 0) " " (repr-local 1) " " (repr-local 4) ")"
+               " (call " (linear-array-range! src) " " (repr-local 2) " " (repr-local 3) " " (repr-local 4) ")"
+               " (i32.mul " (repr-local 4) " (i32.const " width "))))"))))))
+(swap! linear-instructions assoc "array.copy"
+  (fn [node args] (into ["call" (linear-array-copy! (second node) (nth node 2))] (drop 2 args))))
+
 ))
 (def linear-representation-ready (atom false))
 
