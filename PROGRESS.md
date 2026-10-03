@@ -16,10 +16,12 @@
 - struct.get and the corrected `illegal cast` diagnostic passed structural, target and frozen byte checks (2026-10-03).
 - struct.get is pushed as `b968734` (2026-10-03).
 - ref.null passed structural, target and frozen GC byte checks (2026-10-03).
-- Next instruction family: ref.test.
+- ref.null is pushed as `75b1cc3` (2026-10-03).
+- ref.test passed structural execution, target checks and the frozen byte guard (2026-10-03).
+- The pinned first refusal is now ref.is_null. Next instruction family: struct.new.
 - Cast-family draft is preserved in `/tmp/linear-cast-family.lg`.
 - Exact next command: `git push origin linear-target-m1 && gh pr checks 1`
-- Commit and push ref.null, then install `/tmp/linear-ref-test-family.lg`, extend the structural probe and update the pinned first refusal. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
+- Commit and push ref.test, then install `/tmp/linear-struct-new-family.lg` and repeat structural/target/byte checks. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
 
 ## Open questions
 - Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output. The team is investigating.

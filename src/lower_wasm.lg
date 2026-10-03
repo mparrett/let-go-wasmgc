@@ -4304,7 +4304,9 @@
                                   :when (= (linear-func-signature (repr-type-body decl))
                                            (linear-func-signature (get (:functions *linear-state*) fnm)))]
                               (str "(i32.eq " p " " (repr-const idx) ")")))
-                     layout (str "(if (result i32) (i32.and " p " (i32.const 1)) (then (i32.const 0)) (else "
+                     layout (str "(if (result i32) (i32.or (i32.and " p " (i32.const 7))"
+                                 " (i32.or (i32.lt_u " p " (i32.const 65536)) (i32.gt_u " p " (i32.sub (global.get $heap_top) (i32.const 12)))))"
+                                 " (then (i32.const 0)) (else "
                                  (linear-or
                                    (for [[type info] (:layouts *linear-state*) :when (linear-descends? type tn)]
                                      (str "(i32.eq (i32.load offset=8 " p ") " (repr-const (:id info)) ")"))) "))")
@@ -4341,6 +4343,9 @@
 (swap! linear-instructions assoc "ref.null"
   (fn [node args]
     (if (= "exn" (second node)) node ["i32.const" "0"])))
+
+(swap! linear-instructions assoc "ref.test"
+  (fn [node args] ["call" (linear-type-test! (second node)) (last args)]))
 
 ))
 (def linear-representation-ready (atom false))
