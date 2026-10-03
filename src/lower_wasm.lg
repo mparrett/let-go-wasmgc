@@ -4371,6 +4371,15 @@
 (swap! linear-instructions assoc "struct.new"
   (fn [node args] (into ["call" (linear-struct-new! (second node))] (rest args))))
 
+(defn linear-array-len! []
+  (linear-helper! "$lin_array_len"
+    (fn []
+      (str "(func $lin_array_len (param $p0 i32) (result i32)"
+           " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+           " (i32.load offset=12 (local.get $p0)))"))))
+(swap! linear-instructions assoc "array.len"
+  (fn [node args] (into ["call" (linear-array-len!)] args)))
+
 ))
 (def linear-representation-ready (atom false))
 

@@ -20,10 +20,12 @@
 - ref.test passed structural execution, target checks and the frozen byte guard (2026-10-03).
 - ref.test is pushed as `89d127e` (2026-10-03).
 - struct.new passed structural execution, target checks and the frozen byte guard (2026-10-03).
-- The first refusal remains ref.is_null. Next instruction family: array.len.
+- struct.new is pushed as `a1021dc` (2026-10-03).
+- array.len passed structural validation, target checks and the frozen byte guard (2026-10-03).
+- The first refusal remains ref.is_null. Next instruction family: ref.i31.
 - Cast-family draft is preserved in `/tmp/linear-cast-family.lg`.
 - Exact next command: `git push origin linear-target-m1 && gh pr checks 1`
-- Commit and push struct.new, then install `/tmp/linear-array-len-family.lg` and repeat structural/target/byte checks. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
+- Commit and push array.len, then install `/tmp/linear-ref-i31-family.lg` and repeat structural/target/byte checks. Actual array allocation probes follow with array.new_default. Subsequent family drafts remain in `/tmp/linear-*-family.lg`.
 
 ## Open questions
 - Original runtime cache omits some variadic dispatch state when restored; reported in the PR without changing GC output. The team is investigating.

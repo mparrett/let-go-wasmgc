@@ -153,4 +153,4 @@ TOTAL ≈ $1,227
 | P8.0 | PASS | 2026-10-03: frozen pre-change scalar and eval GC binary guard; compare default and explicit GC |
 | P8.1 | PASS | 2026-10-03: driver target selection, precedence and isolated runtime cache keys; unfinished linear output refused by op name |
 | P8.2 | PASS | 2026-10-03: linear module skeleton and bump allocator; validate with GC disabled |
-| P8.3 | PASS | 2026-10-03: ref.cast, struct.get, ref.null, ref.test and struct.new probes validate with GC disabled; wazero prototypes exercise field reads and caught named errors |
+| P8.3 | PASS | 2026-10-03: completed families through array.len validate with GC disabled; wazero prototypes exercise field reads and caught named errors |
