@@ -1,817 +1,817 @@
 idx	file	name	arity	bucket	detail	externs	program-vars	phase2	ms
-1	main.lg	term-size	1	unbound-var		core/nth,core/vector,term/size	1		1925
-2	main.lg	init-terminal!	1	unbound-var		core/nil?,os/exit,term/alternate-screen,term/clear,term/flush,term/raw-mode!,term/size,term/write	1		2010
-3	main.lg	shutdown-terminal!	1	unbound-var		term/flush,term/main-screen,term/reset-style,term/restore-mode!,term/show-cursor,term/write	1		2072
-4	main.lg	load-file-or-scratch	1	unbound-var		core/assoc,core/count,core/first,os/cwd	4		2075
-5	main.lg	load-user-config!	1	unbound-var		core/require	0	symbol	2171
-6	main.lg	render!	1	unbound-var		core/nth,term/flush,term/write	3		1996
-7	main.lg	handle-chord	1	unbound-var		core/assoc,core/nil?	4		1928
-8	main.lg	run	1	unbound-var		core/sleep,term/key-pending?	7		1899
-9	main.lg	open-additional-buffer	1	unbound-var		core/array-map,core/assoc,core/first	3		1858
-10	main.lg	build-workspace	1	unbound-var		core/assoc,core/first,core/reduce,core/rest	5	map	1774
-11	main.lg	main	1	unbound-var		core/*command-line-args*	7		1730
-12	legmacs/bindings.lg	install!	1	unbound-var		core/first,core/next,core/nth,core/seq	2		1957
-13	legmacs/buffer.lg	split-lines	1	unbound-var		core/count,core/subs,core/vec,string/ends-with?,string/replace,string/split	0		1922
-14	legmacs/buffer.lg	join-lines	1	unbound-var		core/str,string/join	0		2005
-15	legmacs/buffer.lg	new-state	1	unbound-var		core/array-map,core/seq,core/vec,core/vector	0	list,list,vector	2082
-16	legmacs/buffer.lg	line-count	1	unbound-var		core/count	0		2066
-17	legmacs/buffer.lg	current-line	1	unbound-var		core/nth	0		2162
-18	legmacs/buffer.lg	line-length	1	unbound-var		core/count,core/nth	0		1989
-19	legmacs/buffer.lg	clamp	1	unbound-var		core/max,core/min	0		1934
-20	legmacs/buffer.lg	clamp-cursor	1	unbound-var		core/assoc	3		2110
-21	legmacs/buffer.lg	snapshot	1	unbound-var		core/array-map	0		2360
-22	legmacs/buffer.lg	push-undo	1	unbound-var		core/assoc,core/cons,core/count,core/take,core/update	2	list	1799
-23	legmacs/buffer.lg	writable?	1	unbound-var		core/not	0		1734
-24	legmacs/buffer.lg	blocked	1	unbound-var		core/assoc	0		1714
-25	legmacs/buffer.lg	undo	1	unbound-var		core/assoc,core/cons,core/first,core/rest,core/update	3		2474
-26	legmacs/buffer.lg	redo	1	unbound-var		core/assoc,core/cons,core/first,core/rest,core/update	3		2462
-27	legmacs/buffer.lg	split-insert-text	1	unbound-var		core/conj,core/subs,string/index-of	0	vector	1713
-28	legmacs/buffer.lg	insert-string	1	unbound-var		core/assoc,core/concat,core/conj,core/count,core/get,core/into,core/nth,core/str,core/subs,core/subvec,core/vec,core/vector	4		1741
-29	legmacs/buffer.lg	insert-newline	1	ok			1		1648
-30	legmacs/buffer.lg	replace-span	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs	3		1877
-31	legmacs/buffer.lg	delete-char-forward	1	unbound-var		core/assoc,core/concat,core/count,core/get,core/nth,core/str,core/subs,core/subvec,core/vec,core/vector	3		1739
-32	legmacs/buffer.lg	delete-char-backward	1	unbound-var		core/assoc,core/get	2		1989
-33	legmacs/buffer.lg	kill-line	1	unbound-var		core/assoc,core/count,core/get,core/nth,core/subs	4		1775
-34	legmacs/buffer.lg	yank	1	unbound-var		core/seq	1		1697
-35	legmacs/buffer.lg	kill-whole-line	1	unbound-var		core/assoc,core/concat,core/count,core/get,core/subvec,core/vec,core/vector	4		1944
-36	legmacs/buffer.lg	move-left	1	unbound-var		core/assoc,core/get	1		2577
-37	legmacs/buffer.lg	move-right	1	unbound-var		core/assoc,core/get	2		2517
-38	legmacs/buffer.lg	vertical-move	1	unbound-var		core/assoc,core/get	3		2588
-39	legmacs/buffer.lg	move-up	1	ok			1		1733
-40	legmacs/buffer.lg	move-down	1	ok			1		1931
-41	legmacs/buffer.lg	move-line-start	1	unbound-var		core/assoc	0		2357
-42	legmacs/buffer.lg	move-line-end	1	unbound-var		core/assoc	1		2007
-43	legmacs/buffer.lg	move-buffer-start	1	unbound-var		core/assoc	0		2684
-44	legmacs/buffer.lg	move-buffer-end	1	unbound-var		core/assoc	2		2583
-45	legmacs/buffer.lg	char-at	1	unbound-var		core/count,core/nth,core/seq	0		1702
-46	legmacs/buffer.lg	word-char?	1	unbound-var		core/int	0		1768
-47	legmacs/buffer.lg	word-char-at?	1	ok			2		1774
-48	legmacs/buffer.lg	at-buffer-end?	1	ok			2		1716
-49	legmacs/buffer.lg	skip-while	1	unbound-var		core/not	2		1718
-50	legmacs/buffer.lg	move-word-forward	1	unbound-var		core/not	2		1694
-51	legmacs/buffer.lg	at-buffer-start?	1	ok			0		1739
-52	legmacs/buffer.lg	skip-while-back	1	unbound-var		core/not	2		1742
-53	legmacs/buffer.lg	move-word-backward	1	unbound-var		core/not	2		1775
-54	legmacs/buffer.lg	blank-line?	1	unbound-var		core/nth,string/blank?	0		1720
-55	legmacs/buffer.lg	move-paragraph-forward	1	unbound-var		core/assoc,core/min,core/not	3		2499
-56	legmacs/buffer.lg	move-paragraph-backward	1	unbound-var		core/assoc,core/max,core/not	1		2513
-57	legmacs/buffer.lg	page-move	1	unbound-var		core/assoc,core/get	3		1919
-58	legmacs/buffer.lg	ensure-visible	1	unbound-var		core/assoc,core/get,core/max	0		2083
-59	legmacs/buffer.lg	build-flat	1	unbound-var		core/array-map,core/conj,core/count,core/nth,core/reduce,core/seq,core/vec	0	vector	3096
-60	legmacs/buffer.lg	flat-index	1	unbound-var		core/identical?	2		1732
-61	legmacs/buffer.lg	buffer-chars	1	ok			1		1730
-62	legmacs/buffer.lg	buffer-text	1	unbound-var		core/apply,core/str	1		1727
-63	legmacs/buffer.lg	text-before-cursor	1	unbound-var		core/get,core/map,core/nth,core/str,core/subs,core/subvec,string/join	0		1784
-64	legmacs/buffer.lg	region-active?	1	unbound-var		core/boolean	0		1715
-65	legmacs/buffer.lg	region-bounds	1	unbound-var		core/nth,core/vector	0		1747
-66	legmacs/buffer.lg	region-text	1	unbound-var		core/concat,core/nth,core/subs,core/subvec,core/vector,string/join	1		1796
-67	legmacs/buffer.lg	delete-region	1	unbound-var		core/assoc,core/concat,core/nth,core/str,core/subs,core/subvec,core/vec,core/vector	4		4356
-68	legmacs/buffer.lg	push-mark-at	1	unbound-var		core/cons,core/count,core/take,core/update,core/vector	1		1753
-69	legmacs/buffer.lg	push-mark	1	ok			1		1698
-70	legmacs/buffer.lg	pop-mark	1	unbound-var		core/assoc,core/first,core/nth,core/rest,core/update	1		3226
-71	legmacs/buffer.lg	kill-word	1	unbound-var		core/assoc,core/seq,core/vector	5		1733
-72	legmacs/buffer.lg	backward-kill-word	1	unbound-var		core/assoc,core/seq,core/vector	5		1710
-73	legmacs/buffer.lg	offset-of	1	unbound-var		core/nth	1		1878
-74	legmacs/buffer.lg	row-col-of	1	unbound-var		core/count,core/nth,core/vector	1		1746
-75	legmacs/buffer.lg	symbol-bounds-at	1	unbound-var		core/count,core/nth,core/seq,core/vector	1		1801
-76	legmacs/buffer.lg	find-match-in-line	1	unbound-var		core/array-map,core/count,string/index-of	0		1720
-77	legmacs/buffer.lg	find-next-match	1	unbound-var		core/array-map,core/count,core/nth	1		2204
-78	legmacs/buffer.lg	qr-prompt	1	unbound-var		core/str	0		1962
-79	legmacs/buffer.lg	qr-finish	1	unbound-var		core/assoc,core/dissoc,core/format	0		1761
-80	legmacs/buffer.lg	qr-goto	1	unbound-var		core/array-map,core/assoc	1		4989
-81	legmacs/buffer.lg	qr-advance	1	ok			3		2510
-82	legmacs/buffer.lg	query-replace-start	1	ok			1		2264
-83	legmacs/buffer.lg	query-replace-active?	1	unbound-var		core/boolean	0		1712
-84	legmacs/buffer.lg	query-replace-answer	1	unbound-var		core/count,core/get	4		2291
-85	legmacs/buffers.lg	new-workspace	1	unbound-var		core/array-map,core/vector	2	vector	1687
-86	legmacs/buffers.lg	basename	1	unbound-var		core/subs,os/file-separator,string/last-index-of	0		1723
-87	legmacs/buffers.lg	buffer-base-name	1	unbound-var		core/nil?	1		1693
-88	legmacs/buffers.lg	buffer-list	1	unbound-var		core/array-map,core/assoc,core/conj,core/empty?,core/first,core/get,core/get-in,core/rest,core/str,core/vector	1	map,vector	3752
-89	legmacs/buffers.lg	flat-for-window	1	unbound-var		core/array-map,core/get-in,core/merge,core/select-keys,core/vector	2		1684
-90	legmacs/buffers.lg	current	1	unbound-var		core/array-map,core/count,core/merge	3		2809
-91	legmacs/buffers.lg	index-of	1	unbound-var		core/empty?,core/first,core/rest,core/seq	0		1677
-92	legmacs/buffers.lg	cycle-id	1	unbound-var		core/count,core/mod,core/nth	1		1713
-93	legmacs/buffers.lg	kill-buffer-op	1	unbound-var		core/array-map,core/assoc,core/count,core/dissoc,core/empty?,core/min,core/nth,core/remove,core/update,core/vec,core/vector	1		2556
-94	legmacs/buffers.lg	set-window-buffer	1	unbound-var		core/assoc,core/get-in,core/update,core/vector	2		1928
-95	legmacs/buffers.lg	add-buffer	1	unbound-var		core/assoc-in,core/conj,core/update,core/vector	0		1702
-96	legmacs/buffers.lg	appended-buffer-state	1	unbound-var		core/assoc,core/concat,core/count,core/nth,core/seq,core/vec,core/vector	0	vector	3366
-97	legmacs/buffers.lg	replaced-buffer-state	1	ok			0		1728
-98	legmacs/buffers.lg	find-buffer-by-name	1	unbound-var		core/get-in,core/some,core/vector	0		1773
-99	legmacs/buffers.lg	reuse-named-buffer	1	unbound-var		core/nth,core/update-in,core/vector	3		1710
-100	legmacs/buffers.lg	apply-buffer-command	1	unbound-var		core/assoc,core/count,core/get-in,core/nth,core/update,core/vector	14		2386
-101	legmacs/buffers.lg	sync-current	1	unbound-var		core/assoc	1		2225
-102	legmacs/buffers.lg	put-current	1	unbound-var		core/apply,core/assoc,core/assoc-in,core/boolean,core/concat,core/dissoc,core/get,core/merge,core/reduce,core/update,core/vector	5	map	2121
-103	legmacs/buffers.lg	pending-queue	1	unbound-var		core/fn?,core/nil?,core/vec,core/vector,core/vector?	0	vector	1814
-104	legmacs/buffers.lg	as-pending	1	unbound-var		core/count,core/first,core/vec	0		1841
-105	legmacs/buffers.lg	arm-task	m0	ok			1		1746
-106	legmacs/buffers.lg	arm-task	m1	unbound-var		core/assoc,core/conj	2		1723
-107	legmacs/buffers.lg	task-error-line	1	unbound-var		core/count,core/ex-message,core/str,core/subs,string/replace	0		1724
-108	legmacs/buffers.lg	task-failed-state	1	unbound-var		core/assoc,core/str	1		1932
-109	legmacs/buffers.lg	finish-pending-step	1	unbound-var		core/assoc,core/into	3		1753
-110	legmacs/buffers.lg	run-pending-task	m0	unbound-var		core/identity	1		1665
-111	legmacs/buffers.lg	run-pending-task	m1	unbound-var		core/assoc,core/empty?,core/first,core/rest,core/vec	5		1720
-112	legmacs/buffers.lg	job-list	1	unbound-var		core/vec	0	vector	1743
-113	legmacs/buffers.lg	as-jobs	1	unbound-var		core/empty?	1		1740
-114	legmacs/buffers.lg	jobs-running?	1	unbound-var		core/boolean,core/seq	0		1696
-115	legmacs/buffers.lg	add-job	1	unbound-var		core/assoc,core/conj	1		1765
-116	legmacs/buffers.lg	discard-jobs	1	unbound-var		core/assoc	0		1691
-117	legmacs/buffers.lg	job-outcome	1	unbound-var		core/array-map	0		1713
-118	legmacs/buffers.lg	spawn-task	m0	ok			1		1721
-119	legmacs/buffers.lg	spawn-task	m1	unbound-var		core/array-map,core/assoc,core/future*	2		2179
-120	legmacs/buffers.lg	apply-one-job	1	unbound-var		core/assoc,core/str	1		1759
-121	legmacs/buffers.lg	job-realized?	1	unbound-var		core/boolean,core/realized?	0		1806
-122	legmacs/buffers.lg	job-waiting?	1	unbound-var		core/not	1		1829
-123	legmacs/buffers.lg	drain-jobs	m0	unbound-var		core/identity	1		1715
-124	legmacs/buffers.lg	drain-jobs	m1	unbound-var		core/assoc,core/empty?,core/filterv,core/reduce	7		1744
-125	legmacs/buffers.lg	live-spawns?	1	ok			1		1737
-126	legmacs/buffers.lg	tracked-body	1	unbound-var		core/array-map,core/contains?	1		1782
-127	legmacs/buffers.lg	make-tracked-spawn	1	ok			2		1725
-128	legmacs/buffers.lg	replace-spawn-var!	1	unbound-var		core/alter-var-root,core/constantly	1		1683
-129	legmacs/buffers.lg	install-spawn-tracking!	1	unbound-var		core/find-var,core/future*,core/go*	2	var,var,symbol	1784
-130	legmacs/buffers.lg	loop-wait	1	ok			2		1713
-131	legmacs/commands.lg	set-message	1	unbound-var		core/assoc	0		1912
-132	legmacs/commands.lg	forward-char	1	ok			1		2011
-133	legmacs/commands.lg	backward-char	1	ok			1		2063
-134	legmacs/commands.lg	next-line	1	ok			1		2076
-135	legmacs/commands.lg	previous-line	1	ok			1		2166
-136	legmacs/commands.lg	move-beginning-of-line	1	ok			1		1989
-137	legmacs/commands.lg	move-end-of-line	1	ok			1		1914
-138	legmacs/commands.lg	forward-word	1	ok			1		1871
-139	legmacs/commands.lg	backward-word	1	ok			1		1863
-140	legmacs/commands.lg	beginning-of-buffer	1	ok			2		1798
-141	legmacs/commands.lg	end-of-buffer	1	ok			2		1735
-142	legmacs/commands.lg	forward-paragraph	1	ok			1		1676
-143	legmacs/commands.lg	backward-paragraph	1	ok			1		1732
-144	legmacs/commands.lg	scroll-up-command	1	ok			2		1681
-145	legmacs/commands.lg	scroll-down-command	1	ok			2		1669
-146	legmacs/commands.lg	recenter	1	unbound-var		core/assoc	0		1650
-147	legmacs/commands.lg	goto-line	1	unbound-var		core/assoc,core/parse-long,core/str,string/trim	6		1928
-148	legmacs/commands.lg	newline	1	ok			1		1670
-149	legmacs/commands.lg	delete-char	1	ok			1		1666
-150	legmacs/commands.lg	delete-backward-char	1	ok			1		1684
-151	legmacs/commands.lg	kill-line	1	ok			1		1713
-152	legmacs/commands.lg	kill-whole-line	1	ok			1		1712
-153	legmacs/commands.lg	kill-word	1	ok			1		1701
-154	legmacs/commands.lg	backward-kill-word	1	ok			1		1709
-155	legmacs/commands.lg	yank	1	ok			1		1706
-156	legmacs/commands.lg	undo	1	ok			1		1782
-157	legmacs/commands.lg	redo	1	ok			1		1725
-158	legmacs/commands.lg	tab-insert	1	ok			1		1727
-159	legmacs/commands.lg	word-at-end	1	unbound-var		core/nth,core/subs,core/vector	1		1739
-160	legmacs/commands.lg	words-in-line	1	unbound-var		core/conj,core/count,core/nth,core/subs,core/vector	1	vector	1768
-161	legmacs/commands.lg	all-words	1	unbound-var		core/count,core/map,core/mapcat,core/nth,core/range,core/vec,core/vector	1		1886
-162	legmacs/commands.lg	dedupe-texts	1	unbound-var		core/conj,core/contains?,core/empty?,core/first,core/nth,core/rest	0	set,vector	2128
-163	legmacs/commands.lg	dabbrev-candidates	1	unbound-var		core/concat,core/contains?,core/filter,core/not,core/not=,core/nth,core/remove,core/reverse,string/starts-with?	1		1841
-164	legmacs/commands.lg	dabbrev-continuing?	1	unbound-var		core/vector	0		1871
-165	legmacs/commands.lg	dabbrev-apply	1	unbound-var		core/array-map,core/assoc,core/conj,core/nth,core/vector	1		2971
-166	legmacs/commands.lg	dabbrev-expand	1	unbound-var		core/empty?,core/first,core/get,core/hash-set,core/nth,core/str,core/vector,string/blank?	7		1989
+1	main.lg	term-size	1	unbound-var		core/nth,core/vector,term/size	1		1791
+2	main.lg	init-terminal!	1	unbound-var		core/nil?,os/exit,term/alternate-screen,term/clear,term/flush,term/raw-mode!,term/size,term/write	1		2037
+3	main.lg	shutdown-terminal!	1	unbound-var		term/flush,term/main-screen,term/reset-style,term/restore-mode!,term/show-cursor,term/write	1		1963
+4	main.lg	load-file-or-scratch	1	unbound-var		core/assoc,core/count,core/first,os/cwd	4		1998
+5	main.lg	load-user-config!	1	unbound-var		core/require	0	symbol	2129
+6	main.lg	render!	1	unbound-var		core/nth,term/flush,term/write	3		2958
+7	main.lg	handle-chord	1	unbound-var		core/assoc,core/nil?	4		2080
+8	main.lg	run	1	unbound-var		core/sleep,term/key-pending?	7		1943
+9	main.lg	open-additional-buffer	1	unbound-var		core/array-map,core/assoc,core/first	3		1946
+10	main.lg	build-workspace	1	unbound-var		core/assoc,core/first,core/reduce,core/rest	5	map	1831
+11	main.lg	main	1	unbound-var		core/*command-line-args*	7		1764
+12	legmacs/bindings.lg	install!	1	unbound-var		core/first,core/next,core/nth,core/seq	2		1799
+13	legmacs/buffer.lg	split-lines	1	unbound-var		core/count,core/subs,core/vec,string/ends-with?,string/replace,string/split	0		2028
+14	legmacs/buffer.lg	join-lines	1	unbound-var		core/str,string/join	0		1963
+15	legmacs/buffer.lg	new-state	1	unbound-var		core/array-map,core/seq,core/vec,core/vector	0	list,list,vector	2024
+16	legmacs/buffer.lg	line-count	1	unbound-var		core/count	0		2061
+17	legmacs/buffer.lg	current-line	1	unbound-var		core/nth	0		2876
+18	legmacs/buffer.lg	line-length	1	unbound-var		core/count,core/nth	0		2117
+19	legmacs/buffer.lg	clamp	1	unbound-var		core/max,core/min	0		1917
+20	legmacs/buffer.lg	clamp-cursor	1	unbound-var		core/assoc	3		2181
+21	legmacs/buffer.lg	snapshot	1	unbound-var		core/array-map	0		2322
+22	legmacs/buffer.lg	push-undo	1	unbound-var		core/assoc,core/cons,core/count,core/take,core/update	2	list	1778
+23	legmacs/buffer.lg	writable?	1	unbound-var		core/not	0		1749
+24	legmacs/buffer.lg	blocked	1	unbound-var		core/assoc	0		1677
+25	legmacs/buffer.lg	undo	1	unbound-var		core/assoc,core/cons,core/first,core/rest,core/update	3		2511
+26	legmacs/buffer.lg	redo	1	unbound-var		core/assoc,core/cons,core/first,core/rest,core/update	3		2490
+27	legmacs/buffer.lg	split-insert-text	1	unbound-var		core/conj,core/subs,string/index-of	0	vector	1838
+28	legmacs/buffer.lg	insert-string	1	unbound-var		core/assoc,core/concat,core/conj,core/count,core/get,core/into,core/nth,core/str,core/subs,core/subvec,core/vec,core/vector	4		1779
+29	legmacs/buffer.lg	insert-newline	1	ok			1		1681
+30	legmacs/buffer.lg	replace-span	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs	3		1930
+31	legmacs/buffer.lg	delete-char-forward	1	unbound-var		core/assoc,core/concat,core/count,core/get,core/nth,core/str,core/subs,core/subvec,core/vec,core/vector	3		1756
+32	legmacs/buffer.lg	delete-char-backward	1	unbound-var		core/assoc,core/get	2		1931
+33	legmacs/buffer.lg	kill-line	1	unbound-var		core/assoc,core/count,core/get,core/nth,core/subs	4		1799
+34	legmacs/buffer.lg	yank	1	unbound-var		core/seq	1		1754
+35	legmacs/buffer.lg	kill-whole-line	1	unbound-var		core/assoc,core/concat,core/count,core/get,core/subvec,core/vec,core/vector	4		2026
+36	legmacs/buffer.lg	move-left	1	unbound-var		core/assoc,core/get	1		2642
+37	legmacs/buffer.lg	move-right	1	unbound-var		core/assoc,core/get	2		2616
+38	legmacs/buffer.lg	vertical-move	1	unbound-var		core/assoc,core/get	3		2684
+39	legmacs/buffer.lg	move-up	1	ok			1		1720
+40	legmacs/buffer.lg	move-down	1	ok			1		1761
+41	legmacs/buffer.lg	move-line-start	1	unbound-var		core/assoc	0		1966
+42	legmacs/buffer.lg	move-line-end	1	unbound-var		core/assoc	1		2030
+43	legmacs/buffer.lg	move-buffer-start	1	unbound-var		core/assoc	0		2587
+44	legmacs/buffer.lg	move-buffer-end	1	unbound-var		core/assoc	2		2570
+45	legmacs/buffer.lg	char-at	1	unbound-var		core/count,core/nth,core/seq	0		1724
+46	legmacs/buffer.lg	word-char?	1	unbound-var		core/int	0		2327
+47	legmacs/buffer.lg	word-char-at?	1	ok			2		1817
+48	legmacs/buffer.lg	at-buffer-end?	1	ok			2		1780
+49	legmacs/buffer.lg	skip-while	1	unbound-var		core/not	2		1820
+50	legmacs/buffer.lg	move-word-forward	1	unbound-var		core/not	2		1734
+51	legmacs/buffer.lg	at-buffer-start?	1	ok			0		1759
+52	legmacs/buffer.lg	skip-while-back	1	unbound-var		core/not	2		1724
+53	legmacs/buffer.lg	move-word-backward	1	unbound-var		core/not	2		1853
+54	legmacs/buffer.lg	blank-line?	1	unbound-var		core/nth,string/blank?	0		1756
+55	legmacs/buffer.lg	move-paragraph-forward	1	unbound-var		core/assoc,core/min,core/not	3		2719
+56	legmacs/buffer.lg	move-paragraph-backward	1	unbound-var		core/assoc,core/max,core/not	1		2555
+57	legmacs/buffer.lg	page-move	1	unbound-var		core/assoc,core/get	3		2058
+58	legmacs/buffer.lg	ensure-visible	1	unbound-var		core/assoc,core/get,core/max	0		2020
+59	legmacs/buffer.lg	build-flat	1	unbound-var		core/array-map,core/conj,core/count,core/nth,core/reduce,core/seq,core/vec	0	vector	2907
+60	legmacs/buffer.lg	flat-index	1	unbound-var		core/identical?	2		1745
+61	legmacs/buffer.lg	buffer-chars	1	ok			1		1698
+62	legmacs/buffer.lg	buffer-text	1	unbound-var		core/apply,core/str	1		1735
+63	legmacs/buffer.lg	text-before-cursor	1	unbound-var		core/get,core/map,core/nth,core/str,core/subs,core/subvec,string/join	0		1687
+64	legmacs/buffer.lg	region-active?	1	unbound-var		core/boolean	0		1795
+65	legmacs/buffer.lg	region-bounds	1	unbound-var		core/nth,core/vector	0		1758
+66	legmacs/buffer.lg	region-text	1	unbound-var		core/concat,core/nth,core/subs,core/subvec,core/vector,string/join	1		1860
+67	legmacs/buffer.lg	delete-region	1	unbound-var		core/assoc,core/concat,core/nth,core/str,core/subs,core/subvec,core/vec,core/vector	4		4394
+68	legmacs/buffer.lg	push-mark-at	1	unbound-var		core/cons,core/count,core/take,core/update,core/vector	1		1787
+69	legmacs/buffer.lg	push-mark	1	ok			1		1753
+70	legmacs/buffer.lg	pop-mark	1	unbound-var		core/assoc,core/first,core/nth,core/rest,core/update	1		2551
+71	legmacs/buffer.lg	kill-word	1	unbound-var		core/assoc,core/seq,core/vector	5		1808
+72	legmacs/buffer.lg	backward-kill-word	1	unbound-var		core/assoc,core/seq,core/vector	5		1739
+73	legmacs/buffer.lg	offset-of	1	unbound-var		core/nth	1		1779
+74	legmacs/buffer.lg	row-col-of	1	unbound-var		core/count,core/nth,core/vector	1		1792
+75	legmacs/buffer.lg	symbol-bounds-at	1	unbound-var		core/count,core/nth,core/seq,core/vector	1		1839
+76	legmacs/buffer.lg	find-match-in-line	1	unbound-var		core/array-map,core/count,string/index-of	0		2501
+77	legmacs/buffer.lg	find-next-match	1	unbound-var		core/array-map,core/count,core/nth	1		2415
+78	legmacs/buffer.lg	qr-prompt	1	unbound-var		core/str	0		2365
+79	legmacs/buffer.lg	qr-finish	1	unbound-var		core/assoc,core/dissoc,core/format	0		2035
+80	legmacs/buffer.lg	qr-goto	1	unbound-var		core/array-map,core/assoc	1		5067
+81	legmacs/buffer.lg	qr-advance	1	ok			3		2504
+82	legmacs/buffer.lg	query-replace-start	1	ok			1		2292
+83	legmacs/buffer.lg	query-replace-active?	1	unbound-var		core/boolean	0		1747
+84	legmacs/buffer.lg	query-replace-answer	1	unbound-var		core/count,core/get	4		2412
+85	legmacs/buffers.lg	new-workspace	1	unbound-var		core/array-map,core/vector	2	vector	1730
+86	legmacs/buffers.lg	basename	1	unbound-var		core/subs,os/file-separator,string/last-index-of	0		1759
+87	legmacs/buffers.lg	buffer-base-name	1	unbound-var		core/nil?	1		1813
+88	legmacs/buffers.lg	buffer-list	1	unbound-var		core/array-map,core/assoc,core/conj,core/empty?,core/first,core/get,core/get-in,core/rest,core/str,core/vector	1	map,vector	3860
+89	legmacs/buffers.lg	flat-for-window	1	unbound-var		core/array-map,core/get-in,core/merge,core/select-keys,core/vector	2		1721
+90	legmacs/buffers.lg	current	1	unbound-var		core/array-map,core/count,core/merge	3		2972
+91	legmacs/buffers.lg	index-of	1	unbound-var		core/empty?,core/first,core/rest,core/seq	0		1833
+92	legmacs/buffers.lg	cycle-id	1	unbound-var		core/count,core/mod,core/nth	1		1806
+93	legmacs/buffers.lg	kill-buffer-op	1	unbound-var		core/array-map,core/assoc,core/count,core/dissoc,core/empty?,core/min,core/nth,core/remove,core/update,core/vec,core/vector	1		2618
+94	legmacs/buffers.lg	set-window-buffer	1	unbound-var		core/assoc,core/get-in,core/update,core/vector	2		1982
+95	legmacs/buffers.lg	add-buffer	1	unbound-var		core/assoc-in,core/conj,core/update,core/vector	0		1831
+96	legmacs/buffers.lg	appended-buffer-state	1	unbound-var		core/assoc,core/concat,core/count,core/nth,core/seq,core/vec,core/vector	0	vector	3418
+97	legmacs/buffers.lg	replaced-buffer-state	1	ok			0		1795
+98	legmacs/buffers.lg	find-buffer-by-name	1	unbound-var		core/get-in,core/some,core/vector	0		1762
+99	legmacs/buffers.lg	reuse-named-buffer	1	unbound-var		core/nth,core/update-in,core/vector	3		1731
+100	legmacs/buffers.lg	apply-buffer-command	1	unbound-var		core/assoc,core/count,core/get-in,core/nth,core/update,core/vector	14		2342
+101	legmacs/buffers.lg	sync-current	1	unbound-var		core/assoc	1		2100
+102	legmacs/buffers.lg	put-current	1	unbound-var		core/apply,core/assoc,core/assoc-in,core/boolean,core/concat,core/dissoc,core/get,core/merge,core/reduce,core/update,core/vector	5	map	2875
+103	legmacs/buffers.lg	pending-queue	1	unbound-var		core/fn?,core/nil?,core/vec,core/vector,core/vector?	0	vector	2526
+104	legmacs/buffers.lg	as-pending	1	unbound-var		core/count,core/first,core/vec	0		3001
+105	legmacs/buffers.lg	arm-task	m0	ok			1		2134
+106	legmacs/buffers.lg	arm-task	m1	unbound-var		core/assoc,core/conj	2		1880
+107	legmacs/buffers.lg	task-error-line	1	unbound-var		core/count,core/ex-message,core/str,core/subs,string/replace	0		1912
+108	legmacs/buffers.lg	task-failed-state	1	unbound-var		core/assoc,core/str	1		2274
+109	legmacs/buffers.lg	finish-pending-step	1	unbound-var		core/assoc,core/into	3		1963
+110	legmacs/buffers.lg	run-pending-task	m0	unbound-var		core/identity	1		1869
+111	legmacs/buffers.lg	run-pending-task	m1	unbound-var		core/assoc,core/empty?,core/first,core/rest,core/vec	5		2054
+112	legmacs/buffers.lg	job-list	1	unbound-var		core/vec	0	vector	1923
+113	legmacs/buffers.lg	as-jobs	1	unbound-var		core/empty?	1		1835
+114	legmacs/buffers.lg	jobs-running?	1	unbound-var		core/boolean,core/seq	0		1768
+115	legmacs/buffers.lg	add-job	1	unbound-var		core/assoc,core/conj	1		1970
+116	legmacs/buffers.lg	discard-jobs	1	unbound-var		core/assoc	0		1757
+117	legmacs/buffers.lg	job-outcome	1	unbound-var		core/array-map	0		1791
+118	legmacs/buffers.lg	spawn-task	m0	ok			1		1755
+119	legmacs/buffers.lg	spawn-task	m1	unbound-var		core/array-map,core/assoc,core/future*	2		2352
+120	legmacs/buffers.lg	apply-one-job	1	unbound-var		core/assoc,core/str	1		2056
+121	legmacs/buffers.lg	job-realized?	1	unbound-var		core/boolean,core/realized?	0		1820
+122	legmacs/buffers.lg	job-waiting?	1	unbound-var		core/not	1		1772
+123	legmacs/buffers.lg	drain-jobs	m0	unbound-var		core/identity	1		1783
+124	legmacs/buffers.lg	drain-jobs	m1	unbound-var		core/assoc,core/empty?,core/filterv,core/reduce	7		1994
+125	legmacs/buffers.lg	live-spawns?	1	ok			1		1890
+126	legmacs/buffers.lg	tracked-body	1	unbound-var		core/array-map,core/contains?	1		1844
+127	legmacs/buffers.lg	make-tracked-spawn	1	ok			2		2036
+128	legmacs/buffers.lg	replace-spawn-var!	1	unbound-var		core/alter-var-root,core/constantly	1		1805
+129	legmacs/buffers.lg	install-spawn-tracking!	1	unbound-var		core/find-var,core/future*,core/go*	2	var,var,symbol	1777
+130	legmacs/buffers.lg	loop-wait	1	ok			2		1761
+131	legmacs/commands.lg	set-message	1	unbound-var		core/assoc	0		1773
+132	legmacs/commands.lg	forward-char	1	ok			1		2030
+133	legmacs/commands.lg	backward-char	1	ok			1		1987
+134	legmacs/commands.lg	next-line	1	ok			1		1955
+135	legmacs/commands.lg	previous-line	1	ok			1		2046
+136	legmacs/commands.lg	move-beginning-of-line	1	ok			1		2837
+137	legmacs/commands.lg	move-end-of-line	1	ok			1		2116
+138	legmacs/commands.lg	forward-word	1	ok			1		1931
+139	legmacs/commands.lg	backward-word	1	ok			1		1982
+140	legmacs/commands.lg	beginning-of-buffer	1	ok			2		1829
+141	legmacs/commands.lg	end-of-buffer	1	ok			2		1736
+142	legmacs/commands.lg	forward-paragraph	1	ok			1		1750
+143	legmacs/commands.lg	backward-paragraph	1	ok			1		1713
+144	legmacs/commands.lg	scroll-up-command	1	ok			2		1718
+145	legmacs/commands.lg	scroll-down-command	1	ok			2		1676
+146	legmacs/commands.lg	recenter	1	unbound-var		core/assoc	0		1686
+147	legmacs/commands.lg	goto-line	1	unbound-var		core/assoc,core/parse-long,core/str,string/trim	6		2020
+148	legmacs/commands.lg	newline	1	ok			1		1779
+149	legmacs/commands.lg	delete-char	1	ok			1		1695
+150	legmacs/commands.lg	delete-backward-char	1	ok			1		1712
+151	legmacs/commands.lg	kill-line	1	ok			1		1719
+152	legmacs/commands.lg	kill-whole-line	1	ok			1		1717
+153	legmacs/commands.lg	kill-word	1	ok			1		1706
+154	legmacs/commands.lg	backward-kill-word	1	ok			1		1743
+155	legmacs/commands.lg	yank	1	ok			1		1719
+156	legmacs/commands.lg	undo	1	ok			1		1785
+157	legmacs/commands.lg	redo	1	ok			1		1795
+158	legmacs/commands.lg	tab-insert	1	ok			1		1776
+159	legmacs/commands.lg	word-at-end	1	unbound-var		core/nth,core/subs,core/vector	1		1741
+160	legmacs/commands.lg	words-in-line	1	unbound-var		core/conj,core/count,core/nth,core/subs,core/vector	1	vector	1843
+161	legmacs/commands.lg	all-words	1	unbound-var		core/count,core/map,core/mapcat,core/nth,core/range,core/vec,core/vector	1		1735
+162	legmacs/commands.lg	dedupe-texts	1	unbound-var		core/conj,core/contains?,core/empty?,core/first,core/nth,core/rest	0	set,vector	1785
+163	legmacs/commands.lg	dabbrev-candidates	1	unbound-var		core/concat,core/contains?,core/filter,core/not,core/not=,core/nth,core/remove,core/reverse,string/starts-with?	1		1747
+164	legmacs/commands.lg	dabbrev-continuing?	1	unbound-var		core/vector	0		1793
+165	legmacs/commands.lg	dabbrev-apply	1	unbound-var		core/array-map,core/assoc,core/conj,core/nth,core/vector	1		2947
+166	legmacs/commands.lg	dabbrev-expand	1	unbound-var		core/empty?,core/first,core/get,core/hash-set,core/nth,core/str,core/vector,string/blank?	7		2028
 167	legmacs/commands.lg	set-mark-command	1	unbound-var		core/assoc,core/vector	1		1719
-168	legmacs/commands.lg	pop-mark	1	ok			1		1705
-169	legmacs/commands.lg	kill-region	1	unbound-var		core/assoc	4		1752
-170	legmacs/commands.lg	copy-region-as-kill	1	unbound-var		core/assoc	3		1904
-171	legmacs/commands.lg	exchange-point-and-mark	1	unbound-var		core/assoc,core/nth,core/vector	1		2506
-172	legmacs/commands.lg	find-from	1	unbound-var		core/count,core/nth,core/vector,string/index-of	0		1832
-173	legmacs/commands.lg	search-forward	1	unbound-var		core/assoc,core/first,core/second,core/str,string/blank?	3		1956
-174	legmacs/commands.lg	compile-search	1	unbound-var		core/re-pattern,string/blank?	0		1765
-175	legmacs/commands.lg	line-match-cols	1	unbound-var		core/conj,core/count,core/first,core/nil?,core/re-find,core/subs,core/vector,core/vector?,string/index-of	0	vector	1780
-176	legmacs/commands.lg	swiper-candidates	1	unbound-var		core/array-map,core/count,core/format,core/into,core/map,core/nth	1	vector	2854
-177	legmacs/commands.lg	swiper	1	unbound-var		core/array-map,core/assoc,core/assoc-in,core/get-in,core/merge,core/nth,core/select-keys,core/vector	5	vector	2913
-178	legmacs/commands.lg	count-occurrences	1	unbound-var		core/count,string/index-of	0		1712
-179	legmacs/commands.lg	replace-string	1	unbound-var		core/assoc,core/concat,core/format,core/get,core/map,core/nth,core/reduce,core/str,core/subs,core/subvec,core/vec,core/vector,string/blank?,string/replace	6		2110
-180	legmacs/commands.lg	query-replace	1	unbound-var		core/str,string/blank?	4		1820
-181	legmacs/commands.lg	shell-command	1	unbound-var		core/not,core/str,os/sh,string/blank?,string/trim	2		1758
-182	legmacs/commands.lg	yes?	1	unbound-var		core/contains?,string/trim	0	set	1739
-183	legmacs/commands.lg	ask-yes-or-no	1	unbound-var		core/array-map	2		1735
-184	legmacs/commands.lg	write-buffer-to	1	unbound-var		core/assoc,core/dissoc,core/spit,core/str	3		3343
-185	legmacs/commands.lg	save-buffer	1	unbound-var		core/array-map,string/blank?	4		1703
-186	legmacs/commands.lg	write-file	1	unbound-var		core/array-map,core/str,string/blank?	4		1786
-187	legmacs/commands.lg	with-auto-mode	1	ok			2		1725
-188	legmacs/commands.lg	new-file-state	1	unbound-var		core/assoc,core/first,core/slurp,core/str,core/vector	4		1751
-189	legmacs/commands.lg	find-file	1	unbound-var		core/array-map,core/assoc,core/nth,core/some,core/str,string/blank?	3		1993
-190	legmacs/commands.lg	other-modified-buffers	1	unbound-var		core/filter,core/not=	0		1722
-191	legmacs/commands.lg	plural	1	unbound-var		core/str	0		2086
-192	legmacs/commands.lg	save-buffers-kill-terminal	1	unbound-var		core/assoc,core/count,core/seq,core/str	5		2050
-193	legmacs/commands.lg	switch-to-buffer	1	unbound-var		core/array-map,core/assoc,core/map,core/some,core/vector,string/blank?	4		1990
-194	legmacs/commands.lg	repl	1	unbound-var		core/array-map,core/assoc,core/some	2		1716
-195	legmacs/commands.lg	list-buffers	1	unbound-var		core/array-map,core/assoc,core/format,core/map,core/vec	0		1895
-196	legmacs/commands.lg	kill-buffer	1	unbound-var		core/array-map,core/assoc,core/vector	4		2223
-197	legmacs/commands.lg	next-buffer	1	unbound-var		core/assoc	0	map	1717
-198	legmacs/commands.lg	previous-buffer	1	unbound-var		core/assoc	0	map	1722
-199	legmacs/commands.lg	split-window-below	1	unbound-var		core/assoc	0	map	1704
-200	legmacs/commands.lg	split-window-right	1	unbound-var		core/assoc	0	map	1703
-201	legmacs/commands.lg	other-window	1	unbound-var		core/assoc	1	map	1778
-202	legmacs/commands.lg	delete-window	1	unbound-var		core/assoc	1	map	1770
-203	legmacs/commands.lg	delete-other-windows	1	unbound-var		core/assoc	0	map	1775
-204	legmacs/commands.lg	start-kbd-macro	1	unbound-var		core/assoc	1	vector	1918
-205	legmacs/commands.lg	end-kbd-macro	1	unbound-var		core/assoc	1		1733
-206	legmacs/commands.lg	call-last-kbd-macro	1	unbound-var		core/assoc,core/reduce,core/seq	2		1766
-207	legmacs/commands.lg	command-keys	1	unbound-var		core/get,core/keyword,core/seq,core/sort,string/join	2	vector	1723
-208	legmacs/commands.lg	command-candidate	1	unbound-var		core/array-map,core/keyword	2		2856
-209	legmacs/commands.lg	command-candidates-on-change	1	unbound-var		core/assoc-in,core/map,core/vec,core/vector	2		1710
-210	legmacs/commands.lg	open-command-prompt	1	unbound-var		core/array-map	3		2227
-211	legmacs/commands.lg	command-help-lines	1	unbound-var		core/concat,core/get,core/keyword,core/map,core/seq,core/sort,core/str,core/vec,core/vector	4	vector	1778
-212	legmacs/commands.lg	mode-heading	1	unbound-var		core/name,core/str	0		1693
-213	legmacs/commands.lg	one-line-doc	1	unbound-var		core/map,core/remove,string/blank?,string/join,string/split,string/trim	0		1713
-214	legmacs/commands.lg	binding-entry-lines	1	unbound-var		core/keyword?,core/seq,core/str,core/vector	4		1784
-215	legmacs/commands.lg	binding-lines	1	unbound-var		core/mapcat,core/nth,core/sort-by,string/join	2	map	1724
-216	legmacs/commands.lg	binding-section	1	unbound-var		core/into,core/seq,core/vec,core/vector	1		1714
-217	legmacs/commands.lg	mode-help-section	1	unbound-var		core/concat,core/seq,core/vec,core/vector	4		1714
-218	legmacs/commands.lg	keyboard-quit	1	unbound-var		core/assoc	6	vector	3336
-219	legmacs/commands.lg	execute-extended-command	1	unbound-var		core/keyword,string/blank?,string/trim	2		1731
-220	legmacs/commands.lg	toggle-minor-mode	1	unbound-var		core/array-map,core/keyword,core/map,core/name,string/blank?,string/trim	4		1732
-221	legmacs/commands.lg	toggle-read-only	1	unbound-var		core/assoc,core/not	1		1718
-222	legmacs/commands.lg	load-theme	1	unbound-var		core/array-map,core/map,core/name,core/str,string/blank?,string/trim	5		2022
-223	legmacs/commands.lg	describe-bindings	1	unbound-var		core/apply,core/concat,core/identity,core/interpose,core/keep,core/seq,core/vec,core/vector	5	vector	2669
-224	legmacs/commands.lg	describe-key	1	unbound-var		core/assoc	0		3136
-225	legmacs/commands.lg	describe-function	1	unbound-var		core/assoc,core/keyword,core/str,string/blank?,string/trim	4		2592
-226	legmacs/commands.lg	describe-mode	1	unbound-var		core/concat,core/empty?,core/mapcat,core/nil?,core/vec,core/vector	2	vector	1939
-227	legmacs/commands.lg	help-for-help	1	unbound-var		core/get,core/into,core/map?,core/mapcat,core/nth,core/sort-by,core/vector,string/join	4	vector	1841
-228	legmacs/completion.lg	longest-common-prefix	1	unbound-var		core/count,core/empty?,core/min,core/nth,core/reduce,core/subs	0		2044
-229	legmacs/completion.lg	preview	1	unbound-var		core/count,core/format,core/str,core/take,string/join	0		2067
-230	legmacs/completion.lg	complete-input	1	unbound-var		core/array-map,core/count,core/empty?,core/first	2		2098
-231	legmacs/completion.lg	fuzzy-score	1	unbound-var		core/count,core/min,core/nth,string/lower-case	0		2265
-232	legmacs/completion.lg	fuzzy-filter	1	unbound-var		core/first,core/keep,core/map,core/second,core/sort,core/sort-by,core/vector,string/blank?	1		1997
-233	legmacs/completion.lg	command-names	1	unbound-var		core/keys,core/map,core/name,core/sort	1		1913
-234	legmacs/completion.lg	command-completer	1	ok			2		1863
-235	legmacs/completion.lg	split-dir-leaf	1	unbound-var		core/subs,core/vector,string/last-index-of	0		1864
-236	legmacs/completion.lg	dir-entries	1	unbound-var		os/ls,string/blank?	0	vector	1820
-237	legmacs/completion.lg	dir?	1	unbound-var		core/boolean,os/stat	0		1736
-238	legmacs/completion.lg	path-completer	1	unbound-var		core/map,core/nth,core/str	4		1671
-239	legmacs/dispatch.lg	chord-path-str	1	unbound-var		string/join	0		1786
-240	legmacs/dispatch.lg	keymaps-for	1	unbound-var		core/conj,core/map,core/nil?,core/remove,core/vec	3		1817
-241	legmacs/dispatch.lg	lookup-layers	1	unbound-var		core/conj,core/empty?,core/first,core/nth,core/rest,core/seq,core/vector	1	vector	1789
-242	legmacs/dispatch.lg	dispatch-minibuffer	1	ok			13		1856
-243	legmacs/dispatch.lg	dispatch-paste	1	unbound-var		core/assoc,string/replace	3	vector	2606
-244	legmacs/dispatch.lg	dispatch-prefix	1	unbound-var		core/assoc,core/conj,core/nth,core/str	3	vector,vector	2554
-245	legmacs/dispatch.lg	finish-describe-key	1	unbound-var		core/assoc,core/str,core/vector	4	vector	3322
-246	legmacs/dispatch.lg	dispatch-describe-key	1	unbound-var		core/assoc,core/conj,core/nth,core/str	4	vector	2541
-247	legmacs/dispatch.lg	dispatch-normal	1	unbound-var		core/assoc,core/nth,core/str,core/vector	6		1993
-248	legmacs/dispatch.lg	run-after-commands	1	unbound-var		core/reduce	2		1733
-249	legmacs/dispatch.lg	record-if-still-recording	1	unbound-var		core/assoc,core/conj,core/count,core/drop-last,core/not,core/update,core/vec	0		2076
-250	legmacs/dispatch.lg	dispatch	1	unbound-var		core/assoc,core/boolean,core/count,core/dissoc,core/not,core/str	13	vector	2635
-251	legmacs/extensions/acme.lg	path-char?	1	unbound-var		core/contains?,core/hash-set	1		1737
-252	legmacs/extensions/acme.lg	path-bounds-at	1	unbound-var		core/count,core/nth,core/vector	2		1829
-253	legmacs/extensions/acme.lg	target-text	1	unbound-var		core/nth,core/seq,core/subs,string/trim	4		1728
-254	legmacs/extensions/acme.lg	entry-line	1	unbound-var		core/str,os/file-separator,os/stat	1		2190
-255	legmacs/extensions/acme.lg	directory-state	1	unbound-var		core/assoc,core/mapv,os/ls	4		2722
-256	legmacs/extensions/acme.lg	existing-file-id	1	unbound-var		core/some	1		1756
-257	legmacs/extensions/acme.lg	existing-directory-id	1	unbound-var		core/nil?,core/some	1		1868
-258	legmacs/extensions/acme.lg	open-file	1	unbound-var		core/array-map,core/assoc,core/nth,core/str,string/starts-with?	2		2001
-259	legmacs/extensions/acme.lg	open-directory	1	unbound-var		core/array-map,core/assoc,core/str	3		1955
-260	legmacs/extensions/acme.lg	look-at-point	1	unbound-var		core/assoc,core/nil?,core/str,os/stat	4		1742
-261	legmacs/extensions/acme.lg	rc-quote	1	unbound-var		core/str,string/replace	0		1694
-262	legmacs/extensions/acme.lg	rc-script	1	unbound-var		core/str	2		1720
-263	legmacs/extensions/acme.lg	nonblank-lines	1	unbound-var		string/blank?	1	vector	1768
-264	legmacs/extensions/acme.lg	execute-result-lines	1	unbound-var		core/concat,core/empty?,core/format,core/not,core/seq,core/str,core/vec,core/vector	2	vector	1802
-265	legmacs/extensions/acme.lg	errors-buffer-name	1	unbound-var		core/str	1		1793
-266	legmacs/extensions/acme.lg	execute-output-state	1	unbound-var		core/assoc,core/count,core/nth	3		4303
-267	legmacs/extensions/acme.lg	apply-execute-result	1	unbound-var		core/array-map,core/assoc,core/format	2		2255
-268	legmacs/extensions/acme.lg	run-command-now	1	unbound-var		core/array-map,core/str,os/sh	2		2197
-269	legmacs/extensions/acme.lg	execute-io	1	unbound-var		core/array-map,core/str,os/sh	0		2220
-270	legmacs/extensions/acme.lg	execute-then	1	unbound-var		core/array-map,core/contains?,core/str	1		2188
-271	legmacs/extensions/acme.lg	execute-at-point	1	unbound-var		core/assoc,core/str	5		1749
+168	legmacs/commands.lg	pop-mark	1	ok			1		1795
+169	legmacs/commands.lg	kill-region	1	unbound-var		core/assoc	4		2248
+170	legmacs/commands.lg	copy-region-as-kill	1	unbound-var		core/assoc	3		2008
+171	legmacs/commands.lg	exchange-point-and-mark	1	unbound-var		core/assoc,core/nth,core/vector	1		2632
+172	legmacs/commands.lg	find-from	1	unbound-var		core/count,core/nth,core/vector,string/index-of	0		1809
+173	legmacs/commands.lg	search-forward	1	unbound-var		core/assoc,core/first,core/second,core/str,string/blank?	3		2003
+174	legmacs/commands.lg	compile-search	1	unbound-var		core/re-pattern,string/blank?	0		1745
+175	legmacs/commands.lg	line-match-cols	1	unbound-var		core/conj,core/count,core/first,core/nil?,core/re-find,core/subs,core/vector,core/vector?,string/index-of	0	vector	1904
+176	legmacs/commands.lg	swiper-candidates	1	unbound-var		core/array-map,core/count,core/format,core/into,core/map,core/nth	1	vector	3067
+177	legmacs/commands.lg	swiper	1	unbound-var		core/array-map,core/assoc,core/assoc-in,core/get-in,core/merge,core/nth,core/select-keys,core/vector	5	vector	2958
+178	legmacs/commands.lg	count-occurrences	1	unbound-var		core/count,string/index-of	0		1826
+179	legmacs/commands.lg	replace-string	1	unbound-var		core/assoc,core/concat,core/format,core/get,core/map,core/nth,core/reduce,core/str,core/subs,core/subvec,core/vec,core/vector,string/blank?,string/replace	6		2028
+180	legmacs/commands.lg	query-replace	1	unbound-var		core/str,string/blank?	4		1768
+181	legmacs/commands.lg	shell-command	1	unbound-var		core/not,core/str,os/sh,string/blank?,string/trim	2		1733
+182	legmacs/commands.lg	yes?	1	unbound-var		core/contains?,string/trim	0	set	1722
+183	legmacs/commands.lg	ask-yes-or-no	1	unbound-var		core/array-map	2		1694
+184	legmacs/commands.lg	write-buffer-to	1	unbound-var		core/assoc,core/dissoc,core/spit,core/str	3		3288
+185	legmacs/commands.lg	save-buffer	1	unbound-var		core/array-map,string/blank?	4		1793
+186	legmacs/commands.lg	write-file	1	unbound-var		core/array-map,core/str,string/blank?	4		1759
+187	legmacs/commands.lg	with-auto-mode	1	ok			2		1819
+188	legmacs/commands.lg	new-file-state	1	unbound-var		core/assoc,core/first,core/slurp,core/str,core/vector	4		1746
+189	legmacs/commands.lg	find-file	1	unbound-var		core/array-map,core/assoc,core/nth,core/some,core/str,string/blank?	3		2014
+190	legmacs/commands.lg	other-modified-buffers	1	unbound-var		core/filter,core/not=	0		1708
+191	legmacs/commands.lg	plural	1	unbound-var		core/str	0		1774
+192	legmacs/commands.lg	save-buffers-kill-terminal	1	unbound-var		core/assoc,core/count,core/seq,core/str	5		1809
+193	legmacs/commands.lg	switch-to-buffer	1	unbound-var		core/array-map,core/assoc,core/map,core/some,core/vector,string/blank?	4		2004
+194	legmacs/commands.lg	repl	1	unbound-var		core/array-map,core/assoc,core/some	2		1811
+195	legmacs/commands.lg	list-buffers	1	unbound-var		core/array-map,core/assoc,core/format,core/map,core/vec	0		1746
+196	legmacs/commands.lg	kill-buffer	1	unbound-var		core/array-map,core/assoc,core/vector	4		2310
+197	legmacs/commands.lg	next-buffer	1	unbound-var		core/assoc	0	map	1752
+198	legmacs/commands.lg	previous-buffer	1	unbound-var		core/assoc	0	map	2007
+199	legmacs/commands.lg	split-window-below	1	unbound-var		core/assoc	0	map	2304
+200	legmacs/commands.lg	split-window-right	1	unbound-var		core/assoc	0	map	1911
+201	legmacs/commands.lg	other-window	1	unbound-var		core/assoc	1	map	2172
+202	legmacs/commands.lg	delete-window	1	unbound-var		core/assoc	1	map	1970
+203	legmacs/commands.lg	delete-other-windows	1	unbound-var		core/assoc	0	map	1852
+204	legmacs/commands.lg	start-kbd-macro	1	unbound-var		core/assoc	1	vector	1934
+205	legmacs/commands.lg	end-kbd-macro	1	unbound-var		core/assoc	1		1775
+206	legmacs/commands.lg	call-last-kbd-macro	1	unbound-var		core/assoc,core/reduce,core/seq	2		1732
+207	legmacs/commands.lg	command-keys	1	unbound-var		core/get,core/keyword,core/seq,core/sort,string/join	2	vector	1809
+208	legmacs/commands.lg	command-candidate	1	unbound-var		core/array-map,core/keyword	2		2895
+209	legmacs/commands.lg	command-candidates-on-change	1	unbound-var		core/assoc-in,core/map,core/vec,core/vector	2		1846
+210	legmacs/commands.lg	open-command-prompt	1	unbound-var		core/array-map	3		2214
+211	legmacs/commands.lg	command-help-lines	1	unbound-var		core/concat,core/get,core/keyword,core/map,core/seq,core/sort,core/str,core/vec,core/vector	4	vector	1789
+212	legmacs/commands.lg	mode-heading	1	unbound-var		core/name,core/str	0		1793
+213	legmacs/commands.lg	one-line-doc	1	unbound-var		core/map,core/remove,string/blank?,string/join,string/split,string/trim	0		1755
+214	legmacs/commands.lg	binding-entry-lines	1	unbound-var		core/keyword?,core/seq,core/str,core/vector	4		1722
+215	legmacs/commands.lg	binding-lines	1	unbound-var		core/mapcat,core/nth,core/sort-by,string/join	2	map	1722
+216	legmacs/commands.lg	binding-section	1	unbound-var		core/into,core/seq,core/vec,core/vector	1		1732
+217	legmacs/commands.lg	mode-help-section	1	unbound-var		core/concat,core/seq,core/vec,core/vector	4		1816
+218	legmacs/commands.lg	keyboard-quit	1	unbound-var		core/assoc	6	vector	3485
+219	legmacs/commands.lg	execute-extended-command	1	unbound-var		core/keyword,string/blank?,string/trim	2		1758
+220	legmacs/commands.lg	toggle-minor-mode	1	unbound-var		core/array-map,core/keyword,core/map,core/name,string/blank?,string/trim	4		1787
+221	legmacs/commands.lg	toggle-read-only	1	unbound-var		core/assoc,core/not	1		1739
+222	legmacs/commands.lg	load-theme	1	unbound-var		core/array-map,core/map,core/name,core/str,string/blank?,string/trim	5		1871
+223	legmacs/commands.lg	describe-bindings	1	unbound-var		core/apply,core/concat,core/identity,core/interpose,core/keep,core/seq,core/vec,core/vector	5	vector	1848
+224	legmacs/commands.lg	describe-key	1	unbound-var		core/assoc	0		2026
+225	legmacs/commands.lg	describe-function	1	unbound-var		core/assoc,core/keyword,core/str,string/blank?,string/trim	4		1781
+226	legmacs/commands.lg	describe-mode	1	unbound-var		core/concat,core/empty?,core/mapcat,core/nil?,core/vec,core/vector	2	vector	1789
+227	legmacs/commands.lg	help-for-help	1	unbound-var		core/get,core/into,core/map?,core/mapcat,core/nth,core/sort-by,core/vector,string/join	4	vector	1759
+228	legmacs/completion.lg	longest-common-prefix	1	unbound-var		core/count,core/empty?,core/min,core/nth,core/reduce,core/subs	0		2582
+229	legmacs/completion.lg	preview	1	unbound-var		core/count,core/format,core/str,core/take,string/join	0		1926
+230	legmacs/completion.lg	complete-input	1	unbound-var		core/array-map,core/count,core/empty?,core/first	2		1838
+231	legmacs/completion.lg	fuzzy-score	1	unbound-var		core/count,core/min,core/nth,string/lower-case	0		1931
+232	legmacs/completion.lg	fuzzy-filter	1	unbound-var		core/first,core/keep,core/map,core/second,core/sort,core/sort-by,core/vector,string/blank?	1		1864
+233	legmacs/completion.lg	command-names	1	unbound-var		core/keys,core/map,core/name,core/sort	1		1992
+234	legmacs/completion.lg	command-completer	1	ok			2		1772
+235	legmacs/completion.lg	split-dir-leaf	1	unbound-var		core/subs,core/vector,string/last-index-of	0		1766
+236	legmacs/completion.lg	dir-entries	1	unbound-var		os/ls,string/blank?	0	vector	1828
+237	legmacs/completion.lg	dir?	1	unbound-var		core/boolean,os/stat	0		1747
+238	legmacs/completion.lg	path-completer	1	unbound-var		core/map,core/nth,core/str	4		1845
+239	legmacs/dispatch.lg	chord-path-str	1	unbound-var		string/join	0		1722
+240	legmacs/dispatch.lg	keymaps-for	1	unbound-var		core/conj,core/map,core/nil?,core/remove,core/vec	3		2482
+241	legmacs/dispatch.lg	lookup-layers	1	unbound-var		core/conj,core/empty?,core/first,core/nth,core/rest,core/seq,core/vector	1	vector	2444
+242	legmacs/dispatch.lg	dispatch-minibuffer	1	ok			13		2987
+243	legmacs/dispatch.lg	dispatch-paste	1	unbound-var		core/assoc,string/replace	3	vector	3695
+244	legmacs/dispatch.lg	dispatch-prefix	1	unbound-var		core/assoc,core/conj,core/nth,core/str	3	vector,vector	2762
+245	legmacs/dispatch.lg	finish-describe-key	1	unbound-var		core/assoc,core/str,core/vector	4	vector	3841
+246	legmacs/dispatch.lg	dispatch-describe-key	1	unbound-var		core/assoc,core/conj,core/nth,core/str	4	vector	2904
+247	legmacs/dispatch.lg	dispatch-normal	1	unbound-var		core/assoc,core/nth,core/str,core/vector	6		2230
+248	legmacs/dispatch.lg	run-after-commands	1	unbound-var		core/reduce	2		1992
+249	legmacs/dispatch.lg	record-if-still-recording	1	unbound-var		core/assoc,core/conj,core/count,core/drop-last,core/not,core/update,core/vec	0		2094
+250	legmacs/dispatch.lg	dispatch	1	unbound-var		core/assoc,core/boolean,core/count,core/dissoc,core/not,core/str	13	vector	2806
+251	legmacs/extensions/acme.lg	path-char?	1	unbound-var		core/contains?,core/hash-set	1		1726
+252	legmacs/extensions/acme.lg	path-bounds-at	1	unbound-var		core/count,core/nth,core/vector	2		1777
+253	legmacs/extensions/acme.lg	target-text	1	unbound-var		core/nth,core/seq,core/subs,string/trim	4		1710
+254	legmacs/extensions/acme.lg	entry-line	1	unbound-var		core/str,os/file-separator,os/stat	1		1688
+255	legmacs/extensions/acme.lg	directory-state	1	unbound-var		core/assoc,core/mapv,os/ls	4		2471
+256	legmacs/extensions/acme.lg	existing-file-id	1	unbound-var		core/some	1		1843
+257	legmacs/extensions/acme.lg	existing-directory-id	1	unbound-var		core/nil?,core/some	1		1800
+258	legmacs/extensions/acme.lg	open-file	1	unbound-var		core/array-map,core/assoc,core/nth,core/str,string/starts-with?	2		1939
+259	legmacs/extensions/acme.lg	open-directory	1	unbound-var		core/array-map,core/assoc,core/str	3		1947
+260	legmacs/extensions/acme.lg	look-at-point	1	unbound-var		core/assoc,core/nil?,core/str,os/stat	4		1712
+261	legmacs/extensions/acme.lg	rc-quote	1	unbound-var		core/str,string/replace	0		1684
+262	legmacs/extensions/acme.lg	rc-script	1	unbound-var		core/str	2		1774
+263	legmacs/extensions/acme.lg	nonblank-lines	1	unbound-var		string/blank?	1	vector	1722
+264	legmacs/extensions/acme.lg	execute-result-lines	1	unbound-var		core/concat,core/empty?,core/format,core/not,core/seq,core/str,core/vec,core/vector	2	vector	1860
+265	legmacs/extensions/acme.lg	errors-buffer-name	1	unbound-var		core/str	1		1783
+266	legmacs/extensions/acme.lg	execute-output-state	1	unbound-var		core/assoc,core/count,core/nth	3		4396
+267	legmacs/extensions/acme.lg	apply-execute-result	1	unbound-var		core/array-map,core/assoc,core/format	2		2302
+268	legmacs/extensions/acme.lg	run-command-now	1	unbound-var		core/array-map,core/str,os/sh	2		2256
+269	legmacs/extensions/acme.lg	execute-io	1	unbound-var		core/array-map,core/str,os/sh	0		2246
+270	legmacs/extensions/acme.lg	execute-then	1	unbound-var		core/array-map,core/contains?,core/str	1		2295
+271	legmacs/extensions/acme.lg	execute-at-point	1	unbound-var		core/assoc,core/str	5		1780
 272	legmacs/extensions/acme.lg	enable!	1	ok			1		1754
-273	legmacs/indent.lg	spaces	1	unbound-var		core/apply,core/max,core/repeat,core/str	0		1716
-274	legmacs/indent.lg	whitespace?	1	ok			0		1665
-275	legmacs/indent.lg	leading-width	1	unbound-var		core/count,core/nth,core/seq,core/vec	1		1709
-276	legmacs/indent.lg	blank-line?	1	unbound-var		core/count	1		1682
-277	legmacs/indent.lg	code-text	1	unbound-var		core/get,core/reduce,core/str,core/subs	2		1678
-278	legmacs/indent.lg	word-char?	1	unbound-var		core/int	0		1740
-279	legmacs/indent.lg	words	1	unbound-var		core/conj,core/count,core/nth,core/seq,core/subs,core/vec	1	vector	1717
-280	legmacs/indent.lg	first-char	1	unbound-var		core/count,core/nth,core/seq,core/vec	1		1689
-281	legmacs/indent.lg	brackets-of	1	unbound-var		core/array-map	0		2202
-282	legmacs/indent.lg	bracket-delta	1	unbound-var		core/contains?,core/reduce,core/seq,core/set,core/vals,core/vec	1		1729
-283	legmacs/indent.lg	closes-block?	1	unbound-var		core/boolean,core/contains?,core/some	0		1693
-284	legmacs/indent.lg	opens-block?	1	unbound-var		core/boolean,core/contains?,core/first,core/last,core/not,core/some,string/ends-with?,string/trim	1		1720
-285	legmacs/indent.lg	dedents-itself?	1	unbound-var		core/boolean,core/contains?,core/first,core/set,core/vals	2		1733
-286	legmacs/indent.lg	previous-code-row	1	unbound-var		core/nth	1		1795
-287	legmacs/indent.lg	absolute-column	1	unbound-var		core/max	4		1747
-288	legmacs/indent.lg	relative-column	1	unbound-var		core/contains?,core/first,core/max,core/nth	6		1853
-289	legmacs/indent.lg	indent-column	1	unbound-var		core/nth	6	map	2567
-290	legmacs/indent.lg	set-line-indent	1	unbound-var		core/assoc,core/nth,core/subs	3		2165
-291	legmacs/indent.lg	indent-line	1	ok			2		2122
-292	legmacs/keymap.lg	defcommand!	1	unbound-var		core/array-map,core/assoc	1		1803
-293	legmacs/keymap.lg	command-fn	1	unbound-var		core/get	1		1922
-294	legmacs/keymap.lg	command-name-str	1	unbound-var		core/keyword?,core/name,core/str	0		1748
-295	legmacs/keymap.lg	command-doc	1	unbound-var		core/get	1		1711
-296	legmacs/keymap.lg	run-command	1	unbound-var		core/assoc,core/str	2		1724
-297	legmacs/keymap.lg	split-chord-sequence	1	unbound-var		core/remove,core/vec,string/blank?,string/split	0		1713
-298	legmacs/keymap.lg	assoc-in-keymap	1	unbound-var		core/assoc,core/count,core/first,core/get,core/map?,core/rest	1	map	1725
-299	legmacs/keymap.lg	bind-key!	m0	ok			2		1770
-300	legmacs/keymap.lg	bind-key!	m1	unbound-var		core/empty?,core/pr-str,core/str	2		1698
-301	legmacs/keymap.lg	unbind-key!	m0	ok			2		1685
-302	legmacs/keymap.lg	unbind-key!	m1	unbound-var		core/dissoc,core/first	1		1745
-303	legmacs/keymap.lg	lookup	1	unbound-var		core/fn?,core/get,core/keyword?,core/map?,core/vector	0		1740
-304	legmacs/keymap.lg	describe-keymap	1	unbound-var		core/into,core/map,core/map?,core/mapcat,core/nth,core/vector	1		1706
-305	legmacs/keymap.lg	format-binding-line	1	unbound-var		core/format,core/string?,string/join	1		1778
-306	legmacs/keymap.lg	chord-paths-by-command	1	unbound-var		core/assoc,core/conj,core/contains?,core/fnil,core/nth,core/reduce,core/update,string/join	1	map,map,vector	1709
-307	legmacs/keys.lg	esc-seq	1	unbound-var		core/str	1		1756
-308	legmacs/keys.lg	modifier-prefix	1	unbound-var		core/str	0		1915
-309	legmacs/keys.lg	digits?	1	unbound-var		core/every?,core/int,core/seq,core/string?	0		1835
-310	legmacs/keys.lg	decode-csi	1	unbound-var		core/contains?,core/count,core/get,core/nil?,core/nth,core/parse-long,core/str,core/string?,core/subs,core/vec,string/split	5		1848
-311	legmacs/keys.lg	describe-raw	1	unbound-var		core/apply,core/char,core/int,core/map,core/seq,core/str	0		1715
-312	legmacs/keys.lg	control-chord	1	unbound-var		core/char,core/str	0		1774
-313	legmacs/keys.lg	raw->chord	1	unbound-var		core/contains?,core/count,core/first,core/get,core/int,core/seq,core/string?,core/subs	8		1849
-314	legmacs/keys.lg	meta-chord	1	unbound-var		core/keyword?,core/nil?,core/str	0		1860
-315	legmacs/keys.lg	paste-token->text	1	ok			1		1712
-316	legmacs/keys.lg	paste-tokens->text	1	unbound-var		core/apply,core/map,core/str	1		1730
-317	legmacs/keys.lg	read-paste-text	1	unbound-var		core/conj,core/nil?,term/read-key	2	vector	1726
-318	legmacs/keys.lg	paste?	1	unbound-var		core/first,core/vector?	0		2160
-319	legmacs/keys.lg	paste-text	1	unbound-var		core/second	0		1979
-320	legmacs/keys.lg	read-chord	1	unbound-var		core/vector,term/key-pending?,term/read-key	4		1741
-321	legmacs/keys.lg	printable?	1	unbound-var		core/count,core/first,core/int,core/seq,core/string?	0		1735
-322	legmacs/lisp_syntax.lg	as-chars	1	unbound-var		core/seq,core/vec,core/vector?	0		1696
-323	legmacs/lisp_syntax.lg	open-bracket?	1	unbound-var		core/contains?	1		1717
-324	legmacs/lisp_syntax.lg	close-bracket?	1	unbound-var		core/contains?	1		1701
-325	legmacs/lisp_syntax.lg	newline-from	1	unbound-var		core/nth	0		1722
-326	legmacs/lisp_syntax.lg	scan	m0	unbound-var		core/count	2		1804
-327	legmacs/lisp_syntax.lg	scan	m1	unbound-var		core/array-map,core/assoc,core/boolean,core/conj,core/cons,core/count,core/empty?,core/first,core/get,core/min,core/not,core/nth,core/rest,core/vector	6	list,map,vector	3397
-328	legmacs/lisp_syntax.lg	ends-in-string?	1	unbound-var		core/count,core/nth,core/seq,core/vec	0		1818
-329	legmacs/lisp_syntax.lg	matching	1	unbound-var		core/get	0		1726
-330	legmacs/lisp_syntax.lg	in-string-or-comment?	1	unbound-var		core/boolean,core/get,core/some	0		1735
-331	legmacs/lisp_syntax.lg	open-stack-at*	1	unbound-var		core/array-map,core/cons,core/contains?,core/count,core/empty?,core/min,core/not,core/nth,core/rest,core/vector	4	list,set	2482
-332	legmacs/lisp_syntax.lg	point-in-string-or-comment-at?	1	unbound-var		core/contains?	1	set	1710
-333	legmacs/lisp_syntax.lg	open-stack-at	1	ok			1		1769
-334	legmacs/lisp_syntax.lg	depth-at	1	unbound-var		core/count	1		1707
-335	legmacs/lisp_syntax.lg	match-for-closer	1	unbound-var		core/count,core/first,core/get,core/nth	3		1792
-336	legmacs/lisp_syntax.lg	innermost-open-before	1	unbound-var		core/first	1		1771
-337	legmacs/lisp_syntax.lg	matched-pairs	1	unbound-var		core/filter,core/nth	0		1724
-338	legmacs/lisp_syntax.lg	innermost-pair-containing	1	unbound-var		core/apply,core/filter,core/first,core/max-key,core/nth,core/seq	1		2378
-339	legmacs/lisp_syntax.lg	enclosing-pair	1	unbound-var		core/apply,core/filter,core/first,core/max-key,core/nth,core/seq	1		1794
-340	legmacs/minibuffer.lg	active?	1	unbound-var		core/boolean	0		1702
-341	legmacs/minibuffer.lg	fire-select	1	unbound-var		core/get,core/seq	0		1770
-342	legmacs/minibuffer.lg	react	1	unbound-var		core/assoc,core/get-in,core/update,core/vector	1		2007
-343	legmacs/minibuffer.lg	completer->on-change	1	unbound-var		core/array-map,core/assoc-in,core/map,core/vec,core/vector	0		1676
-344	legmacs/minibuffer.lg	open	m0	phase2-const			1	map	1743
-345	legmacs/minibuffer.lg	open	m1	unbound-var		core/array-map,core/assoc,core/count	2	vector	28718
-346	legmacs/minibuffer.lg	clear-note	1	unbound-var		core/assoc,core/update	0		2037
-347	legmacs/minibuffer.lg	insert-text	1	unbound-var		core/assoc,core/count,core/get,core/str,core/subs,core/update	2		1824
-348	legmacs/minibuffer.lg	insert-char	1	unbound-var		core/str	1		1740
-349	legmacs/minibuffer.lg	backward-delete-char	1	unbound-var		core/assoc,core/get,core/str,core/subs,core/update	2		1797
-350	legmacs/minibuffer.lg	select-next	1	unbound-var		core/count,core/get-in,core/min,core/update,core/vector	1		2000
-351	legmacs/minibuffer.lg	select-prev	1	unbound-var		core/count,core/get-in,core/max,core/update,core/vector	1		2019
-352	legmacs/minibuffer.lg	move-left	1	unbound-var		core/max,core/update	0		1701
-353	legmacs/minibuffer.lg	move-right	1	unbound-var		core/count,core/min,core/update	0		1722
-354	legmacs/minibuffer.lg	move-beginning	1	unbound-var		core/assoc,core/update	0		1718
-355	legmacs/minibuffer.lg	move-end	1	unbound-var		core/assoc,core/count,core/update	0		1704
-356	legmacs/minibuffer.lg	complete	1	unbound-var		core/assoc,core/count,core/get,core/update	0		3303
-357	legmacs/minibuffer.lg	selected-value	1	unbound-var		core/count,core/get,core/min,core/nth,core/seq	0		1787
-358	legmacs/minibuffer.lg	accept-selection	1	unbound-var		core/assoc,core/count,core/update	2		2666
-359	legmacs/minibuffer.lg	submit	1	unbound-var		core/assoc,core/get	1		1760
-360	legmacs/minibuffer.lg	submit-input	1	unbound-var		core/assoc,core/get	0		1766
-361	legmacs/minibuffer.lg	cancel	1	unbound-var		core/assoc,core/get	0		2176
-362	legmacs/modeline.lg	register-modeline-segment!	1	unbound-var		core/array-map,core/assoc,core/get	2		2284
-363	legmacs/modeline.lg	remove-modeline-segment!	1	unbound-var		core/dissoc	1		1740
-364	legmacs/modeline.lg	set-modeline-order!	1	unbound-var		core/assoc,core/get,core/into,core/map,core/map-indexed,core/nth,core/vector	1	map,map	1737
-365	legmacs/modeline.lg	set-modeline-theme!	1	unbound-var		core/merge	1		1779
-366	legmacs/modeline.lg	set-modeline-separator!	1	ok			1		1680
-367	legmacs/modeline.lg	normalize-seg	1	unbound-var		core/array-map,core/map?,core/nil?,core/seq,core/string?	0		1740
-368	legmacs/modeline.lg	seg-label	1	unbound-var		core/keyword?,core/name,core/str	0		1709
-369	legmacs/modeline.lg	broken-seg	1	unbound-var		core/array-map,core/str,core/vector	1		2202
-370	legmacs/modeline.lg	call-seg	1	unbound-var		core/array-map,core/contains?,core/map?,core/nil?,core/not,core/seq,core/string?	2		1821
-371	legmacs/modeline.lg	ordered	1	unbound-var		core/filter,core/keep,core/nth,core/sort-by	2		1827
-372	legmacs/modeline.lg	left-segments	1	ok			1		1713
-373	legmacs/modeline.lg	right-segments	1	ok			1		1688
-374	legmacs/modeline.lg	buffer-label	1	ok			0		1714
-375	legmacs/modeline.lg	buffer-segment	1	unbound-var		core/array-map,core/str,core/vector	1		2197
-376	legmacs/modeline.lg	mode-segment	1	unbound-var		core/array-map,core/name,core/str,core/vector	0		2261
-377	legmacs/modeline.lg	call-lighter	1	unbound-var		core/array-map,core/contains?,core/seq,core/string?	0		1712
-378	legmacs/modeline.lg	mode-lighters	1	unbound-var		core/keep,string/join	2		1730
-379	legmacs/modeline.lg	modes-status-segment	1	ok			2		1724
-380	legmacs/modeline.lg	modes-status-right-segment	1	ok			2		1719
-381	legmacs/modeline.lg	pending-keys-segment	1	unbound-var		core/array-map,core/seq,core/str,core/vector,string/join	0		2333
-382	legmacs/modeline.lg	position-segment	1	unbound-var		core/count,core/format	0		1717
-383	legmacs/modeline.lg	jobs-segment	1	unbound-var		core/array-map,core/count,core/last,core/str,core/vec,core/vector	0	vector	2252
-384	legmacs/modes.lg	register-mode!	m0	phase2-const			1	map	1765
-385	legmacs/modes.lg	register-mode!	m1	unbound-var		core/array-map,core/assoc,core/merge	1	map	1746
-386	legmacs/modes.lg	register-minor-mode!	m0	phase2-const			1	map	1741
-387	legmacs/modes.lg	register-minor-mode!	m1	ok			1		1709
-388	legmacs/modes.lg	register-auto-mode!	1	unbound-var		core/conj,core/vector	1		1859
-389	legmacs/modes.lg	mode-for-filename	1	unbound-var		core/nth,core/some,string/ends-with?	1		1789
-390	legmacs/modes.lg	register-mode-detector!	1	unbound-var		core/conj	1		1710
-391	legmacs/modes.lg	register-interpreter-mode!	1	unbound-var		core/conj,core/vector	1		1726
-392	legmacs/modes.lg	interpreter-from-shebang	1	unbound-var		core/first,core/last,core/remove,core/second,core/subs,string/blank?,string/split,string/starts-with?	0		1748
-393	legmacs/modes.lg	mode-for-interpreter	1	unbound-var		core/nth,core/some	2		2405
-394	legmacs/modes.lg	mode-for-file	1	unbound-var		core/some	2		1769
-395	legmacs/modes.lg	mode-keymap	1	unbound-var		core/get	1		1735
-396	legmacs/modes.lg	mode-highlighter	1	unbound-var		core/get	1		1743
-397	legmacs/modes.lg	lifted-highlighter	1	unbound-var		core/array-map	0		1760
-398	legmacs/modes.lg	spans-dropping-advance	1	ok			0		1745
-399	legmacs/modes.lg	no-carry	1	ok			0		1728
-400	legmacs/modes.lg	line-highlighter	1	unbound-var		core/get	2		1785
-401	legmacs/modes.lg	carry-advance	1	unbound-var		core/get	3		1700
-402	legmacs/modes.lg	mode-after-command	1	unbound-var		core/get	1		1715
-403	legmacs/modes.lg	mode-status	1	unbound-var		core/get	1		1705
-404	legmacs/modes.lg	mode-status-right	1	unbound-var		core/get	1		1718
-405	legmacs/modes.lg	mode-syntax-spec	1	unbound-var		core/get	1		1755
-406	legmacs/modes.lg	describe-mode	1	unbound-var		core/get	1		1777
-407	legmacs/modes.lg	registered-modes	1	unbound-var		core/keys	1		1734
-408	legmacs/modes.lg	resolve-keymap	1	unbound-var		core/fn?,core/get,core/map?,core/nil?	1		1703
-409	legmacs/modes.lg	active-modes	1	unbound-var		core/concat,core/vector	0	vector	1743
-410	legmacs/modes.lg	suppress-self-insert?	1	unbound-var		core/boolean,core/fn?,core/get,core/some	2		1707
-411	legmacs/modes.lg	minor-mode-active?	1	unbound-var		core/boolean,core/some	0		1727
-412	legmacs/modes.lg	enable-minor-mode	1	unbound-var		core/assoc,core/conj,core/get,core/name,core/nil?,core/str,core/update	2	vector	1743
-413	legmacs/modes.lg	disable-minor-mode	1	unbound-var		core/get,core/remove,core/update,core/vec	2		1702
-414	legmacs/modes.lg	switch-to-mode	1	unbound-var		core/assoc,core/get,core/name,core/reduce,core/str	3		1736
-415	legmacs/modes.lg	toggle-minor-mode	1	ok			3		1725
-416	legmacs/modes/comment.lg	indent-len	1	unbound-var		core/contains?,core/count,core/hash-set,core/nth	0		1691
-417	legmacs/modes/comment.lg	line-comment-marker	1	unbound-var		core/first	2		1705
-418	legmacs/modes/comment.lg	block-comment-pair	1	unbound-var		core/seq	1		1775
-419	legmacs/modes/comment.lg	target-rows	1	unbound-var		core/nth,core/vector	1		1715
-420	legmacs/modes/comment.lg	line-commented?	1	unbound-var		core/count,core/subs,string/starts-with?	1		1726
-421	legmacs/modes/comment.lg	comment-line	1	unbound-var		core/count,core/str,core/subs	1		1707
-422	legmacs/modes/comment.lg	uncomment-line	1	unbound-var		core/count,core/nth,core/str,core/subs	1		1726
-423	legmacs/modes/comment.lg	toggle-line-comments	1	unbound-var		core/concat,core/every?,core/map,core/remove,core/seq,core/subvec,core/vec,string/blank?	3		1758
-424	legmacs/modes/comment.lg	block-wrapped?	1	unbound-var		core/nth,core/subs,string/ends-with?,string/starts-with?	1		1736
-425	legmacs/modes/comment.lg	wrap-block	1	unbound-var		core/assoc,core/nth,core/str,core/subs	1		2218
-426	legmacs/modes/comment.lg	unwrap-block	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs,string/ends-with?	1		1779
-427	legmacs/modes/comment.lg	toggle-block-comment	1	ok			3		2303
-428	legmacs/modes/comment.lg	comment-dwim	1	unbound-var		core/assoc,core/name,core/nth,core/str	7		3104
-429	legmacs/modes/crutch.lg	repeatn	1	ok			0		1691
-430	legmacs/modes/crutch.lg	count-value	1	unbound-var		core/max	0		1681
-431	legmacs/modes/crutch.lg	consume-count	1	unbound-var		core/dissoc	2		1772
-432	legmacs/modes/crutch.lg	crutch-digit	1	unbound-var		core/assoc,core/nil?	1		2000
-433	legmacs/modes/crutch.lg	at-line-end?	1	ok			1		1737
-434	legmacs/modes/crutch.lg	crutch-normal-mode	1	unbound-var		core/assoc,core/dissoc	0		1917
-435	legmacs/modes/crutch.lg	crutch-insert-mode	1	unbound-var		core/assoc	0		1886
-436	legmacs/modes/crutch.lg	crutch-insert-bol	1	unbound-var		core/assoc	1		2233
-437	legmacs/modes/crutch.lg	crutch-append	1	unbound-var		core/assoc	2		1736
-438	legmacs/modes/crutch.lg	crutch-append-eol	1	unbound-var		core/assoc	1		1741
-439	legmacs/modes/crutch.lg	crutch-open-below	1	unbound-var		core/assoc	2		1794
-440	legmacs/modes/crutch.lg	crutch-open-above	1	unbound-var		core/assoc	3		1736
-441	legmacs/modes/crutch.lg	crutch-visual-mode	1	unbound-var		core/assoc,core/vector	0		2078
-442	legmacs/modes/crutch.lg	crutch-backward-char	1	ok			2		1731
-443	legmacs/modes/crutch.lg	crutch-forward-char	1	ok			2		1795
-444	legmacs/modes/crutch.lg	crutch-next-line	1	ok			2		1689
-445	legmacs/modes/crutch.lg	crutch-previous-line	1	ok			2		1680
-446	legmacs/modes/crutch.lg	crutch-word-forward	1	ok			2		1719
-447	legmacs/modes/crutch.lg	crutch-word-backward	1	ok			2		1751
-448	legmacs/modes/crutch.lg	crutch-line-start	1	ok			1		1784
-449	legmacs/modes/crutch.lg	crutch-line-end	1	ok			1		1737
-450	legmacs/modes/crutch.lg	crutch-buffer-end	1	ok			1		1711
-451	legmacs/modes/crutch.lg	crutch-goto-top	1	ok			1		1724
-452	legmacs/modes/crutch.lg	crutch-delete-char	1	ok			2		1820
-453	legmacs/modes/crutch.lg	crutch-kill-line	1	unbound-var		core/assoc,core/str	3		1737
-454	legmacs/modes/crutch.lg	crutch-delete-word	1	unbound-var		core/assoc,core/vector	4		1742
-455	legmacs/modes/crutch.lg	crutch-paste	1	ok			1		1771
-456	legmacs/modes/crutch.lg	crutch-undo	1	ok			1		1783
-457	legmacs/modes/crutch.lg	crutch-redo	1	ok			1		1706
-458	legmacs/modes/crutch.lg	crutch-ex-command	1	unbound-var		core/assoc,core/str,string/blank?,string/trim	2		1769
-459	legmacs/modes/crutch.lg	crutch-visual-delete	1	unbound-var		core/assoc	3		2021
-460	legmacs/modes/crutch.lg	crutch-visual-yank	1	unbound-var		core/assoc	2		2644
-461	legmacs/modes/crutch.lg	crutch-keymap-for	1	ok			3		1720
-462	legmacs/modes/crutch.lg	crutch-after-command	1	unbound-var		core/dissoc	0		1744
-463	legmacs/modes/crutch.lg	crutch-mode	1	ok			1		1716
-464	legmacs/modes/help.lg	pop-to-help	1	unbound-var		core/array-map,core/assoc,core/vec	3		3801
-465	legmacs/modes/help.lg	entry-spans	1	unbound-var		core/array-map,core/count,core/nth,core/vector	0		2559
-466	legmacs/modes/help.lg	header-line?	1	unbound-var		core/not,string/includes?,string/starts-with?	0		1825
-467	legmacs/modes/help.lg	leading-spaces	1	unbound-var		core/count,core/nth	0		1799
-468	legmacs/modes/help.lg	highlight-line	1	unbound-var		core/array-map,core/count,core/vector,string/blank?,string/starts-with?	3	vector,vector	2319
-469	legmacs/modes/keycast.lg	push-key	1	unbound-var		core/conj,core/count,core/drop,core/max,core/vec	1	vector	1805
-470	legmacs/modes/keycast.lg	keycast-after-command	1	unbound-var		core/update	1		1753
-471	legmacs/modes/keycast.lg	keycast-status-right	1	unbound-var		string/join	0		1737
-472	legmacs/modes/keycast.lg	keycast-mode	1	ok			1		1687
-473	legmacs/modes/letgo.lg	digit-char?	1	unbound-var		core/int	0		1744
-474	legmacs/modes/letgo.lg	symbol-char?	1	unbound-var		core/contains?,core/int	0	set	1803
-475	legmacs/modes/letgo.lg	tokenize-words	1	unbound-var		core/conj,core/count,core/nth,core/seq,core/subs,core/vec,core/vector	1	vector	1903
-476	legmacs/modes/letgo.lg	number-token?	1	unbound-var		core/contains?,core/count,core/hash-set,core/nth	1		1752
-477	legmacs/modes/letgo.lg	keyword-token?	1	unbound-var		core/count,core/nth	0		1718
-478	legmacs/modes/letgo.lg	highlight-scanned	1	unbound-var		core/array-map,core/concat,core/contains?,core/filter,core/get,core/map,core/not,core/nth,core/some	4		2260
-479	legmacs/modes/letgo.lg	highlight-line	1	ok			2		1726
-480	legmacs/modes/letgo.lg	shift-spans	1	unbound-var		core/assoc,core/mapv	0		1991
-481	legmacs/modes/letgo.lg	string-close	1	unbound-var		core/count,core/nth,core/seq,core/vec	0		1756
-482	legmacs/modes/letgo.lg	highlight-line-carry	1	unbound-var		core/array-map,core/concat,core/count,core/subs,core/vector	4		2320
-483	legmacs/modes/letgo.lg	highlight-carry	1	unbound-var		core/boolean,string/includes?	1		1708
-484	legmacs/modes/letgo.lg	char-at	1	unbound-var		core/count,core/nth	0		1716
-485	legmacs/modes/letgo.lg	update-paren-match	1	unbound-var		core/assoc,core/vector	9		1766
-486	legmacs/modes/letgo.lg	point-in-string-or-comment?	1	ok			1		1777
-487	legmacs/modes/letgo.lg	point-info	1	unbound-var		core/array-map	4		2192
-488	legmacs/modes/letgo.lg	insert-pair	1	unbound-var		core/str,core/update	2		1730
-489	legmacs/modes/letgo.lg	auto-insert-paren	1	ok			1		1713
-490	legmacs/modes/letgo.lg	auto-insert-bracket	1	ok			1		1725
-491	legmacs/modes/letgo.lg	auto-insert-brace	1	ok			1		1743
-492	legmacs/modes/letgo.lg	skip-or-insert-close	1	unbound-var		core/get,core/not,core/str	3		1727
-493	legmacs/modes/letgo.lg	auto-close-paren	1	ok			1		1726
-494	legmacs/modes/letgo.lg	auto-close-bracket	1	ok			1		1774
-495	legmacs/modes/letgo.lg	auto-close-brace	1	ok			1		1706
-496	legmacs/modes/letgo.lg	auto-delete-pair	1	unbound-var		core/get,core/not	4		1738
-497	legmacs/modes/letgo.lg	format-result	1	unbound-var		core/ex-message,core/pr-str,core/str	0		1686
-498	legmacs/modes/letgo.lg	capturing-out	1	unbound-var		core/*out*,core/with-out-str*	0		1739
-499	legmacs/modes/letgo.lg	eval-form	1	unbound-var		core/eval	1		1743
-500	legmacs/modes/letgo.lg	eval-each-form	1	unbound-var		core/eval,core/reduce	0		1723
-501	legmacs/modes/letgo.lg	load-in-editor	1	unbound-var		core/read-all-string	2		1744
-502	legmacs/modes/letgo.lg	preserving-ns	1	unbound-var		core/*ns*,core/array-map,core/contains?,core/in-ns,core/ns-name	0		1726
-503	legmacs/modes/letgo.lg	ns-form-name	1	unbound-var		core/first,core/second,core/seq?,core/symbol?	0	symbol,symbol,symbol,symbol	2181
-504	legmacs/modes/letgo.lg	buffer-ns-name	1	unbound-var		core/first,core/next,core/read-all-string,core/read-string,core/seq	2		2703
-505	legmacs/modes/letgo.lg	eval-form-in-ns	1	unbound-var		core/in-ns	2		2690
-506	legmacs/modes/letgo.lg	eval-form-in-state	1	ok			3		2626
-507	legmacs/modes/letgo.lg	register-eval-result-handler!	1	unbound-var		core/assoc	1		1824
-508	legmacs/modes/letgo.lg	replacement-result	1	unbound-var		core/array-map	0		1917
-509	legmacs/modes/letgo.lg	replacement-result?	1	unbound-var		core/contains?,core/map?	0		1782
-510	legmacs/modes/letgo.lg	selection-region-offsets	1	unbound-var		core/nth,core/vector	2		1822
-511	legmacs/modes/letgo.lg	pair-span-at	1	unbound-var		core/apply,core/contains?,core/filter,core/first,core/hash-set,core/max-key,core/nth,core/seq,core/vector	0		2025
-512	legmacs/modes/letgo.lg	literal-span-at	1	unbound-var		core/apply,core/filter,core/get,core/max-key,core/not=,core/seq,core/vector	0		1799
-513	legmacs/modes/letgo.lg	token-delimiter?	1	unbound-var		core/contains?,core/hash-set,core/nil?	0		5761
-514	legmacs/modes/letgo.lg	token-span-at	1	unbound-var		core/count,core/not,core/nth,core/vector	2		1802
-515	legmacs/modes/letgo.lg	form-span-at-point	1	ok			7		1739
-516	legmacs/modes/letgo.lg	eval-selection	1	unbound-var		core/ex-message,core/nth,core/read-all-string,core/seq,core/str,core/subs,core/vec,core/vector	2		1964
-517	legmacs/modes/letgo.lg	highlight-span	1	unbound-var		core/array-map,core/assoc	0		2213
-518	legmacs/modes/letgo.lg	clear-highlight	1	unbound-var		core/dissoc	0		1756
-519	legmacs/modes/letgo.lg	run-eval	1	unbound-var		core/assoc,core/ex-message,core/nth,core/reduce,core/str	3		2102
-520	legmacs/modes/letgo.lg	eval-last-sexp	1	unbound-var		core/assoc,core/str	2		1741
-521	legmacs/modes/letgo.lg	eval-print-last-sexp	1	unbound-var		core/assoc,core/nth,core/str	4		1984
-522	legmacs/modes/letgo.lg	splice-offsets	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs	6		2759
-523	legmacs/modes/letgo.lg	apply-source-result	1	unbound-var		core/assoc	1		1775
-524	legmacs/modes/letgo.lg	apply-replacement-result	1	unbound-var		core/assoc,core/get,core/str	4		1756
-525	legmacs/modes/letgo.lg	in-process-eval-backend	1	unbound-var		core/get,core/reduce	2		1730
-526	legmacs/modes/letgo.lg	register-eval-backend!	1	unbound-var		core/assoc	1		1761
-527	legmacs/modes/letgo.lg	use-eval-backend!	1	unbound-var		core/contains?	2		1830
-528	legmacs/modes/letgo.lg	eval-replace-value	1	unbound-var		core/get,core/pr-str,core/str	2		1787
-529	legmacs/modes/letgo.lg	eval-replace-io	1	ok			1		1708
-530	legmacs/modes/letgo.lg	resolve-eval-replace	1	unbound-var		core/assoc,core/count,core/ex-message,core/str,core/subs	3		1763
-531	legmacs/modes/letgo.lg	eval-replace-then	1	ok			1		2252
-532	legmacs/modes/letgo.lg	eval-replace-sexp	1	unbound-var		core/array-map,core/assoc,core/nth,core/str	8		7135
-533	legmacs/modes/letgo.lg	eval-buffer	1	unbound-var		core/assoc,core/ex-message,core/str	4		1799
-534	legmacs/modes/letgo.lg	body-form?	1	unbound-var		core/boolean,core/contains?,core/some,string/starts-with?	2	set	1747
-535	legmacs/modes/letgo.lg	token-at	1	unbound-var		core/contains?,core/count,core/hash-set,core/not,core/not=,core/nth,core/seq,core/vec,core/vector	1		1810
-536	legmacs/modes/letgo.lg	indent-column-for	1	unbound-var		core/contains?,core/hash-set,core/nth,core/subs	7		1869
-537	legmacs/modes/letgo.lg	newline-and-indent	1	unbound-var		core/assoc	3		1916
-538	legmacs/modes/letgo.lg	lisp-indent-line	1	ok			2		1713
-539	legmacs/modes/letgo.lg	pair->region	1	unbound-var		core/nth,core/vector	0		1692
-540	legmacs/modes/letgo.lg	region-offsets	1	unbound-var		core/nth,core/vector	2		1730
-541	legmacs/modes/letgo.lg	set-region-from-offsets	1	unbound-var		core/assoc,core/nth,core/vector	1		2544
-542	legmacs/modes/letgo.lg	word-region-at-point	1	unbound-var		core/nth,core/vector	2		1827
-543	legmacs/modes/letgo.lg	next-region-to-select	1	unbound-var		core/nth	8		1740
-544	legmacs/modes/letgo.lg	expand-region	1	unbound-var		core/assoc,core/conj,core/nth,core/update	3		1740
-545	legmacs/modes/letgo.lg	contract-region	1	unbound-var		core/apply,core/assoc,core/first,core/rest,core/seq,core/update	1		1695
-546	legmacs/modes/markdown.lg	fence-line?	1	unbound-var		core/boolean,core/re-find	0	let-go.lang.Regex	1718
-547	legmacs/modes/markdown.lg	header-span	1	unbound-var		core/array-map,core/count,core/re-find,core/vector	0	let-go.lang.Regex	2346
-548	legmacs/modes/markdown.lg	hr-line?	1	unbound-var		core/boolean,core/re-matches	0	let-go.lang.Regex	1706
-549	legmacs/modes/markdown.lg	blockquote-span	1	unbound-var		core/array-map,core/count,core/re-find,core/vector	0	let-go.lang.Regex	2216
-550	legmacs/modes/markdown.lg	list-marker-span	1	unbound-var		core/array-map,core/count,core/re-find,core/vector	0	let-go.lang.Regex	2193
-551	legmacs/modes/markdown.lg	at?	1	unbound-var		core/count,core/subs	0		1710
-552	legmacs/modes/markdown.lg	word-char-at?	1	unbound-var		core/count,core/int,core/nth,core/seq	0		1838
-553	legmacs/modes/markdown.lg	scan-link	1	unbound-var		core/array-map,core/vector,string/index-of	1		2277
-554	legmacs/modes/markdown.lg	scan-inline	1	unbound-var		core/array-map,core/conj,core/count,core/into,core/not,core/nth,core/subs,string/index-of	3	vector	2389
-555	legmacs/modes/markdown.lg	highlight-line	1	unbound-var		core/array-map,core/concat,core/count,core/vector	6	vector,vector	2562
-556	legmacs/modes/markdown.lg	highlight-line-carry	1	unbound-var		core/array-map,core/count,core/vector	2		2538
-557	legmacs/modes/markdown.lg	highlight-carry	1	unbound-var		string/includes?	1		1754
-558	legmacs/modes/prog.lg	at?	1	unbound-var		core/count,core/subs	0		1845
-559	legmacs/modes/prog.lg	word-char?	1	unbound-var		core/int	0		1831
-560	legmacs/modes/prog.lg	digit?	1	unbound-var		core/int	0		1766
-561	legmacs/modes/prog.lg	scan-string	1	unbound-var		core/nth	0		1778
-562	legmacs/modes/prog.lg	scan-word	1	unbound-var		core/nth	2		1761
-563	legmacs/modes/prog.lg	find-close	1	unbound-var		core/count,core/nth	1		1808
-564	legmacs/modes/prog.lg	multiline-at	1	unbound-var		core/some	1		1723
-565	legmacs/modes/prog.lg	blank-before?	1	unbound-var		core/contains?,core/hash-set,core/nth	0		1738
-566	legmacs/modes/prog.lg	scan-var	1	unbound-var		core/contains?,core/hash-set,core/nth	4		2248
-567	legmacs/modes/prog.lg	scan-tag	1	unbound-var		core/nth	2		1796
-568	legmacs/modes/prog.lg	scan-directive	1	unbound-var		core/array-map,core/contains?,core/hash-set,core/nth,core/subs	2		1789
-569	legmacs/modes/prog.lg	angle-include	1	unbound-var		core/contains?,core/hash-set,core/nth,core/vector,string/index-of	0		1755
-570	legmacs/modes/prog.lg	resume-carry	1	unbound-var		core/array-map,core/vector	1		2236
-571	legmacs/modes/prog.lg	make-line-scanner	1	unbound-var		core/array-map,core/conj,core/contains?,core/count,core/first,core/get,core/map,core/mapcat,core/nth,core/seq,core/set,core/some,core/subs,core/vec	14	set,set,set,vector,vector,vector,vector,set,vector	3498
-572	legmacs/modes/prog.lg	make-highlighter	1	ok			1		1739
-573	legmacs/modes/prog.lg	carry-markers	1	unbound-var		core/concat,core/get,core/mapcat,core/vec,core/vector	0	vector,vector	1814
-574	legmacs/modes/prog.lg	nothing-to-carry	1	ok			0		1774
-575	legmacs/modes/prog.lg	marker-gated-advance	1	unbound-var		core/some,string/includes?	0		1721
-576	legmacs/modes/prog.lg	make-carry-advance	1	unbound-var		core/empty?	4		1714
-577	legmacs/modes/prog.lg	both-cases	1	unbound-var		core/into,core/mapcat,core/vector,string/lower-case,string/upper-case	0	set	1738
-578	legmacs/modes/prog.lg	register-prog-mode!	m0	phase2-const			1	vector	2034
-579	legmacs/modes/prog.lg	register-prog-mode!	m1	unbound-var		core/array-map,core/first,core/next,core/seq	6	map	2961
+273	legmacs/indent.lg	spaces	1	unbound-var		core/apply,core/max,core/repeat,core/str	0		1801
+274	legmacs/indent.lg	whitespace?	1	ok			0		1899
+275	legmacs/indent.lg	leading-width	1	unbound-var		core/count,core/nth,core/seq,core/vec	1		1801
+276	legmacs/indent.lg	blank-line?	1	unbound-var		core/count	1		1806
+277	legmacs/indent.lg	code-text	1	unbound-var		core/get,core/reduce,core/str,core/subs	2		1767
+278	legmacs/indent.lg	word-char?	1	unbound-var		core/int	0		1836
+279	legmacs/indent.lg	words	1	unbound-var		core/conj,core/count,core/nth,core/seq,core/subs,core/vec	1	vector	1843
+280	legmacs/indent.lg	first-char	1	unbound-var		core/count,core/nth,core/seq,core/vec	1		1902
+281	legmacs/indent.lg	brackets-of	1	unbound-var		core/array-map	0		2438
+282	legmacs/indent.lg	bracket-delta	1	unbound-var		core/contains?,core/reduce,core/seq,core/set,core/vals,core/vec	1		1816
+283	legmacs/indent.lg	closes-block?	1	unbound-var		core/boolean,core/contains?,core/some	0		1940
+284	legmacs/indent.lg	opens-block?	1	unbound-var		core/boolean,core/contains?,core/first,core/last,core/not,core/some,string/ends-with?,string/trim	1		1858
+285	legmacs/indent.lg	dedents-itself?	1	unbound-var		core/boolean,core/contains?,core/first,core/set,core/vals	2		1857
+286	legmacs/indent.lg	previous-code-row	1	unbound-var		core/nth	1		1774
+287	legmacs/indent.lg	absolute-column	1	unbound-var		core/max	4		1800
+288	legmacs/indent.lg	relative-column	1	unbound-var		core/contains?,core/first,core/max,core/nth	6		1819
+289	legmacs/indent.lg	indent-column	1	unbound-var		core/nth	6	map	3416
+290	legmacs/indent.lg	set-line-indent	1	unbound-var		core/assoc,core/nth,core/subs	3		2127
+291	legmacs/indent.lg	indent-line	1	ok			2		1766
+292	legmacs/keymap.lg	defcommand!	1	unbound-var		core/array-map,core/assoc	1		1716
+293	legmacs/keymap.lg	command-fn	1	unbound-var		core/get	1		1702
+294	legmacs/keymap.lg	command-name-str	1	unbound-var		core/keyword?,core/name,core/str	0		2312
+295	legmacs/keymap.lg	command-doc	1	unbound-var		core/get	1		1787
+296	legmacs/keymap.lg	run-command	1	unbound-var		core/assoc,core/str	2		1774
+297	legmacs/keymap.lg	split-chord-sequence	1	unbound-var		core/remove,core/vec,string/blank?,string/split	0		1790
+298	legmacs/keymap.lg	assoc-in-keymap	1	unbound-var		core/assoc,core/count,core/first,core/get,core/map?,core/rest	1	map	1738
+299	legmacs/keymap.lg	bind-key!	m0	ok			2		1742
+300	legmacs/keymap.lg	bind-key!	m1	unbound-var		core/empty?,core/pr-str,core/str	2		1719
+301	legmacs/keymap.lg	unbind-key!	m0	ok			2		1861
+302	legmacs/keymap.lg	unbind-key!	m1	unbound-var		core/dissoc,core/first	1		1744
+303	legmacs/keymap.lg	lookup	1	unbound-var		core/fn?,core/get,core/keyword?,core/map?,core/vector	0		1842
+304	legmacs/keymap.lg	describe-keymap	1	unbound-var		core/into,core/map,core/map?,core/mapcat,core/nth,core/vector	1		1807
+305	legmacs/keymap.lg	format-binding-line	1	unbound-var		core/format,core/string?,string/join	1		1773
+306	legmacs/keymap.lg	chord-paths-by-command	1	unbound-var		core/assoc,core/conj,core/contains?,core/fnil,core/nth,core/reduce,core/update,string/join	1	map,map,vector	1856
+307	legmacs/keys.lg	esc-seq	1	unbound-var		core/str	1		1826
+308	legmacs/keys.lg	modifier-prefix	1	unbound-var		core/str	0		2522
+309	legmacs/keys.lg	digits?	1	unbound-var		core/every?,core/int,core/seq,core/string?	0		2071
+310	legmacs/keys.lg	decode-csi	1	unbound-var		core/contains?,core/count,core/get,core/nil?,core/nth,core/parse-long,core/str,core/string?,core/subs,core/vec,string/split	5		1916
+311	legmacs/keys.lg	describe-raw	1	unbound-var		core/apply,core/char,core/int,core/map,core/seq,core/str	0		1820
+312	legmacs/keys.lg	control-chord	1	unbound-var		core/char,core/str	0		1844
+313	legmacs/keys.lg	raw->chord	1	unbound-var		core/contains?,core/count,core/first,core/get,core/int,core/seq,core/string?,core/subs	8		1805
+314	legmacs/keys.lg	meta-chord	1	unbound-var		core/keyword?,core/nil?,core/str	0		1771
+315	legmacs/keys.lg	paste-token->text	1	ok			1		1789
+316	legmacs/keys.lg	paste-tokens->text	1	unbound-var		core/apply,core/map,core/str	1		1735
+317	legmacs/keys.lg	read-paste-text	1	unbound-var		core/conj,core/nil?,term/read-key	2	vector	1765
+318	legmacs/keys.lg	paste?	1	unbound-var		core/first,core/vector?	0		1771
+319	legmacs/keys.lg	paste-text	1	unbound-var		core/second	0		1748
+320	legmacs/keys.lg	read-chord	1	unbound-var		core/vector,term/key-pending?,term/read-key	4		1843
+321	legmacs/keys.lg	printable?	1	unbound-var		core/count,core/first,core/int,core/seq,core/string?	0		1844
+322	legmacs/lisp_syntax.lg	as-chars	1	unbound-var		core/seq,core/vec,core/vector?	0		1834
+323	legmacs/lisp_syntax.lg	open-bracket?	1	unbound-var		core/contains?	1		1763
+324	legmacs/lisp_syntax.lg	close-bracket?	1	unbound-var		core/contains?	1		1769
+325	legmacs/lisp_syntax.lg	newline-from	1	unbound-var		core/nth	0		1751
+326	legmacs/lisp_syntax.lg	scan	m0	unbound-var		core/count	2		1876
+327	legmacs/lisp_syntax.lg	scan	m1	unbound-var		core/array-map,core/assoc,core/boolean,core/conj,core/cons,core/count,core/empty?,core/first,core/get,core/min,core/not,core/nth,core/rest,core/vector	6	list,map,vector	3677
+328	legmacs/lisp_syntax.lg	ends-in-string?	1	unbound-var		core/count,core/nth,core/seq,core/vec	0		1886
+329	legmacs/lisp_syntax.lg	matching	1	unbound-var		core/get	0		1750
+330	legmacs/lisp_syntax.lg	in-string-or-comment?	1	unbound-var		core/boolean,core/get,core/some	0		1986
+331	legmacs/lisp_syntax.lg	open-stack-at*	1	unbound-var		core/array-map,core/cons,core/contains?,core/count,core/empty?,core/min,core/not,core/nth,core/rest,core/vector	4	list,set	2675
+332	legmacs/lisp_syntax.lg	point-in-string-or-comment-at?	1	unbound-var		core/contains?	1	set	2058
+333	legmacs/lisp_syntax.lg	open-stack-at	1	ok			1		1833
+334	legmacs/lisp_syntax.lg	depth-at	1	unbound-var		core/count	1		1775
+335	legmacs/lisp_syntax.lg	match-for-closer	1	unbound-var		core/count,core/first,core/get,core/nth	3		1854
+336	legmacs/lisp_syntax.lg	innermost-open-before	1	unbound-var		core/first	1		1893
+337	legmacs/lisp_syntax.lg	matched-pairs	1	unbound-var		core/filter,core/nth	0		2532
+338	legmacs/lisp_syntax.lg	innermost-pair-containing	1	unbound-var		core/apply,core/filter,core/first,core/max-key,core/nth,core/seq	1		1860
+339	legmacs/lisp_syntax.lg	enclosing-pair	1	unbound-var		core/apply,core/filter,core/first,core/max-key,core/nth,core/seq	1		1772
+340	legmacs/minibuffer.lg	active?	1	unbound-var		core/boolean	0		1700
+341	legmacs/minibuffer.lg	fire-select	1	unbound-var		core/get,core/seq	0		1804
+342	legmacs/minibuffer.lg	react	1	unbound-var		core/assoc,core/get-in,core/update,core/vector	1		1949
+343	legmacs/minibuffer.lg	completer->on-change	1	unbound-var		core/array-map,core/assoc-in,core/map,core/vec,core/vector	0		1705
+344	legmacs/minibuffer.lg	open	m0	phase2-const			1	map	1720
+345	legmacs/minibuffer.lg	open	m1	unbound-var		core/array-map,core/assoc,core/count	2	vector	26042
+346	legmacs/minibuffer.lg	clear-note	1	unbound-var		core/assoc,core/update	0		2068
+347	legmacs/minibuffer.lg	insert-text	1	unbound-var		core/assoc,core/count,core/get,core/str,core/subs,core/update	2		2495
+348	legmacs/minibuffer.lg	insert-char	1	unbound-var		core/str	1		1854
+349	legmacs/minibuffer.lg	backward-delete-char	1	unbound-var		core/assoc,core/get,core/str,core/subs,core/update	2		2092
+350	legmacs/minibuffer.lg	select-next	1	unbound-var		core/count,core/get-in,core/min,core/update,core/vector	1		2353
+351	legmacs/minibuffer.lg	select-prev	1	unbound-var		core/count,core/get-in,core/max,core/update,core/vector	1		2140
+352	legmacs/minibuffer.lg	move-left	1	unbound-var		core/max,core/update	0		1704
+353	legmacs/minibuffer.lg	move-right	1	unbound-var		core/count,core/min,core/update	0		1762
+354	legmacs/minibuffer.lg	move-beginning	1	unbound-var		core/assoc,core/update	0		1714
+355	legmacs/minibuffer.lg	move-end	1	unbound-var		core/assoc,core/count,core/update	0		1799
+356	legmacs/minibuffer.lg	complete	1	unbound-var		core/assoc,core/count,core/get,core/update	0		3369
+357	legmacs/minibuffer.lg	selected-value	1	unbound-var		core/count,core/get,core/min,core/nth,core/seq	0		1835
+358	legmacs/minibuffer.lg	accept-selection	1	unbound-var		core/assoc,core/count,core/update	2		2537
+359	legmacs/minibuffer.lg	submit	1	unbound-var		core/assoc,core/get	1		1850
+360	legmacs/minibuffer.lg	submit-input	1	unbound-var		core/assoc,core/get	0		1750
+361	legmacs/minibuffer.lg	cancel	1	unbound-var		core/assoc,core/get	0		1966
+362	legmacs/modeline.lg	register-modeline-segment!	1	unbound-var		core/array-map,core/assoc,core/get	2		2318
+363	legmacs/modeline.lg	remove-modeline-segment!	1	unbound-var		core/dissoc	1		2052
+364	legmacs/modeline.lg	set-modeline-order!	1	unbound-var		core/assoc,core/get,core/into,core/map,core/map-indexed,core/nth,core/vector	1	map,map	2028
+365	legmacs/modeline.lg	set-modeline-theme!	1	unbound-var		core/merge	1		1968
+366	legmacs/modeline.lg	set-modeline-separator!	1	ok			1		2091
+367	legmacs/modeline.lg	normalize-seg	1	unbound-var		core/array-map,core/map?,core/nil?,core/seq,core/string?	0		2923
+368	legmacs/modeline.lg	seg-label	1	unbound-var		core/keyword?,core/name,core/str	0		1990
+369	legmacs/modeline.lg	broken-seg	1	unbound-var		core/array-map,core/str,core/vector	1		2529
+370	legmacs/modeline.lg	call-seg	1	unbound-var		core/array-map,core/contains?,core/map?,core/nil?,core/not,core/seq,core/string?	2		1927
+371	legmacs/modeline.lg	ordered	1	unbound-var		core/filter,core/keep,core/nth,core/sort-by	2		1758
+372	legmacs/modeline.lg	left-segments	1	ok			1		1760
+373	legmacs/modeline.lg	right-segments	1	ok			1		1737
+374	legmacs/modeline.lg	buffer-label	1	ok			0		1743
+375	legmacs/modeline.lg	buffer-segment	1	unbound-var		core/array-map,core/str,core/vector	1		2190
+376	legmacs/modeline.lg	mode-segment	1	unbound-var		core/array-map,core/name,core/str,core/vector	0		2189
+377	legmacs/modeline.lg	call-lighter	1	unbound-var		core/array-map,core/contains?,core/seq,core/string?	0		1852
+378	legmacs/modeline.lg	mode-lighters	1	unbound-var		core/keep,string/join	2		1734
+379	legmacs/modeline.lg	modes-status-segment	1	ok			2		1684
+380	legmacs/modeline.lg	modes-status-right-segment	1	ok			2		1702
+381	legmacs/modeline.lg	pending-keys-segment	1	unbound-var		core/array-map,core/seq,core/str,core/vector,string/join	0		2207
+382	legmacs/modeline.lg	position-segment	1	unbound-var		core/count,core/format	0		1706
+383	legmacs/modeline.lg	jobs-segment	1	unbound-var		core/array-map,core/count,core/last,core/str,core/vec,core/vector	0	vector	2285
+384	legmacs/modes.lg	register-mode!	m0	phase2-const			1	map	1747
+385	legmacs/modes.lg	register-mode!	m1	unbound-var		core/array-map,core/assoc,core/merge	1	map	1759
+386	legmacs/modes.lg	register-minor-mode!	m0	phase2-const			1	map	1817
+387	legmacs/modes.lg	register-minor-mode!	m1	ok			1		1751
+388	legmacs/modes.lg	register-auto-mode!	1	unbound-var		core/conj,core/vector	1		1933
+389	legmacs/modes.lg	mode-for-filename	1	unbound-var		core/nth,core/some,string/ends-with?	1		1875
+390	legmacs/modes.lg	register-mode-detector!	1	unbound-var		core/conj	1		1849
+391	legmacs/modes.lg	register-interpreter-mode!	1	unbound-var		core/conj,core/vector	1		1953
+392	legmacs/modes.lg	interpreter-from-shebang	1	unbound-var		core/first,core/last,core/remove,core/second,core/subs,string/blank?,string/split,string/starts-with?	0		1775
+393	legmacs/modes.lg	mode-for-interpreter	1	unbound-var		core/nth,core/some	2		1786
+394	legmacs/modes.lg	mode-for-file	1	unbound-var		core/some	2		1841
+395	legmacs/modes.lg	mode-keymap	1	unbound-var		core/get	1		1889
+396	legmacs/modes.lg	mode-highlighter	1	unbound-var		core/get	1		1810
+397	legmacs/modes.lg	lifted-highlighter	1	unbound-var		core/array-map	0		2114
+398	legmacs/modes.lg	spans-dropping-advance	1	ok			0		2447
+399	legmacs/modes.lg	no-carry	1	ok			0		2401
+400	legmacs/modes.lg	line-highlighter	1	unbound-var		core/get	2		2215
+401	legmacs/modes.lg	carry-advance	1	unbound-var		core/get	3		3324
+402	legmacs/modes.lg	mode-after-command	1	unbound-var		core/get	1		2370
+403	legmacs/modes.lg	mode-status	1	unbound-var		core/get	1		1938
+404	legmacs/modes.lg	mode-status-right	1	unbound-var		core/get	1		1979
+405	legmacs/modes.lg	mode-syntax-spec	1	unbound-var		core/get	1		1819
+406	legmacs/modes.lg	describe-mode	1	unbound-var		core/get	1		2117
+407	legmacs/modes.lg	registered-modes	1	unbound-var		core/keys	1		1971
+408	legmacs/modes.lg	resolve-keymap	1	unbound-var		core/fn?,core/get,core/map?,core/nil?	1		1991
+409	legmacs/modes.lg	active-modes	1	unbound-var		core/concat,core/vector	0	vector	1966
+410	legmacs/modes.lg	suppress-self-insert?	1	unbound-var		core/boolean,core/fn?,core/get,core/some	2		1982
+411	legmacs/modes.lg	minor-mode-active?	1	unbound-var		core/boolean,core/some	0		2137
+412	legmacs/modes.lg	enable-minor-mode	1	unbound-var		core/assoc,core/conj,core/get,core/name,core/nil?,core/str,core/update	2	vector	1922
+413	legmacs/modes.lg	disable-minor-mode	1	unbound-var		core/get,core/remove,core/update,core/vec	2		1800
+414	legmacs/modes.lg	switch-to-mode	1	unbound-var		core/assoc,core/get,core/name,core/reduce,core/str	3		2045
+415	legmacs/modes.lg	toggle-minor-mode	1	ok			3		3085
+416	legmacs/modes/comment.lg	indent-len	1	unbound-var		core/contains?,core/count,core/hash-set,core/nth	0		1881
+417	legmacs/modes/comment.lg	line-comment-marker	1	unbound-var		core/first	2		1924
+418	legmacs/modes/comment.lg	block-comment-pair	1	unbound-var		core/seq	1		1904
+419	legmacs/modes/comment.lg	target-rows	1	unbound-var		core/nth,core/vector	1		1748
+420	legmacs/modes/comment.lg	line-commented?	1	unbound-var		core/count,core/subs,string/starts-with?	1		1813
+421	legmacs/modes/comment.lg	comment-line	1	unbound-var		core/count,core/str,core/subs	1		1733
+422	legmacs/modes/comment.lg	uncomment-line	1	unbound-var		core/count,core/nth,core/str,core/subs	1		1787
+423	legmacs/modes/comment.lg	toggle-line-comments	1	unbound-var		core/concat,core/every?,core/map,core/remove,core/seq,core/subvec,core/vec,string/blank?	3		1882
+424	legmacs/modes/comment.lg	block-wrapped?	1	unbound-var		core/nth,core/subs,string/ends-with?,string/starts-with?	1		1832
+425	legmacs/modes/comment.lg	wrap-block	1	unbound-var		core/assoc,core/nth,core/str,core/subs	1		2416
+426	legmacs/modes/comment.lg	unwrap-block	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs,string/ends-with?	1		1831
+427	legmacs/modes/comment.lg	toggle-block-comment	1	ok			3		1770
+428	legmacs/modes/comment.lg	comment-dwim	1	unbound-var		core/assoc,core/name,core/nth,core/str	7		2032
+429	legmacs/modes/crutch.lg	repeatn	1	ok			0		1813
+430	legmacs/modes/crutch.lg	count-value	1	unbound-var		core/max	0		1799
+431	legmacs/modes/crutch.lg	consume-count	1	unbound-var		core/dissoc	2		1969
+432	legmacs/modes/crutch.lg	crutch-digit	1	unbound-var		core/assoc,core/nil?	1		2101
+433	legmacs/modes/crutch.lg	at-line-end?	1	ok			1		1915
+434	legmacs/modes/crutch.lg	crutch-normal-mode	1	unbound-var		core/assoc,core/dissoc	0		2045
+435	legmacs/modes/crutch.lg	crutch-insert-mode	1	unbound-var		core/assoc	0		1860
+436	legmacs/modes/crutch.lg	crutch-insert-bol	1	unbound-var		core/assoc	1		1797
+437	legmacs/modes/crutch.lg	crutch-append	1	unbound-var		core/assoc	2		1821
+438	legmacs/modes/crutch.lg	crutch-append-eol	1	unbound-var		core/assoc	1		1756
+439	legmacs/modes/crutch.lg	crutch-open-below	1	unbound-var		core/assoc	2		2258
+440	legmacs/modes/crutch.lg	crutch-open-above	1	unbound-var		core/assoc	3		2006
+441	legmacs/modes/crutch.lg	crutch-visual-mode	1	unbound-var		core/assoc,core/vector	0		2038
+442	legmacs/modes/crutch.lg	crutch-backward-char	1	ok			2		1778
+443	legmacs/modes/crutch.lg	crutch-forward-char	1	ok			2		1943
+444	legmacs/modes/crutch.lg	crutch-next-line	1	ok			2		2487
+445	legmacs/modes/crutch.lg	crutch-previous-line	1	ok			2		2006
+446	legmacs/modes/crutch.lg	crutch-word-forward	1	ok			2		1755
+447	legmacs/modes/crutch.lg	crutch-word-backward	1	ok			2		1831
+448	legmacs/modes/crutch.lg	crutch-line-start	1	ok			1		1814
+449	legmacs/modes/crutch.lg	crutch-line-end	1	ok			1		1748
+450	legmacs/modes/crutch.lg	crutch-buffer-end	1	ok			1		1767
+451	legmacs/modes/crutch.lg	crutch-goto-top	1	ok			1		1786
+452	legmacs/modes/crutch.lg	crutch-delete-char	1	ok			2		1748
+453	legmacs/modes/crutch.lg	crutch-kill-line	1	unbound-var		core/assoc,core/str	3		1761
+454	legmacs/modes/crutch.lg	crutch-delete-word	1	unbound-var		core/assoc,core/vector	4		1766
+455	legmacs/modes/crutch.lg	crutch-paste	1	ok			1		1762
+456	legmacs/modes/crutch.lg	crutch-undo	1	ok			1		1791
+457	legmacs/modes/crutch.lg	crutch-redo	1	ok			1		1830
+458	legmacs/modes/crutch.lg	crutch-ex-command	1	unbound-var		core/assoc,core/str,string/blank?,string/trim	2		1795
+459	legmacs/modes/crutch.lg	crutch-visual-delete	1	unbound-var		core/assoc	3		2074
+460	legmacs/modes/crutch.lg	crutch-visual-yank	1	unbound-var		core/assoc	2		2572
+461	legmacs/modes/crutch.lg	crutch-keymap-for	1	ok			3		1854
+462	legmacs/modes/crutch.lg	crutch-after-command	1	unbound-var		core/dissoc	0		1929
+463	legmacs/modes/crutch.lg	crutch-mode	1	ok			1		1804
+464	legmacs/modes/help.lg	pop-to-help	1	unbound-var		core/array-map,core/assoc,core/vec	3		2817
+465	legmacs/modes/help.lg	entry-spans	1	unbound-var		core/array-map,core/count,core/nth,core/vector	0		2345
+466	legmacs/modes/help.lg	header-line?	1	unbound-var		core/not,string/includes?,string/starts-with?	0		1770
+467	legmacs/modes/help.lg	leading-spaces	1	unbound-var		core/count,core/nth	0		1946
+468	legmacs/modes/help.lg	highlight-line	1	unbound-var		core/array-map,core/count,core/vector,string/blank?,string/starts-with?	3	vector,vector	2294
+469	legmacs/modes/keycast.lg	push-key	1	unbound-var		core/conj,core/count,core/drop,core/max,core/vec	1	vector	1725
+470	legmacs/modes/keycast.lg	keycast-after-command	1	unbound-var		core/update	1		1815
+471	legmacs/modes/keycast.lg	keycast-status-right	1	unbound-var		string/join	0		1768
+472	legmacs/modes/keycast.lg	keycast-mode	1	ok			1		1755
+473	legmacs/modes/letgo.lg	digit-char?	1	unbound-var		core/int	0		1752
+474	legmacs/modes/letgo.lg	symbol-char?	1	unbound-var		core/contains?,core/int	0	set	1871
+475	legmacs/modes/letgo.lg	tokenize-words	1	unbound-var		core/conj,core/count,core/nth,core/seq,core/subs,core/vec,core/vector	1	vector	1784
+476	legmacs/modes/letgo.lg	number-token?	1	unbound-var		core/contains?,core/count,core/hash-set,core/nth	1		1814
+477	legmacs/modes/letgo.lg	keyword-token?	1	unbound-var		core/count,core/nth	0		1738
+478	legmacs/modes/letgo.lg	highlight-scanned	1	unbound-var		core/array-map,core/concat,core/contains?,core/filter,core/get,core/map,core/not,core/nth,core/some	4		2375
+479	legmacs/modes/letgo.lg	highlight-line	1	ok			2		1768
+480	legmacs/modes/letgo.lg	shift-spans	1	unbound-var		core/assoc,core/mapv	0		2020
+481	legmacs/modes/letgo.lg	string-close	1	unbound-var		core/count,core/nth,core/seq,core/vec	0		1722
+482	legmacs/modes/letgo.lg	highlight-line-carry	1	unbound-var		core/array-map,core/concat,core/count,core/subs,core/vector	4		2246
+483	legmacs/modes/letgo.lg	highlight-carry	1	unbound-var		core/boolean,string/includes?	1		2333
+484	legmacs/modes/letgo.lg	char-at	1	unbound-var		core/count,core/nth	0		1836
+485	legmacs/modes/letgo.lg	update-paren-match	1	unbound-var		core/assoc,core/vector	9		1903
+486	legmacs/modes/letgo.lg	point-in-string-or-comment?	1	ok			1		1771
+487	legmacs/modes/letgo.lg	point-info	1	unbound-var		core/array-map	4		2244
+488	legmacs/modes/letgo.lg	insert-pair	1	unbound-var		core/str,core/update	2		1688
+489	legmacs/modes/letgo.lg	auto-insert-paren	1	ok			1		1800
+490	legmacs/modes/letgo.lg	auto-insert-bracket	1	ok			1		1853
+491	legmacs/modes/letgo.lg	auto-insert-brace	1	ok			1		1846
+492	legmacs/modes/letgo.lg	skip-or-insert-close	1	unbound-var		core/get,core/not,core/str	3		1777
+493	legmacs/modes/letgo.lg	auto-close-paren	1	ok			1		1703
+494	legmacs/modes/letgo.lg	auto-close-bracket	1	ok			1		1797
+495	legmacs/modes/letgo.lg	auto-close-brace	1	ok			1		1717
+496	legmacs/modes/letgo.lg	auto-delete-pair	1	unbound-var		core/get,core/not	4		1828
+497	legmacs/modes/letgo.lg	format-result	1	unbound-var		core/ex-message,core/pr-str,core/str	0		1707
+498	legmacs/modes/letgo.lg	capturing-out	1	unbound-var		core/*out*,core/with-out-str*	0		1727
+499	legmacs/modes/letgo.lg	eval-form	1	unbound-var		core/eval	1		1681
+500	legmacs/modes/letgo.lg	eval-each-form	1	unbound-var		core/eval,core/reduce	0		1715
+501	legmacs/modes/letgo.lg	load-in-editor	1	unbound-var		core/read-all-string	2		1722
+502	legmacs/modes/letgo.lg	preserving-ns	1	unbound-var		core/*ns*,core/array-map,core/contains?,core/in-ns,core/ns-name	0		1789
+503	legmacs/modes/letgo.lg	ns-form-name	1	unbound-var		core/first,core/second,core/seq?,core/symbol?	0	symbol,symbol,symbol,symbol	1763
+504	legmacs/modes/letgo.lg	buffer-ns-name	1	unbound-var		core/first,core/next,core/read-all-string,core/read-string,core/seq	2		1819
+505	legmacs/modes/letgo.lg	eval-form-in-ns	1	unbound-var		core/in-ns	2		1745
+506	legmacs/modes/letgo.lg	eval-form-in-state	1	ok			3		1715
+507	legmacs/modes/letgo.lg	register-eval-result-handler!	1	unbound-var		core/assoc	1		1752
+508	legmacs/modes/letgo.lg	replacement-result	1	unbound-var		core/array-map	0		1758
+509	legmacs/modes/letgo.lg	replacement-result?	1	unbound-var		core/contains?,core/map?	0		1777
+510	legmacs/modes/letgo.lg	selection-region-offsets	1	unbound-var		core/nth,core/vector	2		1767
+511	legmacs/modes/letgo.lg	pair-span-at	1	unbound-var		core/apply,core/contains?,core/filter,core/first,core/hash-set,core/max-key,core/nth,core/seq,core/vector	0		2046
+512	legmacs/modes/letgo.lg	literal-span-at	1	unbound-var		core/apply,core/filter,core/get,core/max-key,core/not=,core/seq,core/vector	0		1747
+513	legmacs/modes/letgo.lg	token-delimiter?	1	unbound-var		core/contains?,core/hash-set,core/nil?	0		5763
+514	legmacs/modes/letgo.lg	token-span-at	1	unbound-var		core/count,core/not,core/nth,core/vector	2		2660
+515	legmacs/modes/letgo.lg	form-span-at-point	1	ok			7		1884
+516	legmacs/modes/letgo.lg	eval-selection	1	unbound-var		core/ex-message,core/nth,core/read-all-string,core/seq,core/str,core/subs,core/vec,core/vector	2		2436
+517	legmacs/modes/letgo.lg	highlight-span	1	unbound-var		core/array-map,core/assoc	0		2592
+518	legmacs/modes/letgo.lg	clear-highlight	1	unbound-var		core/dissoc	0		1796
+519	legmacs/modes/letgo.lg	run-eval	1	unbound-var		core/assoc,core/ex-message,core/nth,core/reduce,core/str	3		2011
+520	legmacs/modes/letgo.lg	eval-last-sexp	1	unbound-var		core/assoc,core/str	2		1748
+521	legmacs/modes/letgo.lg	eval-print-last-sexp	1	unbound-var		core/assoc,core/nth,core/str	4		1951
+522	legmacs/modes/letgo.lg	splice-offsets	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs	6		2622
+523	legmacs/modes/letgo.lg	apply-source-result	1	unbound-var		core/assoc	1		1731
+524	legmacs/modes/letgo.lg	apply-replacement-result	1	unbound-var		core/assoc,core/get,core/str	4		1842
+525	legmacs/modes/letgo.lg	in-process-eval-backend	1	unbound-var		core/get,core/reduce	2		1760
+526	legmacs/modes/letgo.lg	register-eval-backend!	1	unbound-var		core/assoc	1		1737
+527	legmacs/modes/letgo.lg	use-eval-backend!	1	unbound-var		core/contains?	2		1800
+528	legmacs/modes/letgo.lg	eval-replace-value	1	unbound-var		core/get,core/pr-str,core/str	2		1738
+529	legmacs/modes/letgo.lg	eval-replace-io	1	ok			1		1715
+530	legmacs/modes/letgo.lg	resolve-eval-replace	1	unbound-var		core/assoc,core/count,core/ex-message,core/str,core/subs	3		1773
+531	legmacs/modes/letgo.lg	eval-replace-then	1	ok			1		2261
+532	legmacs/modes/letgo.lg	eval-replace-sexp	1	unbound-var		core/array-map,core/assoc,core/nth,core/str	8		6804
+533	legmacs/modes/letgo.lg	eval-buffer	1	unbound-var		core/assoc,core/ex-message,core/str	4		1751
+534	legmacs/modes/letgo.lg	body-form?	1	unbound-var		core/boolean,core/contains?,core/some,string/starts-with?	2	set	1756
+535	legmacs/modes/letgo.lg	token-at	1	unbound-var		core/contains?,core/count,core/hash-set,core/not,core/not=,core/nth,core/seq,core/vec,core/vector	1		1943
+536	legmacs/modes/letgo.lg	indent-column-for	1	unbound-var		core/contains?,core/hash-set,core/nth,core/subs	7		1876
+537	legmacs/modes/letgo.lg	newline-and-indent	1	unbound-var		core/assoc	3		2015
+538	legmacs/modes/letgo.lg	lisp-indent-line	1	ok			2		1791
+539	legmacs/modes/letgo.lg	pair->region	1	unbound-var		core/nth,core/vector	0		1719
+540	legmacs/modes/letgo.lg	region-offsets	1	unbound-var		core/nth,core/vector	2		1759
+541	legmacs/modes/letgo.lg	set-region-from-offsets	1	unbound-var		core/assoc,core/nth,core/vector	1		2887
+542	legmacs/modes/letgo.lg	word-region-at-point	1	unbound-var		core/nth,core/vector	2		2410
+543	legmacs/modes/letgo.lg	next-region-to-select	1	unbound-var		core/nth	8		2430
+544	legmacs/modes/letgo.lg	expand-region	1	unbound-var		core/assoc,core/conj,core/nth,core/update	3		3290
+545	legmacs/modes/letgo.lg	contract-region	1	unbound-var		core/apply,core/assoc,core/first,core/rest,core/seq,core/update	1		2188
+546	legmacs/modes/markdown.lg	fence-line?	1	unbound-var		core/boolean,core/re-find	0	let-go.lang.Regex	1884
+547	legmacs/modes/markdown.lg	header-span	1	unbound-var		core/array-map,core/count,core/re-find,core/vector	0	let-go.lang.Regex	2512
+548	legmacs/modes/markdown.lg	hr-line?	1	unbound-var		core/boolean,core/re-matches	0	let-go.lang.Regex	1998
+549	legmacs/modes/markdown.lg	blockquote-span	1	unbound-var		core/array-map,core/count,core/re-find,core/vector	0	let-go.lang.Regex	2553
+550	legmacs/modes/markdown.lg	list-marker-span	1	unbound-var		core/array-map,core/count,core/re-find,core/vector	0	let-go.lang.Regex	2445
+551	legmacs/modes/markdown.lg	at?	1	unbound-var		core/count,core/subs	0		2045
+552	legmacs/modes/markdown.lg	word-char-at?	1	unbound-var		core/count,core/int,core/nth,core/seq	0		1922
+553	legmacs/modes/markdown.lg	scan-link	1	unbound-var		core/array-map,core/vector,string/index-of	1		2353
+554	legmacs/modes/markdown.lg	scan-inline	1	unbound-var		core/array-map,core/conj,core/count,core/into,core/not,core/nth,core/subs,string/index-of	3	vector	2610
+555	legmacs/modes/markdown.lg	highlight-line	1	unbound-var		core/array-map,core/concat,core/count,core/vector	6	vector,vector	2296
+556	legmacs/modes/markdown.lg	highlight-line-carry	1	unbound-var		core/array-map,core/count,core/vector	2		2288
+557	legmacs/modes/markdown.lg	highlight-carry	1	unbound-var		string/includes?	1		1839
+558	legmacs/modes/prog.lg	at?	1	unbound-var		core/count,core/subs	0		2023
+559	legmacs/modes/prog.lg	word-char?	1	unbound-var		core/int	0		2436
+560	legmacs/modes/prog.lg	digit?	1	unbound-var		core/int	0		2383
+561	legmacs/modes/prog.lg	scan-string	1	unbound-var		core/nth	0		2172
+562	legmacs/modes/prog.lg	scan-word	1	unbound-var		core/nth	2		2765
+563	legmacs/modes/prog.lg	find-close	1	unbound-var		core/count,core/nth	1		3148
+564	legmacs/modes/prog.lg	multiline-at	1	unbound-var		core/some	1		1900
+565	legmacs/modes/prog.lg	blank-before?	1	unbound-var		core/contains?,core/hash-set,core/nth	0		2035
+566	legmacs/modes/prog.lg	scan-var	1	unbound-var		core/contains?,core/hash-set,core/nth	4		2379
+567	legmacs/modes/prog.lg	scan-tag	1	unbound-var		core/nth	2		2162
+568	legmacs/modes/prog.lg	scan-directive	1	unbound-var		core/array-map,core/contains?,core/hash-set,core/nth,core/subs	2		2005
+569	legmacs/modes/prog.lg	angle-include	1	unbound-var		core/contains?,core/hash-set,core/nth,core/vector,string/index-of	0		2004
+570	legmacs/modes/prog.lg	resume-carry	1	unbound-var		core/array-map,core/vector	1		2394
+571	legmacs/modes/prog.lg	make-line-scanner	1	unbound-var		core/array-map,core/conj,core/contains?,core/count,core/first,core/get,core/map,core/mapcat,core/nth,core/seq,core/set,core/some,core/subs,core/vec	14	set,set,set,vector,vector,vector,vector,set,vector	4078
+572	legmacs/modes/prog.lg	make-highlighter	1	ok			1		1871
+573	legmacs/modes/prog.lg	carry-markers	1	unbound-var		core/concat,core/get,core/mapcat,core/vec,core/vector	0	vector,vector	1862
+574	legmacs/modes/prog.lg	nothing-to-carry	1	ok			0		2627
+575	legmacs/modes/prog.lg	marker-gated-advance	1	unbound-var		core/some,string/includes?	0		3737
+576	legmacs/modes/prog.lg	make-carry-advance	1	unbound-var		core/empty?	4		3047
+577	legmacs/modes/prog.lg	both-cases	1	unbound-var		core/into,core/mapcat,core/vector,string/lower-case,string/upper-case	0	set	3312
+578	legmacs/modes/prog.lg	register-prog-mode!	m0	phase2-const			1	vector	8721
+579	legmacs/modes/prog.lg	register-prog-mode!	m1	unbound-var		core/array-map,core/first,core/next,core/seq	6	map	6359
 580	legmacs/modes/repl.lg	format-result	1	unbound-var		core/ex-message,core/pr-str,core/str	0		1742
-581	legmacs/modes/repl.lg	last-row	1	unbound-var		core/count	0		1696
-582	legmacs/modes/repl.lg	at-last-line?	1	ok			1		1814
-583	legmacs/modes/repl.lg	prompt-start-row	1	unbound-var		core/count,core/nth,string/starts-with?	1		1739
-584	legmacs/modes/repl.lg	current-input	1	unbound-var		core/concat,core/count,core/nth,core/subs,core/subvec,core/vector,string/join,string/starts-with?	2		1777
-585	legmacs/modes/repl.lg	truncate-to-point	1	unbound-var		core/assoc,core/conj,core/get,core/nth,core/subs,core/subvec	0		1725
-586	legmacs/modes/repl.lg	append-lines	1	unbound-var		core/assoc,core/concat,core/count,core/last,core/vec	1		5012
-587	legmacs/modes/repl.lg	repl-eval-text	1	unbound-var		core/ex-message,core/vector	2		1763
-588	legmacs/modes/repl.lg	repl-return	1	unbound-var		core/assoc,core/concat,core/conj,core/count,core/fnil,core/not,core/nth,core/str,core/update,core/vec,core/vector,string/blank?,string/split	9	vector	1899
-589	legmacs/modes/repl.lg	new-repl-state	1	unbound-var		core/assoc,core/count	5		2010
-590	legmacs/modes/structural.lg	spec-for	1	ok			1		1810
-591	legmacs/modes/structural.lg	char-at	1	unbound-var		core/count,core/nth	0		2194
-592	legmacs/modes/structural.lg	update-paren-match	1	unbound-var		core/assoc,core/vector	10		1910
-593	legmacs/modes/structural.lg	point-info	1	unbound-var		core/array-map	4		2236
-594	legmacs/modes/structural.lg	insert-pair	1	unbound-var		core/str,core/update	3		1900
-595	legmacs/modes/structural.lg	reindent-after-close	1	unbound-var		core/max,core/nth,core/subs	2		1743
-596	legmacs/modes/structural.lg	skip-or-insert-close	1	unbound-var		core/get,core/not,core/str	5		1792
-597	legmacs/modes/structural.lg	structural-insert-paren	1	ok			1		1709
-598	legmacs/modes/structural.lg	structural-insert-bracket	1	ok			1		1707
-599	legmacs/modes/structural.lg	structural-insert-brace	1	ok			1		1747
-600	legmacs/modes/structural.lg	structural-close-paren	1	ok			1		1725
-601	legmacs/modes/structural.lg	structural-close-bracket	1	ok			1		1747
-602	legmacs/modes/structural.lg	structural-close-brace	1	ok			1		1759
-603	legmacs/modes/structural.lg	structural-delete-pair	1	unbound-var		core/get,core/not	5		1773
-604	legmacs/modes/structural.lg	opening-a-pair?	1	unbound-var		core/boolean,core/nth,core/seq,core/vec	1		1741
-605	legmacs/modes/structural.lg	structural-newline-and-indent	1	unbound-var		core/assoc	6		2008
-606	legmacs/modes/structural.lg	dedent-closing-word	1	unbound-var		core/contains?,core/count,core/first,core/nth,core/str	4	map	1837
-607	legmacs/modes/structural.lg	structural-indent-line	1	ok			3		1719
-608	legmacs/path.lg	absolute?	1	unbound-var		core/char,core/count,core/int,core/nth,core/seq,core/str,core/string?,os/file-separator,string/starts-with?	0		1636
-609	legmacs/path.lg	strip-trailing-separators	1	unbound-var		core/count,core/subs,os/file-separator,string/ends-with?	0		1585
-610	legmacs/path.lg	join	1	unbound-var		core/str,os/file-separator,string/blank?,string/ends-with?	1		1596
-611	legmacs/path.lg	absolute-path	1	unbound-var		os/cwd	2		1685
-612	legmacs/path.lg	dirname	1	unbound-var		core/subs,os/file-separator,string/last-index-of	1		1673
-613	legmacs/path.lg	directory-of	1	unbound-var		os/cwd	2		1516
-614	legmacs/path.lg	default-directory	1	unbound-var		os/cwd	1		1411
-615	legmacs/path.lg	resolve	1	ok			3		1488
-616	legmacs/path.lg	display-directory	1	unbound-var		core/str,os/file-separator,string/ends-with?	1		1474
-617	legmacs/prog_syntax.lg	as-chars	1	unbound-var		core/seq,core/vec,core/vector?	0		1782
-618	legmacs/prog_syntax.lg	marker-at?	1	unbound-var		core/count,core/nth	0		1768
-619	legmacs/prog_syntax.lg	any-marker-at?	1	unbound-var		core/some	1		1821
-620	legmacs/prog_syntax.lg	markers-of	1	unbound-var		core/mapv,core/seq,core/vec	0		1753
-621	legmacs/prog_syntax.lg	first-chars	1	unbound-var		core/map,core/nth,core/set	0		1752
-622	legmacs/prog_syntax.lg	newline-from	1	unbound-var		core/nth	0		1703
-623	legmacs/prog_syntax.lg	scan-string-span	1	unbound-var		core/nth,core/vector	0		1735
-624	legmacs/prog_syntax.lg	find-marker	1	unbound-var		core/count,core/nth	1		1737
-625	legmacs/prog_syntax.lg	multiline-at	1	unbound-var		core/some	1		1747
-626	legmacs/prog_syntax.lg	scan	m0	unbound-var		core/count	2		1720
-627	legmacs/prog_syntax.lg	scan	m1	unbound-var		core/array-map,core/assoc,core/conj,core/cons,core/contains?,core/count,core/empty?,core/first,core/get,core/into,core/map,core/mapcat,core/mapv,core/min,core/nth,core/rest,core/seq,core/set,core/vec,core/vector	10	vector,vector,vector,map,list,map,vector	5336
-628	legmacs/prog_syntax.lg	matching	1	unbound-var		core/get	0		1763
-629	legmacs/prog_syntax.lg	open-stack-at	1	unbound-var		core/array-map,core/assoc,core/cons,core/contains?,core/count,core/empty?,core/get,core/mapcat,core/mapv,core/min,core/not,core/nth,core/rest,core/seq,core/set,core/vals,core/vec,core/vector	10	vector,vector,vector,list,set	3938
-630	legmacs/prog_syntax.lg	point-in-string-or-comment-at?	1	unbound-var		core/contains?	1	set	1752
-631	legmacs/prog_syntax.lg	depth-at	1	unbound-var		core/count	1		1750
-632	legmacs/prog_syntax.lg	match-for-closer	1	unbound-var		core/count,core/first,core/get,core/nth	3		1832
-633	legmacs/prog_syntax.lg	point-in-string-or-comment?	1	unbound-var		core/get,core/some	0		1881
-634	legmacs/prog_syntax.lg	open-bracket?	1	unbound-var		core/contains?	1		1744
-635	legmacs/prog_syntax.lg	close-bracket?	1	unbound-var		core/contains?,core/set,core/vals	1		1717
-636	legmacs/prog_syntax.lg	close-for	1	unbound-var		core/get	1		1754
-637	legmacs/render.lg	csi	1	unbound-var		core/char,core/str	0		1681
-638	legmacs/render.lg	fg	1	unbound-var		core/str	1		2579
-639	legmacs/render.lg	bg	1	unbound-var		core/str	1		2483
-640	legmacs/render.lg	move-to	1	unbound-var		core/str	1		1710
-641	legmacs/render.lg	compile-face-fg	1	unbound-var		core/apply,core/str	4		1701
-642	legmacs/render.lg	with-default	1	unbound-var		core/get,core/merge	0	map	1711
-643	legmacs/render.lg	ui-face-spec	1	unbound-var		core/get	0		1872
-644	legmacs/render.lg	compile-theme!	1	unbound-var		core/apply,core/assoc,core/get,core/nth,core/reduce,core/select-keys,core/str,core/vector	8	map	2967
-645	legmacs/render.lg	ui	1	unbound-var		core/get	1		1680
-646	legmacs/render.lg	region-bg	1	unbound-var		core/get	1		1695
-647	legmacs/render.lg	search-match-bg	1	unbound-var		core/get	1		1822
-648	legmacs/render.lg	search-current-bg	1	unbound-var		core/get	1		1785
-649	legmacs/render.lg	candidate-keys-fg	1	ok			1		1714
-650	legmacs/render.lg	candidate-sel	1	ok			1		1705
-651	legmacs/render.lg	pad-right	1	unbound-var		core/apply,core/count,core/repeat,core/str,core/subs	0		1727
-652	legmacs/render.lg	sanitize	1	unbound-var		core/apply,core/char,core/int,core/map,core/seq,core/str	0		2412
-653	legmacs/render.lg	gutter-width	1	unbound-var		core/count,core/max,core/str	0		1734
-654	legmacs/render.lg	display-piece	1	unbound-var		core/apply,core/char,core/int,core/repeat,core/str	0		1811
-655	legmacs/render.lg	display-width	1	unbound-var		core/int	0		1808
-656	legmacs/render.lg	line-display	1	unbound-var		core/apply,core/array-map,core/conj,core/count,core/nth,core/seq,core/str,core/vec	1	vector	1767
-657	legmacs/render.lg	line-display-window	1	unbound-var		core/apply,core/array-map,core/conj,core/count,core/max,core/min,core/nth,core/seq,core/str,core/subs,core/vec	1	vector	1888
-658	legmacs/render.lg	display-col	1	unbound-var		core/count,core/nth,core/seq,core/vec	1		1762
-659	legmacs/render.lg	display-span	1	unbound-var		core/assoc,core/count,core/nth	0		2017
-660	legmacs/render.lg	wrap-line	1	unbound-var		core/conj,core/count,core/subs,core/vector	0	vector	1715
-661	legmacs/render.lg	message-lines	1	unbound-var		core/mapcat,string/split	2		1710
-662	legmacs/render.lg	minibuffer-height	1	unbound-var		core/count,core/max,core/min	2		1742
-663	legmacs/render.lg	dims	1	unbound-var		core/array-map,core/count,core/max	2		2905
-664	legmacs/render.lg	scroll-to-fit	1	unbound-var		core/assoc,core/dissoc,core/get,core/max,core/nil?,core/not,core/not=,core/nth	3		1939
-665	legmacs/render.lg	right-align	1	unbound-var		core/apply,core/count,core/repeat,core/str	0		1762
-666	legmacs/render.lg	gutter-cell	1	unbound-var		core/str	3		1719
-667	legmacs/render.lg	clamp-span	1	unbound-var		core/max,core/min,core/vector	0		1799
-668	legmacs/render.lg	paint	1	unbound-var		core/assoc,core/range,core/reduce	0		1798
-669	legmacs/render.lg	style-array	1	unbound-var		core/get,core/nth,core/reduce,core/repeat,core/vec	2		1719
-670	legmacs/render.lg	render-spans	1	unbound-var		core/apply,core/conj,core/count,core/get,core/nth,core/seq,core/str,core/subs	3	vector	2032
-671	legmacs/render.lg	region-spans-for-row	1	unbound-var		core/array-map,core/nth,core/vector	2	vector,vector	2454
-672	legmacs/render.lg	paren-match-spans-for-row	1	unbound-var		core/array-map,core/conj,core/nth	0	vector,vector	2276
-673	legmacs/render.lg	eval-highlight-spans-for-row	1	unbound-var		core/array-map,core/get,core/nth,core/vector	2	vector,vector	2357
-674	legmacs/render.lg	search-match-spans-for-row	1	unbound-var		core/array-map,core/map-indexed,core/nil?,core/remove	0	vector	2311
-675	legmacs/render.lg	mode-rows-spans	1	unbound-var		core/conj,core/count,core/nth,core/vec	2	vector,vector	1847
-676	legmacs/render.lg	rows-highlight-spans	1	unbound-var		core/filter,core/into,core/mapv,core/reduce,core/repeat,core/reverse,core/vec	3	vector	1739
-677	legmacs/render.lg	text-row	1	unbound-var		core/concat,core/count,core/get,core/mapv,core/nth,core/str	14		2252
-678	legmacs/render.lg	clip-text	1	unbound-var		core/count,core/max,core/min,core/subs	0		1765
-679	legmacs/render.lg	render-segments-clipped	1	unbound-var		core/apply,core/conj,core/count,core/empty?,core/first,core/rest,core/str,core/vector	4	vector	1900
-680	legmacs/render.lg	status-line	1	unbound-var		core/apply,core/count,core/dissoc,core/get,core/map,core/max,core/min,core/nth,core/repeat,core/seq,core/str,string/join	10		2383
-681	legmacs/render.lg	blank-row	1	unbound-var		core/str	4		1968
-682	legmacs/render.lg	candidate-window	1	unbound-var		core/count,core/max,core/min,core/subvec,core/vec,core/vector	0		2079
-683	legmacs/render.lg	clip-to	1	unbound-var		core/count,core/max,core/subs	0		2003
-684	legmacs/render.lg	clip-ellipsis	1	unbound-var		core/count,core/str,core/subs	1		1774
-685	legmacs/render.lg	flatten-doc	1	unbound-var		core/map,core/remove,string/blank?,string/join,string/split,string/trim	0		1753
-686	legmacs/render.lg	annotated-candidate-row	1	unbound-var		core/apply,core/count,core/max,core/repeat,core/seq,core/str	9		3517
-687	legmacs/render.lg	candidate-row	1	unbound-var		core/seq,core/str	6		1770
-688	legmacs/render.lg	minibuffer-view	1	unbound-var		core/apply,core/concat,core/count,core/get,core/map,core/map-indexed,core/max,core/nth,core/range,core/str	7		1987
-689	legmacs/render.lg	message-view	1	unbound-var		core/apply,core/concat,core/count,core/map,core/map-indexed,core/range,core/str,core/take	6		1721
-690	legmacs/render.lg	echo-area	1	unbound-var		core/apply,core/map,core/range,core/str	3		1756
-691	legmacs/render.lg	cursor-placement	1	unbound-var		core/count,core/nth,core/vector	2		1764
-692	legmacs/render.lg	overlay-frame	1	unbound-var		core/apply,core/concat,core/count,core/format,core/get,core/map,core/map-indexed,core/max,core/range,core/str,core/take,core/vector	5		2561
-693	legmacs/render.lg	window-dims	1	unbound-var		core/array-map,core/count,core/max	1		2327
-694	legmacs/render.lg	window-frame	1	unbound-var		core/apply,core/get,core/map,core/nth,core/range,core/str	4		2236
-695	legmacs/render.lg	divider-column	1	unbound-var		core/apply,core/get,core/map,core/range,core/str	4		1750
-696	legmacs/render.lg	clamp-view	1	unbound-var		core/assoc,core/count,core/max,core/min	1		1975
-697	legmacs/render.lg	workspace-geometry	1	unbound-var		core/assoc,core/max	2		1907
-698	legmacs/render.lg	prepare-workspace	1	unbound-var		core/assoc,core/reduce,core/update	9		1830
-699	legmacs/render.lg	window-cursor	1	unbound-var		core/count,core/nth,core/vector	3		1631
-700	legmacs/render.lg	workspace-frame	1	unbound-var		core/apply,core/map,core/nth,core/some,core/str	11		1840
-701	legmacs/render.lg	frame	1	unbound-var		core/array-map,core/nth,core/str	8		2792
-702	legmacs/theme.lg	on-change!	1	ok			2		1715
-703	legmacs/theme.lg	notify!	1	ok			1		1726
-704	legmacs/theme.lg	as-face	1	unbound-var		core/array-map,core/vector?	0	map	1730
-705	legmacs/theme.lg	as-name	1	unbound-var		core/keyword,core/keyword?	0		1732
-706	legmacs/theme.lg	set-theme!	1	unbound-var		core/assoc,core/get,core/merge,core/nth,core/reduce	3		1776
-707	legmacs/theme.lg	set-face!	1	unbound-var		core/assoc,core/get,core/merge	3		1714
-708	legmacs/theme.lg	register-theme!	1	unbound-var		core/assoc	2		1698
-709	legmacs/theme.lg	theme-names	1	unbound-var		core/cons,core/keys,core/remove,core/sort,core/vec	1	set	1801
-710	legmacs/theme.lg	current-theme	1	ok			1		1727
-711	legmacs/theme.lg	load-theme!	1	unbound-var		core/get	5		1761
-712	legmacs/theme.lg	reset-theme!	1	ok			1		1742
-713	legmacs/theme.lg	catppuccin	1	unbound-var		core/array-map,core/get	0	map,map	2298
-714	legmacs/vibe.lg	openai-chat-tools	1	unbound-var		core/array-map,core/mapv	0	map	2395
-715	legmacs/vibe.lg	openai-responses-tools	1	unbound-var		core/array-map,core/mapv	0	map	4312
-716	legmacs/vibe.lg	anthropic-tools	1	unbound-var		core/array-map,core/mapv	0	map	2233
-717	legmacs/vibe.lg	openai-tool-call	1	unbound-var		core/array-map,json/write-json	0	map	2275
-718	legmacs/vibe.lg	openai-message	1	unbound-var		core/array-map,core/assoc,core/mapv,core/seq	1		2251
-719	legmacs/vibe.lg	openai-api	1	unbound-var		core/keyword,core/str,string/includes?	0		1801
-720	legmacs/vibe.lg	effort-str	1	unbound-var		core/keyword?,core/name,core/str	0		1714
-721	legmacs/vibe.lg	openai-chat-url	1	ok			0		1701
-722	legmacs/vibe.lg	openai-responses-url	1	ok			0		1741
-723	legmacs/vibe.lg	keywordize-json	1	unbound-var		core/into,core/keyword,core/map,core/map?,core/mapv,core/nth,core/string?,core/vector,core/vector?	1	map	1697
-724	legmacs/vibe.lg	responses-input	1	unbound-var		core/array-map,core/mapcat,core/mapv,core/seq,core/vec,core/vector	1		2261
-725	legmacs/vibe.lg	openai-chat-body	1	unbound-var		core/array-map,core/assoc,core/get,core/into,core/mapv,core/nil?,core/not=,core/seq,core/vector	3		2415
-726	legmacs/vibe.lg	openai-responses-body	1	unbound-var		core/array-map,core/assoc,core/get,core/seq	3		3773
-727	legmacs/vibe.lg	openai-body	1	ok			2		1706
-728	legmacs/vibe.lg	as-arg-map	1	unbound-var		core/map?,core/seq,core/str,json/read-json	0	map,map,map	1713
-729	legmacs/vibe.lg	openai-parse-call	1	unbound-var		core/array-map,core/get	1		2230
-730	legmacs/vibe.lg	openai-chat-parse	1	unbound-var		core/array-map,core/first,core/get,core/mapv,core/seq,core/string?	1	vector	1742
-731	legmacs/vibe.lg	responses-text	1	unbound-var		core/get,core/keep,core/mapcat,string/join	0	vector,vector	1737
-732	legmacs/vibe.lg	openai-responses-parse	1	unbound-var		core/array-map,core/get,core/keep,core/seq,core/string?,core/vec	2	vector	2229
-733	legmacs/vibe.lg	openai-parse	1	unbound-var		core/get	2		1707
-734	legmacs/vibe.lg	anthropic-assistant-content	1	unbound-var		core/array-map,core/into,core/mapv,core/seq,core/vector	0	vector,map	3016
-735	legmacs/vibe.lg	anthropic-wire-messages	1	unbound-var		core/array-map,core/conj,core/first,core/rest,core/seq	1	vector,vector	2263
-736	legmacs/vibe.lg	anthropic-body	1	unbound-var		core/array-map,core/assoc,core/get,core/seq	2		2880
-737	legmacs/vibe.lg	anthropic-parse	1	unbound-var		core/array-map,core/get,core/keep,core/seq,core/vec,string/join	0	vector,map	2263
-738	legmacs/vibe.lg	config-dir	1	unbound-var		core/seq,core/str,os/getenv	0		1755
-739	legmacs/vibe.lg	config-path	1	unbound-var		core/str	1		1731
-740	legmacs/vibe.lg	parse-config	1	unbound-var		core/map?,core/read-string,core/seq,core/str,string/trim	0	map,map	1752
-741	legmacs/vibe.lg	read-config	1	unbound-var		core/slurp	2		1736
-742	legmacs/vibe.lg	api-key	1	unbound-var		core/seq,os/getenv	0		2034
-743	legmacs/vibe.lg	strip-fences	1	unbound-var		core/subs,string/index-of,string/last-index-of,string/starts-with?,string/trim	0		2067
-744	legmacs/vibe.lg	format-echo	1	unbound-var		core/str,string/replace,string/trim	0		1748
-745	legmacs/vibe.lg	http-error-text	1	unbound-var		core/get,core/map?,core/seq,core/str,json/read-json	1		1783
-746	legmacs/vibe.lg	error-message	1	unbound-var		core/ex-message,core/str	0		1773
-747	legmacs/vibe.lg	tool-arg	1	unbound-var		core/get,core/keyword	0		1728
-748	legmacs/vibe.lg	catalog-worthy?	1	unbound-var		core/contains?,core/int,core/not,core/nth,core/seq,string/starts-with?	1		1893
-749	legmacs/vibe.lg	format-var-names	1	unbound-var		core/keys,core/map,core/ns-publics,core/sort,core/str,string/join	0		1730
-750	legmacs/vibe.lg	format-ns-line	1	unbound-var		core/find-ns,core/str,core/symbol	1		1812
-751	legmacs/vibe.lg	loaded-lib-names	1	unbound-var		core/all-ns,core/filter,core/map,core/ns-name,core/sort,core/str	1		1691
-752	legmacs/vibe.lg	available-stdlib	1	unbound-var		core/filter,core/find-ns,core/symbol	1		1694
-753	legmacs/vibe.lg	available-editor	1	unbound-var		core/filter,core/find-ns,core/symbol	1		1723
-754	legmacs/vibe.lg	parse-libspec	1	unbound-var		core/apply,core/array-map,core/first,core/hash-map,core/rest,core/str,core/symbol?,core/vector?	0		1786
-755	legmacs/vibe.lg	name-char?	1	unbound-var		core/contains?,core/int	0	set	1840
-756	legmacs/vibe.lg	ns-name-char?	1	ok			1		1750
-757	legmacs/vibe.lg	line-start?	1	unbound-var		core/contains?,core/hash-set,core/nth	1		1760
-758	legmacs/vibe.lg	ns-head-at?	1	unbound-var		core/count,core/not,core/nth,core/subs	2		1731
-759	legmacs/vibe.lg	find-ns-form	1	unbound-var		core/apply,core/filter,core/first,core/min-key,core/not,core/nth,core/seq,core/vector	3		1852
-760	legmacs/vibe.lg	find-require-list	1	unbound-var		core/get,core/subs,core/vector,string/index-of	1		1752
-761	legmacs/vibe.lg	parse-require-list	1	unbound-var		core/keep,core/read-string,core/rest,core/seq,core/subs,core/vec	1	vector	1757
-762	legmacs/vibe.lg	ns-require-index	1	unbound-var		core/array-map,core/into,core/keep,core/map,core/nth,core/set,core/vector	3	map,set,map,set,map	1784
-763	legmacs/vibe.lg	format-file-requires	1	unbound-var		core/contains?,core/find-ns,core/map,core/not,core/nth,core/seq,core/set,core/some,core/sort,core/str,core/symbol,string/join	4		1827
-764	legmacs/vibe.lg	namespace-catalog	m0	ok			1		1715
-765	legmacs/vibe.lg	namespace-catalog	m1	unbound-var		core/map,core/seq,core/str,string/join	4		2890
-766	legmacs/vibe.lg	tool-list-namespaces	1	unbound-var		string/join	1		1806
-767	legmacs/vibe.lg	tool-ns-publics	1	unbound-var		core/find-ns,core/not,core/seq,core/str,core/symbol	2		1794
-768	legmacs/vibe.lg	tool-var-doc	1	unbound-var		core/meta,core/pr-str,core/resolve,core/seq,core/str,core/symbol	1	map	1762
-769	legmacs/vibe.lg	call-tool	1	unbound-var		core/str	4		1734
-770	legmacs/vibe.lg	openai-endpoint	1	ok			2		1704
-771	legmacs/vibe.lg	completion-turn	1	unbound-var		core/array-map,core/not,core/seq,core/str,http/post,json/read-json,json/write-json	6		6679
-772	legmacs/vibe.lg	append-tool-round	1	unbound-var		core/array-map,core/conj,core/into,core/mapv	1		3445
-773	legmacs/vibe.lg	request-completion	1	unbound-var		core/array-map,core/seq,core/vector	3		1956
-774	legmacs/vibe.lg	with-context	1	ok			1		1724
-775	legmacs/vibe.lg	context-text	1	unbound-var		core/str,core/subs	1		1879
-776	legmacs/vibe.lg	eval-replace-vibe-context	1	unbound-var		core/array-map,core/get	2		2270
-777	legmacs/vibe.lg	user-message	1	unbound-var		core/str	2		4329
-778	legmacs/vibe.lg	span-covering	1	unbound-var		core/some	0		1704
-779	legmacs/vibe.lg	rewrite-at	1	unbound-var		core/count,core/not,core/nth,core/some,core/subs,core/vector	2		1790
-780	legmacs/vibe.lg	rewrite-clojure-ns	1	unbound-var		core/count,core/nth,core/str,core/subs	3		1775
-781	legmacs/vibe.lg	symbol-end	1	unbound-var		core/nth	1		1732
-782	legmacs/vibe.lg	letter-or-sym-start?	1	unbound-var		core/contains?,core/int	0	set	1839
-783	legmacs/vibe.lg	qualified-prefixes	1	unbound-var		core/conj,core/count,core/distinct,core/nth,core/subs,core/vec,string/index-of	4	vector	1822
-784	legmacs/vibe.lg	needed-libs	1	unbound-var		core/distinct,core/filter,core/find-ns,core/keys,core/not,core/set,core/symbol,core/vec	3		1732
-785	legmacs/vibe.lg	trailing-indent	1	unbound-var		core/contains?,core/count,core/hash-set,core/nth,core/subs,string/last-index-of	0		1775
-786	legmacs/vibe.lg	add-require	1	unbound-var		core/nth,core/str,core/subs,string/includes?	3		1787
-787	legmacs/vibe.lg	ensure-requires	1	unbound-var		core/contains?,core/reduce	2		1684
-788	legmacs/vibe.lg	vibe	m0	phase2-const			1	map	1615
-789	legmacs/vibe.lg	vibe	m1	unbound-var		core/get,core/merge,core/pr-str,core/str	11		1615
-790	legmacs/vibe.lg	export-vibe-unqualified!	1	unbound-var		core/alter-meta!,core/intern,core/merge,core/meta	1	symbol,symbol,var,map	1588
-791	legmacs/vibe.lg	vibe-head-at?	1	unbound-var		core/count,core/not,core/nth,core/subs	1		1685
-792	legmacs/vibe.lg	find-vibe-form	1	unbound-var		core/apply,core/filter,core/first,core/max-key,core/nth,core/seq,core/vector	2		1686
-793	legmacs/vibe.lg	splice-offsets	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs	6		2159
-794	legmacs/vibe.lg	apply-vibe-code	1	unbound-var		core/assoc,core/count,core/first,core/nth,core/remove,core/seq,core/sort,core/str,core/subs,string/join,string/trim	11		2218
-795	legmacs/vibe.lg	apply-vibe-result	1	ok			1		1461
-796	legmacs/vibe.lg	eval-vibe-form	1	unbound-var		core/eval,core/read-string	1		1342
-797	legmacs/vibe.lg	vibe-io	1	ok			1		1356
-798	legmacs/vibe.lg	resolve-vibe	1	unbound-var		core/assoc,core/count,core/pr-str,core/str,core/string?	5		1364
-799	legmacs/vibe.lg	vibe-then	1	ok			1		1324
-800	legmacs/vibe.lg	vibe-call-context	1	unbound-var		core/array-map,core/nth	3		1721
-801	legmacs/vibe.lg	vibe-replace	1	unbound-var		core/assoc,core/nth,core/subs	7		1361
-802	legmacs/windows.lg	view-of	1	unbound-var		core/assoc,core/get,core/reduce	1	map	1333
-803	legmacs/windows.lg	leaf?	1	unbound-var		core/contains?	0		1328
-804	legmacs/windows.lg	single	1	unbound-var		core/array-map	0		1732
-805	legmacs/windows.lg	leaf-ids	1	unbound-var		core/mapcat,core/vec,core/vector	2		1339
-806	legmacs/windows.lg	find-leaf	1	unbound-var		core/some	2		1499
-807	legmacs/windows.lg	update-leaf	1	unbound-var		core/assoc,core/mapv	2		1357
-808	legmacs/windows.lg	index-of	1	unbound-var		core/empty?,core/first,core/rest,core/seq	0		1357
-809	legmacs/windows.lg	next-leaf-id	1	unbound-var		core/count,core/mod,core/nth	2		1327
-810	legmacs/windows.lg	new-sibling	1	unbound-var		core/assoc	0		1343
-811	legmacs/windows.lg	direct-child-index	1	unbound-var		core/count,core/nth	1		1411
-812	legmacs/windows.lg	split-leaf	1	unbound-var		core/array-map,core/assoc,core/concat,core/mapv,core/nth,core/subvec,core/vec,core/vector	4		1744
-813	legmacs/windows.lg	delete-leaf	1	unbound-var		core/assoc,core/count,core/empty?,core/ffirst,core/first,core/keep,core/map,core/mapv,core/not=,core/nth,core/second,core/vec,core/vector	2		1546
-814	legmacs/windows.lg	remap-buffer	1	unbound-var		core/assoc,core/mapv	2		1517
-815	legmacs/windows.lg	apportion	1	unbound-var		core/count,core/map,core/map-indexed,core/nil?,core/nth,core/range,core/reduce,core/some,core/update,core/vec	0		1375
-816	legmacs/windows.lg	layout	1	unbound-var		core/array-map,core/assoc,core/conj,core/count,core/empty?,core/first,core/into,core/rest,core/vector	5	vector,vector,vector	2997
+581	legmacs/modes/repl.lg	last-row	1	unbound-var		core/count	0		1748
+582	legmacs/modes/repl.lg	at-last-line?	1	ok			1		1773
+583	legmacs/modes/repl.lg	prompt-start-row	1	unbound-var		core/count,core/nth,string/starts-with?	1		1817
+584	legmacs/modes/repl.lg	current-input	1	unbound-var		core/concat,core/count,core/nth,core/subs,core/subvec,core/vector,string/join,string/starts-with?	2		1841
+585	legmacs/modes/repl.lg	truncate-to-point	1	unbound-var		core/assoc,core/conj,core/get,core/nth,core/subs,core/subvec	0		1752
+586	legmacs/modes/repl.lg	append-lines	1	unbound-var		core/assoc,core/concat,core/count,core/last,core/vec	1		4465
+587	legmacs/modes/repl.lg	repl-eval-text	1	unbound-var		core/ex-message,core/vector	2		1833
+588	legmacs/modes/repl.lg	repl-return	1	unbound-var		core/assoc,core/concat,core/conj,core/count,core/fnil,core/not,core/nth,core/str,core/update,core/vec,core/vector,string/blank?,string/split	9	vector	1786
+589	legmacs/modes/repl.lg	new-repl-state	1	unbound-var		core/assoc,core/count	5		2025
+590	legmacs/modes/structural.lg	spec-for	1	ok			1		1990
+591	legmacs/modes/structural.lg	char-at	1	unbound-var		core/count,core/nth	0		1881
+592	legmacs/modes/structural.lg	update-paren-match	1	unbound-var		core/assoc,core/vector	10		1939
+593	legmacs/modes/structural.lg	point-info	1	unbound-var		core/array-map	4		2288
+594	legmacs/modes/structural.lg	insert-pair	1	unbound-var		core/str,core/update	3		1981
+595	legmacs/modes/structural.lg	reindent-after-close	1	unbound-var		core/max,core/nth,core/subs	2		1913
+596	legmacs/modes/structural.lg	skip-or-insert-close	1	unbound-var		core/get,core/not,core/str	5		1867
+597	legmacs/modes/structural.lg	structural-insert-paren	1	ok			1		1960
+598	legmacs/modes/structural.lg	structural-insert-bracket	1	ok			1		1802
+599	legmacs/modes/structural.lg	structural-insert-brace	1	ok			1		1769
+600	legmacs/modes/structural.lg	structural-close-paren	1	ok			1		1754
+601	legmacs/modes/structural.lg	structural-close-bracket	1	ok			1		2416
+602	legmacs/modes/structural.lg	structural-close-brace	1	ok			1		2036
+603	legmacs/modes/structural.lg	structural-delete-pair	1	unbound-var		core/get,core/not	5		1869
+604	legmacs/modes/structural.lg	opening-a-pair?	1	unbound-var		core/boolean,core/nth,core/seq,core/vec	1		1840
+605	legmacs/modes/structural.lg	structural-newline-and-indent	1	unbound-var		core/assoc	6		2118
+606	legmacs/modes/structural.lg	dedent-closing-word	1	unbound-var		core/contains?,core/count,core/first,core/nth,core/str	4	map	2062
+607	legmacs/modes/structural.lg	structural-indent-line	1	ok			3		1776
+608	legmacs/path.lg	absolute?	1	unbound-var		core/char,core/count,core/int,core/nth,core/seq,core/str,core/string?,os/file-separator,string/starts-with?	0		2776
+609	legmacs/path.lg	strip-trailing-separators	1	unbound-var		core/count,core/subs,os/file-separator,string/ends-with?	0		2584
+610	legmacs/path.lg	join	1	unbound-var		core/str,os/file-separator,string/blank?,string/ends-with?	1		4107
+611	legmacs/path.lg	absolute-path	1	unbound-var		os/cwd	2		4901
+612	legmacs/path.lg	dirname	1	unbound-var		core/subs,os/file-separator,string/last-index-of	1		3088
+613	legmacs/path.lg	directory-of	1	unbound-var		os/cwd	2		3629
+614	legmacs/path.lg	default-directory	1	unbound-var		os/cwd	1		4960
+615	legmacs/path.lg	resolve	1	ok			3		3371
+616	legmacs/path.lg	display-directory	1	unbound-var		core/str,os/file-separator,string/ends-with?	1		3138
+617	legmacs/prog_syntax.lg	as-chars	1	unbound-var		core/seq,core/vec,core/vector?	0		1773
+618	legmacs/prog_syntax.lg	marker-at?	1	unbound-var		core/count,core/nth	0		1739
+619	legmacs/prog_syntax.lg	any-marker-at?	1	unbound-var		core/some	1		1748
+620	legmacs/prog_syntax.lg	markers-of	1	unbound-var		core/mapv,core/seq,core/vec	0		1730
+621	legmacs/prog_syntax.lg	first-chars	1	unbound-var		core/map,core/nth,core/set	0		2598
+622	legmacs/prog_syntax.lg	newline-from	1	unbound-var		core/nth	0		2442
+623	legmacs/prog_syntax.lg	scan-string-span	1	unbound-var		core/nth,core/vector	0		3043
+624	legmacs/prog_syntax.lg	find-marker	1	unbound-var		core/count,core/nth	1		2603
+625	legmacs/prog_syntax.lg	multiline-at	1	unbound-var		core/some	1		1954
+626	legmacs/prog_syntax.lg	scan	m0	unbound-var		core/count	2		1830
+627	legmacs/prog_syntax.lg	scan	m1	unbound-var		core/array-map,core/assoc,core/conj,core/cons,core/contains?,core/count,core/empty?,core/first,core/get,core/into,core/map,core/mapcat,core/mapv,core/min,core/nth,core/rest,core/seq,core/set,core/vec,core/vector	10	vector,vector,vector,map,list,map,vector	6159
+628	legmacs/prog_syntax.lg	matching	1	unbound-var		core/get	0		1910
+629	legmacs/prog_syntax.lg	open-stack-at	1	unbound-var		core/array-map,core/assoc,core/cons,core/contains?,core/count,core/empty?,core/get,core/mapcat,core/mapv,core/min,core/not,core/nth,core/rest,core/seq,core/set,core/vals,core/vec,core/vector	10	vector,vector,vector,list,set	4138
+630	legmacs/prog_syntax.lg	point-in-string-or-comment-at?	1	unbound-var		core/contains?	1	set	1802
+631	legmacs/prog_syntax.lg	depth-at	1	unbound-var		core/count	1		1972
+632	legmacs/prog_syntax.lg	match-for-closer	1	unbound-var		core/count,core/first,core/get,core/nth	3		1956
+633	legmacs/prog_syntax.lg	point-in-string-or-comment?	1	unbound-var		core/get,core/some	0		1791
+634	legmacs/prog_syntax.lg	open-bracket?	1	unbound-var		core/contains?	1		1755
+635	legmacs/prog_syntax.lg	close-bracket?	1	unbound-var		core/contains?,core/set,core/vals	1		1752
+636	legmacs/prog_syntax.lg	close-for	1	unbound-var		core/get	1		1908
+637	legmacs/render.lg	csi	1	unbound-var		core/char,core/str	0		1819
+638	legmacs/render.lg	fg	1	unbound-var		core/str	1		2535
+639	legmacs/render.lg	bg	1	unbound-var		core/str	1		2641
+640	legmacs/render.lg	move-to	1	unbound-var		core/str	1		1809
+641	legmacs/render.lg	compile-face-fg	1	unbound-var		core/apply,core/str	4		1923
+642	legmacs/render.lg	with-default	1	unbound-var		core/get,core/merge	0	map	1782
+643	legmacs/render.lg	ui-face-spec	1	unbound-var		core/get	0		1812
+644	legmacs/render.lg	compile-theme!	1	unbound-var		core/apply,core/assoc,core/get,core/nth,core/reduce,core/select-keys,core/str,core/vector	8	map	3091
+645	legmacs/render.lg	ui	1	unbound-var		core/get	1		1758
+646	legmacs/render.lg	region-bg	1	unbound-var		core/get	1		1792
+647	legmacs/render.lg	search-match-bg	1	unbound-var		core/get	1		2062
+648	legmacs/render.lg	search-current-bg	1	unbound-var		core/get	1		1852
+649	legmacs/render.lg	candidate-keys-fg	1	ok			1		1918
+650	legmacs/render.lg	candidate-sel	1	ok			1		1841
+651	legmacs/render.lg	pad-right	1	unbound-var		core/apply,core/count,core/repeat,core/str,core/subs	0		1825
+652	legmacs/render.lg	sanitize	1	unbound-var		core/apply,core/char,core/int,core/map,core/seq,core/str	0		1832
+653	legmacs/render.lg	gutter-width	1	unbound-var		core/count,core/max,core/str	0		1751
+654	legmacs/render.lg	display-piece	1	unbound-var		core/apply,core/char,core/int,core/repeat,core/str	0		1786
+655	legmacs/render.lg	display-width	1	unbound-var		core/int	0		1958
+656	legmacs/render.lg	line-display	1	unbound-var		core/apply,core/array-map,core/conj,core/count,core/nth,core/seq,core/str,core/vec	1	vector	2365
+657	legmacs/render.lg	line-display-window	1	unbound-var		core/apply,core/array-map,core/conj,core/count,core/max,core/min,core/nth,core/seq,core/str,core/subs,core/vec	1	vector	1944
+658	legmacs/render.lg	display-col	1	unbound-var		core/count,core/nth,core/seq,core/vec	1		1780
+659	legmacs/render.lg	display-span	1	unbound-var		core/assoc,core/count,core/nth	0		2071
+660	legmacs/render.lg	wrap-line	1	unbound-var		core/conj,core/count,core/subs,core/vector	0	vector	2481
+661	legmacs/render.lg	message-lines	1	unbound-var		core/mapcat,string/split	2		2022
+662	legmacs/render.lg	minibuffer-height	1	unbound-var		core/count,core/max,core/min	2		1849
+663	legmacs/render.lg	dims	1	unbound-var		core/array-map,core/count,core/max	2		3060
+664	legmacs/render.lg	scroll-to-fit	1	unbound-var		core/assoc,core/dissoc,core/get,core/max,core/nil?,core/not,core/not=,core/nth	3		1997
+665	legmacs/render.lg	right-align	1	unbound-var		core/apply,core/count,core/repeat,core/str	0		1755
+666	legmacs/render.lg	gutter-cell	1	unbound-var		core/str	3		1743
+667	legmacs/render.lg	clamp-span	1	unbound-var		core/max,core/min,core/vector	0		1779
+668	legmacs/render.lg	paint	1	unbound-var		core/assoc,core/range,core/reduce	0		1744
+669	legmacs/render.lg	style-array	1	unbound-var		core/get,core/nth,core/reduce,core/repeat,core/vec	2		1797
+670	legmacs/render.lg	render-spans	1	unbound-var		core/apply,core/conj,core/count,core/get,core/nth,core/seq,core/str,core/subs	3	vector	1988
+671	legmacs/render.lg	region-spans-for-row	1	unbound-var		core/array-map,core/nth,core/vector	2	vector,vector	2443
+672	legmacs/render.lg	paren-match-spans-for-row	1	unbound-var		core/array-map,core/conj,core/nth	0	vector,vector	2353
+673	legmacs/render.lg	eval-highlight-spans-for-row	1	unbound-var		core/array-map,core/get,core/nth,core/vector	2	vector,vector	2431
+674	legmacs/render.lg	search-match-spans-for-row	1	unbound-var		core/array-map,core/map-indexed,core/nil?,core/remove	0	vector	2381
+675	legmacs/render.lg	mode-rows-spans	1	unbound-var		core/conj,core/count,core/nth,core/vec	2	vector,vector	1841
+676	legmacs/render.lg	rows-highlight-spans	1	unbound-var		core/filter,core/into,core/mapv,core/reduce,core/repeat,core/reverse,core/vec	3	vector	1983
+677	legmacs/render.lg	text-row	1	unbound-var		core/concat,core/count,core/get,core/mapv,core/nth,core/str	14		2438
+678	legmacs/render.lg	clip-text	1	unbound-var		core/count,core/max,core/min,core/subs	0		1798
+679	legmacs/render.lg	render-segments-clipped	1	unbound-var		core/apply,core/conj,core/count,core/empty?,core/first,core/rest,core/str,core/vector	4	vector	2101
+680	legmacs/render.lg	status-line	1	unbound-var		core/apply,core/count,core/dissoc,core/get,core/map,core/max,core/min,core/nth,core/repeat,core/seq,core/str,string/join	10		2447
+681	legmacs/render.lg	blank-row	1	unbound-var		core/str	4		2084
+682	legmacs/render.lg	candidate-window	1	unbound-var		core/count,core/max,core/min,core/subvec,core/vec,core/vector	0		1920
+683	legmacs/render.lg	clip-to	1	unbound-var		core/count,core/max,core/subs	0		1830
+684	legmacs/render.lg	clip-ellipsis	1	unbound-var		core/count,core/str,core/subs	1		2061
+685	legmacs/render.lg	flatten-doc	1	unbound-var		core/map,core/remove,string/blank?,string/join,string/split,string/trim	0		2479
+686	legmacs/render.lg	annotated-candidate-row	1	unbound-var		core/apply,core/count,core/max,core/repeat,core/seq,core/str	9		4502
+687	legmacs/render.lg	candidate-row	1	unbound-var		core/seq,core/str	6		3199
+688	legmacs/render.lg	minibuffer-view	1	unbound-var		core/apply,core/concat,core/count,core/get,core/map,core/map-indexed,core/max,core/nth,core/range,core/str	7		2786
+689	legmacs/render.lg	message-view	1	unbound-var		core/apply,core/concat,core/count,core/map,core/map-indexed,core/range,core/str,core/take	6		1952
+690	legmacs/render.lg	echo-area	1	unbound-var		core/apply,core/map,core/range,core/str	3		1985
+691	legmacs/render.lg	cursor-placement	1	unbound-var		core/count,core/nth,core/vector	2		1820
+692	legmacs/render.lg	overlay-frame	1	unbound-var		core/apply,core/concat,core/count,core/format,core/get,core/map,core/map-indexed,core/max,core/range,core/str,core/take,core/vector	5		3174
+693	legmacs/render.lg	window-dims	1	unbound-var		core/array-map,core/count,core/max	1		2536
+694	legmacs/render.lg	window-frame	1	unbound-var		core/apply,core/get,core/map,core/nth,core/range,core/str	4		2480
+695	legmacs/render.lg	divider-column	1	unbound-var		core/apply,core/get,core/map,core/range,core/str	4		2113
+696	legmacs/render.lg	clamp-view	1	unbound-var		core/assoc,core/count,core/max,core/min	1		2245
+697	legmacs/render.lg	workspace-geometry	1	unbound-var		core/assoc,core/max	2		2102
+698	legmacs/render.lg	prepare-workspace	1	unbound-var		core/assoc,core/reduce,core/update	9		2168
+699	legmacs/render.lg	window-cursor	1	unbound-var		core/count,core/nth,core/vector	3		2675
+700	legmacs/render.lg	workspace-frame	1	unbound-var		core/apply,core/map,core/nth,core/some,core/str	11		4449
+701	legmacs/render.lg	frame	1	unbound-var		core/array-map,core/nth,core/str	8		5057
+702	legmacs/theme.lg	on-change!	1	ok			2		8392
+703	legmacs/theme.lg	notify!	1	ok			1		2716
+704	legmacs/theme.lg	as-face	1	unbound-var		core/array-map,core/vector?	0	map	4610
+705	legmacs/theme.lg	as-name	1	unbound-var		core/keyword,core/keyword?	0		2708
+706	legmacs/theme.lg	set-theme!	1	unbound-var		core/assoc,core/get,core/merge,core/nth,core/reduce	3		2590
+707	legmacs/theme.lg	set-face!	1	unbound-var		core/assoc,core/get,core/merge	3		4266
+708	legmacs/theme.lg	register-theme!	1	unbound-var		core/assoc	2		4904
+709	legmacs/theme.lg	theme-names	1	unbound-var		core/cons,core/keys,core/remove,core/sort,core/vec	1	set	2892
+710	legmacs/theme.lg	current-theme	1	ok			1		3681
+711	legmacs/theme.lg	load-theme!	1	unbound-var		core/get	5		4906
+712	legmacs/theme.lg	reset-theme!	1	ok			1		3568
+713	legmacs/theme.lg	catppuccin	1	unbound-var		core/array-map,core/get	0	map,map	3840
+714	legmacs/vibe.lg	openai-chat-tools	1	unbound-var		core/array-map,core/mapv	0	map	2512
+715	legmacs/vibe.lg	openai-responses-tools	1	unbound-var		core/array-map,core/mapv	0	map	3935
+716	legmacs/vibe.lg	anthropic-tools	1	unbound-var		core/array-map,core/mapv	0	map	2542
+717	legmacs/vibe.lg	openai-tool-call	1	unbound-var		core/array-map,json/write-json	0	map	2413
+718	legmacs/vibe.lg	openai-message	1	unbound-var		core/array-map,core/assoc,core/mapv,core/seq	1		2575
+719	legmacs/vibe.lg	openai-api	1	unbound-var		core/keyword,core/str,string/includes?	0		1817
+720	legmacs/vibe.lg	effort-str	1	unbound-var		core/keyword?,core/name,core/str	0		1769
+721	legmacs/vibe.lg	openai-chat-url	1	ok			0		1753
+722	legmacs/vibe.lg	openai-responses-url	1	ok			0		2177
+723	legmacs/vibe.lg	keywordize-json	1	unbound-var		core/into,core/keyword,core/map,core/map?,core/mapv,core/nth,core/string?,core/vector,core/vector?	1	map	2281
+724	legmacs/vibe.lg	responses-input	1	unbound-var		core/array-map,core/mapcat,core/mapv,core/seq,core/vec,core/vector	1		2362
+725	legmacs/vibe.lg	openai-chat-body	1	unbound-var		core/array-map,core/assoc,core/get,core/into,core/mapv,core/nil?,core/not=,core/seq,core/vector	3		2450
+726	legmacs/vibe.lg	openai-responses-body	1	unbound-var		core/array-map,core/assoc,core/get,core/seq	3		4179
+727	legmacs/vibe.lg	openai-body	1	ok			2		1741
+728	legmacs/vibe.lg	as-arg-map	1	unbound-var		core/map?,core/seq,core/str,json/read-json	0	map,map,map	1827
+729	legmacs/vibe.lg	openai-parse-call	1	unbound-var		core/array-map,core/get	1		2226
+730	legmacs/vibe.lg	openai-chat-parse	1	unbound-var		core/array-map,core/first,core/get,core/mapv,core/seq,core/string?	1	vector	1845
+731	legmacs/vibe.lg	responses-text	1	unbound-var		core/get,core/keep,core/mapcat,string/join	0	vector,vector	1799
+732	legmacs/vibe.lg	openai-responses-parse	1	unbound-var		core/array-map,core/get,core/keep,core/seq,core/string?,core/vec	2	vector	2516
+733	legmacs/vibe.lg	openai-parse	1	unbound-var		core/get	2		1755
+734	legmacs/vibe.lg	anthropic-assistant-content	1	unbound-var		core/array-map,core/into,core/mapv,core/seq,core/vector	0	vector,map	3024
+735	legmacs/vibe.lg	anthropic-wire-messages	1	unbound-var		core/array-map,core/conj,core/first,core/rest,core/seq	1	vector,vector	2312
+736	legmacs/vibe.lg	anthropic-body	1	unbound-var		core/array-map,core/assoc,core/get,core/seq	2		3044
+737	legmacs/vibe.lg	anthropic-parse	1	unbound-var		core/array-map,core/get,core/keep,core/seq,core/vec,string/join	0	vector,map	2533
+738	legmacs/vibe.lg	config-dir	1	unbound-var		core/seq,core/str,os/getenv	0		1825
+739	legmacs/vibe.lg	config-path	1	unbound-var		core/str	1		1917
+740	legmacs/vibe.lg	parse-config	1	unbound-var		core/map?,core/read-string,core/seq,core/str,string/trim	0	map,map	1814
+741	legmacs/vibe.lg	read-config	1	unbound-var		core/slurp	2		1823
+742	legmacs/vibe.lg	api-key	1	unbound-var		core/seq,os/getenv	0		1805
+743	legmacs/vibe.lg	strip-fences	1	unbound-var		core/subs,string/index-of,string/last-index-of,string/starts-with?,string/trim	0		1852
+744	legmacs/vibe.lg	format-echo	1	unbound-var		core/str,string/replace,string/trim	0		1754
+745	legmacs/vibe.lg	http-error-text	1	unbound-var		core/get,core/map?,core/seq,core/str,json/read-json	1		2274
+746	legmacs/vibe.lg	error-message	1	unbound-var		core/ex-message,core/str	0		1998
+747	legmacs/vibe.lg	tool-arg	1	unbound-var		core/get,core/keyword	0		1808
+748	legmacs/vibe.lg	catalog-worthy?	1	unbound-var		core/contains?,core/int,core/not,core/nth,core/seq,string/starts-with?	1		1803
+749	legmacs/vibe.lg	format-var-names	1	unbound-var		core/keys,core/map,core/ns-publics,core/sort,core/str,string/join	0		1885
+750	legmacs/vibe.lg	format-ns-line	1	unbound-var		core/find-ns,core/str,core/symbol	1		2534
+751	legmacs/vibe.lg	loaded-lib-names	1	unbound-var		core/all-ns,core/filter,core/map,core/ns-name,core/sort,core/str	1		1960
+752	legmacs/vibe.lg	available-stdlib	1	unbound-var		core/filter,core/find-ns,core/symbol	1		1785
+753	legmacs/vibe.lg	available-editor	1	unbound-var		core/filter,core/find-ns,core/symbol	1		1813
+754	legmacs/vibe.lg	parse-libspec	1	unbound-var		core/apply,core/array-map,core/first,core/hash-map,core/rest,core/str,core/symbol?,core/vector?	0		1850
+755	legmacs/vibe.lg	name-char?	1	unbound-var		core/contains?,core/int	0	set	1854
+756	legmacs/vibe.lg	ns-name-char?	1	ok			1		1755
+757	legmacs/vibe.lg	line-start?	1	unbound-var		core/contains?,core/hash-set,core/nth	1		1785
+758	legmacs/vibe.lg	ns-head-at?	1	unbound-var		core/count,core/not,core/nth,core/subs	2		1751
+759	legmacs/vibe.lg	find-ns-form	1	unbound-var		core/apply,core/filter,core/first,core/min-key,core/not,core/nth,core/seq,core/vector	3		1768
+760	legmacs/vibe.lg	find-require-list	1	unbound-var		core/get,core/subs,core/vector,string/index-of	1		1808
+761	legmacs/vibe.lg	parse-require-list	1	unbound-var		core/keep,core/read-string,core/rest,core/seq,core/subs,core/vec	1	vector	1760
+762	legmacs/vibe.lg	ns-require-index	1	unbound-var		core/array-map,core/into,core/keep,core/map,core/nth,core/set,core/vector	3	map,set,map,set,map	1838
+763	legmacs/vibe.lg	format-file-requires	1	unbound-var		core/contains?,core/find-ns,core/map,core/not,core/nth,core/seq,core/set,core/some,core/sort,core/str,core/symbol,string/join	4		1890
+764	legmacs/vibe.lg	namespace-catalog	m0	ok			1		1755
+765	legmacs/vibe.lg	namespace-catalog	m1	unbound-var		core/map,core/seq,core/str,string/join	4		3060
+766	legmacs/vibe.lg	tool-list-namespaces	1	unbound-var		string/join	1		1764
+767	legmacs/vibe.lg	tool-ns-publics	1	unbound-var		core/find-ns,core/not,core/seq,core/str,core/symbol	2		1927
+768	legmacs/vibe.lg	tool-var-doc	1	unbound-var		core/meta,core/pr-str,core/resolve,core/seq,core/str,core/symbol	1	map	1989
+769	legmacs/vibe.lg	call-tool	1	unbound-var		core/str	4		1869
+770	legmacs/vibe.lg	openai-endpoint	1	ok			2		1929
+771	legmacs/vibe.lg	completion-turn	1	unbound-var		core/array-map,core/not,core/seq,core/str,http/post,json/read-json,json/write-json	6		6880
+772	legmacs/vibe.lg	append-tool-round	1	unbound-var		core/array-map,core/conj,core/into,core/mapv	1		3069
+773	legmacs/vibe.lg	request-completion	1	unbound-var		core/array-map,core/seq,core/vector	3		2530
+774	legmacs/vibe.lg	with-context	1	ok			1		2370
+775	legmacs/vibe.lg	context-text	1	unbound-var		core/str,core/subs	1		2294
+776	legmacs/vibe.lg	eval-replace-vibe-context	1	unbound-var		core/array-map,core/get	2		2952
+777	legmacs/vibe.lg	user-message	1	unbound-var		core/str	2		6319
+778	legmacs/vibe.lg	span-covering	1	unbound-var		core/some	0		1970
+779	legmacs/vibe.lg	rewrite-at	1	unbound-var		core/count,core/not,core/nth,core/some,core/subs,core/vector	2		1849
+780	legmacs/vibe.lg	rewrite-clojure-ns	1	unbound-var		core/count,core/nth,core/str,core/subs	3		2254
+781	legmacs/vibe.lg	symbol-end	1	unbound-var		core/nth	1		1919
+782	legmacs/vibe.lg	letter-or-sym-start?	1	unbound-var		core/contains?,core/int	0	set	2038
+783	legmacs/vibe.lg	qualified-prefixes	1	unbound-var		core/conj,core/count,core/distinct,core/nth,core/subs,core/vec,string/index-of	4	vector	1930
+784	legmacs/vibe.lg	needed-libs	1	unbound-var		core/distinct,core/filter,core/find-ns,core/keys,core/not,core/set,core/symbol,core/vec	3		2068
+785	legmacs/vibe.lg	trailing-indent	1	unbound-var		core/contains?,core/count,core/hash-set,core/nth,core/subs,string/last-index-of	0		2052
+786	legmacs/vibe.lg	add-require	1	unbound-var		core/nth,core/str,core/subs,string/includes?	3		1906
+787	legmacs/vibe.lg	ensure-requires	1	unbound-var		core/contains?,core/reduce	2		1789
+788	legmacs/vibe.lg	vibe	m0	phase2-const			1	map	2085
+789	legmacs/vibe.lg	vibe	m1	unbound-var		core/get,core/merge,core/pr-str,core/str	11		3411
+790	legmacs/vibe.lg	export-vibe-unqualified!	1	unbound-var		core/alter-meta!,core/intern,core/merge,core/meta	1	symbol,symbol,var,map	3805
+791	legmacs/vibe.lg	vibe-head-at?	1	unbound-var		core/count,core/not,core/nth,core/subs	1		3298
+792	legmacs/vibe.lg	find-vibe-form	1	unbound-var		core/apply,core/filter,core/first,core/max-key,core/nth,core/seq,core/vector	2		8307
+793	legmacs/vibe.lg	splice-offsets	1	unbound-var		core/assoc,core/count,core/nth,core/str,core/subs	6		4445
+794	legmacs/vibe.lg	apply-vibe-code	1	unbound-var		core/assoc,core/count,core/first,core/nth,core/remove,core/seq,core/sort,core/str,core/subs,string/join,string/trim	11		5901
+795	legmacs/vibe.lg	apply-vibe-result	1	ok			1		2583
+796	legmacs/vibe.lg	eval-vibe-form	1	unbound-var		core/eval,core/read-string	1		4066
+797	legmacs/vibe.lg	vibe-io	1	ok			1		5290
+798	legmacs/vibe.lg	resolve-vibe	1	unbound-var		core/assoc,core/count,core/pr-str,core/str,core/string?	5		2974
+799	legmacs/vibe.lg	vibe-then	1	ok			1		3734
+800	legmacs/vibe.lg	vibe-call-context	1	unbound-var		core/array-map,core/nth	3		5921
+801	legmacs/vibe.lg	vibe-replace	1	unbound-var		core/assoc,core/nth,core/subs	7		3368
+802	legmacs/windows.lg	view-of	1	unbound-var		core/assoc,core/get,core/reduce	1	map	3756
+803	legmacs/windows.lg	leaf?	1	unbound-var		core/contains?	0		3149
+804	legmacs/windows.lg	single	1	unbound-var		core/array-map	0		9010
+805	legmacs/windows.lg	leaf-ids	1	unbound-var		core/mapcat,core/vec,core/vector	2		2630
+806	legmacs/windows.lg	find-leaf	1	unbound-var		core/some	2		4707
+807	legmacs/windows.lg	update-leaf	1	unbound-var		core/assoc,core/mapv	2		2775
+808	legmacs/windows.lg	index-of	1	unbound-var		core/empty?,core/first,core/rest,core/seq	0		2639
+809	legmacs/windows.lg	next-leaf-id	1	unbound-var		core/count,core/mod,core/nth	2		4131
+810	legmacs/windows.lg	new-sibling	1	unbound-var		core/assoc	0		5203
+811	legmacs/windows.lg	direct-child-index	1	unbound-var		core/count,core/nth	1		2924
+812	legmacs/windows.lg	split-leaf	1	unbound-var		core/array-map,core/assoc,core/concat,core/mapv,core/nth,core/subvec,core/vec,core/vector	4		4574
+813	legmacs/windows.lg	delete-leaf	1	unbound-var		core/assoc,core/count,core/empty?,core/ffirst,core/first,core/keep,core/map,core/mapv,core/not=,core/nth,core/second,core/vec,core/vector	2		5672
+814	legmacs/windows.lg	remap-buffer	1	unbound-var		core/assoc,core/mapv	2		3550
+815	legmacs/windows.lg	apportion	1	unbound-var		core/count,core/map,core/map-indexed,core/nil?,core/nth,core/range,core/reduce,core/some,core/update,core/vec	0		2709
+816	legmacs/windows.lg	layout	1	unbound-var		core/array-map,core/assoc,core/conj,core/count,core/empty?,core/first,core/into,core/rest,core/vector	5	vector,vector,vector	7951
