@@ -28,7 +28,7 @@ ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 REPS=${REPS:-5}
-pw=$ws/local-scripts/browser-smoke-playwright
+pw=${LW_BROWSER_TOOLS:-$ws/local-scripts}/browser-smoke-playwright
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
 
 # the stock lane: lane5.sh's cache (same key), built by lane5.sh if missing

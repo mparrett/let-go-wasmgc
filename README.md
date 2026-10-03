@@ -90,8 +90,11 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   node 25. `src/run.mjs` and `host/node-host.mjs` set their own stack sizes.
 - **Chromium through Playwright** for the browser checks
   (`checks/browser-boot.sh`, `checks/repl-page-check.mjs`). These currently
-  resolve Playwright from `../../../local-scripts/browser-smoke-playwright`
-  relative to `checks/`, a path outside this repo.
+  accept `LW_BROWSER_TOOLS` naming the external `local-scripts` directory
+  containing `browser-smoke-playwright/`, `coi-serve.py` and `inject-shell.sh`
+  (2026-10-03).
+  The default remains `../../../local-scripts` relative to `checks/`.
+  Standalone checkouts must configure their installed tools directory.
 - **xsofy and legmacs checkouts** (`$XSOFY`, `$LEGMACS`) for those corpora.
   Multi-namespace programs name their source roots through `LG_ARGS`, as
   row P7.3 in `checks/items.tsv` does:
@@ -101,6 +104,7 @@ Environment variables that matter:
 
 | variable | effect |
 |---|---|
+| `LW_BROWSER_TOOLS` | external browser-tools directory for Playwright, COI serving, shell injection and boot probes (2026-10-03) |
 | `LW_ROOT` | the root holding `let-go/`, `xsofy/`, `legmacs/`, `lg-bin/` (`checks/env.sh`) |
 | `LG` | native lg used by the driver and as the oracle's reference |
 | `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |

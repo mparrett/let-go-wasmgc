@@ -40,7 +40,7 @@ else
   ok=0; echo "node-host  FAIL  exit $rc"; diff "$t/expected" "$t/node.out" | head -12
 fi
 mkdir -p "$t/www"; command cp "$here"/host/index.html "$here"/host/lg-wasm-host.js "$t/www/"; command cp "$t/eval.wasm" "$t/www/eval.wasm"
-px=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$px" "$t/www" >"$t/server.log" 2>&1 & pids+=($!)
+px=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$px" "$t/www" >"$t/server.log" 2>&1 & pids+=($!)
 for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
 if node "$here/checks/browser-boot.mjs" --run "http://127.0.0.1:$px" eval.wasm "$t/expected" >"$t/browser.json" 2>"$t/browser.err"; then
   echo "browser    PASS  eval-hello == native in Chromium ($(python3 -c 'import json,sys; print(round(json.load(open(sys.argv[1]))["totalMs"]))' "$t/browser.json") ms)"

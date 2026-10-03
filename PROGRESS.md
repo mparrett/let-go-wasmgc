@@ -21,12 +21,9 @@
 - Final GC gate 1: 8 rows passed with LW_ATTEST=0 (2026-10-03).
 
 ## In progress
-- Active final-gate exec session: 75758; poll it before starting another gate. Output: /tmp/linear-m1-final-gate-1.log and /tmp/linear-m1-final-gate-7.log (2026-10-03).
-- Representation families, cast refinements, host twins and runner are pushed with GC byte identity green (2026-10-03).
-- Exact next command (2026-10-03): `LW_ATTEST=0 checks/gate.sh 7`
-- Corpus rows are acceptance checks, not current MATCH claims (2026-10-03).
-- Final GC gates are running after every required linear corpus passed (2026-10-03).
+- Configured P7.4 and P7.5 passed in full (2026-10-03).
+- Exact next command (2026-10-03): `git diff --check`, commit/push the external tools configuration, verify publish CI, then `/tmp/linear-m1-gate7-rerun.sh`.
 
 ## Open questions
 - Original runtime cache omits variadic dispatch state on restore; reported in the PR, the team is investigating. Keep GC output unchanged.
-- Required linear corpora and helper-size measurement passed; final GC gates remain pending (2026-10-03).
+- Required linear corpora and helper-size measurement passed; configured GC gate 7 rerun remains pending (2026-10-03).
