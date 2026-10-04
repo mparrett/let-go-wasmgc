@@ -20,7 +20,7 @@ out=${1:?usage: build-legmacs-module.sh <out.wasm>}
 . "$(dirname "$0")/../checks/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 entry=${LW_LEGMACS_MAIN:-$LEGMACS/main.lg}
-OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
+OPT=$WASM_OPT
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory
           --enable-tail-call --enable-multivalue)
 cache=${LW_LEGMACS_CACHE:-${TMPDIR:-/tmp}/lw-legmacs-module}; mkdir -p "$cache"

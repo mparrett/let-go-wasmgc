@@ -45,7 +45,7 @@ done
 # the oracle reports only the exit class of a failing run; show the module's own error
 [ "$ok" -eq "$N" ] || sed -E 's/\x1b\[[0-9;]*m//g' "$cache/first.err" | grep -v catalog | grep -m1 -iE 'error' | cut -c1-400 | sed 's/^/backend (script 1): /'
 m=$(newest)
-opt=$(/opt/homebrew/opt/binaryen/bin/wasm-opt -O3 --enable-gc --enable-reference-types --enable-exception-handling \
+opt=$("$WASM_OPT" -O3 --enable-gc --enable-reference-types --enable-exception-handling \
       --enable-bulk-memory --enable-tail-call --enable-multivalue "$m" -o - 2>/dev/null | wc -c | tr -d ' ')
 echo "module: $(wc -c <"$m" | tr -d ' ') bytes raw, $opt bytes after wasm-opt -O3"
 echo "$ok/$N MATCH (legmacs $(git -C "$LEGMACS" rev-parse --short HEAD 2>/dev/null))"

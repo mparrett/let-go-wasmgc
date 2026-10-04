@@ -73,8 +73,10 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   at that commit with `git show`, and fails with a message naming the path
   when it cannot.
 - **wasm-tools** on `PATH` (WAT to binary).
-- **binaryen's wasm-opt** at `/opt/homebrew/opt/binaryen/bin/wasm-opt`, used
-  by the module build scripts in `host/`. `LW_NO_OPT=1` skips it.
+- **binaryen's wasm-opt** (and `wasm-merge` for `checks/browser-boot.sh`):
+  the Homebrew install when present, otherwise the one on `PATH`; set
+  `WASM_OPT` / `WASM_MERGE` to choose another. Used by the module build
+  scripts in `host/`. `LW_NO_OPT=1` skips it.
 - **brotli**, for the size lines the build scripts print.
 - **node** with WasmGC, wasm exception handling and JSPI. We develop on
   node 25. `src/run.mjs` and `host/node-host.mjs` set their own stack sizes.
