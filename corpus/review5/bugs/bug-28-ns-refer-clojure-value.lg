@@ -1,0 +1,2 @@
+;; native: "nil" -- (ns x (:refer-clojure :exclude [...])) is nil natively (core.lg's ns ends in exclude-in-current-ns); the evaluator's ns expander drops :refer-clojure and returns in-ns's value, <ns r5.rc>. Same on both seams (eval-seam, 2026-10-04; probes/ns/n04 line 8)
+(println (pr-str (eval '(ns r5.rc (:refer-clojure :exclude [map])))))
