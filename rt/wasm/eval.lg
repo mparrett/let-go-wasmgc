@@ -7,10 +7,32 @@
 ;; resolve x in this context") come out of the same nesting.
 ;;
 ;; DIALECT: plain lg, as rt/wasm/natives.lg (the round-3 seam note, kept with the campaign notes). The
-;; evaluator itself uses only core fns, so it also runs under native lg on
-;; native values (corpus/intrinsics/eval_test.lg sets `native-tier` and
-;; compares it with native eval); the few runtime calls (raising, var
-;; stand-ins, the reader hook) are module-only branches.
+;; evaluator itself uses only core fns; everything it needs from its host
+;; goes through the host seam below, so it also runs under native lg.
+;;
+;; Host seam (eval-seam, 2026-10-04). The evaluator reaches namespaces,
+;; vars and the runtime only through these fns of the "Host layer" sections;
+;; their bodies HERE are the wasm implementation (wasm.natives' registry of
+;; cells, the backend's program table, var stand-ins):
+;;   cur-ns  ns-value  enter-ns!  canon      current ns name, *ns*, the
+;;                                           compile-time in-ns, ns aliases
+;;   resolve-global  local-def?  core-var    symbol -> {:kind :cell|:prog|
+;;                                           :pmacro|:core ..}, own-var test
+;;                                           (syntax-quote), #'core/x
+;;   cell-get  set-cell!                     read / set! a var at run time
+;;   def-var!  var-of  def-root!             def: intern + meta at compile
+;;                                           time, the var, its root at run time
+;;   raise  var-value  ensure-hook!  type-name   behind `native-tier`
+;; rt/wasm/eval_native.lg is the native implementation: requiring it under
+;; stock lg sets `native-tier` and rebinds each seam fn (alter-var-root of
+;; the private var, once, at load) to real let-go namespaces and vars;
+;; corpus/intrinsics/eval_test.lg and checks/eval-native.sh load it. The
+;; rest of this host layer (tbl, cell, cell-var, intern-cell!, prog,
+;; lookup-in, resolve-alias, builtin-in, code-hook, install-program-table!,
+;; the core table's in-ns*/require*/bound?*/set-macro!*/throw* and the
+;; wasm.natives var fns) is reached only through those seam fns or the core
+;; table, which the native seam consults for two plumbing names only, so
+;; it is wasm-only.
 ;;
 ;; Shape: (compile form cenv) returns an lg fn of the run-time environment,
 ;; a vector of local values indexed at compile time (cenv :locals name ->
@@ -75,7 +97,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Host layer: the only module-specific calls
 
-(def native-tier (atom false))     ; set by eval_test.lg under native lg
+(def native-tier (atom false))     ; set by eval_native.lg under native lg
 
 (defn- raise [msg]
   (if @native-tier
@@ -118,6 +140,22 @@
     (when-not (cell key)
       (swap! n/registry assoc-in [:cells key] {:var (cell-var key nsn nm) :ns nsn :name nm :meta nil :stack ()}))
     key))
+
+(defn- def-var!
+  "def at compile time: intern nsn/sym with the def's meta m; the key."
+  [nsn sym m]
+  (let [key (intern-cell! nsn sym)
+        ;; the def's meta rides on a fresh stand-in (wasm.core's meta
+        ;; reads the stand-in's own); a var taken before keeps the old
+        ;; one fn arg: the module's swap! has fixed arities (7 extra args failed)
+        nv (cell-var key nsn sym m)]
+    (swap! n/registry (fn [t] (update-in t [:cells key] (fn [cl] (assoc cl :meta m :var nv)))))
+    key))
+
+(defn- var-of [key] (:var (cell key)))
+(defn- def-root! [key x] (swap! n/registry assoc-in [:cells key :val] x))
+(defn- enter-ns! [nm] (n/set-cur! (n/add-ns* (str nm))))
+(defn- ns-value [] (n/current-ns))
 
 (defn ^{:doc "B's program table (round-3 seam), kept in the registry under :program."}
   install-program-table! [t]
@@ -244,7 +282,7 @@
   (let [m (second form)]
     (when (and (seq? m) (= 'in-ns (first m)))
       (when-let [nm (quoted-sym (second m))]
-        (n/set-cur! (n/add-ns* (str nm))))))
+        (enter-ns! nm))))
   (comp-body (rest form) ce "compiling do member" (:tail ce)))
 
 (defn- check-bindings [form op]
@@ -375,13 +413,8 @@
           m (if doc (assoc (or m {}) :doc doc) m)
           m (assoc (or m {}) :name sym)
           nsn (cur-ns)
-          key (intern-cell! nsn sym)
-          ;; the def's meta rides on a fresh stand-in (wasm.core's meta
-          ;; reads the stand-in's own); a var taken before keeps the old
-          ;; one fn arg: the module's swap! has fixed arities (7 extra args failed)
-          nv (cell-var key nsn sym m)
-          _ (swap! n/registry (fn [t] (update-in t [:cells key] (fn [cl] (assoc cl :meta m :var nv)))))
-          v (:var (cell key))]
+          key (def-var! nsn sym m)
+          v (var-of key)]
       (if (= l 1)
         ;; (def x) / (declare x) leave the var unbound (bound? false), so a
         ;; later defonce still defines it
@@ -389,7 +422,7 @@
         (let [vf (wrap "compiling def value" (fn [] (comp* valf (assoc ce :tail false))))]
           (fn [env]
             (let [x (vf env)]
-              (swap! n/registry assoc-in [:cells key :val] x)
+              (def-root! key x)
               v)))))))
 
 (defn- set-cell! [key x]
@@ -981,7 +1014,7 @@
     (if l
       (let [i (nth l 0)] (if (nth l 1) (fn [env] @(nth env i)) (fn [env] (nth env i))))
       (cond
-        (= sym '*ns*) (fn [env] (n/current-ns))
+        (= sym '*ns*) (fn [env] (ns-value))
         ;; read when the form runs: with-out-str rebinds *out*
         (= sym '*out*) (fn [env] *out*)
         (= sym '*err*) (fn [env] *err*)
