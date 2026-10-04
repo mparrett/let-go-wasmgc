@@ -1,0 +1,26 @@
+;; The actual driver formatter, without invoking the driver's entry point.
+(require '[clojure.string])
+(eval (first (filter #(and (seq? %) (= 'defn (first %)) (= 'native-msg (second %)))
+                     (read-string (str "[" (slurp "src/driver.lg") "]")))))
+(doseq [[in expected]
+        [["CompileError: Executing macro #'user/bad (<fn bad 0xABC123>) failed"
+          "Executing macro #'user/bad (<fn bad>) failed"]
+         ["CompileError: Executing macro #'user/bad (<fn 0x123>) failed"
+          "Executing macro #'user/bad (<fn>) failed"]
+         ["CompileError: Executing macro #'user/bad (<mfn bad 0x123>) failed"
+          "Executing macro #'user/bad (<mfn bad>) failed"]
+         ["CompileError: Executing macro #'user/bad (<native-fn bad 0x123>) failed"
+          "Executing macro #'user/bad (<native-fn bad>) failed"]
+         ["CompileError: Executing macro #'user/bad> (<fn bad> 0x123>) failed"
+          "Executing macro #'user/bad> (<fn bad>>) failed"]
+         ["Executing macro #'user/bad (<fn bad 0x123>) failed"
+          "Executing macro #'user/bad (<fn bad 0x123>) failed"]
+         ["macro boom 0x123 and <fn bad 0x123>" "macro boom 0x123 and <fn bad 0x123>"]
+         ["CompileError: Executing macro #'user/bad (<fn bad>) failed" "Executing macro #'user/bad (<fn bad>) failed"]]]
+  (assert (= expected (native-msg (ex-info in {}) false)) (str "diagnostic changed incorrectly: " in)))
+(let [in "CompileError: compiling fn body\n\tcaused by CompileError: Executing macro #'user/bad (<fn bad 0x123>) failed\n\tcaused by macro boom 0xCAFE"]
+  (assert (= "Executing macro #'user/bad (<fn bad>) failed\ncaused by: macro boom 0xCAFE"
+             (native-msg (ex-info in {}) true)))
+  (assert (= "compiling fn body\ncaused by: Executing macro #'user/bad (<fn bad>) failed\ncaused by: macro boom 0xCAFE"
+             (native-msg (ex-info in {}) false))))
+(println "PASS native-msg: 8 format/preservation cases and both wrapper modes")
