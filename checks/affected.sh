@@ -92,6 +92,7 @@ P7.R	corpus/review5/
 P7.7	oracle corpus/review5/fix-eval/ checks/run-corpus.sh
 P7.8	oracle corpus/review5/fix-rt/ checks/run-corpus.sh
 P7.9	oracle corpus/review5/fix-backend/ checks/run-corpus.sh
+P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

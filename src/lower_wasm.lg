@@ -4163,6 +4163,12 @@
      :consts (:consts st) :const-order (:const-order st)
      :strings @*strings* :globals @*globals* :regions @*regions* :elem @*elem* :env-types @*env-types*
      :externs (into {} (for [[v g] @*externs*] [(var-sym v) g]))
+     ;; the two session counters size the dispatch helpers (var-k 0..max,
+     ;; $rt_invoke5..max); a runtime fn value raises them during the build
+     ;; (core update: [m k f x y z & more] gives var-k 6), and only the
+     ;; program's own lowering raises them again after a restore
+     :var-k-max (when *var-k-max* @*var-k-max*)
+     :invoke-max (when *invoke-max* @*invoke-max*)
      :failures (into fails (:failures st))}))
 
 (defn rtlib-restore! [snap]
@@ -4173,6 +4179,8 @@
                      :consts (:consts snap) :const-order (:const-order snap)
                      :failures (:failures snap)})
   (swap! *strings* merge (:strings snap))
+  (when (and *var-k-max* (:var-k-max snap)) (swap! *var-k-max* max (:var-k-max snap)))
+  (when (and *invoke-max* (:invoke-max snap)) (swap! *invoke-max* max (:invoke-max snap)))
   (swap! *globals* into (:globals snap))
   (swap! *regions* into (:regions snap))
   (swap! *elem* into (:elem snap))

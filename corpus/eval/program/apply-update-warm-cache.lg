@@ -1,0 +1,8 @@
+;; D181 regression. The evaluator's core table takes core fn values inside
+;; cached runtime code; `update` has the arity [m k f x y z & more], so its
+;; value is a $FnV with k = 6 that only the runtime library ever lowers. A
+;; restored library that forgot the session's var-k counter emitted a
+;; dispatcher without the k = 6 branch, and this call reached `unreachable`
+;; on every warm cache (fresh caches passed). run-corpus warms the cache
+;; before it runs, so this program exercises the restored path.
+(println (eval (quote (apply update {:a 1} :a + [1 2 3 4 5]))))
