@@ -395,9 +395,13 @@
 (defn native-msg
   "Native's compile-error chain as its report prints it: the first line is
    the outermost context, then `caused by: ` lines. strip? drops the
-   `compiling fn body` layer the driver's own (fn* [] ..) wrapper adds."
+   `compiling fn body` layer the driver's own (fn* [] ..) wrapper adds.
+   A macro context keeps its var and fn name, but omits the native VM's
+   process address so the diagnostic embedded in WAT is deterministic."
   [e strip?]
-  (let [parts (map #(clojure.string/replace % #"^CompileError: " "")
+  (let [parts (map #(-> %
+                       (clojure.string/replace #"^(CompileError: Executing macro .* \(<(?:fn|mfn|native-fn)(?: .*)?) 0x[0-9a-fA-F]+(>\) failed)$" "$1$2")
+                       (clojure.string/replace #"^CompileError: " ""))
                    (clojure.string/split (str (ex-message e)) #"\n\tcaused by "))
         parts (if (and strip? (= "compiling fn body" (first parts)) (next parts)) (rest parts) parts)]
     (clojure.string/join "\ncaused by: " parts)))
