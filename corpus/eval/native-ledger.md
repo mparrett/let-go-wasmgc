@@ -35,9 +35,10 @@ Both mismatches have the one cause under "Seam gaps". With a probe that interned
 ## Evaluator bugs (wrong on both seams; repros in `corpus/review5/bugs/`, not fixed here)
 
 - `bug-28-ns-refer-clojure-value.lg`: `(ns x (:refer-clojure :exclude [map]))` is nil natively;
-  the evaluator's `ns` expander drops `:refer-clojure` and returns `in-ns`'s value. The module's
-  output in `corpus/review5/results/ns-n04-builtin-refer.wasm.out` line 8 shows the same.
+  the evaluator's `ns` expander drops `:refer-clojure` and returns `in-ns`'s value.
 - `bug-29-evaluated-def-meta-source.lg`: see "Form source" above.
+- Both print the same through the module (`checks/wasm-run.sh`, this branch, 2026-10-04) as on
+  the native seam.
 - Already on review5's list and seen again here: `(eval *ns*)` (review5 S3 row, e07), and class
   dispatch in `catch` (named limit).
 
