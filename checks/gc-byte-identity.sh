@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen before linear work (2026-10-03).
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-04 at
+# 7b87007, after D181-D184; first frozen 2026-10-03 at 3c5011e).
 # Inputs: src/, rt/, corpus/scalar/, corpus/eval/, pinned baseline commit.
 # --capture compiles the baseline only; otherwise compare default and explicit GC.
 # Each current lane gets an independent fresh rtlib, matching the baseline
@@ -7,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
-base=3c5011ebfb785b98a532789a62e9557dd042d0eb
+base=7b8700749665aa6748e42c2c15206ec07cda5f32
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
