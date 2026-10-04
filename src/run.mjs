@@ -24,7 +24,8 @@ if (isMainThread) {
   const emit = (buf) => { chunks.push(buf); pending += buf.length; if (pending > 1 << 16) flush(); };
 
   let mem;
-  const argv = ['lg', ...workerData.argv];
+  // argv[0] is the lg path, as native's os/args reports it (wasm-run.sh exports LG)
+  const argv = [process.env.LG || 'lg', ...workerData.argv];
   const env = {
     print_i64: (v) => emit(Buffer.from(String(v))),
     // copy: the module reuses the scratch region for the next string
