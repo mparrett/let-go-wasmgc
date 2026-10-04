@@ -1,0 +1,108 @@
+;; wasm.eval-native — the native implementation of wasm.eval's host seam.
+;;
+;; rt/wasm/eval.lg's evaluator reaches its host only through the seam fns of
+;; its "Host layer" sections (listed in its header). Their bodies there are
+;; the wasm implementation: wasm.natives' registry of cells, the backend's
+;; program table, var stand-ins. Requiring this ns under stock lg rebinds
+;; each of them (alter-var-root of the private var, chosen once, at load) to
+;; an implementation over real let-go namespaces and vars:
+;;   - resolution is let-go's own `resolve` in *ns* (refers, aliases,
+;;     privacy as native compiles them); a var of the core ns resolves as a
+;;     builtin (its value, so `+` stays a direct op and core macros reach
+;;     the evaluator's expanders), every other var as a real var read at
+;;     run time (program fns, evaluated defs, other namespaces alike);
+;;   - def interns a real var with the def's meta, sets its root at run
+;;     time; `(do (in-ns 'x) ..)` and *ns* are let-go's in-ns and *ns*;
+;;   - the core table is not consulted except for the two names the
+;;     expanders emit that let-go itself does not define (`concat*`,
+;;     `wasm.eval/macro-form*`); every other core name is let-go's own var
+;;     (in-ns, require, bound?, set-macro!, push-binding!, throw, ...).
+;; Nothing here is loaded into a module: rt/wasm/README.md's load-order
+;; table does not list this file. Loaded by corpus/intrinsics/eval_test.lg
+;; and by checks/eval-native.sh's prelude.
+;;
+;; Native seam limit: set! of a var whose innermost thread binding holds the
+;; root's identical value sets the root (lg cannot ask whether a var is
+;; thread-bound; see set-var!).
+(ns wasm.eval-native
+  (:require [clojure.string :as string]
+            [wasm.eval :as ev]
+            [wasm.natives :as n]))
+
+(def ^:private plumbing #{"concat*" "wasm.eval/macro-form*"})
+
+(defn- key-var [key] (find-var (symbol key)))
+(defn- var-key
+  "\"ns/name\" of the var v, from its printed form #'ns/name: a Go native's
+   var carries no meta (#'core/+), so :ns/:name cannot be read there."
+  [v]
+  (subs (str v) 2))
+
+(defn- global-of
+  "eval.lg's resolved-global map for the real var v."
+  [v]
+  (let [m (meta v) key (var-key v) i (string/index-of key "/")
+        vns (subs key 0 i) nm (subs key (inc i))]
+    (if (= vns "core")
+      ;; a core macro without an expander stays unresolvable, as on wasm
+      (if (:macro m) {:kind :core-macro} {:kind :core :name nm :val (deref v)})
+      {:kind :cell :key key :var v :macro (:macro m) :private (:private m)})))
+
+(defn- ns-of-alias [q]
+  (let [s (symbol q)] (or (get (ns-aliases *ns*) s) (find-ns s))))
+
+(defn- resolve-global
+  ([sym] (resolve-global sym false))
+  ([sym any-private?]
+   (let [v (try (resolve sym) (catch Exception e nil))
+         ;; (var a/s) reaches a private var, as native's var form does
+         v (or v (when (and any-private? (namespace sym))
+                   (when-let [ns (ns-of-alias (namespace sym))]
+                     (get (ns-interns ns) (symbol (name sym))))))]
+     (cond (var? v) (global-of v)
+           (plumbing (str sym)) {:kind :core :name (str sym) :val (get (@#'ev/core-table) (str sym))}
+           :else nil))))
+
+(defn- canon [q]
+  (if-let [ns (ns-of-alias q)] (str (ns-name ns)) (n/canon* q)))
+
+(defn- local-def? [t] (contains? (ns-interns *ns*) (symbol t)))
+
+(defn- core-var [nm v] (or (find-var (symbol "core" nm)) v))
+
+;; def at compile time, as defCompiler: intern, then apply-def-meta! (the
+;; compiler's own meta path: :ns, and the :private/:dynamic flags resolve
+;; reads). Seam gap: let-go's 2-arg `intern` binds a NEW var to nil, where
+;; the compiler's LookupOrAdd leaves it unbound (Clojure's intern does too),
+;; and no lg-callable fn interns unbound; so (def x)/(declare x) here leave
+;; x bound to nil and defonce sees it bound (native-ledger.md).
+(defn- def-var! [nsn sym m]
+  (let [v (intern (the-ns (symbol nsn)) sym)]
+    (apply-def-meta! v m)
+    (str nsn "/" sym)))
+
+;; set! (OP_SET_VAR): the innermost thread binding when there is one, else
+;; the root. alter-var-root with identity reads the root; a deref that
+;; differs from it means a binding is active, which pop+push replaces.
+(defn- set-var! [key x]
+  (let [v (key-var key)
+        root (alter-var-root v identity)]
+    (if (identical? root (deref v))
+      (alter-var-root v (fn [_] x))
+      (do (pop-binding! v) (push-binding! v x)))))
+
+(defn- install! [vsym f] (alter-var-root (find-var vsym) (fn [_] f)))
+
+(reset! ev/native-tier true)
+(install! 'wasm.eval/cur-ns (fn [] (str (ns-name *ns*))))
+(install! 'wasm.eval/ns-value (fn [] *ns*))
+(install! 'wasm.eval/enter-ns! (fn [nm] (in-ns nm)))
+(install! 'wasm.eval/canon canon)
+(install! 'wasm.eval/resolve-global resolve-global)
+(install! 'wasm.eval/local-def? local-def?)
+(install! 'wasm.eval/core-var core-var)
+(install! 'wasm.eval/cell-get (fn [key] (deref (key-var key))))
+(install! 'wasm.eval/set-cell! set-var!)
+(install! 'wasm.eval/def-var! def-var!)
+(install! 'wasm.eval/var-of key-var)
+(install! 'wasm.eval/def-root! (fn [key x] (alter-var-root (key-var key) (fn [_] x))))
