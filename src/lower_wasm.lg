@@ -3808,6 +3808,9 @@
 
 (def ^:dynamic *shake* true)
 
+;; Build-local: exact helper text determines the split, including runtime paths.
+(def ^:dynamic *top-forms-cache* nil)
+
 
 (defn with-session* [ss thunk]
   (binding [*sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
@@ -3819,28 +3822,42 @@
             *var-k-max* (or (:var-k-max ss) (atom 4))]
     (thunk)))
 
-(defn top-forms
-  "Split WAT text into its top-level parenthesised forms (strings with
-   escapes and ;; comments are skipped over, so a paren inside either does
-   not count). Text outside any form is dropped."
+(defn top-forms*
+  "Split top-level WAT forms. A native regex scan groups ordinary text,
+   leaving only punctuation to interpret. Offsets remain rune indices,
+   matching count/subs; strings, escapes and ;; comments keep their rules."
   [text]
-  (let [n (count text)]
-    (loop [i 0 depth 0 start 0 in-str false out (transient [])]
-      (if (>= i n)
-        (persistent! out)
-        (let [c (nth text i)]
-          (cond
-            in-str (cond (= c \\) (recur (+ i 2) depth start true out)
-                         (= c \") (recur (inc i) depth start false out)
-                         :else (recur (inc i) depth start true out))
-            (= c \") (recur (inc i) depth start true out)
-            (and (= c \;) (< (inc i) n) (= \; (nth text (inc i))))
-            (let [e (or (str/index-of text "\n" i) n)] (recur e depth start false out))
-            (= c \() (recur (inc i) (inc depth) (if (zero? depth) i start) false out)
-            (= c \)) (if (= depth 1)
-                       (recur (inc i) 0 start false (conj! out (subs text start (inc i))))
-                       (recur (inc i) (dec depth) start false out))
-            :else (recur (inc i) depth start false out)))))))
+  (loop [tokens (seq (re-seq #"[()\";\\]|[^()\";\\]+" text))
+         i 0 depth 0 start 0 in-str false escaped false comment false
+         out (transient [])]
+    (if-let [token (first tokens)]
+      (let [end (+ i (count token)) more (next tokens)]
+        (cond
+          comment (recur more end depth start false false
+                         (nil? (str/index-of token "\n")) out)
+          escaped (recur more end depth start true false false out)
+          in-str (cond
+                   (= token "\\") (recur more end depth start true true false out)
+                   (= token "\"") (recur more end depth start false false false out)
+                   :else (recur more end depth start true false false out))
+          (= token "\"") (recur more end depth start true false false out)
+          (and (= token ";") (= (first more) ";"))
+          (recur (next more) (+ end 1) depth start false false true out)
+          (= token "(") (recur more end (inc depth) (if (zero? depth) i start) false false false out)
+          (= token ")") (if (= depth 1)
+                           (recur more end 0 start false false false (conj! out (subs text start end)))
+                           (recur more end (dec depth) start false false false out))
+          :else (recur more end depth start false false false out)))
+      (persistent! out))))
+
+(defn top-forms [text]
+  (if *top-forms-cache*
+    (if-let [forms (get @*top-forms-cache* text)]
+      forms
+      (let [forms (top-forms* text)]
+        (swap! *top-forms-cache* assoc text forms)
+        forms))
+    (top-forms* text)))
 
 (def wat-id #"\$[A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]+")
 (defn refs-of [t] (set (re-seq wat-id t)))
@@ -4078,27 +4095,28 @@
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
   [ss fns]
-  (with-session* ss
-    (fn []
-      (when *rt* (rt-fixpoint! fns))
-      (let [{:keys [fixed items live program]} (module-parts fns)
-            ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
-            ;; fn-value globals must come after the globals they read ($info_*)
-            gl (let [gs (ordered "(global")
-                     info? #(str/starts-with? % "(global $info_")]
-                 (concat (filter info? gs) (remove info? gs)))
-            elem (filter #(live (str "$" %)) (sort @*elem*))]
-        (str "(module\n"
-             (str/join "\n" (ordered "(import")) "\n"
-             (rec-group)
-             (str/join "\n" fixed) "\n"
-             (str/join "\n" gl) "\n"
-             (when (seq elem) (str "(elem declare func" (apply str (map #(str " $" %) elem)) ")\n"))
-             (str/join "\n" (ordered "(data")) "\n"
-             (str/join "\n" (ordered "(func")) "\n"
-             program "\n"
-             (rt-init-wat live items)
-             ")\n")))))
+  (binding [*top-forms-cache* (atom {})]
+    (with-session* ss
+      (fn []
+        (when *rt* (rt-fixpoint! fns))
+        (let [{:keys [fixed items live program]} (module-parts fns)
+              ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
+              ;; fn-value globals must come after the globals they read ($info_*)
+              gl (let [gs (ordered "(global")
+                       info? #(str/starts-with? % "(global $info_")]
+                   (concat (filter info? gs) (remove info? gs)))
+              elem (filter #(live (str "$" %)) (sort @*elem*))]
+          (str "(module\n"
+               (str/join "\n" (ordered "(import")) "\n"
+               (rec-group)
+               (str/join "\n" fixed) "\n"
+               (str/join "\n" gl) "\n"
+               (when (seq elem) (str "(elem declare func" (apply str (map #(str " $" %) elem)) ")\n"))
+               (str/join "\n" (ordered "(data")) "\n"
+               (str/join "\n" (ordered "(func")) "\n"
+               program "\n"
+               (rt-init-wat live items)
+               ")\n"))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.
