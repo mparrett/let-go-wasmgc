@@ -10,10 +10,8 @@
 ;; evaluator itself uses only core fns; everything it needs from its host
 ;; goes through the host seam below, so it also runs under native lg.
 ;;
-;; Host seam (eval-seam, 2026-10-04). The evaluator reaches namespaces,
-;; vars and the runtime only through these fns of the "Host layer" sections;
-;; their bodies HERE are the wasm implementation (wasm.natives' registry of
-;; cells, the backend's program table, var stand-ins):
+;; Host seam (eval-seam, 2026-10-04; D185, D187). This file is host-free: it
+;; declares the seam fns and defines none of them; a host file defines them.
 ;;   cur-ns  ns-value  enter-ns!  canon      current ns name, *ns*, the
 ;;                                           compile-time in-ns, ns aliases
 ;;   resolve-global  local-def?  core-var    symbol -> {:kind :cell|:prog|
@@ -22,17 +20,24 @@
 ;;   cell-get  set-cell!                     read / set! a var at run time
 ;;   def-var!  var-of  def-root!             def: intern + meta at compile
 ;;                                           time, the var, its root at run time
-;;   raise  var-value  ensure-hook!  type-name   behind `native-tier`
-;; rt/wasm/eval_native.lg is the native implementation: requiring it under
-;; stock lg sets `native-tier` and rebinds each seam fn (alter-var-root of
-;; the private var, once, at load) to real let-go namespaces and vars;
-;; corpus/intrinsics/eval_test.lg and checks/eval-native.sh load it. The
-;; rest of this host layer (tbl, cell, cell-var, intern-cell!, prog,
-;; lookup-in, resolve-alias, builtin-in, code-hook, install-program-table!,
-;; the core table's in-ns*/require*/bound?*/set-macro!*/throw* and the
-;; wasm.natives var fns) is reached only through those seam fns or the core
-;; table, which the native seam consults for two plumbing names only, so
-;; it is wasm-only.
+;;   raise  var-value  ensure-hook!          throw a message, read a program
+;;                                           var, give the reader its hook
+;; Selection is by load order: a host file re-enters this namespace with its
+;; own (ns wasm.eval ...) form and is loaded after this file, so its defns
+;; land on the declared vars and calls to them stay direct.
+;;   rt/wasm/eval_wasm.lg    the module's host: wasm.natives' registry of
+;;                           cells, the backend's program table, var
+;;                           stand-ins, the core table evaluated code
+;;                           resolves against; rt/wasm/README.md's load order
+;;                           lists it right after this file
+;;   rt/wasm/eval_native.lg  stock lg's host: real let-go namespaces and
+;;                           vars; (require 'wasm.eval-native) loads this
+;;                           file first, then the host (corpus/intrinsics/
+;;                           eval_test.lg, checks/eval-native.sh)
+;; Without a host file the seam fns are unbound and eval fails at its first
+;; call. What this file keeps beyond the evaluator is the plumbing its
+;; expanders emit and every host resolves to: concat-star (`concat*`),
+;; concat-list*, and the `macro-form` atom (`wasm.eval/macro-form*`).
 ;;
 ;; Shape: (compile form cenv) returns an lg fn of the run-time environment,
 ;; a vector of local values indexed at compile time (cenv :locals name ->
@@ -42,26 +47,11 @@
 ;; loop in the compiled closure. try is lg's try; finally runs after the
 ;; catch and the outcome is rethrown (let-go's finally cannot propagate).
 ;;
-;; Symbols resolve as the seam orders it: local, a cell of the current ns
-;; (wasm.natives' registry), the program table's :vars then :refers of the
-;; current ns, a cell interned into let-go.core (native's baseline refer;
-;; legmacs.vibe's `vibe`), the core table (unqualified); a/s through the registry aliases
-;; of the current ns, the program table's :aliases, then a/s as a full ns
-;; name (cells, program table, and for core/clojure.core/builtin namespaces
-;; the core table). Not found: native's "CompileError: Can't resolve s in
-;; this context". Deviation from the seam, following native: let-go.core/s
-;; and user/s do NOT reach the core table (native: Can't resolve).
+;; Resolution order, def and the var stand-ins are the host's; each host
+;; file's header states them, and its named limits.
 ;;
-;; def/defn/defmacro intern a cell `cur/name` (value, meta, :macro) at
-;; compile time, as native interns the var; the cell's var is a meta'd
-;; Symbol #'cur/name with an :lw/var getter, so deref, var-get, calls through
-;; the var and wasm.natives' var fns all work on it. Evaluation never writes
-;; a program var: a redefinition shadows it for evaluated code only.
-;;
-;; Named limits (each raises `lower-wasm: ... (named limit)` or is a silent
-;; difference listed here):
-;;   - tail calls between evaluated fns are not trampolined: deep non-loop
-;;     recursion grows the wasm stack;
+;; Named limits of the evaluator, on every host (each raises `lower-wasm: ...
+;; (named limit)` or is a silent difference listed here):
 ;;   - catch clauses do not dispatch on the class: the first clause catches
 ;;     every exception (native matches by catch-matches?);
 ;;   - arity errors of an evaluated fn: native's text names the fn's address
@@ -70,39 +60,20 @@
 ;;     "<fn name>" stands in; native's "ExecutionError: calling X" frames
 ;;     for calls inside a macro appear only for let/loop over a non-seqable
 ;;     binding form and the when-let/when-first arity throw;
-;;   - binding of a program var or of *out*/*err* (wasm.natives' limits);
-;;     set! of a program var;
 ;;   - host interop (`.`, `(.method x)`, `Foo.`, `new`), deftype, defrecord,
 ;;     defprotocol, reify, defmulti, go, future: not evaluator built-ins
 ;;     (they resolve as calls and fail as unknown symbols);
-;;   - the core table holds the names in `core-table` below; any other core
-;;     name is "Can't resolve" here (natively it resolves);
-;;   - macroexpand-1 / macroexpand are absent;
-;;   - (meta v) of a var taken before a later def re-defined it shows the
-;;     old meta (var meta rides on the stand-in, native's var is mutable);
-;;   - an invalid #"regex" literal raises re-pattern's message, not the
-;;     reader's "invalid regex literal" chain;
 ;;   - gensym counters: native expansions call gensym a different number of
 ;;     times, so printed gensym names differ.
 (ns wasm.eval
   (:refer-clojure :exclude [eval compile])
-  (:require [clojure.string :as string]
-            [wasm.seq :as sq]
-            [wasm.str :as s]
-            [wasm.core :as c]
-            [wasm.reader :as rd]
-            [wasm.natives :as n]
-            [clojure.math]))
+  (:require [clojure.string :as string]))
 
 ;; ---------------------------------------------------------------------------
-;; Host layer: the only module-specific calls
+;; The host seam: defined by the host file loaded after this one
 
-(def native-tier (atom false))     ; set by eval_native.lg under native lg
-
-(defn- raise [msg]
-  (if @native-tier
-    (throw (ex-info msg {}))
-    (c/raise (s/str-bytes msg))))
+(declare cur-ns ns-value enter-ns! canon resolve-global local-def? core-var
+         cell-get set-cell! def-var! var-of def-root! raise var-value ensure-hook!)
 
 (defn- limit [msg] (raise (str "lower-wasm: " msg " (named limit)")))
 (defn- cerr [msg] (raise (str "CompileError: " msg)))
@@ -114,109 +85,7 @@
        (catch Exception e
          (raise (str "CompileError: " ctx "\n\tcaused by " (ex-message e))))))
 
-;; ---------------------------------------------------------------------------
-;; The registry (wasm.natives), cells and the program table
-
-(declare ensure-hook!)
-(defn- tbl [] (n/table*))
-(defn- cur-ns [] (:cur (tbl)))
-(defn- canon [nm] (n/canon* nm))
-(defn- cell [key] (get (:cells (tbl)) key))
-(defn- cell-value [cl] (if (seq (:stack cl)) (first (:stack cl)) (:val cl)))
-(defn- cell-get [key] (cell-value (cell key)))
-
-(defn- cell-var
-  "The var stand-in of the cell key \"ns/name\": #'ns/name with an :lw/var
-   getter (wasm.core/var-value), :ns and :name, so it derefs and calls."
-  ([key nsn nm] (cell-var key nsn nm nil))
-  ([key nsn nm m]
-   (with-meta (symbol (str "#'" key))
-              (merge m {(keyword "lw" "var") (fn [] (cell-get key)) :ns (symbol (str "<ns " nsn ">")) :name nm}))))
-
-(defn- intern-cell!
-  "The cell for nsn/nm, created unbound when absent; returns its key."
-  [nsn nm]
-  (let [key (str nsn "/" nm)]
-    (when-not (cell key)
-      (swap! n/registry assoc-in [:cells key] {:var (cell-var key nsn nm) :ns nsn :name nm :meta nil :stack ()}))
-    key))
-
-(defn- def-var!
-  "def at compile time: intern nsn/sym with the def's meta m; the key."
-  [nsn sym m]
-  (let [key (intern-cell! nsn sym)
-        ;; the def's meta rides on a fresh stand-in (wasm.core's meta
-        ;; reads the stand-in's own); a var taken before keeps the old
-        ;; one fn arg: the module's swap! has fixed arities (7 extra args failed)
-        nv (cell-var key nsn sym m)]
-    (swap! n/registry (fn [t] (update-in t [:cells key] (fn [cl] (assoc cl :meta m :var nv)))))
-    key))
-
-(defn- var-of [key] (:var (cell key)))
-(defn- def-root! [key x] (swap! n/registry assoc-in [:cells key :val] x))
-(defn- enter-ns! [nm] (n/set-cur! (n/add-ns* (str nm))))
-(defn- ns-value [] (n/current-ns))
-
-(defn ^{:doc "B's program table (round-3 seam), kept in the registry under :program."}
-  install-program-table! [t]
-  (tbl)
-  (ensure-hook!)
-  (swap! n/registry assoc :program t)
-  nil)
-
-(defn- prog [nsn] (get (:program (tbl)) nsn))
-
-(defn- var-value [v]
-  (if @native-tier (raise "program var in the native tier") (c/var-value v)))
-
 (defn- core-std-ns? [q] (or (= q "core") (= q "clojure.core")))
-
-(declare core-table)
-
-;; A resolved global: {:kind :cell|:prog|:core :key :var :val :macro}
-(defn- lookup-in
-  "Resolve name nm in namespace nsn (canonical): cell, then program var."
-  [nsn nm]
-  (let [key (str nsn "/" nm) cl (cell key)]
-    (cond cl {:kind :cell :key key :var (:var cl) :macro (:macro cl) :private (:private (:meta cl))}
-          (get-in (prog nsn) [:vars nm]) {:kind :prog :var (get-in (prog nsn) [:vars nm])}
-          (get-in (prog nsn) [:macros nm]) {:kind :pmacro :key key :val (get-in (prog nsn) [:macros nm])}
-          :else nil)))
-
-(defn- resolve-alias [q]
-  (let [cur (cur-ns)]
-    (or (get-in (tbl) [:aliases cur q])
-        (get-in (prog cur) [:aliases q])
-        (canon q))))
-
-(defn- builtin-in
-  "nsn/nm from the core table: core names for core/clojure.core, else the
-   table's \"string/join\"-style key."
-  [nsn nm]
-  (or (when (core-std-ns? nsn)
-        (when-let [v (get (core-table) nm)] {:kind :core :name nm :val v}))
-      (when-let [v (get (core-table) (str nsn "/" nm))] {:kind :core :name (str nsn "/" nm) :val v})))
-
-(defn- resolve-global
-  "The global symbol sym names in the current ns, or nil. A private cell of
-   another ns is not reachable as a/s (native: Can't resolve) except
-   through var (any-private? true), as native's (var a/s) is."
-  ([sym] (resolve-global sym false))
-  ([sym any-private?]
-   (let [q (namespace sym) nm (name sym) cur (cur-ns)]
-     (if (nil? q)
-       (or (lookup-in cur nm)
-           (when-let [r (or (get-in (tbl) [:refers cur nm]) (get-in (prog cur) [:refers nm]))]
-             (or (lookup-in r nm) (builtin-in r nm)))
-           ;; let-go.core is a baseline refer of every ns (Lookup walks it), so
-           ;; a var interned there at run time resolves unqualified anywhere:
-           ;; legmacs.vibe interns `vibe` so (ns weather) (vibe ...) works
-           (lookup-in "let-go.core" nm)
-           (when-let [v (get (core-table) nm)] {:kind :core :name nm :val v}))
-       (let [nsn (resolve-alias q)
-             g (lookup-in nsn nm)]
-         (or (when-not (and g (:private g) (not any-private?) (not= nsn cur)) g)
-             (builtin-in nsn nm)))))))
 
 (defn- cant-resolve [sym] (cerr (str "Can't resolve " sym " in this context")))
 
@@ -425,12 +294,6 @@
               (def-root! key x)
               v)))))))
 
-(defn- set-cell! [key x]
-  (let [cl (cell key)]
-    (if (seq (:stack cl))
-      (swap! n/registry assoc-in [:cells key :stack] (cons x (rest (:stack cl))))
-      (swap! n/registry assoc-in [:cells key :val] x))))
-
 (defn- sf-set [form ce]
   (let [args (vec (rest form)) l (count args)]
     (when (not= l 2) (cerr (str "set!: wrong number of forms (" l "), need 2")))
@@ -441,20 +304,6 @@
         (cond (= :cell (:kind g)) (let [key (:key g) v (:var g)] (fn [env] (set-cell! key (vf env)) v))
               (= :prog (:kind g)) (fn [env] (vf env) (limit (str "set! of the program var " sym)))
               :else (fn [env] (vf env) (raise "ExecutionError: SET_VAR invalid Var")))))))
-
-(def ^:private core-vars (atom nil))
-
-(defn- core-var
-  "#'core/name for a core-table entry, with an :lw/var getter so deref and
-   calls through it reach the value. Interned once per name: native's
-   #'inc is one var, so = / hash / set membership must see one stand-in."
-  [nm v]
-  (or (get @core-vars nm)
-      (let [i (string/index-of nm "/")
-            [q s] (if (and i (pos? i)) [(subs nm 0 i) (subs nm (inc i))] ["core" nm])
-            cv (with-meta (symbol (str "#'" q "/" s)) {(keyword "lw" "var") (fn [] v) :ns (symbol (str "<ns " q ">")) :name (symbol s)})]
-        (swap! core-vars assoc nm cv)
-        cv)))
 
 (defn- sf-var [form ce]
   (let [sym (second form)
@@ -951,12 +800,6 @@
 
 (defn- unquote-form? [x tag] (and (list? x) (= 2 (count x)) (= tag (first x))))
 
-(defn- local-def?
-  "LookupLocal (reader.go:991): a var the current ns itself holds, a cell
-   or a program var of it."
-  [t]
-  (let [cur (cur-ns)] (or (some? (cell (str cur "/" t))) (some? (get-in (prog cur) [:vars t])))))
-
 (declare sq-form)
 
 (defn- expand-unquotes [xs genv]
@@ -990,21 +833,6 @@
   "The expansion native's reader gives `form, against the current ns."
   [form]
   (sq-form form (atom {:syms {} :cnt 0})))
-
-(defn- code-hook [op x]
-  (cond (= op 0) (str (cur-ns) "/" x)
-        (= op 1) (let [cur (cur-ns)] (or (get-in (tbl) [:aliases cur (str x)]) (get-in (prog cur) [:aliases (str x)])))
-        (= op 3) (re-pattern x)
-        :else (syntax-quote x)))
-
-(def ^:private hook-set (atom false))
-(defn- ensure-hook!
-  "Give wasm.reader the code hook (once). Called by install-program-table!
-   (the backend's ns-init of a program that reaches eval) and by compile."
-  []
-  (when-not (or @native-tier @hook-set)
-    (c/set-var-root! (with-meta (symbol "#'wasm.reader/code-hook") {}) code-hook)
-    (reset! hook-set true)))
 
 ;; ---------------------------------------------------------------------------
 ;; The compiler
@@ -1105,59 +933,15 @@
   (comp* form {:locals {} :depth 0 :tail false :loop nil :fn? false :argc 0}))
 
 (defn ^{:twin "core/eval"} eval
-  "Evaluate form in the current namespace (wasm.natives' registry)."
+  "Evaluate form in the current namespace (the host's)."
   [form]
   ((compile form) []))
 
 ;; ---------------------------------------------------------------------------
-;; Natives the core table adds (a let-go native without a value here, or
-;; evaluated-code plumbing)
-
-(defn- set-macro!* [v]
-  (let [t (str v) key (when (string/starts-with? t "#'") (subs t 2))]
-    (if (and key (cell key))
-      (do (swap! n/registry assoc-in [:cells key :macro] true) v)
-      (limit (str "set-macro! of " v ": not a var evaluated code defined")))))
-
-(defn- in-ns* [& args]
-  (let [x (first args)]
-    (cond (not= 1 (count args)) (raise (str "wrong number of arguments " (count args)))
-          (symbol? x) (let [nm (n/add-ns* (str x))]
-                        (n/set-cur! nm)
-                        (symbol (str "<ns " nm ">")))
-          :else (raise "in-ns expected Symbol"))))
-
-;; throw as a native: a wrong arg count is native's text, not an lg fn's
-(defn- throw* [& args]
-  (if (= 1 (count args))
-    (throw (first args))
-    (raise (str "wrong number of arguments " (count args)))))
-
-(defn- type-name [x] (if @native-tier (str (type x)) (s/mk-str (c/type-name x))))   ; type-name is Bytes
-
-(defn- known-ns? [nm] (or (n/ns-exists*? nm) (some? (prog nm))))
-
-;; CoreRequire at run time: a spec [lib :as a :refer [x ...]] records the
-;; alias and refers under the current ns (the seam's :aliases / :refers).
-(defn- require* [& specs]
-  (doseq [spec specs]
-    (let [lib (if (vector? spec) (first spec) spec)]
-      (cond (not (symbol? lib)) (raise (str "require expected Symbol or Vector, got " (type-name spec)))
-            (not (known-ns? (canon (str lib)))) (raise (str "unable to load namespace " lib))
-            (vector? spec)
-            (let [opts (apply hash-map (rest spec)) cur (cur-ns) libn (canon (str lib))]
-              (when-let [a (:as opts)] (swap! n/registry assoc-in [:aliases cur (str a)] libn))
-              (when (sequential? (:refer opts))
-                (doseq [r (:refer opts)] (swap! n/registry assoc-in [:refers cur (str r)] libn)))))))
-  nil)
-
-;; bound? (lang.go:9177): a cell is bound once a def gave it a value (def
-;; interns at compile time, so defonce's resolve already sees the cell)
-(defn- bound?* [& args]
-  (let [v (first args) t (str v) key (when (string/starts-with? t "#'") (subs t 2))]
-    (if (and (= 1 (count args)) key (cell key))
-      (contains? (cell key) :val)
-      (apply n/bound? args))))
+;; Plumbing the expanders emit, which a host resolves to these values by
+;; name: `concat*` (syntax-quote), `concat-list` (for; let-go defines its
+;; own) and `wasm.eval/macro-form*` (an evaluated defmacro's &form, read
+;; from the macro-form atom above)
 
 (defn- concat-star [& xs] (apply list (apply concat xs)))
 
@@ -1169,78 +953,3 @@
   (if (empty? a)
     b
     (cons (first a) (concat-list* (next a) b))))
-
-;; ---------------------------------------------------------------------------
-;; The core table: name -> fn value (the seam: "A's, in eval.lg"). Written as
-;; plain lg values so the backend links each twin because this file names
-;; it. A fn, not a def: a map literal as a runtime global came out empty in
-;; the module (natives.lg's builtin-nss note); cached after the first call.
-
-(defn- core-table* []
-  {"+" + "-" - "*" * "/" / "inc" inc "dec" dec "quot" quot "rem" rem "mod" mod "max" max "min" min
-   "=" = "==" == "not=" not= "<" < ">" > "<=" <= ">=" >= "compare" compare "identical?" identical?
-   "zero?" zero? "pos?" pos? "neg?" neg? "even?" even? "odd?" odd? "number?" number? "int?" int?
-   "integer?" integer? "float?" float? "not" not "true?" true? "false?" false? "nil?" nil? "some?" some?
-   "string?" string? "keyword?" keyword? "symbol?" symbol? "map?" map? "vector?" vector? "set?" set?
-   "seq?" seq? "list?" list? "coll?" coll? "fn?" fn? "char?" char? "sequential?" sequential?
-   "associative?" associative? "counted?" counted? "empty?" empty? "map-entry?" map-entry?
-   "first" first "second" second "rest" rest "next" next "last" last "butlast" butlast "cons" cons
-   "conj" conj "seq" seq "vec" vec "list" list "list*" list* "vector" vector "hash-map" hash-map
-   "hash-set" hash-set "array-map" array-map "set" set "into" into "concat" concat "map" map "mapv" mapv
-   "filter" filter "filterv" filterv "remove" remove "reduce" reduce "reduce-kv" reduce-kv
-   "take" take "drop" drop "take-while" take-while "drop-while" drop-while "take-last" take-last
-   "drop-last" drop-last "nth" nth "count" count "range" range "repeat" repeat "repeatedly" repeatedly
-   "iterate" iterate "interpose" interpose "interleave" interleave "partition" partition
-   "partition-all" partition-all "partition-by" partition-by "group-by" group-by "frequencies" frequencies
-   "distinct" distinct "sort" sort "sort-by" sort-by "reverse" reverse "keep" keep "keep-indexed" keep-indexed
-   "map-indexed" map-indexed "mapcat" mapcat "some" some "every?" every? "not-any?" not-any?
-   "not-every?" not-every? "apply" apply "partial" partial "comp" comp "juxt" juxt "complement" complement
-   "constantly" constantly "identity" identity "fnil" fnil "doall" doall "dorun" dorun "flatten" flatten
-   "zipmap" zipmap "split-at" split-at "split-with" split-with "nthnext" nthnext "nthrest" nthrest
-   "ffirst" ffirst "fnext" fnext "nfirst" nfirst "nnext" nnext "empty" empty "not-empty" not-empty
-   "cycle" cycle "tree-seq" tree-seq "run!" run! "transduce" transduce "sequence" sequence "dedupe" dedupe
-   "get" get "get-in" get-in "assoc" assoc "assoc-in" assoc-in "dissoc" dissoc "update" update
-   "update-in" update-in "merge" merge "merge-with" merge-with "select-keys" select-keys "keys" keys
-   "vals" vals "contains?" contains? "find" find "key" key "val" val "peek" peek "pop" pop "subvec" subvec
-   "disj" disj "update-vals" update-vals "update-keys" update-keys "max-key" max-key "min-key" min-key
-   "str" str "subs" subs "name" name "namespace" namespace "keyword" keyword "symbol" symbol
-   "format" n/format "pr-str" pr-str "print-str" print-str "println" println "print" print "prn" prn "pr" pr
-   "atom" atom "deref" deref "reset!" reset! "swap!" swap! "volatile!" volatile! "vreset!" vreset!
-   "vswap!" vswap! "meta" meta "with-meta" with-meta "vary-meta" vary-meta
-   "ex-info" ex-info "ex-message" ex-message "ex-data" ex-data "ex-cause" ex-cause "throw" throw*
-   "gensym" gensym "hash" hash "type" type "read-string" read-string "eval" eval "rand-int" rand-int
-   "boolean" boolean "char" char "int" int "long" long "double" double "float" float "parse-long" parse-long
-   "force" force "realized?" realized? "promise" promise "deliver" deliver "delay?" delay? "trampoline" trampoline "some-fn" some-fn
-   "every-pred" every-pred "memoize" memoize "transient" transient "persistent!" persistent! "conj!" conj!
-   "assoc!" assoc! "dissoc!" dissoc! "disj!" disj! "re-find" re-find "re-matches" re-matches "re-seq" re-seq
-   "re-pattern" re-pattern "sorted-map" sorted-map "sorted-set" sorted-set "read-all-string" read-all-string
-   "lazy-seq*" (fn [f] (lazy-seq (f))) "delay*" (fn [f] (delay (f))) "with-out-str*" with-out-str*
-   "wasm.eval/macro-form*" (fn [] @macro-form) "concat*" concat-star "concat-list" concat-list* "set-macro!" set-macro!* "bound-fn*" n/bound-fn*
-   "seq-to-map-for-destructuring" seq-to-map-for-destructuring "with-redefs-fn" with-redefs-fn
-   "->AssertionError" ->AssertionError "*assert*" true "*out*" *out* "*err*" *err*
-   "in-ns" in-ns* "require" require* "ns-name" ns-name "ns-resolve" n/ns-resolve "resolve" n/resolve
-   "find-ns" n/find-ns "the-ns" n/the-ns "all-ns" n/all-ns "find-var" n/find-var "var-get" n/var-get
-   "var?" n/var? "intern" n/intern "alter-var-root" n/alter-var-root "alter-meta!" n/alter-meta!
-   "push-binding!" n/push-binding! "pop-binding!" n/pop-binding! "bound?" bound?* "ns-publics" n/ns-publics
-   "string/join" string/join "string/split" string/split "string/upper-case" string/upper-case
-   "string/lower-case" string/lower-case "string/trim" string/trim "string/blank?" string/blank?
-   "string/includes?" string/includes? "string/starts-with?" string/starts-with?
-   "string/ends-with?" string/ends-with? "string/replace" string/replace "string/split-lines" string/split-lines
-   "string/index-of" string/index-of "string/capitalize" string/capitalize "string/triml" string/triml
-   "string/trimr" string/trimr "string/reverse" string/reverse
-   ;; bit ops, math and clock natives, randomness (REPL demo snippets, 2026-10-02).
-   ;; Math/* is keyed to clojure.math's twins (the Math/ natives have none);
-   ;; rand-nth is lg over rand-int (core/rand-nth is a Go native with no twin);
-   ;; floor/ceil/round/log/rand/shuffle stay out: no twin.
-   "bit-and" bit-and "bit-or" bit-or "bit-xor" bit-xor "bit-not" bit-not "bit-and-not" bit-and-not
-   "bit-shift-left" bit-shift-left "bit-shift-right" bit-shift-right
-   "unsigned-bit-shift-right" unsigned-bit-shift-right "bit-test" bit-test
-   "Math/sqrt" clojure.math/sqrt "Math/pow" clojure.math/pow "Math/exp" clojure.math/exp "Math/abs" clojure.math/abs
-   "clojure.math/sqrt" clojure.math/sqrt "clojure.math/pow" clojure.math/pow "clojure.math/exp" clojure.math/exp
-   "clojure.math/abs" clojure.math/abs "clojure.math/sin" clojure.math/sin "clojure.math/cos" clojure.math/cos
-   "clojure.math/hypot" clojure.math/hypot "clojure.math/cbrt" clojure.math/cbrt "abs" clojure.math/abs
-   "System/nanoTime" System/nanoTime "System/currentTimeMillis" System/currentTimeMillis
-   "rand-nth" (fn [coll] (nth coll (rand-int (count coll))))})
-
-(def ^:private core-cache (atom nil))
-(defn- core-table [] (or @core-cache (reset! core-cache (core-table*))))

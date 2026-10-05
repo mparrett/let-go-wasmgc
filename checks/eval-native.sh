@@ -9,8 +9,9 @@
 # normalised error line):
 #   native   as is: let-go's `eval`;
 #   seam     the same text with a one-line prelude joined to its line 1, so
-#            every line keeps its number: (require 'wasm.eval-native) installs
-#            the evaluator's native host seam (rt/wasm/eval_native.lg) and
+#            every line keeps its number: (require 'wasm.eval-native) loads
+#            the host-free evaluator (rt/wasm/eval.lg) and then its native
+#            host (rt/wasm/eval_native.lg, D187), and
 #            (alter-var-root #'clojure.core/eval ..) makes `eval` wasm.eval/eval.
 #            The joined copy lives in a scratch dir; -source-paths gains rt/
 #            (and keeps '.', lg's default).

@@ -6,9 +6,9 @@
 ;; expanders, resolution, error layers) and the closures it builds; the
 ;; module tier (checks/run-corpus.sh corpus/eval/*/) checks the same through
 ;; the backend, and checks/eval-native.sh runs the eval corpora on this seam.
-;; The wasm seam's own parts (the registry of cells, the program table, var
-;; stand-ins, the core table's wasm.natives fns) are module-only and are not
-;; exercised here.
+;; The wasm host's own parts (rt/wasm/eval_wasm.lg: the registry of cells,
+;; the program table, var stand-ins, the core table) are module-only and are
+;; not exercised here.
 (ns eval-test
   (:require [test :refer [deftest is testing]]
             [wasm.eval :as ev]
@@ -24,7 +24,7 @@
     [(res (fn [] (eval form))) (res (fn [] (ev/eval form)))]))
 
 (defn- same-ns!
-  "The native seam (wasm.eval-native, required above) evaluates in *ns*,
+  "The native host (wasm.eval-native, required above) evaluates in *ns*,
    the namespace native eval uses here; nothing to set up."
   [] nil)
 
@@ -116,7 +116,13 @@
       (is (= (pr-str native) (pr-str mine)) s))))
 
 (deftest dialect
-  ;; eval.lg is plain lg like natives.lg; what this file relies on is that
-  ;; the evaluator touches the runtime only behind native-tier (raise) or in
-  ;; module-only paths (var stand-ins), so it runs here at all.
-  (is (string/includes? (slurp "rt/wasm/eval.lg") "DIALECT: plain lg")))
+  ;; eval.lg is plain lg like natives.lg and host-free (D187): its ns form
+  ;; requires clojure.string only, it defines no seam fn and nothing in it
+  ;; switches on the host at run time; the host file loaded after it (here
+  ;; eval_native.lg, in a module eval_wasm.lg) defines the seam.
+  (let [text (slurp "rt/wasm/eval.lg")
+        ns-form (read-string text)]
+    (is (string/includes? text "DIALECT: plain lg"))
+    (is (= '(:require [clojure.string :as string]) (last ns-form)))
+    (is (not (string/includes? text "native-tier")))
+    (is (not (string/includes? text "alter-var-root")))))
