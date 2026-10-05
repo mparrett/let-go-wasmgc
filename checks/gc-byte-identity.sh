@@ -23,7 +23,9 @@ n=$(wc -l < "$t/programs" | tr -d ' ')
 compile() {
   local source=$1 f=$2 out=$3 target=${4:-} sp="" lane=baseline
   if [ "$source" = "$PWD" ]; then lane=${target:-default}; fi
-  case "$f" in */multi/*) sp="$PWD/corpus/eval/program/multi/lib" ;; "$LEGMACS"/*) sp=$LEGMACS ;; esac
+  # legmacs builds its own rtlib in every lane: its baseline may be captured in a
+  # later run than the corpus, and a restored rtlib differs from a fresh one (D173)
+  case "$f" in */multi/*) sp="$PWD/corpus/eval/program/multi/lib" ;; "$LEGMACS"/*) sp=$LEGMACS lane=$lane-legmacs ;; esac
   local args=("$LG" -source-paths "$source/src${sp:+:$sp}" "$source/src/driver.lg")
   [ -z "$sp" ] || args+=(-source-paths "$sp")
   [ -z "$target" ] || args+=(--target "$target")
