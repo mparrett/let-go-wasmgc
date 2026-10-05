@@ -4011,6 +4011,18 @@
       (fail "rec-group-constant: type names and rec entries disagree" {:names (count names) :types (count group)}))
     [(subvec bs start) (str/join " " names)]))
 
+(defn- lk-argc [w] (parse-long (second (re-find #"#([0-9]+)__box$" w))))
+
+(defn- lk-wrappers
+  "wasm.eval/lk-<name>#<argc>__box for each fixed arity of each public
+   lk-* defn of the runtime (rt/wasm/emit.lg)."
+  []
+  (sort (mapcat (fn [d]
+                  (when (and (= 'wasm.eval (:ns d)) (str/starts-with? (str (:name d)) "lk-")
+                             (not (:private (meta (:var d)))))
+                    (map (fn [a] (str "wasm.eval/" (:name d) "#" (count (first a)) "__box")) (:arities d))))
+                lw-rt/defns)))
+
 (defn- compile-entries-wat
   "lw compile / lw eval and the data they pass (LW_RUNTIME_COMPILE=1)."
   []
@@ -4043,15 +4055,12 @@
          "  (call $lw_eval_body (local.get $p) (local.get $n)))\n"
          "(func $lw_eval_body (param $p i32) (param $n i32)\n"
          "  (drop (call $wasm.eval/eval-text#1__box (call $lw_mem_str (local.get $p) (local.get $n)))))\n"
-         ;; never called: it names the boxed seam entries compiled code
-         ;; imports (rt/wasm/emit.lg's linked mode), so they are made and,
-         ;; being lowered, exported
+         ;; never called: it names the boxed wrapper of every arity of every
+         ;; public wasm.eval/lk-* defn (rt/wasm/emit.lg's entries for
+         ;; compiled code), so they are made and, being lowered, exported
          "(func $lw_rt_seams (param $x (ref null eq)) (result (ref null eq))\n"
-         "  (drop (call $wasm.eval/lk-const#1__box (local.get $x)))\n"
-         "  (drop (call $wasm.eval/lk-cell-get#1__box (local.get $x)))\n"
-         "  (drop (call $wasm.eval/lk-var-value#1__box (local.get $x)))\n"
-         "  (drop (call $wasm.eval/lk-def-root!#2__box (local.get $x) (local.get $x)))\n"
-         "  (drop (call $wasm.eval/lk-conj#2__box (local.get $x) (local.get $x)))\n"
+         (apply str (map (fn [w] (str "  (drop (call $" w (apply str (repeat (lk-argc w) " (local.get $x)")) "))\n"))
+                         (lk-wrappers)))
          "  (local.get $x))\n"
          (export-form "func" "lw rt lw_rt_seams" "$lw_rt_seams"))))
 

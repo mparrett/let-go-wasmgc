@@ -811,6 +811,10 @@
 (defn lk-var-value "The seam's var-value, boxed for compiled code." [v] (var-value v))
 (defn lk-def-root! "The seam's def-root!, boxed for compiled code." [key x] (def-root! key x))
 (defn lk-conj "conj, for the argument vector of a call of more than 4 args." [v x] (conj v x))
+;; inc and dec as native compiles them, the IR op: an overflow's caught
+;; message has the "ExecutionError: " prefix (the core value's has none)
+(defn lk-inc "(inc x), the op form." [x] (inc x))
+(defn lk-dec "(dec x), the op form." [x] (dec x))
 
 (def ^:private em-host (atom nil))
 
@@ -838,22 +842,28 @@
         (or (vector? x) (set? x)) (every? lk-literal? x)
         :else true))
 
-(defn- lk-konst [ce v]
+(defn- lk-konst
+  "Constant v: appended to the table; the code reads it from a module
+   global the module's start function fills from the table (lk-link)."
+  [ce v]
   (let [i (count @em-consts)]
     (swap! em-consts conj v)
-    (ins (i32c i) [:ref.i31] [:call :const])))
+    [[:global.get [:c i]]]))
 
 (defn- lk-int [n]
   (if (and (>= n -1073741824) (<= n 1073741823))
     (ins (i32c n) [:ref.i31])
     (ins (i64c n) [:call :box_i])))
 
-(defn- lk-op-key [nm n]
-  (if (= n 2)
-    (cond (= nm "+") :add (= nm "-") :sub (= nm "*") :mul
-          (= nm "<") :lt (= nm "<=") :le (= nm ">") :gt (= nm ">=") :ge
-          :else nil)
-    nil))
+(defn- lk-op-key
+  "The import a core op compiles to at this arg count (native's op form),
+   or nil: the call goes through the fn value."
+  [nm n]
+  (cond (= n 2) (cond (= nm "+") :add (= nm "-") :sub (= nm "*") :mul
+                      (= nm "<") :lt (= nm "<=") :le (= nm ">") :gt (= nm ">=") :ge
+                      :else nil)
+        (= n 1) (cond (= nm "inc") :inc (= nm "dec") :dec :else nil)
+        :else nil))
 
 (defn- lk-local? [ce h]
   (and (symbol? h) (nil? (namespace h))
@@ -1024,11 +1034,12 @@
      :var-value ["lw rt wasm.eval/lk-var-value#1__box" [e] [e]]
      :def-root! ["lw rt wasm.eval/lk-def-root!#2__box" [e e] [e]]
      :conj ["lw rt wasm.eval/lk-conj#2__box" [e e] [e]]
+     :inc ["lw rt wasm.eval/lk-inc#1__box" [e] [e]] :dec ["lw rt wasm.eval/lk-dec#1__box" [e] [e]]
      :apply-vec ["lw rt rt_apply_vec" [e e] [e]]}))
 
 (def ^:private lk-import-order
   [:truthy :box_i :add :sub :mul :lt :le :gt :ge :invoke0 :invoke1 :invoke2 :invoke3 :invoke4
-   :const :cell-get :var-value :def-root! :conj :apply-vec])
+   :const :cell-get :var-value :def-root! :conj :apply-vec :inc :dec])
 
 (defn- lk-helpers []
   {:box_f {:params [:f64] :results [em-eqref] :locals [] :body (ins (lget 0) [:struct.new [:t "$Float"]])}
@@ -1070,24 +1081,35 @@
         hs (vec (filter (fn [k] (contains? used k)) [:box_f :box_b]))
         used (into used (mapcat (fn [k] (lk-calls (:body (get helpers k)))) hs))
         _ (doseq [k used] (when-not (or (contains? table k) (contains? helpers k)) (em-fail (str "no import " k))))
+        used (if (some (fn [f] (some (fn [i] (and (= :global.get (first i)) (vector? (second i)))) (:body f))) code)
+               (conj used :const) used)
         imps (vec (filter (fn [k] (contains? used k)) lk-import-order))
         ni (count imps)
         fidx (merge (into {} (map-indexed (fn [i k] [k i]) imps))
                     (into {} (map-indexed (fn [i k] [k (+ ni ncode i)]) hs)))
         throws? (some (fn [f] (some (fn [i] (= :throw (first i))) (:body f))) code)
         tag-sig [[em-eqref] []]
+        start-sig [[] []]
         own-sigs (vec (distinct (concat (map (fn [k] [(nth (get table k) 1) (nth (get table k) 2)]) imps)
                                         (keep (fn [f] (when (nil? (:type f)) [(:params f) (:results f)])) code)
                                         (map (fn [k] [(:params (get helpers k)) (:results (get helpers k))]) hs)
-                                        (when throws? [tag-sig]))))
+                                        (when throws? [tag-sig])
+                                        [start-sig])))
         sidx (into {} (map-indexed (fn [i sg] [sg (+ nrec i)]) own-sigs))
         ftype (fn [f] (if (:type f) (lk-imm (:type f) tix) (get sidx [(:params f) (:results f)])))
         refd (atom #{})
+        ;; constants: own globals 2.. (after the two imported Bools), in
+        ;; first-use order, filled by the start function from the table
+        cs (vec (distinct (mapcat (fn [f] (keep (fn [i] (let [g (second i)]
+                                                          (when (and (= :global.get (first i)) (vector? g)) (second g))))
+                                                (:body f)))
+                                  code)))
+        cidx (into {} (map-indexed (fn [j c] [c (+ 2 j)]) cs))
         fix (fn [i]
               (let [op (first i)]
                 (cond (= op :call) (let [t (second i)] [:call (if (keyword? t) (get fidx t) (+ ni (second t)))])
                       (= op :ref.func) (let [k (+ ni (second (second i)))] (swap! refd conj k) [:ref.func k])
-                      (= op :global.get) (let [g (second i)] [:global.get (cond (= g :true) 0 (= g :false) 1 :else g)])
+                      (= op :global.get) (let [g (second i)] [:global.get (cond (= g :true) 0 (= g :false) 1 (vector? g) (get cidx (second g)) :else g)])
                       (= op :throw) [:throw 0]
                       :else (vec (cons op (map (fn [x] (lk-imm x tix)) (rest i)))))))
         bool [:ref (lk-type-idx tix "$Bool")]
@@ -1095,22 +1117,31 @@
                                      [{:module "host" :name "lw rt true" :desc [:global bool false]}
                                       {:module "host" :name "lw rt false" :desc [:global bool false]}]
                                      (when throws? [{:module "host" :name "lw lgex" :desc [:tag (get sidx tag-sig)]}])))
-               :funcs (vec (concat (map ftype code) (map (fn [k] (get sidx [(:params (get helpers k)) (:results (get helpers k))])) hs)))
+               :funcs (vec (concat (map ftype code) (map (fn [k] (get sidx [(:params (get helpers k)) (:results (get helpers k))])) hs)
+                                   [(get sidx start-sig)]))
+               :globals (mapv (fn [_] {:type em-eqref :mut? true :init [[:ref.null :eq]]}) cs)
                :exports [{:name "lw run" :kind :func :index (+ ni (dec ncode))}]
+               :start (+ ni ncode (count hs))
                :code (vec (concat (map (fn [f] {:locals (:locals f) :body (mapv fix (:body f))}) code)
-                                  (map (fn [k] {:locals [] :body (mapv fix (:body (get helpers k)))}) hs)))}
+                                  (map (fn [k] {:locals [] :body (mapv fix (:body (get helpers k)))}) hs)
+                                  [{:locals []
+                                    :body (vec (mapcat (fn [c] [(i32c c) [:ref.i31] [:call (get fidx :const)] [:global.set (get cidx c)]]) cs))}]))}
         model (if (seq @refd) (assoc model :elems [{:mode :declare :funcs (vec (sort @refd))}]) model)
         bs (wasm.wasmbin/encode-module model)]
     (into (into (subvec bs 0 8) (lk-type-section host (mapv (fn [sg] [:func (first sg) (second sg)]) own-sigs)))
           (subvec bs 8))))
 
-(defn- lk-module [forms host]
+(defn- lk-parts
+  "The symbolic module of forms, before linking: {:code [fn* arity fns]
+   :run the \"lw run\" fn}."
+  [forms]
   (let [m (atom {:code []})
         fctx (atom {:n 0})
         ce {:lk true :m m :fctx fctx :depth 0 :tail false :locals {} :outer #{} :loop nil}
         body (em-body forms ce false)]
-    (lk-link {:code (:code @m) :run {:params [] :results [em-eqref] :locals (vec (repeat (:n @fctx) em-eqref)) :body body}}
-             host)))
+    {:code (:code @m) :run {:params [] :results [em-eqref] :locals (vec (repeat (:n @fctx) em-eqref)) :body body}}))
+
+(defn- lk-module [forms host] (lk-link (lk-parts forms) host))
 
 (defn emit-module
   "The bytes (ints 0-255) of a module. Standalone (3a): forms are defn,
