@@ -311,6 +311,8 @@
     (cond (nil? g) (cant-resolve sym)
           (#{:cell :prog} (:kind g)) (konst (:var g))
           (= :core (:kind g)) (konst (core-var (:name g) (:val g)))
+          ;; a host that resolves core macros to their var (eval_native.lg)
+          (and (= :core-macro (:kind g)) (:var g)) (konst (:var g))
           :else (cant-resolve sym))))
 
 (defn- class-sym? [x]

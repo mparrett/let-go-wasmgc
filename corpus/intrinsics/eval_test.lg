@@ -105,7 +105,11 @@
    ["(do (def ^:dynamic ev-dyn 1) (binding [ev-dyn 2] ev-dyn))" "(do (def ev-sv 1) (set! ev-sv 2) ev-sv)"
     "[(binding [ev-dyn 5] (set! ev-dyn 6) ev-dyn) ev-dyn]" "(= (var ev-sv) (resolve 'ev-sv))"
     "(do (defn- ev-p [] 1) (:private (meta (var ev-p))))" "(do (defmacro ev-m3 [x] x) (:macro (meta (var ev-m3))))"
-    "(reductions + [1 2 3])" "(macroexpand-1 '(when 1 2))" "(with-out-str (binding [*out* *out*] (print 1)))"]))
+    "(reductions + [1 2 3])" "(macroexpand-1 '(when 1 2))" "(with-out-str (binding [*out* *out*] (print 1)))"
+    ;; PR #4 review: dynamic core vars read when the form runs; (var m) of a core macro
+    "(binding [*assert* false] *assert*)" "(binding [clojure.core/*assert* false] clojure.core/*assert*)"
+    "(with-redefs [*assert* false] *assert*)" "*assert*" "(str (var when))" "(str (var let))"
+    "(= (var when) (resolve 'when))"]))
 
 (deftest syntax-quote-expansion
   (same-ns!)

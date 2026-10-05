@@ -51,7 +51,11 @@ Both mismatches have the one cause under "Seam gaps". With a probe that interned
   program in the proof corpus leaves an eval error uncaught.
 - **A core macro without an expander** (`defmulti`, `deftype`, `future`, `go`, `bound-fn`, ...)
   resolves to a real var natively; the native seam reports it as `Can't resolve`, the text the
-  wasm seam gives, instead of calling the macro fn as a fn.
+  wasm seam gives, instead of calling the macro fn as a fn. `(var m)` of any core macro returns
+  the real var on this host (PR #4 review, 2026-10-04).
+- **Dynamic core vars** (`*assert*`, `*print-length*`, ..., by `:dynamic` meta or earmuffs) are
+  read when the form runs on this host, so `binding`, `with-redefs` and `set!` of them are seen
+  (PR #4 review, 2026-10-04); on the wasm host they are core-table constants (named limit).
 - **Fn addresses** in printed values (`<fn 0x...>`) differ run to run on any host
   (review5 `reader/r01`).
 

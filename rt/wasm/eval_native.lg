@@ -60,10 +60,19 @@
   [v]
   (let [m (meta v) key (var-key v) i (string/index-of key "/")
         vns (subs key 0 i) nm (subs key (inc i))]
-    (if (= vns "core")
-      ;; a core macro without an expander stays unresolvable, as on wasm
-      (if (:macro m) {:kind :core-macro} {:kind :core :name nm :val (deref v)})
-      {:kind :cell :key key :var v :macro (:macro m) :private (:private m)})))
+    (cond
+      (not= vns "core") {:kind :cell :key key :var v :macro (:macro m) :private (:private m)}
+      ;; a core macro: eval.lg expands the ones it has expanders for and
+      ;; (var m) returns the real var; without an expander it stays
+      ;; unresolvable as a value, as on the wasm host, rather than calling
+      ;; the macro fn as a fn
+      (:macro m) {:kind :core-macro :name nm :var v}
+      ;; a dynamic core var (*assert*, *print-length*, ..) is read when the
+      ;; form runs, so binding / with-redefs / set! are seen; *out*, *err* and
+      ;; *ns* are comp-sym's own cases and never reach here
+      (or (:dynamic m) (and (string/starts-with? nm "*") (string/ends-with? nm "*") (> (count nm) 2)))
+      {:kind :cell :key key :var v}
+      :else {:kind :core :name nm :val (deref v)})))
 
 (defn- ns-of-alias [q]
   (let [s (symbol q)] (or (get (ns-aliases *ns*) s) (find-ns s))))
