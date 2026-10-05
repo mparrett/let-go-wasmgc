@@ -2,10 +2,12 @@
 ;; names, each section on a tiny model, the instruction table and its named
 ;; errors, and one whole module. Every expected byte string was produced by
 ;; `wasm-tools parse` (1.256) of the module's WAT, quoted in each test; the
-;; corpus-wide comparison is row P10.0 (checks/wasmbin-roundtrip.sh).
+;; corpus-wide comparison is row P10.0 (checks/wasmbin-roundtrip.sh), and
+;; its test-only WAT reader (rt/wasm/watread.lg) is checked at the end.
 (ns wasmbin-test
   (:require [test :refer [deftest is testing]]
             [wasm.wasmbin :as wb]
+            [wasm.watread :as wr]
             [string]))
 
 (defn- hex [s]
@@ -180,7 +182,7 @@
 ;;   (func $refs (param $v (ref null eq)) (local $b (ref null $box)) (local $a (ref null $bytes)) (local $e exnref) ...)
 ;;   (func $calls (param $n i64) (result i64) ...)
 ;;   (func $tail (type $th) (return_call_ref $th (ref.func $th0))))
-;; (the full text is `sink-wat` in the reader's test below)
+;; (the full text is `sink-wat` below)
 (def ^:private sink-model
   {:types [{:rec [[:array {:type :i8, :mut? true}] [:array {:type [:ref-null :eq], :mut? true}] {:final? false, :supers [], :comp [:struct [{:type :i64, :mut? true}]]}]} [:func [] [[:ref-null :eq]]] [:func [[:ref-null :eq]] []] [:func [:i64] [:i64]]]
    :funcs [3 5 4 5 3]
@@ -254,3 +256,102 @@
   (is (= (hex sink-bytes) (wb/encode-module sink-model)))
   (testing "every opname of the table appears in the module"
     (is (= (wb/opnames) (set (map first (mapcat :body (:code sink-model))))))))
+
+;; ---------------------------------------------------------------------------
+;; wasm.watread, the test-only reader row P10.0 builds models with
+
+(def ^:private sink-wat
+  "(module
+  (rec
+    (type $bytes (array (mut i8)))
+    (type $vec (array (mut (ref null eq))))
+    (type $box (sub (struct (field (mut i64))))))
+  (type $th (func (result (ref null eq))))
+  (memory (export \"mem\") 1)
+  (tag $ex (export \"ex\") (param (ref null eq)))
+  (global $g (mut i64) (i64.const 0))
+  (data $d \"ab\\00\\ff\")
+  (elem declare func $th0)
+  (func $th0 (type $th) (ref.null none))
+  (func $ints (export \"ints\") (param $n i64) (result i64) (local $i i32) (local $f f64)
+    (global.set $g (i64.popcnt (i64.shr_u (i64.shr_s (i64.shl (i64.xor (i64.or (i64.and (i64.div_s (i64.mul (i64.sub (i64.add (local.get $n) (i64.const 1)) (i64.const 2)) (i64.const 3)) (i64.const 4)) (i64.const 5)) (i64.const 6)) (i64.const 7)) (i64.const 8)) (i64.const 9)) (i64.const 10))))
+    (local.set $i (i32.add (i32.or (i32.and (i32.mul (i32.sub (i32.add (i32.add (i64.eqz (global.get $g)) (i64.eq (global.get $g) (i64.const 1))) (i64.ne (global.get $g) (i64.const 2))) (i64.lt_s (global.get $g) (i64.const 3))) (i64.lt_u (global.get $g) (i64.const 4))) (i64.gt_s (global.get $g) (i64.const 5))) (i64.le_s (global.get $g) (i64.const 6))) (i64.ge_s (global.get $g) (i64.const -9223372036854775808))))
+    (local.set $i (i32.add (i32.eqz (i32.shr_u (i32.rem_u (i32.div_u (local.get $i) (i32.const 0x80000000)) (i32.const 3)) (i32.const 1))) (i32.wrap_i64 (local.get $n))))
+    (local.set $i (i32.add (i32.add (i32.add (i32.add (i32.add (i32.eq (local.get $i) (i32.const 2)) (i32.lt_s (local.get $i) (i32.const 3))) (i32.lt_u (local.get $i) (i32.const 4))) (i32.gt_s (local.get $i) (i32.const 5))) (i32.gt_u (local.get $i) (i32.const 6))) (i32.ge_u (local.get $i) (i32.const -7))))
+    (local.set $f (f64.neg (f64.div (f64.mul (f64.sub (f64.add (f64.convert_i64_s (local.get $n)) (f64.const 0.1)) (f64.const -0.0)) (f64.const inf)) (f64.const nan:0x8000000000001))))
+    (local.set $i (i32.add (i32.add (i32.add (i32.add (f64.eq (local.get $f) (f64.const 1.0)) (f64.lt (local.get $f) (f64.const 2.0))) (f64.gt (local.get $f) (f64.const 3.0))) (f64.le (local.get $f) (f64.const 4.0))) (f64.ge (local.get $f) (f64.const 2.2250738585072014e-308))))
+    (i32.store8 offset=32 (i32.const 0) (i32.load8_u offset=3 (i32.const 0)))
+    (drop (memory.grow (memory.size)))
+    (i64.add (i64.add (i64.add (i64.extend_i32_s (local.get $i)) (i64.extend_i32_u (local.get $i))) (i64.trunc_f64_s (local.get $f))) (i64.reinterpret_f64 (local.get $f))))
+  (func $refs (param $v (ref null eq)) (local $b (ref null $box)) (local $a (ref null $bytes)) (local $e exnref)
+    (local.set $b (struct.new $box (i64.const 1)))
+    (struct.set $box 0 (local.get $b) (i64.const 2))
+    (drop (struct.get $box 0 (local.get $b)))
+    (local.set $a (array.new_data $bytes $d (i32.const 0) (i32.const 4)))
+    (drop (array.new $bytes (i32.const 7) (i32.const 3)))
+    (local.set $a (array.new_default $bytes (i32.const 3)))
+    (drop (array.new_fixed $bytes 2 (i32.const 1) (i32.const 2)))
+    (drop (array.get_u $bytes (local.get $a) (i32.const 0)))
+    (array.set $bytes (local.get $a) (i32.const 0) (i32.const 9))
+    (drop (array.len (local.get $a)))
+    (array.copy $bytes $bytes (local.get $a) (i32.const 0) (local.get $a) (i32.const 1) (i32.const 2))
+    (drop (array.get $vec (array.new_fixed $vec 1 (ref.null none)) (i32.const 0)))
+    (drop (ref.test (ref i31) (local.get $v)))
+    (drop (ref.test (ref null $box) (local.get $v)))
+    (drop (ref.cast (ref null $box) (local.get $v)))
+    (drop (ref.cast (ref $box) (local.get $v)))
+    (drop (i31.get_s (ref.i31 (i32.const 5))))
+    (drop (ref.is_null (local.get $v)))
+    (drop (ref.eq (local.get $v) (local.get $v)))
+    (drop (call_ref $th (ref.as_non_null (ref.func $th0))))
+    (drop (ref.null func))
+    (drop (ref.null nofunc))
+    (drop (ref.null $box))
+    (drop (select (i32.const 1) (i32.const 2) (i32.const 0)))
+    (local.set $e
+      (block $h (result exnref)
+        (drop
+          (block $out (result (ref null eq))
+            (try_table (catch $ex $out) (catch_all_ref $h)
+              (throw $ex (local.get $v)))
+            (unreachable)))
+        (if (i32.const 1) (then (drop (i32.const 2))) (else (drop (i32.const 3))))
+        (loop $l (br_if $l (ref.is_null (local.get $v))))
+        (br $h (ref.null exn))))
+    (throw_ref (local.get $e)))
+  (func $calls (param $n i64) (result i64)
+    (drop (call $ints (local.get $n)))
+    (if (i64.eqz (local.get $n)) (then (return (local.get $n))))
+    (return_call $ints (local.get $n)))
+  (func $tail (type $th) (return_call_ref $th (ref.func $th0))))")
+
+(deftest reader
+  (testing "the whole-module WAT reads as the model above"
+    (is (= sink-model (wr/module-model sink-wat))))
+  (testing "implicit function types: appended after every explicit type, in text order, never a rec-group type"
+    ;; (module
+    ;;   (rec (type $c (func (param i64))) (type $s (struct)))
+    ;;   (import "env" "p" (func $p (param i64)))
+    ;;   (func $a (param $x i64) (call $p (local.get $x)))
+    ;;   (func $b (result i32) (i32.const 1)))
+    (let [m (wr/module-model "(module
+  (rec (type $c (func (param i64))) (type $s (struct)))
+  (import \"env\" \"p\" (func $p (param i64)))
+  (func $a (param $x i64) (call $p (local.get $x)))
+  (func $b (result i32) (i32.const 1)))")]
+      (is (= [[:func [:i64] []] [:func [] [:i32]]] (subvec (:types m) 1)))
+      (is (= [2 3] (:funcs m)))
+      (is (= (hex "0061736d010000000111034e0260017e005f0060017e006000017f02090103656e760170000203030202030a0d020600200010000b040041010b0022046e616d65010a030001700101610201620206010101000178040702000163010173") (wb/encode-module m)))))
+  (testing "f64 literals as IEEE bits"
+    (is (= 4591870180066957722 (wr/f64-bits "0.1")))
+    (is (= -9223372036854775808 (wr/f64-bits "-0.0")))
+    (is (= 0x7FF0000000000000 (wr/f64-bits "inf")))
+    (is (= -4503599627370496 (wr/f64-bits "-inf")))
+    (is (= 0x7FF8000000000000 (wr/f64-bits "nan")))
+    (is (= 0x7FF8000000000001 (wr/f64-bits "nan:0x8000000000001")))
+    (is (= 0x0010000000000000 (wr/f64-bits "2.2250738585072014e-308")) "smallest normal")
+    (is (= 1 (wr/f64-bits "5e-324")) "smallest subnormal")
+    (is (= 0x7FEFFFFFFFFFFFFF (wr/f64-bits "1.7976931348623157e308")) "largest finite"))
+  (testing "named errors for WAT outside the driver's subset"
+    (is (= "watread: unknown instruction i32.clz" (err #(wr/module-model "(module (func (drop (i32.clz (i32.const 1)))))"))))
+    (is (= "watread: unknown label $nope" (err #(wr/module-model "(module (func (br $nope)))"))))))

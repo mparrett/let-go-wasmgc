@@ -1,0 +1,510 @@
+;; wasm.watread — TEST-ONLY: reads the WAT the backend's driver writes into
+;; wasm.wasmbin's section model, so checks/wasmbin-roundtrip.sh (row P10.0)
+;; can encode every corpus module and compare the bytes with `wasm-tools
+;; parse` of the same text. It never enters a module and is not in the load
+;; order.
+;;
+;; DIALECT: full lg (regex tokenizer, parse-long/parse-double, slurp/spit):
+;; none of it is compiled by the backend.
+;;
+;; Scope: the WAT subset the driver emits (folded instructions, symbolic
+;; names, inline exports, one rec group, decimal float literals), not WAT in
+;; general; anything else is a "watread: " error naming the form. The rules
+;; it follows to reproduce what wasm-tools 1.256 (the `wast` crate) encodes:
+;;   - implicit function types: a type use without (type ..) (imports, funcs,
+;;     tags) gets a new standalone func type appended after every explicit
+;;     type, in text order, shared by later uses with the same signature;
+;;     it never reuses a type of the rec group (types in a rec group are
+;;     distinct from an equal standalone type);
+;;   - the data count section is written when an instruction refers to a
+;;     data segment (array.new_data);
+;;   - the name custom section carries every $id: functions, locals (params
+;;     first), labels (numbered by block/loop/if/try_table in instruction
+;;     order), types, globals, data, tags;
+;;   - a try_table's catch labels resolve outside the try_table's own label.
+(ns wasm.watread
+  (:require [clojure.string :as string]))
+
+(defn- fail [& xs] (throw (ex-info (apply str "watread: " xs) {})))
+
+;; ---------------------------------------------------------------------------
+;; Tokens and s-expressions: a list is a vector, an atom a string, a string
+;; literal {:str bytes}.
+
+(def ^:private token-re #"\(;[\s\S]*?;\)|;;[^\n]*|[()]|\"(?:[^\"\\]|\\.)*\"|[^\s()\";]+")
+
+(defn- hexval [c]
+  (let [i (int c)]
+    (cond (<= 48 i 57) (- i 48) (<= 97 i 102) (- i 87) (<= 65 i 70) (- i 55)
+          :else (fail "bad hex digit " c))))
+
+(defn- string-bytes
+  "The bytes of a string literal's body (between the quotes)."
+  [s]
+  (loop [cs (seq s) out (transient [])]
+    (if (nil? cs) (persistent! out)
+        (let [c (first cs)]
+          (if (= c \\)
+            (let [d (second cs)]
+              (case d
+                \n (recur (nnext cs) (conj! out 10))
+                \t (recur (nnext cs) (conj! out 9))
+                \r (recur (nnext cs) (conj! out 13))
+                \" (recur (nnext cs) (conj! out 34))
+                \' (recur (nnext cs) (conj! out 39))
+                \\ (recur (nnext cs) (conj! out 92))
+                (let [e (nth (vec (take 3 cs)) 2 nil)]
+                  (if (nil? e) (fail "bad escape in string")
+                      (recur (seq (drop 3 cs)) (conj! out (+ (* 16 (hexval d)) (hexval e))))))))
+            (let [i (int c)]
+              (if (< i 128) (recur (next cs) (conj! out i))
+                  (fail "non-ASCII string literal (not needed by the driver's output)"))))))))
+
+(defn parse-sexprs "Every top-level s-expression of text t." [t]
+  (loop [toks (re-seq token-re t) stack [] cur (transient [])]
+    (if (nil? toks)
+      (if (seq stack) (fail "unbalanced parentheses") (persistent! cur))
+      (let [tok (first toks)]
+        (cond (= tok "(") (recur (next toks) (conj stack cur) (transient []))
+              (= tok ")") (if (seq stack)
+                            (recur (next toks) (pop stack) (conj! (peek stack) (persistent! cur)))
+                            (fail "unbalanced )"))
+              (string/starts-with? tok ";") (recur (next toks) stack cur)
+              (string/starts-with? tok "(;") (recur (next toks) stack cur)
+              (string/starts-with? tok "\"")
+              (recur (next toks) stack (conj! cur {:str (string-bytes (subs tok 1 (dec (count tok))))}))
+              :else (recur (next toks) stack (conj! cur tok)))))))
+
+(defn- head [x] (if (vector? x) (first x) nil))
+(defn- id? [x] (if (string? x) (string/starts-with? x "$") false))
+(defn- form? [x h] (= h (head x)))
+(defn- str-lit [x] (if (map? x) (apply str (map char (:str x))) (fail "expected a string, got " (pr-str x))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+
+(defn- parse-int [s]
+  (let [s (string/replace s "_" "")
+        neg (string/starts-with? s "-")
+        body (if (or neg (string/starts-with? s "+")) (subs s 1) s)
+        hex? (string/starts-with? body "0x")]
+    (if hex?
+      (let [mag (reduce (fn [n c] (+ (* n 16) (hexval c))) 0 (subs body 2))] (if neg (- mag) mag))
+      ;; decimal keeps its sign so that -9223372036854775808 parses
+      (or (parse-long s) (fail "bad integer " s)))))
+
+(def ^:private two52 4503599627370496.0)
+
+(defn- f64-magnitude-bits
+  "IEEE bits of a finite non-negative double, by exact scaling by 2."
+  [a]
+  (cond (= a 0.0) 0
+        (< a 2.2250738585072014e-308) (long (* (* a 4.49423283715579e+307) two52)) ; a * 2^1022 * 2^52
+        :else (loop [a a e 0]
+                (cond (>= a 2.0) (recur (/ a 2.0) (inc e))
+                      (< a 1.0) (recur (* a 2.0) (dec e))
+                      :else (bit-or (bit-shift-left (+ e 1023) 52) (long (* (- a 1.0) two52)))))))
+
+(defn f64-bits "The IEEE-754 bits (an int64) of a WAT f64 literal." [s]
+  (let [neg (string/starts-with? s "-")
+        body (if (or neg (string/starts-with? s "+")) (subs s 1) s)
+        mag (cond (= body "inf") 0x7FF0000000000000
+                  (= body "nan") 0x7FF8000000000000
+                  (string/starts-with? body "nan:0x") (bit-or 0x7FF0000000000000 (parse-int (subs body 4)))
+                  (string/starts-with? body "0x") (fail "hex float literal " s)
+                  :else (f64-magnitude-bits (or (parse-double body) (fail "bad float " s))))]
+    (if neg (bit-or mag -9223372036854775808) mag)))
+
+;; ---------------------------------------------------------------------------
+;; Types
+
+(def ^:private abstract-heaps
+  {"func" :func "nofunc" :nofunc "extern" :extern "noextern" :noextern "any" :any "eq" :eq
+   "i31" :i31 "struct" :struct "array" :array "none" :none "exn" :exn "noexn" :noexn})
+
+(def ^:private shorthand-refs
+  {"funcref" :func "externref" :extern "anyref" :any "eqref" :eq "i31ref" :i31 "structref" :struct
+   "arrayref" :array "nullref" :none "nullfuncref" :nofunc "nullexternref" :noextern "exnref" :exn})
+
+(defn- type-index [env x]
+  (cond (id? x) (or (get-in env [:types x]) (fail "unknown type " x))
+        (string? x) (parse-int x)
+        :else (fail "expected a type index, got " (pr-str x))))
+
+(defn- heap [env x]
+  (or (get abstract-heaps x) (type-index env x)))
+
+(defn- valtype [env x]
+  (cond (contains? #{"i32" "i64" "f32" "f64"} x) (keyword x)
+        (get shorthand-refs x) [:ref-null (get shorthand-refs x)]
+        (form? x "ref") (if (= "null" (nth x 1)) [:ref-null (heap env (nth x 2))] [:ref (heap env (nth x 1))])
+        :else (fail "unknown value type " (pr-str x))))
+
+(defn- storage [env x]
+  (cond (= x "i8") :i8 (= x "i16") :i16 :else (valtype env x)))
+
+(defn- fieldtype [env x]
+  (if (form? x "mut") {:type (storage env (nth x 1)) :mut? true} {:type (storage env x) :mut? false}))
+
+(defn- params-results
+  "[params param-names results] of the (param ..)/(result ..) items in xs."
+  [env xs]
+  (reduce (fn [[ps names rs] x]
+            (cond (form? x "param") (if (id? (nth x 1 nil))
+                                      [(conj ps (valtype env (nth x 2))) (conj names [(count ps) (subs (nth x 1) 1)]) rs]
+                                      [(into ps (map #(valtype env %) (rest x))) names rs])
+                  (form? x "result") [ps names (into rs (map #(valtype env %) (rest x)))]
+                  :else (fail "unexpected in a function type: " (pr-str x))))
+          [[] [] []] xs))
+
+(defn- composite [env x]
+  (case (head x)
+    "func" (let [[ps _ rs] (params-results env (rest x))] [:func ps rs])
+    "struct" [:struct (vec (mapcat (fn [f]
+                                     (if (form? f "field")
+                                       (if (id? (nth f 1 nil)) (fail "named fields (not needed by the driver's output)")
+                                           (map #(fieldtype env %) (rest f)))
+                                       (fail "unexpected in a struct: " (pr-str f))))
+                                   (rest x)))]
+    "array" [:array (fieldtype env (nth x 1))]
+    (fail "unknown composite type " (pr-str x))))
+
+(defn- subtype [env x]
+  (if (form? x "sub")
+    (let [final? (= "final" (nth x 1))
+          xs (if final? (drop 2 x) (rest x))
+          supers (vec (map #(type-index env %) (butlast xs)))]
+      {:final? final? :supers supers :comp (composite env (last xs))})
+    (composite env x)))
+
+(defn- typedef [env t]
+  (let [xs (if (id? (nth t 1)) (drop 2 t) (rest t))]
+    (if (= 1 (count xs)) (subtype env (first xs)) (fail "bad type definition " (pr-str t)))))
+
+;; ---------------------------------------------------------------------------
+;; Index spaces (pass 1)
+
+(defn- field-id [f] (let [x (nth f 1 nil)] (if (id? x) x nil)))
+
+(defn- import-kind [f] (head (nth f 3)))
+
+(defn- index-spaces [fields]
+  (reduce (fn [env f]
+            (let [add (fn [env space id]
+                        (let [n (get-in env [:counts space] 0)]
+                          (cond-> (assoc-in env [:counts space] (inc n))
+                            id (assoc-in [space id] n))))]
+              (case (head f)
+                "rec" (reduce (fn [env t] (if (form? t "type") (add env :types (field-id t)) (fail "unexpected in rec: " (pr-str t))))
+                              env (rest f))
+                "type" (add env :types (field-id f))
+                "import" (let [d (nth f 3)
+                               sp (get {"func" :funcs "global" :globals "memory" :memories "tag" :tags "table" :tables} (head d))]
+                           (if sp (add env sp (field-id d)) (fail "unknown import " (pr-str d))))
+                "func" (add env :funcs (field-id f))
+                "global" (add env :globals (field-id f))
+                "memory" (add env :memories (field-id f))
+                "tag" (add env :tags (field-id f))
+                "table" (add env :tables (field-id f))
+                "data" (add env :data (field-id f))
+                "elem" (add env :elems (field-id f))
+                ("start" "export") env
+                (fail "unknown module field " (pr-str (head f))))))
+          {} fields))
+
+(defn- idx [env space x]
+  (cond (id? x) (let [i (get-in env [space x])] (if (nil? i) (fail "unknown " (name space) " " x) i))
+        (string? x) (parse-int x)
+        :else (fail "expected an index, got " (pr-str x))))
+
+;; ---------------------------------------------------------------------------
+;; Instructions: folded or plain, flattened into wasm.wasmbin's instrs.
+;; ctx: {:env :locals {$name i} :labels [name-or-nil ...] :nlabel n
+;;       :label-names [[i name] ...] :out transient :data? bool}
+
+(def ^:private no-imm
+  #{"unreachable" "else" "end" "return" "drop" "select" "throw_ref" "ref.is_null" "ref.eq"
+    "ref.as_non_null" "array.len" "ref.i31" "i31.get_s" "memory.size" "memory.grow"
+    "i32.eqz" "i32.eq" "i32.lt_s" "i32.lt_u" "i32.gt_s" "i32.gt_u" "i32.ge_u"
+    "i64.eqz" "i64.eq" "i64.ne" "i64.lt_s" "i64.lt_u" "i64.gt_s" "i64.le_s" "i64.ge_s"
+    "f64.eq" "f64.lt" "f64.gt" "f64.le" "f64.ge"
+    "i32.add" "i32.sub" "i32.mul" "i32.div_u" "i32.rem_u" "i32.and" "i32.or" "i32.shr_u"
+    "i64.popcnt" "i64.add" "i64.sub" "i64.mul" "i64.div_s" "i64.and" "i64.or" "i64.xor" "i64.shl"
+    "i64.shr_s" "i64.shr_u" "f64.neg" "f64.add" "f64.sub" "f64.mul" "f64.div"
+    "i32.wrap_i64" "i64.extend_i32_s" "i64.extend_i32_u" "i64.trunc_f64_s" "f64.convert_i64_s"
+    "i64.reinterpret_f64"})
+
+(def ^:private one-index
+  {"local.get" :local "local.set" :local "global.get" :globals "global.set" :globals
+   "call" :funcs "return_call" :funcs "ref.func" :funcs "throw" :tags
+   "call_ref" :types "return_call_ref" :types "struct.new" :types "array.new" :types
+   "array.new_default" :types "array.get" :types "array.get_u" :types "array.set" :types
+   "br" :label "br_if" :label})
+
+(def ^:private natural-align {"i32.load8_u" 0 "i32.store8" 0})
+
+(defn- label-depth [ctx x]
+  (if (id? x)
+    (let [ls (:labels ctx)
+          i (loop [i (dec (count ls))] (cond (< i 0) nil (= x (nth ls i)) i :else (recur (dec i))))]
+      (if (nil? i) (fail "unknown label " x) (- (count ls) 1 i)))
+    (parse-int x)))
+
+(defn- index-imm [ctx space x]
+  (cond (= space :local) (if (id? x) (or (get (:locals ctx) x) (fail "unknown local " x)) (parse-int x))
+        (= space :label) (label-depth ctx x)
+        :else (idx (:env ctx) space x)))
+
+(defn- imms
+  "[immediates rest] of plain op `op` whose following items are xs."
+  [ctx op xs]
+  (let [env (:env ctx)]
+    (cond
+      (contains? no-imm op) [[] xs]
+      (contains? one-index op) [[(index-imm ctx (get one-index op) (first xs))] (rest xs)]
+      (contains? #{"struct.get" "struct.set"} op)
+      [[(idx env :types (first xs)) (parse-int (second xs))] (drop 2 xs)]
+      (= op "array.new_fixed") [[(idx env :types (first xs)) (parse-int (second xs))] (drop 2 xs)]
+      (= op "array.new_data") [[(idx env :types (first xs)) (idx env :data (second xs))] (drop 2 xs)]
+      (= op "array.copy") [[(idx env :types (first xs)) (idx env :types (second xs))] (drop 2 xs)]
+      (contains? #{"i32.const" "i64.const"} op) [[(parse-int (first xs))] (rest xs)]
+      (= op "f64.const") [[(f64-bits (first xs))] (rest xs)]
+      (= op "ref.null") [[(heap env (first xs))] (rest xs)]
+      (contains? #{"ref.test" "ref.cast"} op) [[(valtype env (first xs))] (rest xs)]
+      (contains? natural-align op)
+      (let [[kv xs] (split-with #(if (string? %) (or (string/starts-with? % "offset=") (string/starts-with? % "align=")) false) xs)
+            m (into {} (map #(string/split % #"=") kv))
+            al (if (get m "align") (let [a (parse-int (get m "align"))]
+                                     (loop [l 0] (if (= (bit-shift-left 1 l) a) l (recur (inc l)))))
+                   (get natural-align op))]
+        [[[al (parse-int (get m "offset" "0"))]] xs])
+      :else (fail "unknown instruction " op))))
+
+(declare instrs!)
+
+(defn- emit! [ctx instr] (update ctx :out conj! instr))
+
+(defn- block-head
+  "[label-id blocktype rest] of a block/loop/if/try_table's items."
+  [ctx xs]
+  (let [lbl (if (id? (first xs)) (first xs) nil)
+        xs (if lbl (rest xs) xs)
+        [ty xs] (split-with #(or (form? % "type") (form? % "param") (form? % "result")) xs)
+        bt (cond (empty? ty) :empty
+                 (and (= 1 (count ty)) (form? (first ty) "result") (= 2 (count (first ty))))
+                 (valtype (:env ctx) (nth (first ty) 1))
+                 :else (fail "block type " (pr-str ty) " (not needed by the driver's output)"))]
+    [lbl bt xs]))
+
+(defn- open-label [ctx lbl]
+  (let [n (:nlabel ctx)]
+    (-> ctx (update :labels conj lbl) (assoc :nlabel (inc n))
+        (cond-> lbl (update :label-names conj [n (subs lbl 1)])))))
+
+(defn- close-label [ctx] (emit! (update ctx :labels pop) [:end]))
+
+(defn- catch-clause [ctx c]
+  (let [k (keyword (head c))]
+    (case (head c)
+      ("catch" "catch_ref") [k (idx (:env ctx) :tags (nth c 1)) (label-depth ctx (nth c 2))]
+      ("catch_all" "catch_all_ref") [k (label-depth ctx (nth c 1))]
+      (fail "bad catch clause " (pr-str c)))))
+
+(defn- folded! [ctx x]
+  (let [op (first x) xs (rest x)]
+    (case op
+      ("block" "loop")
+      (let [[lbl bt body] (block-head ctx xs)]
+        (-> ctx (emit! [(keyword op) bt]) (open-label lbl) (instrs! body) close-label))
+      "if"
+      (let [[lbl bt xs] (block-head ctx xs)
+            [conds clauses] (split-with #(not (or (form? % "then") (form? % "else"))) xs)
+            th (first (filter #(form? % "then") clauses))
+            el (first (filter #(form? % "else") clauses))
+            ctx (-> ctx (instrs! conds) (emit! [:if bt]) (open-label lbl) (instrs! (rest th)))
+            ctx (if el (-> ctx (emit! [:else]) (instrs! (rest el))) ctx)]
+        (close-label ctx))
+      "try_table"
+      (let [[lbl bt xs] (block-head ctx xs)
+            [cs body] (split-with #(contains? #{"catch" "catch_ref" "catch_all" "catch_all_ref"} (head %)) xs)]
+        (-> ctx (emit! [:try_table bt (mapv #(catch-clause ctx %) cs)]) (open-label lbl) (instrs! body) close-label))
+      (let [[im operands] (imms ctx op xs)
+            k (keyword op)]
+        (-> ctx (instrs! operands) (emit! (into [k] im))
+            (cond-> (= op "array.new_data") (assoc :data? true)))))))
+
+(defn- instrs!
+  "Flatten items (folded forms, or plain instructions with their immediates)."
+  [ctx items]
+  (loop [ctx ctx items (seq items)]
+    (if (nil? items) ctx
+        (let [x (first items)]
+          (cond (vector? x) (recur (folded! ctx x) (next items))
+                (contains? #{"block" "loop" "if" "try_table"} x) (fail "plain " x " (not needed by the driver's output)")
+                (string? x) (let [[im more] (imms ctx x (rest items))]
+                              (recur (emit! ctx (into [(keyword x)] im)) (seq more)))
+                :else (fail "unexpected in instructions: " (pr-str x)))))))
+
+(defn- run-instrs [env items extra]
+  (let [ctx (instrs! (merge {:env env :locals {} :labels [] :nlabel 0 :label-names [] :out (transient [])} extra) items)]
+    (assoc ctx :out (persistent! (:out ctx)))))
+
+;; ---------------------------------------------------------------------------
+;; The module (pass 2)
+
+(defn- take-exports
+  "[export-names rest] of an item's inline (export ..) forms."
+  [xs]
+  (let [[ex more] (split-with #(form? % "export") xs)]
+    [(mapv #(str-lit (nth % 1)) ex) more]))
+
+(defn- typeuse
+  "[typeidx param-names rest st nparams] for a type use at the start of xs;
+   st's :implicit is updated when the signature needs a new type."
+  [st xs]
+  (let [env (:env st)
+        [tref xs] (if (form? (first xs) "type") [(first xs) (rest xs)] [nil xs])
+        [sig more] (split-with #(or (form? % "param") (form? % "result")) xs)
+        [ps names rs] (params-results env sig)]
+    (if tref
+      (let [ti (type-index env (nth tref 1))]
+        [ti names more st (count (nth (nth (:explicit st) ti) 1))])
+      (let [ft [:func ps rs]
+            hit (get-in st [:implicit ft])]
+        (if hit
+          [hit names more st (count ps)]
+          (let [i (+ (:nexplicit st) (count (:implicit-order st)))]
+            [i names more (-> st (assoc-in [:implicit ft] i) (update :implicit-order conj ft)) (count ps)]))))))
+
+(defn- add-name [st k i id] (if id (update-in st [:names k] (fnil conj []) [i (subs id 1)]) st))
+
+(defn- add-exports [st kind i names]
+  (reduce (fn [st n] (update-in st [:m :exports] (fnil conj []) {:name n :kind kind :index i})) st names))
+
+(defn- mod-conj [st k v] (update-in st [:m k] (fnil conj []) v))
+
+(defn- func-field [st f]
+  (let [env (:env st)
+        fi (get-in st [:counts :funcs] 0)
+        id (field-id f)
+        xs (if id (drop 2 f) (rest f))
+        [exs xs] (take-exports xs)
+        [ti pnames xs st nparams] (typeuse st xs)
+        [locs body] (split-with #(form? % "local") xs)
+        [ltypes lnames] (reduce (fn [[ts ns] l]
+                                  (if (id? (nth l 1 nil))
+                                    [(conj ts (valtype env (nth l 2))) (conj ns [(+ nparams (count ts)) (subs (nth l 1) 1)])]
+                                    [(into ts (map #(valtype env %) (rest l))) ns]))
+                                [[] []] locs)
+        names (into pnames lnames)
+        lmap (into {} (map (fn [[i n]] [(str "$" n) i]) names))
+        ctx (run-instrs env body {:locals lmap})]
+    (-> st
+        (assoc-in [:counts :funcs] (inc fi))
+        (add-name :funcs fi id)
+        (cond-> (seq names) (update-in [:names :locals] (fnil conj []) [fi names])
+                (seq (:label-names ctx)) (update-in [:names :labels] (fnil conj []) [fi (:label-names ctx)])
+                (:data? ctx) (assoc :data? true))
+        (add-exports :func fi exs)
+        (mod-conj :funcs ti)
+        (mod-conj :code {:locals ltypes :body (:out ctx)}))))
+
+(defn- const-expr [st items]
+  (let [ctx (run-instrs (:env st) items {})]
+    [(:out ctx) (if (:data? ctx) (assoc st :data? true) st)]))
+
+(defn- field! [st f]
+  (let [env (:env st)
+        bump (fn [st space] (assoc-in st [:counts space] (inc (get-in st [:counts space] 0))))
+        cnt (fn [st space] (get-in st [:counts space] 0))]
+    (case (head f)
+      ("rec" "type") st                 ; encoded from :explicit at the end
+      "import" (let [d (nth f 3)
+                     id (field-id d)
+                     xs (if id (drop 2 d) (rest d))
+                     im {:module (str-lit (nth f 1)) :name (str-lit (nth f 2))}]
+                 (case (head d)
+                   "func" (let [[ti _ more st] (typeuse st xs)
+                                i (cnt st :funcs)]
+                            (when (seq more) (fail "unexpected in an import: " (pr-str more)))
+                            (-> st (mod-conj :imports (assoc im :desc [:func ti])) (add-name :funcs i id) (bump :funcs)))
+                   "tag" (let [[ti _ _ st] (typeuse st xs) i (cnt st :tags)]
+                           (-> st (mod-conj :imports (assoc im :desc [:tag ti])) (add-name :tags i id) (bump :tags)))
+                   (fail "import of " (head d) " (not needed by the driver's output)")))
+      "func" (func-field st f)
+      "memory" (let [id (field-id f) i (cnt st :memories)
+                     [exs xs] (take-exports (if id (drop 2 f) (rest f)))
+                     lim (if (= 2 (count xs)) {:min (parse-int (first xs)) :max (parse-int (second xs))} {:min (parse-int (first xs))})]
+                 (-> st (mod-conj :memories lim) (add-name :memories i id) (add-exports :memory i exs) (bump :memories)))
+      "tag" (let [id (field-id f) i (cnt st :tags)
+                  [exs xs] (take-exports (if id (drop 2 f) (rest f)))
+                  [ti _ more st] (typeuse st xs)]
+              (when (seq more) (fail "unexpected in a tag: " (pr-str more)))
+              (-> st (mod-conj :tags ti) (add-name :tags i id) (add-exports :tag i exs) (bump :tags)))
+      "global" (let [id (field-id f) i (cnt st :globals)
+                     [exs xs] (take-exports (if id (drop 2 f) (rest f)))
+                     t (first xs)
+                     [vt mut?] (if (form? t "mut") [(valtype env (nth t 1)) true] [(valtype env t) false])
+                     [init st] (const-expr st (rest xs))]
+                 (-> st (mod-conj :globals {:type vt :mut? mut? :init init}) (add-name :globals i id)
+                     (add-exports :global i exs) (bump :globals)))
+      "data" (let [id (field-id f) i (cnt st :data)
+                   xs (if id (drop 2 f) (rest f))
+                   _ (when (form? (first xs) "memory") (fail "data with a memory use"))
+                   [off xs] (split-with vector? xs)
+                   off (if (form? (first off) "offset") (rest (first off)) off)
+                   [offset st] (if (seq off) (const-expr st off) [nil st])
+                   bs (vec (mapcat #(if (map? %) (:str %) (fail "unexpected in data: " (pr-str %))) xs))]
+               (-> st (mod-conj :data {:mode (if offset {:offset offset} :passive) :bytes bs})
+                   (add-name :data i id) (bump :data)))
+      "elem" (let [id (field-id f) i (cnt st :elems)
+                   xs (if id (drop 2 f) (rest f))
+                   [mode xs] (cond (= "declare" (first xs)) [:declare (rest xs)]
+                                   (vector? (first xs)) (let [[o st2] (const-expr st [(first xs)])]
+                                                          (when (:data? st2) (fail "elem offset"))
+                                                          [{:offset o} (rest xs)])
+                                   :else [:passive xs])
+                   xs (if (= "func" (first xs)) (rest xs) (fail "elem without func (not needed by the driver's output)"))]
+               (-> st (mod-conj :elems {:mode mode :funcs (mapv #(idx env :funcs %) xs)})
+                   (add-name :elems i id) (bump :elems)))
+      "start" (assoc-in st [:m :start] (idx env :funcs (nth f 1)))
+      "export" (let [d (nth f 2)
+                     kind (get {"func" [:func :funcs] "global" [:global :globals] "memory" [:memory :memories]
+                                "tag" [:tag :tags] "table" [:table :tables]} (head d))]
+                 (if kind
+                   (mod-conj st :exports {:name (str-lit (nth f 1)) :kind (first kind) :index (idx env (second kind) (nth d 1))})
+                   (fail "bad export " (pr-str f))))
+      (fail "unknown module field " (pr-str (head f))))))
+
+(defn module-model
+  "wasm.wasmbin's section model for the WAT module text t."
+  [t]
+  (let [top (parse-sexprs t)
+        _ (when-not (and (= 1 (count top)) (form? (first top) "module")) (fail "expected one (module ..)"))
+        fields (let [xs (rest (first top))] (if (id? (first xs)) (fail "named module") xs))
+        env (index-spaces fields)
+        ;; explicit types, as entries (a rec group is one) and as a flat list by index
+        entries (vec (keep (fn [f]
+                             (case (head f)
+                               "rec" {:rec (mapv #(typedef env %) (rest f))}
+                               "type" (typedef env f)
+                               nil))
+                           fields))
+        flat (vec (mapcat #(if (and (map? %) (contains? % :rec)) (:rec %) [%]) entries))
+        explicit (mapv #(if (map? %) (:comp %) %) flat)
+        st (reduce field! {:env env :m {} :nexplicit (count flat) :explicit explicit
+                           :implicit {} :implicit-order [] :names {} :counts {}}
+                   fields)
+        tnames (vec (sort-by first (map (fn [[k i]] [i (subs k 1)]) (:types env))))
+        names (cond-> (:names st) (seq tnames) (assoc :types tnames))
+        m (:m st)
+        m (if (or (seq entries) (seq (:implicit-order st))) (assoc m :types (into entries (:implicit-order st))) m)
+        m (if (:data? st) (assoc m :data-count (count (:data m))) m)]
+    (assoc m :names names)))
+
+;; ---------------------------------------------------------------------------
+;; The roundtrip row's entry point
+
+(def ^:private hex2 (mapv (fn [b] (str (nth "0123456789abcdef" (quot b 16)) (nth "0123456789abcdef" (rem b 16)))) (range 256)))
+
+(defn bytes->hex [bs] (apply str (map hex2 bs)))
