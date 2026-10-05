@@ -1,0 +1,253 @@
+;; P10.1: wasm.emit (rt/wasm/emit.lg), the evaluator's second output, under
+;; native lg on its native host (rt/wasm/eval_native.lg). Each case is a fn
+;; form and a table of arguments: native `eval` of the form applied to each
+;; row, wasm.eval/eval (the evaluator, the second leg) the same, and the
+;; module wasm.emit makes of it, run by node through checks/emit-run.mjs
+;; with the row's values boxed, must print the same result or the same
+;; ex-message. A table's forms share one module and one node process.
+;; checks/emit-native.sh (row P10.1) runs whole programs the same way.
+(ns emit-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.eval :as ev]
+            [wasm.eval-native]
+            [wasm.emit]
+            [clojure.string :as string]))
+
+(def ^:private hexd "0123456789abcdef")
+(defn- hex [bs] (apply str (mapcat (fn [b] [(nth hexd (quot b 16)) (nth hexd (rem b 16))]) bs)))
+
+(defn- jstr [s] (str "\"" (-> s (string/replace "\\" "\\\\") (string/replace "\"" "\\\"")) "\""))
+(defn- json [x]
+  (cond (string? x) (jstr x)
+        (map? x) (str "{" (string/join "," (map (fn [[k v]] (str (jstr (name k)) ":" (json v))) x)) "}")
+        (sequential? x) (str "[" (string/join "," (map json x)) "]")
+        :else (str x)))
+
+(defn- arg [x]
+  (cond (nil? x) {:nil true}
+        (or (true? x) (false? x)) {:b x}
+        (int? x) {:i (str x)}
+        (not= x x) {:f "NaN"}
+        (> x 1.7976931348623157e308) {:f "Inf"}
+        (< x -1.7976931348623157e308) {:f "-Inf"}
+        (and (= x 0.0) (< (/ 1.0 x) 0.0)) {:f "-0"}
+        :else {:f (str x)}))
+
+(defn- res [f] (try (pr-str (f)) (catch Exception e (str "ERR: " (ex-message e)))))
+
+(defn- run-node
+  "stdout lines and exit code of checks/emit-run.mjs on bytes and steps."
+  [bytes steps]
+  (let [r (os/sh "node" "checks/emit-run.mjs" "--hex" (hex bytes) "--plan" (json {:steps steps}))]
+    [(string/split-lines (:out r)) (:exit r) (:err r)]))
+
+(defn- emitted
+  "The emit leg of a table: one module of every case's form (anonymous fns,
+   exported as lw fn K), one node run, one line per row."
+  [cases]
+  (let [bytes (ev/emit-module (map (fn [[src _]] (read-string src)) cases))
+        steps (vec (mapcat (fn [k [_ rows]]
+                             (map (fn [as] {:print [{:call (str "lw fn " k) :args (mapv arg as)}]
+                                            :catch [{:s "ERR:"} {:err true}]})
+                                  rows))
+                           (range) cases))]
+    (first (run-node bytes steps))))
+
+(defn- check-table
+  "Every row of every case: emit == native, and eval == native."
+  [cases]
+  (let [mine (emitted cases)
+        i (atom 0)]
+    (doseq [[src rows] cases]
+      (let [nf (eval (read-string src)) ef (ev/eval (read-string src))]
+        (doseq [as rows]
+          (let [n (res (fn [] (apply nf as)))]
+            (is (= n (nth mine @i nil)) (str "emit " src " " (pr-str as)))
+            (is (= n (res (fn [] (apply ef as)))) (str "eval " src " " (pr-str as)))
+            (swap! i inc)))))))
+
+(def ^:private MAX 9223372036854775807)
+(def ^:private MIN -9223372036854775808)
+
+;; the op-matrix operands (corpus/opmatrix/README.md), floats around the
+;; special values, and the non-numbers
+(def ^:private int-ops [0 1 -1 2 -2 7 -7 2147483648 -2147483648 4294967296 4611686018427387904 MAX MIN 3037000499 3037000500])
+(def ^:private float-ops [0.0 -0.0 1.5 -2.5 3.0 7.0 1e300 1e-310 ##Inf ##-Inf ##NaN])
+(def ^:private others [nil true false])
+(def ^:private operands (vec (concat int-ops float-ops others)))
+(def ^:private shift-counts [0 1 31 32 63 64 65 -1 -64])
+(def ^:private few [0 1 -1 MAX MIN 1.5 ##NaN nil])
+
+(defn- pairs [xs ys] (vec (for [a xs b ys] [a b])))
+(defn- ones [xs] (mapv vector xs))
+(defn- triples [xs] (vec (for [a xs b xs c xs] [a b c])))
+
+(deftest arithmetic
+  (check-table
+   (concat (map (fn [op] [(str "(fn [a b] (" op " a b))") (pairs operands operands)]) ["+" "-" "*" "quot" "rem" "mod"])
+           (map (fn [op] [(str "(fn [a] (" op " a))") (ones operands)]) ["inc" "dec" "-" "+" "*"])
+           (map (fn [op] [(str "(fn [a b c] (" op " a b c))") (triples few)]) ["+" "-" "*"])
+           [["(fn [] (+))" [[]]] ["(fn [] (*))" [[]]]
+            ["(fn [a b c d] (- a b c d))" [[1 2 3 4] [MIN 1 0 0] [1.5 2 nil 1]]]])))
+
+(deftest division
+  ;; Int/Int `/` that is not exact (a Ratio) or (/ MinInt64 -1) (a BigInt)
+  ;; is the emitter's named limit (D15), also as the intermediate of
+  ;; (/ a b c): those rows are checked against the limit's text, every other
+  ;; row against native
+  (let [cases [["(fn [a b] (/ a b))" (pairs operands operands)] ["(fn [a] (/ a))" (ones operands)]
+               ["(fn [a b c] (/ a b c))" (triples few)]]
+        mine (emitted cases)
+        i (atom 0)
+        ratio? (fn [s] (or (and (string/includes? s "/") (not (string/starts-with? s "ERR"))) (and (string/ends-with? s "N") (not= s "NaN"))))]
+    (doseq [[src rows] cases]
+      (let [nf (eval (read-string src))]
+        (doseq [as rows]
+          (let [n (res (fn [] (apply nf as))) m (nth mine @i nil)
+                ;; a three-arg row also stops where its first quotient is one
+                limited? (or (ratio? n) (and (= 3 (count as)) (ratio? (res (fn [] (/ (first as) (second as)))))))]
+            (if limited?
+              (is (contains? #{"ERR: wasm.emit: / of two Ints yielding a Ratio (named limit)"
+                               "ERR: wasm.emit: (/ MinInt64 -1) is a BigInt (named limit)"} m)
+                  (str "limit " src " " (pr-str as) " native " n))
+              (is (= n m) (str "emit " src " " (pr-str as))))
+            (swap! i inc)))))))
+
+(deftest comparison
+  (check-table
+   (concat (map (fn [op] [(str "(fn [a b] (" op " a b))") (pairs operands operands)]) ["<" "<=" ">" ">=" "=" "not="])
+           (map (fn [op] [(str "(fn [a] (" op " a))") (ones operands)]) ["zero?" "pos?" "neg?" "not" "<" "=" "not="])
+           (map (fn [op] [(str "(fn [a b c] (" op " a b c))") (triples few)]) ["<" ">=" "=" "not="]))))
+
+(deftest bits
+  (check-table
+   (concat (map (fn [op] [(str "(fn [a b] (" op " a b))") (pairs operands operands)])
+                ["bit-and" "bit-or" "bit-xor" "bit-and-not" "unchecked-add" "unchecked-subtract" "unchecked-multiply"])
+           (map (fn [op] [(str "(fn [a b] (" op " a b))") (pairs operands shift-counts)])
+                ["bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"])
+           [["(fn [a] (bit-not a))" (ones operands)]])))
+
+(deftest d16-quirks
+  ;; DECISIONS.md D16 and corpus/opmatrix/README.md: native's behaviours the
+  ;; backend reproduces rather than fixes, row by row
+  (check-table
+   [["(fn [a b] (quot a b))" [[MIN -1] [1 0] [0 0] [MIN 1]]]
+    ["(fn [a] (- a))" [[MIN] [MAX] [0.0] [##NaN]]]
+    ["(fn [a b] (- a b))" [[MIN 1]]]
+    ["(fn [a] (dec a))" [[MIN]]]
+    ["(fn [a] (inc a))" [[MAX]]]
+    ["(fn [a b c] (+ a b c))" [[MAX 1 0] [0 MAX 1]]]
+    ["(fn [a b] (bit-shift-left a b))" [[1 64] [1 -1] [1 63]]]
+    ["(fn [a b] (bit-shift-right a b))" [[-7 64] [-7 -1] [7 64]]]
+    ["(fn [a b] (unsigned-bit-shift-right a b))" [[-1 64] [-1 1]]]
+    ["(fn [a b] (rem a b))" [[MIN -1] [1 0] [1.0 ##Inf] [##Inf 1]]]
+    ["(fn [a b] (mod a b))" [[MIN -1] [-7 2] [7.5 0.0] [-1 ##Inf]]]
+    ["(fn [a b] (/ a b))" [[1.0 0] [0.0 0.0] [-1 0.0] [1 0]]]
+    ["(fn [a b] (* a b))" [[MAX 2] [MIN -1] [-1 MIN] [3037000499 3037000499] [3037000500 3037000500]]]])
+  (testing "uncaught: native's error line (the text before ExecutionError: is dropped)"
+    (let [bytes (ev/emit-module [(read-string "(fn [a] (inc a))") (read-string "(fn [a b] (quot a b))")])
+          run1 (fn [k as] (run-node bytes [{:print [{:call (str "lw fn " k) :args (mapv arg as)}]}]))]
+      (is (= [1 "error: integer overflow\n"] (rest (run1 0 [MAX]))))
+      (is (= [1 "error: divide by zero\n"] (rest (run1 1 [1 0]))))
+      (is (= [["3"] 0 ""] (run1 1 [7 2]))))))
+
+(deftest constructs
+  (check-table
+   [["(fn [x] (let [y (inc x) z (* y 2)] (if (> z 10) z (- z))))" (ones [0 4 5 9 -3 1.5 MAX])]
+    ["(fn [x] (let [x (inc x)] (let [x (* x 2)] x)))" (ones [1 2.5])]
+    ["(fn [n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc i)) acc)))" (ones [0 1 10 1000 -5])]
+    ["(fn [n acc] (if (zero? n) acc (recur (dec n) (* acc n))))" [[5 1] [20 1] [21 1] [0 7] [3 1.5]]]
+    ["(fn [a b] (loop [x a] (if (< x b) (let [y (+ x 3)] (recur y)) (loop [z x] (if (> z 0) (recur (- z 7)) z)))))" [[0 10] [-5 4] [100 1]]]
+    ["(fn [x] (do 1 2.0 nil x))" (ones [7 nil])]
+    ["(fn [x] (if x 1))" (ones [nil false true 0])]
+    ["(fn [] (quote 5))" [[]]] ["(fn [] '2.5)" [[]]] ["(fn [] nil)" [[]]] ["(fn [] (do))" [[]]]
+    ["(fn [a b] (cond (and a b) 1 (or a b) 2 :else 3))" (pairs [nil false true 0] [nil false true 0])]
+    ["(fn [a b] (when-not (= a b) (if-not a b a)))" (pairs [nil 1 2] [nil 1 2])]
+    ["(fn [a] (and))" (ones [1])] ["(fn [a] (or))" (ones [1])] ["(fn [a b] (or a (and b 5)))" (pairs [nil false 1] [nil false 1])]
+    ["(fn [x] (-> x inc (* 3) (- 1)))" (ones [1 -2 1.5])] ["(fn [x] (->> x (- 10) (quot 100)))" (ones [1 9 10 11])]
+    ["(fn [n] (let [acc (+ n 0)] (dotimes [i n] (* i 2)) acc))" (ones [0 3])]
+    ["(fn [x] (when (pos? x) (if (> x 10) 10 x)))" (ones [-1 0 5 50 2.5])]
+    ["(fn ^long [^long n] n)" (ones [4])]]))
+
+(deftest literals
+  ;; f64.const travels as IEEE bits (em-float-bits, plain lg); each literal
+  ;; through the module prints as native prints it
+  (let [srcs ["0.0" "-0.0" "1.0" "-1.5" "0.1" "1e300" "-1e-300" "1e-310" "5e-324" "2.2250738585072014e-308"
+              "1.7976931348623157e308" "##Inf" "##-Inf" "##NaN" "1e21" "1e16" "123456789.123" "1e-7"
+              "0.30000000000000004" "9007199254740993.0" "1234567.5" "0.0001" "0.00001"
+              "0" "-1" "9223372036854775807" "-9223372036854775808" "1073741823" "1073741824" "-1073741825"
+              "true" "false" "nil"]]
+    (check-table (map (fn [x] [(str "(fn [] " x ")") [[]]]) srcs))
+    (testing "the bits"
+      (let [bits @#'wasm.eval/em-float-bits]
+        (is (= 0x3FF0000000000000 (bits 1.0)))
+        (is (= MIN (bits -0.0)))
+        (is (= 1 (bits 5e-324)))
+        (is (= 0x000FFFFFFFFFFFFF (bits 2.225073858507201e-308)))
+        (is (= 0x7FEFFFFFFFFFFFFF (bits 1.7976931348623157e308)))
+        (is (= -4616189618054758400 (bits -1.0)))))))
+
+(deftest program-fns
+  ;; defn modules: exports by name (name/N when several arities), calls
+  ;; between the module's fns resolved at emit time, self-recursion
+  (let [src ["(defn em-fib [n] (if (< n 2) n (+ (em-fib (- n 1)) (em-fib (- n 2)))))"
+             "(defn- em-twice [x] (* 2 x))"
+             "(defn em-ar ([x] (em-ar x 10)) ([x y] (+ (em-twice x) y)))"
+             "(defn em-tak [x y z] (if (< y x) (em-tak (em-tak (dec x) y z) (em-tak (dec y) z x) (em-tak (dec z) x y)) z))"
+             "(fn [a] (em-ar a a))"]
+        forms (map read-string src)
+        _ (doseq [f forms] (eval f))
+        calls [["em-fib" [0]] ["em-fib" [20]] ["em-fib" [1.5]] ["em-twice" [21]] ["em-ar" [1]] ["em-ar" [1 2]]
+               ["em-ar" [MAX]] ["em-tak" [18 12 6]] ["lw fn 0" [4]]]
+        native (mapv (fn [[nm as]] (res (fn [] (apply (if (= nm "lw fn 0") (eval (last forms)) @(resolve (symbol nm))) as)))) calls)
+        [mine code] (run-node (ev/emit-module forms)
+                              (mapv (fn [[nm as]] {:print [{:call nm :args (mapv arg as)}] :catch [{:s "ERR:"} {:err true}]}) calls))]
+    (is (= 0 code))
+    (doseq [[c n m] (map vector calls native mine)] (is (= n m) (pr-str c)))))
+
+(defn- emit-err [& srcs]
+  (try (ev/emit-module (map read-string srcs)) "no error"
+       (catch Exception e (ex-message e))))
+
+(deftest named-errors
+  (testing "a form outside the subset raises wasm.emit: unsupported form <head>"
+    (is (= "wasm.emit: unsupported form str" (emit-err "(fn [x] (str x))")))
+    (is (= "wasm.emit: unsupported form [x]" (emit-err "(fn [x] [x])")))
+    (is (= "wasm.emit: unsupported form :k" (emit-err "(fn [x] :k)")))
+    (is (= "wasm.emit: unsupported form \"s\"" (emit-err "(fn [x] \"s\")")))
+    (is (= "wasm.emit: unsupported form & (a variadic fn)" (emit-err "(fn [& xs] 1)")))
+    (is (= "wasm.emit: unsupported form fn*" (emit-err "(fn [x] (fn [] x))")))
+    (is (= "wasm.emit: unsupported form try" (emit-err "(fn [x] (try x (finally 1)))")))
+    (is (= "wasm.emit: unsupported form f (call of a local)" (emit-err "(fn [f] (f 1))")))
+    (is (= "wasm.emit: unsupported form em-g (a fn as a value)" (emit-err "(defn em-g [x] em-g)")))
+    (is (= "wasm.emit: unsupported form quote" (emit-err "(fn [] 'x)")))
+    (is (= "wasm.emit: unsupported form nth" (emit-err "(fn [x] (let [[a] x] a))")))
+    (is (= "wasm.emit: unsupported form *assert*" (emit-err "(fn [x] (assert x))")))
+    (is (= "wasm.emit: unsupported form def (of a non-fn value)" (emit-err "(def em-x 1)")))
+    (is (= "wasm.emit: unsupported form println (at top level)" (emit-err "(println 1)")))
+    (is (= "wasm.emit: unsupported form println" (emit-err "(fn [x] (println x))"))))
+  (testing "the emitter's own limits"
+    (is (= "wasm.emit: quot of 1 args (named limit)" (emit-err "(fn [x] (quot x))")))
+    (is (= "wasm.emit: em-h has no 2-arity (named limit)" (emit-err "(defn em-h [x] (em-h x x))")))
+    (is (= "wasm.emit: redefinition of em-h (named limit)" (emit-err "(defn em-h [x] x)" "(defn em-h [x] x)")))
+    (is (= "wasm.emit: two arities of the same count in fn (named limit)" (emit-err "(fn ([a] 1) ([b] 2))"))))
+  (testing "the evaluator's compile errors, root message only (no CompileError context layers)"
+    (is (= "CompileError: Can't resolve nope in this context" (emit-err "(fn [] (nope))")))
+    (is (= "CompileError: Can't resolve em-later in this context" (emit-err "(defn em-a [] (em-later))" "(defn em-later [] 1)")))
+    (is (= "CompileError: recur is only allowed in tail position" (emit-err "(fn [x] (+ 1 (recur 2)))")))
+    (is (= "CompileError: recur argument count must match function argument count" (emit-err "(fn [x] (recur))")))
+    (is (= "CompileError: recur argument count must match loop bindings count" (emit-err "(fn [] (loop [a 1] (recur)))")))
+    (is (= "CompileError: if: wrong number of forms (1), need 2 or 3" (emit-err "(fn [] (if 1))")))))
+
+(deftest dialect
+  ;; emit.lg is plain lg like eval.lg: its first ns form requires the
+  ;; evaluator and the encoder only, the second re-enters wasm.eval as the
+  ;; host files do (D187); no interop, no regex, nothing rebound
+  (let [text (slurp "rt/wasm/emit.lg")
+        first-ns (read-string text)]
+    (is (string/includes? text "DIALECT: plain lg"))
+    (is (= '(ns wasm.emit (:require [wasm.eval] [wasm.wasmbin])) first-ns))
+    (is (string/includes? text "(ns wasm.eval\n  (:refer-clojure :exclude [eval compile])"))
+    (is (not (string/includes? text "#\"")))
+    (is (not (string/includes? text "alter-var-root")))
+    (is (not (string/includes? text "(.")))))

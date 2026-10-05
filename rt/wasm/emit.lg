@@ -1,0 +1,758 @@
+;; wasm.emit — the evaluator's second output (stage 3a of docs/SELF-HOST-SPEC.md):
+;; resolved forms in, the bytes of a standalone WebAssembly module out. It
+;; walks the same forms `compile` (rt/wasm/eval.lg) walks, dispatched the
+;; same way (special form, local, macro, call), and resolves through the
+;; same seam (`resolve-global`, `find-macro`, `expand`, `special-of`), so a
+;; symbol means one thing to both outputs. Where `compile` returns a closure,
+;; this returns wasm instructions; wasm.wasmbin turns the module into bytes.
+;;
+;; DIALECT: plain lg, as eval.lg (core fns only, no interop, no regex), so the
+;; backend can compile it once the module links it (stage 3b). Not in
+;; rt/wasm/README.md's load order yet: nothing in a module loads this file.
+;;
+;; Selection by load order, as rt/wasm/eval_native.lg: the first ns form
+;; requires wasm.eval (the evaluator core) and wasm.wasmbin, the second
+;; re-enters wasm.eval, so everything below is defined in the evaluator's
+;; namespace and reaches its private fns directly; eval.lg has no hook for
+;; this file. A host file must be loaded as well (under stock lg,
+;; (require 'wasm.eval-native)), because resolution goes through the seam.
+;; Entry: (wasm.eval/emit-module forms) -> the module's bytes, ints 0-255.
+;;
+;; THE SUBSET (3a: pure scalar, standalone). Each form is (defn name [params]
+;; body..), (defn- ..), (defn name ([..] ..) ([..] ..)) with fixed arities, or
+;; (fn [params] body..). Bodies: int, float, boolean and nil literals; locals;
+;; if, do, let*, loop*, recur, (quote <scalar>); the evaluator's expanders
+;; for every macro (let, loop, when, cond, and, or, dotimes, -> ..), so their
+;; expansions must land in the subset; calls of this module's own fns (by
+;; name, resolved before the program's vars, arity picked at emit time); and
+;; the core fns in `em-ops` below (+ - * / quot rem mod inc dec, = not= < > <=
+;; >=, zero? pos? neg?, not, the bit ops and unchecked arithmetic). Anything
+;; else raises "wasm.emit: unsupported form <head>" (an ex-info through the
+;; host's raise; nothing falls back). A keyword or string literal is accepted
+;; in the test position of if only (cond's :else), as a true test.
+;;
+;; THE MODULE (the ABI checks/emit-run.mjs speaks; no imports in 3a).
+;;   types   one rec group, private to 3a (decision 4 copies the host's in
+;;           3b): 0 $Int (struct i64), 1 $Float (struct f64), 2 $Bool (struct
+;;           i32); then the func types, interned by signature.
+;;   values  every parameter, local and result is (ref null eq): nil is
+;;           ref.null, an int a fresh $Int (never i31 here), a float a $Float,
+;;           true/false the two $Bool globals.
+;;   funcs   the program's fns first, in definition order, one wasm function
+;;           per arity; then the helpers the code calls (arithmetic,
+;;           comparison, boxing), emitted into the module, each once.
+;;   exports a fn with one arity as its name, a fn with several as name/N
+;;           per arity, an anonymous fn as "lw fn K/N" (K counts the
+;;           anonymous fns); the ABI helpers "lw box_i" (i64), "lw box_f"
+;;           (f64), "lw box_b" (i32), "lw kind" (-> i32), "lw unbox_i",
+;;           "lw unbox_f"; the mutable i32 global "lw err".
+;;   kinds   "lw kind": 0 nil, 1 Int, 2 Float, 3 false, 4 true.
+;;   errors  a helper that raises sets "lw err" to code + 256*ka + 4096*kb
+;;           (ka, kb kinds of the operands) and traps (unreachable); the
+;;           runner reads the global and prints native's text:
+;;             1 integer overflow, op form: uncaught "integer overflow",
+;;               ex-message "ExecutionError: integer overflow" (binary + - *,
+;;               inc, dec: D16)
+;;             2 integer overflow, value form (+ - * of 3 or more args): both
+;;               "integer overflow"
+;;             3 "divide by zero" (quot rem mod, / of Ints)
+;;             4+16v "cannot <verb v> <type ka> and <type kb>", v: 0 add
+;;               1 subtract 2 multiply 3 divide 4 quot 5 rem 6 mod 7 compare
+;;               (unchecked-add & co. raise these too)
+;;             5 "cannot negate <type ka>"
+;;             6 "zero? requires a number, got <str ka>"
+;;             7 "wasm.emit: / of two Ints yielding a Ratio (named limit)"
+;;             8 "wasm.emit: (/ MinInt64 -1) is a BigInt (named limit)"
+;;             9+16v "<op v> expected Int", v: 0 bit-and 1 bit-or 2 bit-xor
+;;               3 bit-and-not 4 bit-shift-left 5 bit-shift-right
+;;               6 unsigned-bit-shift-right 7 bit-not
+;;           A trap with "lw err" 0 is not a language error.
+;; Numeric semantics are pkg/vm/numbers.go's at 4e769212, as rt/wasm/core.lg
+;; and math.lg port them: checked Int arithmetic, Int/Float promotion, Go's
+;; truncated quot/rem, math.Mod for Floats (computed exactly here), the D16
+;; quirks ((quot MinInt64 -1) and (- MinInt64) wrap; Go shift counts).
+(ns wasm.emit
+  (:require [wasm.eval]
+            [wasm.wasmbin]))
+
+(ns wasm.eval
+  (:refer-clojure :exclude [eval compile])
+  (:require [clojure.string :as string]))
+
+(defn- em-fail [msg] (raise (str "wasm.emit: " msg)))
+(defn- em-unsupported [head] (em-fail (str "unsupported form " head)))
+
+;; ---------------------------------------------------------------------------
+;; Instructions as data: flat [opname imm ..] vectors (wasm.wasmbin's model).
+;; A call names its target symbolically, [:call :helper] or [:call [:fn k]],
+;; and em-link numbers them.
+
+(def ^:private em-eqref [:ref-null :eq])
+(def ^:private em-MIN -9223372036854775808)
+(def ^:private em-MAX 9223372036854775807)
+
+(defn- em-instr? [x] (and (vector? x) (keyword? (first x))))
+
+(defn- ins
+  "One flat instruction vector from instructions and nested groups of them."
+  [& xs]
+  (reduce (fn [acc x]
+            (cond (nil? x) acc
+                  (em-instr? x) (conj acc x)
+                  :else (into acc (apply ins x))))
+          [] xs))
+
+;; f64.const takes the IEEE bits. Exact for every double: powers of two only
+;; (exact while the operand stays normal), as wasm.seq/float-bits, with
+;; `long` where that file has the f64-to-i64 intrinsic.
+(defn- em-binary-exponent [a]
+  (loop [m a e 0]
+    (cond (>= m 1.6615349947311448e35) (recur (* m 5.421010862427522e-20) (+ e 64))
+          (>= m 9007199254740992.0) (recur (* m 0.5) (inc e))
+          (< m 0.00048828125) (recur (* m 1.8446744073709552e19) (- e 64))
+          (< m 4503599627370496.0) (recur (* m 2.0) (dec e))
+          :else e)))
+
+(defn- em-scale-by [a e]
+  (loop [m a e e]
+    (cond (>= e 64) (recur (* m 5.421010862427522e-20) (- e 64))
+          (> e 0) (recur (* m 0.5) (dec e))
+          (<= e -64) (recur (* m 1.8446744073709552e19) (+ e 64))
+          (< e 0) (recur (* m 2.0) (inc e))
+          :else m)))
+
+(defn- em-float-bits [x]
+  (cond (if (< x 0.0) false (if (>= x 0.0) false true)) 0x7FF8000000000001
+        (> x 1.7976931348623157e308) 0x7FF0000000000000
+        (< x -1.7976931348623157e308) -4503599627370496
+        (if (< x 0.0) false (if (> x 0.0) false true))
+        (if (< (/ 1.0 x) 0.0) em-MIN 0)
+        :else
+        (let [neg (< x 0.0)
+              a (if neg (- 0.0 x) x)
+              e (em-binary-exponent a)
+              mant (long (em-scale-by a e))
+              be (+ e 1075)
+              mag (if (>= be 1)
+                    (bit-or (bit-shift-left be 52) (- mant 4503599627370496))
+                    (unsigned-bit-shift-right mant (- 1 be)))]
+          (if neg (bit-or mag em-MIN) mag))))
+
+(def ^:private em-inf 0x7FF0000000000000)
+(def ^:private em-ninf -4503599627370496)
+(def ^:private em-nan 0x7FF8000000000001)
+(def ^:private em-two 0x4000000000000000)
+(def ^:private em-half 0x3FE0000000000000)
+
+;; ---------------------------------------------------------------------------
+;; Helpers: wasm functions emitted into the module on first use.
+;; name -> {:params :results :locals :body}
+
+(defn- lget [i] [:local.get i])
+(defn- lset [i] [:local.set i])
+(defn- i32c [n] [:i32.const n])
+(defn- i64c [n] [:i64.const n])
+(defn- f64c [bits] [:f64.const bits])
+
+(defn- em-trap
+  "Set lw err to code + 256*ka + 4096*kb (each an instruction group leaving
+   an i32) and trap."
+  [code ka kb]
+  (ins code ka kb [:call :fail] [:unreachable]))
+
+(defn- em-when [cond-instrs & body] (ins cond-instrs [:if :empty] body [:end]))
+
+;; binary helper locals: 0 a, 1 b (eqref); 2 ka, 3 kb (i32); 4 x, 5 y, 6 r
+;; (i64); 7 fa, 8 fb, 9 fr (f64)
+(def ^:private bin-locals [:i32 :i32 :i64 :i64 :i64 :f64 :f64 :f64])
+
+(defn- both-int [] (ins (lget 2) (i32c 1) [:i32.eq] (lget 3) (i32c 1) [:i32.eq] [:i32.and]))
+(defn- num-k [i] (ins (lget i) (i32c 1) [:i32.sub] (i32c 2) [:i32.lt_u]))
+(defn- both-num [] (ins (num-k 2) (num-k 3) [:i32.and]))
+
+(defn- em-bin
+  "Body of a binary helper: kinds into ka kb; both Ints: x y, then
+   int-part (leaves the result); both numbers: fa fb, then float-part;
+   otherwise trap with code (and the kinds)."
+  [int-part float-part code]
+  (ins (lget 0) [:call :kind] (lset 2)
+       (lget 1) [:call :kind] (lset 3)
+       (em-when (both-int)
+                (lget 0) [:call :unbox_i] (lset 4)
+                (lget 1) [:call :unbox_i] (lset 5)
+                int-part [:return])
+       (when float-part
+         (em-when (both-num)
+                  (lget 0) (lget 2) [:call :tof] (lset 7)
+                  (lget 1) (lget 3) [:call :tof] (lset 8)
+                  float-part [:return]))
+       (em-trap (i32c code) (lget 2) (lget 3))))
+
+(defn- bin [body] {:params [em-eqref em-eqref] :results [em-eqref] :locals bin-locals :body body})
+(defn- un [locals body] {:params [em-eqref] :results [em-eqref] :locals locals :body body})
+
+(defn- box-i [& xs] (ins xs [:call :box_i]))
+(defn- box-f [& xs] (ins xs [:call :box_f]))
+(defn- box-b [& xs] (ins xs [:call :box_b]))
+
+(defn- add-int [ovf]                       ; checkedAddInt
+  (ins (lget 4) (lget 5) [:i64.add] (lset 6)
+       (em-when (ins (lget 4) (lget 6) [:i64.xor] (lget 5) (lget 6) [:i64.xor] [:i64.and] (i64c 0) [:i64.lt_s])
+                (em-trap (i32c ovf) (i32c 0) (i32c 0)))
+       (box-i (lget 6))))
+
+(defn- sub-int [ovf]
+  (ins (lget 4) (lget 5) [:i64.sub] (lset 6)
+       (em-when (ins (lget 4) (lget 5) [:i64.xor] (lget 4) (lget 6) [:i64.xor] [:i64.and] (i64c 0) [:i64.lt_s])
+                (em-trap (i32c ovf) (i32c 0) (i32c 0)))
+       (box-i (lget 6))))
+
+(defn- mul-int [ovf]
+  ;; the wrapped product r overflowed iff x /= 0 and r/x /= y, except
+  ;; x = -1 (where r/x itself traps): overflow iff y = MinInt64
+  (ins (lget 4) (lget 5) [:i64.mul] (lset 6)
+       (em-when (ins (lget 4) [:i64.eqz] [:i32.eqz])
+                (lget 4) (i64c -1) [:i64.eq]
+                [:if :empty]
+                (em-when (ins (lget 5) (i64c em-MIN) [:i64.eq]) (em-trap (i32c ovf) (i32c 0) (i32c 0)))
+                [:else]
+                (em-when (ins (lget 6) (lget 4) [:i64.div_s] (lget 5) [:i64.ne]) (em-trap (i32c ovf) (i32c 0) (i32c 0)))
+                [:end])
+       (box-i (lget 6))))
+
+(defn- fbin [op] (box-f (lget 7) (lget 8) [op]))
+
+(defn- dbz-if [cond-instrs] (em-when cond-instrs (em-trap (i32c 3) (i32c 0) (i32c 0))))
+
+(defn- f-nan? [i] (ins (lget i) (lget i) [:f64.eq] [:i32.eqz]))
+(defn- f-inf? [i] (ins (lget i) (f64c em-inf) [:f64.eq] (lget i) (f64c em-ninf) [:f64.eq] [:i32.or]))
+
+(defn- float-div-check
+  "numQuotFloat / numRemFloat: b == 0, a infinite or NaN, b NaN -> divide by zero."
+  []
+  (dbz-if (ins (lget 8) (f64c 0) [:f64.eq] (f-inf? 7) [:i32.or] (f-nan? 7) [:i32.or] (f-nan? 8) [:i32.or])))
+
+(defn- f-trunc
+  "math.Trunc of local i without f64.trunc (outside the encoder's table): an
+   |x| of 2^52 or more is integral already; below, through i64, keeping the
+   sign of a zero result."
+  [i]
+  (ins (lget i) (f64c (em-float-bits 4503599627370496.0)) [:f64.lt] (lget i) (f64c (em-float-bits -4503599627370496.0)) [:f64.gt] [:i32.and]
+       [:if :f64]
+       (lget i) [:i64.reinterpret_f64] (i64c 0) [:i64.lt_s]
+       [:if :f64] (f64c em-MIN) [:else] (f64c 0) [:end]
+       (lget i) [:i64.trunc_f64_s] [:f64.convert_i64_s]
+       (lget i) [:i64.trunc_f64_s] [:i64.eqz]
+       [:select]
+       [:else] (lget i) [:end]))
+
+(defn- int-rem [] ; x - y*(x/y), y not 0 or -1, into r
+  (ins (lget 4) (lget 4) (lget 5) [:i64.div_s] (lget 5) [:i64.mul] [:i64.sub] (lset 6)))
+
+(defn- float-rem [] ; numRemFloat after its checks, into fr
+  (ins (lget 8) (f64c em-inf) [:f64.eq] (lget 8) (f64c em-ninf) [:f64.eq] [:i32.or]
+       [:if :empty] (f64c em-nan) (lset 9)
+       [:else] (lget 7) (lget 8) [:call :fmod] (lset 9)
+       [:end]))
+
+(defn- sign-differs [ri yi gt0] ; (r > 0) != (y > 0)
+  (ins (lget ri) gt0 (lget yi) gt0 [:i32.eq] [:i32.eqz]))
+
+(def ^:private verb {:add 0 :sub 1 :mul 2 :div 3 :quot 4 :rem 5 :mod 6 :cmp 7})
+(defn- tcode [v] (+ 4 (* 16 (get verb v))))
+
+(defn- cmp-helper [iop fop]
+  (bin (em-bin (box-b (lget 4) (lget 5) [iop]) (box-b (lget 7) (lget 8) [fop]) (tcode :cmp))))
+
+(defn- sign-test [iop fop]                 ; pos? neg?: NumLt/NumGt against Int 0
+  (un [:i32] (ins (lget 0) [:call :kind] (lset 1)
+                  (em-when (ins (lget 1) (i32c 1) [:i32.eq]) (box-b (lget 0) [:call :unbox_i] (i64c 0) [iop]) [:return])
+                  (em-when (ins (lget 1) (i32c 2) [:i32.eq]) (box-b (lget 0) [:call :unbox_f] (f64c 0) [fop]) [:return])
+                  (em-trap (i32c (tcode :cmp)) (lget 1) (i32c 1)))))
+
+;; bit ops (CoreBitAnd & co., math.lg's bit2): exactly two Ints, else
+;; "<op> expected Int". A shift count is uint(b): >= 64 or negative gives 0
+;; (-1 for >> of a negative), as Go.
+(defn- bit-code [v] (+ 9 (* 16 v)))
+(defn- bit-helper [v int-part]
+  (bin (ins (lget 0) [:call :kind] (lset 2)
+            (lget 1) [:call :kind] (lset 3)
+            (em-when (both-int)
+                     (lget 0) [:call :unbox_i] (lset 4)
+                     (lget 1) [:call :unbox_i] (lset 5)
+                     int-part [:return])
+            (em-trap (i32c (bit-code v)) (lget 2) (lget 3)))))
+(defn- shift-in-range [] (ins (lget 5) (i64c 64) [:i64.lt_u]))
+
+(defn- unchecked-helper [v iop fop]        ; unchecked-add & co.: wrap on Ints, IEEE on Floats
+  (bin (em-bin (box-i (lget 4) (lget 5) [iop]) (fbin fop) (tcode v))))
+
+(defn- em-helpers []
+  {:kind {:params [em-eqref] :results [:i32] :locals []
+          :body (ins (em-when (ins (lget 0) [:ref.is_null]) (i32c 0) [:return])
+                     (em-when (ins (lget 0) [:ref.test [:ref 0]]) (i32c 1) [:return])
+                     (em-when (ins (lget 0) [:ref.test [:ref 1]]) (i32c 2) [:return])
+                     (em-when (ins (lget 0) [:ref.test [:ref 2]])
+                              (lget 0) [:ref.cast [:ref 2]] [:struct.get 2 0] (i32c 3) [:i32.add] [:return])
+                     (i32c 5))}
+   :truthy {:params [em-eqref] :results [:i32] :locals []
+            :body (ins (em-when (ins (lget 0) [:ref.is_null]) (i32c 0) [:return])
+                       (em-when (ins (lget 0) [:ref.test [:ref 2]]) (lget 0) [:ref.cast [:ref 2]] [:struct.get 2 0] [:return])
+                       (i32c 1))}
+   :box_i {:params [:i64] :results [em-eqref] :locals [] :body (ins (lget 0) [:struct.new 0])}
+   :box_f {:params [:f64] :results [em-eqref] :locals [] :body (ins (lget 0) [:struct.new 1])}
+   :box_b {:params [:i32] :results [em-eqref] :locals []
+           :body (ins (lget 0) [:if em-eqref] [:global.get 1] [:else] [:global.get 2] [:end])}
+   :unbox_i {:params [em-eqref] :results [:i64] :locals [] :body (ins (lget 0) [:ref.cast [:ref 0]] [:struct.get 0 0])}
+   :unbox_f {:params [em-eqref] :results [:f64] :locals [] :body (ins (lget 0) [:ref.cast [:ref 1]] [:struct.get 1 0])}
+   :tof {:params [em-eqref :i32] :results [:f64] :locals []
+         :body (ins (lget 1) (i32c 1) [:i32.eq]
+                    [:if :f64] (lget 0) [:call :unbox_i] [:f64.convert_i64_s]
+                    [:else] (lget 0) [:call :unbox_f] [:end])}
+   :fail {:params [:i32 :i32 :i32] :results [] :locals []
+          :body (ins (lget 0) (lget 1) (i32c 256) [:i32.mul] [:i32.add] (lget 2) (i32c 4096) [:i32.mul] [:i32.add]
+                     [:global.set 0] [:unreachable])}
+   ;; math.Mod(x, y) for finite x, y /= 0, exactly: binary long division of
+   ;; |x| by |y|*2^k, every subtraction exact (t <= r < 2t); the sign of x
+   :fmod {:params [:f64 :f64] :results [:f64] :locals [:f64 :f64 :f64]
+          :body (ins (lget 1) [:f64.neg] (lget 1) (lget 1) (f64c 0) [:f64.lt] [:select] (lset 4)
+                     (lget 0) [:f64.neg] (lget 0) (lget 0) (f64c 0) [:f64.lt] [:select] (lset 2)
+                     (em-when (ins (lget 2) (lget 4) [:f64.lt]) (lget 0) [:return])
+                     (lget 4) (lset 3)
+                     [:loop :empty]
+                     (em-when (ins (lget 3) (f64c em-two) [:f64.mul] (lget 2) [:f64.le])
+                              (lget 3) (f64c em-two) [:f64.mul] (lset 3) [:br 1])
+                     [:end]
+                     [:loop :empty]
+                     (em-when (ins (lget 2) (lget 3) [:f64.ge]) (lget 2) (lget 3) [:f64.sub] (lset 2))
+                     (lget 3) (f64c em-half) [:f64.mul] (lset 3)
+                     (lget 3) (lget 4) [:f64.ge] [:br_if 0]
+                     [:end]
+                     (lget 2) [:f64.neg] (lget 2) (lget 0) (f64c 0) [:f64.lt] [:select])}
+   :add (bin (em-bin (add-int 1) (fbin :f64.add) (tcode :add)))
+   :sub (bin (em-bin (sub-int 1) (fbin :f64.sub) (tcode :sub)))
+   :mul (bin (em-bin (mul-int 1) (fbin :f64.mul) (tcode :mul)))
+   :add_v (bin (em-bin (add-int 2) (fbin :f64.add) (tcode :add)))
+   :sub_v (bin (em-bin (sub-int 2) (fbin :f64.sub) (tcode :sub)))
+   :mul_v (bin (em-bin (mul-int 2) (fbin :f64.mul) (tcode :mul)))
+   :div (bin (em-bin (ins (dbz-if (ins (lget 5) [:i64.eqz]))
+                          (em-when (ins (lget 4) (i64c em-MIN) [:i64.eq] (lget 5) (i64c -1) [:i64.eq] [:i32.and])
+                                   (em-trap (i32c 8) (i32c 0) (i32c 0)))
+                          (em-when (ins (lget 5) (i64c -1) [:i64.eq] [:i32.eqz])
+                                   (int-rem)
+                                   (em-when (ins (lget 6) [:i64.eqz] [:i32.eqz]) (em-trap (i32c 7) (i32c 0) (i32c 0))))
+                          (box-i (lget 4) (lget 5) [:i64.div_s]))
+                     (fbin :f64.div) (tcode :div)))
+   :quot (bin (em-bin (ins (dbz-if (ins (lget 5) [:i64.eqz]))
+                           (em-when (ins (lget 5) (i64c -1) [:i64.eq]) (box-i (i64c 0) (lget 4) [:i64.sub]) [:return])
+                           (box-i (lget 4) (lget 5) [:i64.div_s]))
+                      (ins (float-div-check)
+                           (em-when (f-inf? 8) (box-f (f64c 0)) [:return])
+                           (lget 7) (lget 8) [:f64.div] (lset 9)
+                           (box-f (f-trunc 9)))
+                      (tcode :quot)))
+   :rem (bin (em-bin (ins (dbz-if (ins (lget 5) [:i64.eqz]))
+                          (em-when (ins (lget 5) (i64c -1) [:i64.eq]) (box-i (i64c 0)) [:return])
+                          (int-rem) (box-i (lget 6)))
+                     (ins (float-div-check) (float-rem) (box-f (lget 9)))
+                     (tcode :rem)))
+   :mod (bin (em-bin (ins (dbz-if (ins (lget 5) [:i64.eqz]))
+                          (em-when (ins (lget 5) (i64c -1) [:i64.eq]) (box-i (i64c 0)) [:return])
+                          (int-rem)
+                          (em-when (ins (lget 6) [:i64.eqz] [:i32.eqz] (sign-differs 6 5 (ins (i64c 0) [:i64.gt_s])) [:i32.and])
+                                   (lget 6) (lget 5) [:i64.add] (lset 6))
+                          (box-i (lget 6)))
+                     (ins (float-div-check) (float-rem)
+                          (em-when (ins (f-nan? 9) [:i32.eqz] (lget 9) (f64c 0) [:f64.eq] [:i32.eqz] [:i32.and]
+                                        (sign-differs 9 8 (ins (f64c 0) [:f64.gt])) [:i32.and])
+                                   (lget 9) (lget 8) [:f64.add] (lset 9))
+                          (box-f (lget 9)))
+                     (tcode :mod)))
+   :lt (cmp-helper :i64.lt_s :f64.lt)
+   :le (cmp-helper :i64.le_s :f64.le)
+   :gt (cmp-helper :i64.gt_s :f64.gt)
+   :ge (cmp-helper :i64.ge_s :f64.ge)
+   ;; = on scalars: same kind (false and true are distinct kinds) and, for
+   ;; numbers, the same value; an Int never equals a Float
+   :eq {:params [em-eqref em-eqref] :results [:i32] :locals [:i32 :i32]
+        :body (ins (lget 0) [:call :kind] (lset 2) (lget 1) [:call :kind] (lset 3)
+                   (em-when (ins (lget 2) (lget 3) [:i32.eq] [:i32.eqz]) (i32c 0) [:return])
+                   (em-when (ins (lget 2) (i32c 1) [:i32.eq]) (lget 0) [:call :unbox_i] (lget 1) [:call :unbox_i] [:i64.eq] [:return])
+                   (em-when (ins (lget 2) (i32c 2) [:i32.eq]) (lget 0) [:call :unbox_f] (lget 1) [:call :unbox_f] [:f64.eq] [:return])
+                   (i32c 1))}
+   ;; not= of two: two NaNs are not "not=" (core.lg's not-eq quirk)
+   :ne {:params [em-eqref em-eqref] :results [em-eqref] :locals []
+        :body (ins (em-when (ins (lget 0) [:call :kind] (i32c 2) [:i32.eq] (lget 1) [:call :kind] (i32c 2) [:i32.eq] [:i32.and])
+                            (em-when (ins (lget 0) [:call :unbox_f] (lget 0) [:call :unbox_f] [:f64.eq] [:i32.eqz]
+                                          (lget 1) [:call :unbox_f] (lget 1) [:call :unbox_f] [:f64.eq] [:i32.eqz] [:i32.and])
+                                     (box-b (i32c 0)) [:return]))
+                   (box-b (lget 0) (lget 1) [:call :eq] [:i32.eqz]))}
+   :not (un [] (box-b (lget 0) [:call :truthy] [:i32.eqz]))
+   :inc (un [:i64] (ins (em-when (ins (lget 0) [:call :kind] (i32c 1) [:i32.eq])
+                                 (lget 0) [:call :unbox_i] (lset 1)
+                                 (em-when (ins (lget 1) (i64c em-MAX) [:i64.eq]) (em-trap (i32c 1) (i32c 0) (i32c 0)))
+                                 (box-i (lget 1) (i64c 1) [:i64.add]) [:return])
+                        (lget 0) (box-i (i64c 1)) [:call :add]))
+   :dec (un [:i64] (ins (em-when (ins (lget 0) [:call :kind] (i32c 1) [:i32.eq])
+                                 (lget 0) [:call :unbox_i] (lset 1)
+                                 (em-when (ins (lget 1) (i64c em-MIN) [:i64.eq]) (em-trap (i32c 1) (i32c 0) (i32c 0)))
+                                 (box-i (lget 1) (i64c 1) [:i64.sub]) [:return])
+                        (lget 0) (box-i (i64c 1)) [:call :sub]))
+   :neg (un [:i32] (ins (lget 0) [:call :kind] (lset 1)
+                        (em-when (ins (lget 1) (i32c 1) [:i32.eq]) (box-i (i64c 0) (lget 0) [:call :unbox_i] [:i64.sub]) [:return])
+                        (em-when (ins (lget 1) (i32c 2) [:i32.eq]) (box-f (lget 0) [:call :unbox_f] [:f64.neg]) [:return])
+                        (em-trap (i32c 5) (lget 1) (i32c 0))))
+   :zero? (un [:i32] (ins (lget 0) [:call :kind] (lset 1)
+                          (em-when (ins (lget 1) (i32c 1) [:i32.eq]) (box-b (lget 0) [:call :unbox_i] [:i64.eqz]) [:return])
+                          (em-when (ins (lget 1) (i32c 2) [:i32.eq]) (box-b (lget 0) [:call :unbox_f] (f64c 0) [:f64.eq]) [:return])
+                          (em-trap (i32c 6) (lget 1) (i32c 0))))
+   :pos? (sign-test :i64.gt_s :f64.gt)
+   :neg? (sign-test :i64.lt_s :f64.lt)
+   :bit-and (bit-helper 0 (box-i (lget 4) (lget 5) [:i64.and]))
+   :bit-or (bit-helper 1 (box-i (lget 4) (lget 5) [:i64.or]))
+   :bit-xor (bit-helper 2 (box-i (lget 4) (lget 5) [:i64.xor]))
+   :bit-and-not (bit-helper 3 (box-i (lget 4) (lget 5) (i64c -1) [:i64.xor] [:i64.and]))
+   :bit-shift-left (bit-helper 4 (ins (shift-in-range) [:if em-eqref] (box-i (lget 4) (lget 5) [:i64.shl]) [:else] (box-i (i64c 0)) [:end]))
+   :bit-shift-right (bit-helper 5 (ins (shift-in-range) [:if em-eqref] (box-i (lget 4) (lget 5) [:i64.shr_s])
+                                       [:else] (box-i (lget 4) (i64c 63) [:i64.shr_s]) [:end]))
+   :unsigned-bit-shift-right (bit-helper 6 (ins (shift-in-range) [:if em-eqref] (box-i (lget 4) (lget 5) [:i64.shr_u]) [:else] (box-i (i64c 0)) [:end]))
+   :bit-not (un [] (ins (em-when (ins (lget 0) [:call :kind] (i32c 1) [:i32.eq])
+                                 (box-i (lget 0) [:call :unbox_i] (i64c -1) [:i64.xor]) [:return])
+                        (em-trap (i32c (bit-code 7)) (ins (lget 0) [:call :kind]) (i32c 0))))
+   :unchecked-add (unchecked-helper :add :i64.add :f64.add)
+   :unchecked-subtract (unchecked-helper :sub :i64.sub :f64.sub)
+   :unchecked-multiply (unchecked-helper :mul :i64.mul :f64.mul)})
+
+(def ^:private em-helpers-cache (atom nil))
+(defn- em-helper [k]
+  (or (get (or @em-helpers-cache (reset! em-helpers-cache (em-helpers))) k)
+      (em-fail (str "no helper " k))))
+
+;; the helpers every module carries: the runner's boxing ABI
+(def ^:private em-abi [[:box_i "lw box_i"] [:box_f "lw box_f"] [:box_b "lw box_b"] [:kind "lw kind"]
+                       [:unbox_i "lw unbox_i"] [:unbox_f "lw unbox_f"]])
+
+;; ---------------------------------------------------------------------------
+;; The core fns of the subset: name -> (fn [arg-instrs n] instrs), arg-instrs
+;; a vector of each argument's instructions, n their count. Arity mistakes
+;; native makes at run time are emit-time named errors here.
+
+(defn- em-arity-error [nm n] (em-fail (str nm " of " n " args (named limit)")))
+
+(defn- fixed [nm k helper]
+  (fn [as n ce] (if (= n k) (ins as [:call helper]) (em-arity-error nm n))))
+
+(defn- fold-left [as op]
+  (reduce (fn [acc a] (ins acc a [:call op])) (first as) (rest as)))
+
+(defn- arith [nm unit one two many]
+  (fn [as n ce]
+    (cond (= n 0) (if unit unit (em-arity-error nm n))
+          (= n 1) (if one (ins (first as) one) (first as))
+          (= n 2) (ins as [:call two])
+          :else (fold-left as many))))
+
+(defn- em-new-local [ce]
+  (let [f (:fctx ce) i (:n @f)] (swap! f update :n inc) i))
+
+(defn- chain
+  "(op a b c ..): every argument evaluated first, then the pairwise tests
+   until the first false (native's chain); test-instrs makes the i32 test of
+   two locals."
+  [as ce test-instrs]
+  (let [ts (mapv (fn [_] (em-new-local ce)) as)
+        n (count ts)
+        step (fn step [i]
+               (if (= i (- n 2))
+                 (box-b (test-instrs (nth ts i) (nth ts (inc i))))
+                 (ins (test-instrs (nth ts i) (nth ts (inc i)))
+                      [:if em-eqref] (step (inc i)) [:else] [:global.get 2] [:end])))]
+    (ins (map (fn [a t] (ins a (lset t))) as ts) (step 0))))
+
+(defn- compare-op [nm helper]
+  (fn [as n ce]
+    (cond (= n 0) (em-arity-error nm n)
+          (= n 1) (ins (first as) [:drop] [:global.get 1])
+          (= n 2) (ins as [:call helper])
+          :else (chain as ce (fn [a b] (ins (lget a) (lget b) [:call helper] [:call :truthy]))))))
+
+(defn- em-ops []
+  {"+" (arith "+" (box-i (i64c 0)) nil :add :add_v)
+   "-" (arith "-" nil [:call :neg] :sub :sub_v)
+   "*" (arith "*" (box-i (i64c 1)) nil :mul :mul_v)
+   "/" (fn [as n ce]
+         (cond (= n 0) (em-arity-error "/" n)
+               (= n 1) (ins (box-i (i64c 1)) (first as) [:call :div])
+               :else (fold-left as :div)))
+   "quot" (fixed "quot" 2 :quot) "rem" (fixed "rem" 2 :rem) "mod" (fixed "mod" 2 :mod)
+   "inc" (fixed "inc" 1 :inc) "dec" (fixed "dec" 1 :dec)
+   "zero?" (fixed "zero?" 1 :zero?) "pos?" (fixed "pos?" 1 :pos?) "neg?" (fixed "neg?" 1 :neg?)
+   "not" (fixed "not" 1 :not)
+   "<" (compare-op "<" :lt) "<=" (compare-op "<=" :le) ">" (compare-op ">" :gt) ">=" (compare-op ">=" :ge)
+   "=" (fn [as n ce]
+         (cond (= n 0) (em-arity-error "=" n)
+               (= n 1) (ins (first as) [:drop] [:global.get 1])
+               (= n 2) (box-b as [:call :eq])
+               :else (chain as ce (fn [a b] (ins (lget a) (lget b) [:call :eq])))))
+   "not=" (fn [as n ce]
+            (cond (= n 0) (em-arity-error "not=" n)
+                  (= n 1) (ins (first as) [:drop] [:global.get 2])
+                  (= n 2) (ins as [:call :ne])
+                  ;; (not (and (= a b) (= a c) ..)): every element against the first
+                  :else (let [ts (mapv (fn [_] (em-new-local ce)) as)]
+                          (ins (map (fn [a t] (ins a (lset t))) as ts)
+                               (box-b (reduce (fn [acc t] (ins acc (lget (first ts)) (lget t) [:call :eq] [:i32.and]))
+                                              (i32c 1) (rest ts))
+                                      [:i32.eqz])))))
+   "bit-and" (fixed "bit-and" 2 :bit-and) "bit-or" (fixed "bit-or" 2 :bit-or) "bit-xor" (fixed "bit-xor" 2 :bit-xor)
+   "bit-and-not" (fixed "bit-and-not" 2 :bit-and-not) "bit-not" (fixed "bit-not" 1 :bit-not)
+   "bit-shift-left" (fixed "bit-shift-left" 2 :bit-shift-left) "bit-shift-right" (fixed "bit-shift-right" 2 :bit-shift-right)
+   "unsigned-bit-shift-right" (fixed "unsigned-bit-shift-right" 2 :unsigned-bit-shift-right)
+   "unchecked-add" (fixed "unchecked-add" 2 :unchecked-add) "unchecked-subtract" (fixed "unchecked-subtract" 2 :unchecked-subtract)
+   "unchecked-multiply" (fixed "unchecked-multiply" 2 :unchecked-multiply)})
+
+(def ^:private em-ops-cache (atom nil))
+(defn- em-op [nm] (get (or @em-ops-cache (reset! em-ops-cache (em-ops))) nm))
+
+;; ---------------------------------------------------------------------------
+;; The emitter: em* mirrors comp* (eval.lg), returning instructions that leave
+;; one (ref null eq). ce: :locals name -> wasm local index, :depth the labels
+;; enclosing this point, :tail, :loop {:label :locals :fn? :argc} (the recur
+;; target), :fctx the fn's local counter, :m the module.
+
+(declare em*)
+
+(defn- em-body [forms ce tail?]
+  (let [forms (vec forms) n (count forms)]
+    (if (= n 0)
+      [[:ref.null :eq]]
+      (ins (map-indexed (fn [i f]
+                          (if (= i (dec n))
+                            (em* f (assoc ce :tail tail?))
+                            (ins (em* f (assoc ce :tail false)) [:drop])))
+                        forms)))))
+
+(defn- em-test [t ce]
+  (if (or (keyword? t) (string? t))
+    [(i32c 1)]
+    (ins (em* t (assoc ce :tail false)) [:call :truthy])))
+
+(defn- em-if [form ce]
+  (let [args (vec (rest form)) l (count args)]
+    (when (or (< l 2) (> l 3)) (cerr (str "if: wrong number of forms (" l "), need 2 or 3")))
+    (let [ce2 (update ce :depth inc)]
+      (ins (em-test (nth args 0) ce)
+           [:if em-eqref] (em* (nth args 1) ce2)
+           [:else] (if (= l 3) (em* (nth args 2) ce2) [[:ref.null :eq]])
+           [:end]))))
+
+(defn- em-do [form ce] (em-body (rest form) ce (:tail ce)))
+
+(defn- em-bindings
+  "[instrs ce' locals] for let*/loop* bindings: each init into a fresh local."
+  [b ce op]
+  (let [b (vec b) n (count b)]
+    (loop [i 0 ce2 ce code [] ls []]
+      (if (>= i n)
+        [code ce2 ls]
+        (let [nm (unmeta (nth b i))]
+          (when-not (symbol? nm) (cerr (str op " binding name must be a symbol: " nm)))
+          (when (>= (inc i) n) (cerr (str op " bindings must have even number of forms")))
+          (let [init (em* (nth b (inc i)) (assoc ce2 :tail false))
+                l (em-new-local ce2)]
+            (recur (+ i 2) (assoc-in ce2 [:locals (str nm)] l) (ins code init (lset l)) (conj ls l))))))))
+
+(defn- em-let [form ce]
+  (let [[code ce2 _] (em-bindings (check-bindings form "let") ce "let")]
+    (ins code (em-body (nnext form) (assoc ce2 :tail (:tail ce)) (:tail ce)))))
+
+(defn- em-loop [form ce]
+  (let [[code ce2 ls] (em-bindings (check-bindings form "loop") ce "loop")
+        d (inc (:depth ce))
+        ce3 (assoc ce2 :depth d :loop {:label d :locals ls})]
+    (ins code [:loop em-eqref] (em-body (nnext form) ce3 true) [:end])))
+
+(defn- em-recur [form ce]
+  (when-not (:tail ce) (cerr "recur is only allowed in tail position"))
+  (let [args (vec (rest form)) argc (count args) lp (:loop ce)]
+    (when (nil? lp) (cerr "recur is only allowed inside loops and functions"))
+    (when (not= argc (count (:locals lp)))
+      (cerr (if (:fn? lp) "recur argument count must match function argument count"
+                "recur argument count must match loop bindings count")))
+    (ins (map (fn [a] (em* a (assoc ce :tail false))) args)
+         (map lset (reverse (:locals lp)))
+         [:br (- (:depth ce) (:label lp))])))
+
+(defn- em-scalar? [x] (or (nil? x) (true? x) (false? x) (int? x) (float? x)))
+
+(defn- em-quote [form ce]
+  (let [x (second form)]
+    (if (em-scalar? x) (em* x ce) (em-unsupported "quote"))))
+
+(defn- em-specials []
+  {"if" em-if "do" em-do "let*" em-let "loop*" em-loop "recur" em-recur "quote" em-quote})
+
+(def ^:private em-specials-cache (atom nil))
+(defn- em-special [nm] (get (or @em-specials-cache (reset! em-specials-cache (em-specials))) nm))
+
+(defn- em-module-fn [ce sym]
+  (when (nil? (namespace sym)) (get (:fns @(:m ce)) (str sym))))
+
+(defn- em-args [form ce] (mapv (fn [a] (em* a (assoc ce :tail false))) (rest form)))
+
+(defn- em-call-fn [arities form ce]
+  (let [as (em-args form ce) n (count as) k (get arities n)]
+    (if (nil? k)
+      (em-fail (str (first form) " has no " n "-arity (named limit)"))
+      (ins as [:call [:fn k]]))))
+
+(defn- em-core-call [h form ce]
+  (let [g (resolve-global h)]
+    (cond (nil? g) (cant-resolve h)
+          (and (= :core (:kind g)) (em-op (:name g)))
+          (let [as (em-args form ce)] ((em-op (:name g)) as (count as) ce))
+          :else (em-unsupported h))))
+
+(defn- em-seq [form ce]
+  (let [h (first form)]
+    (if (symbol? h)
+      (let [bare? (nil? (namespace h))
+            sf (when bare? (em-special (str h)))]
+        (cond sf (sf form ce)
+              (and bare? (special-of (str h))) (em-unsupported h)
+              (and bare? (get (:locals ce) (str h))) (em-unsupported (str h " (call of a local)"))
+              (em-module-fn ce h) (em-call-fn (em-module-fn ce h) form ce)
+              :else (if-let [mf (find-macro h)]
+                      (em* (expand mf h form) ce)
+                      (em-core-call h form ce))))
+      (em-unsupported (pr-str h)))))
+
+(defn- em-sym [sym ce]
+  (let [l (when (nil? (namespace sym)) (get (:locals ce) (str sym)))]
+    (cond l [(lget l)]
+          (em-module-fn ce sym) (em-unsupported (str sym " (a fn as a value)"))
+          (nil? (resolve-global sym)) (cant-resolve sym)
+          :else (em-unsupported sym))))
+
+(defn- em* [form ce]
+  (cond (symbol? form) (em-sym form ce)
+        (seq? form) (if (seq form) (em-seq (apply list form) ce) (em-unsupported "()"))
+        (nil? form) [[:ref.null :eq]]
+        (true? form) [[:global.get 1]]
+        (false? form) [[:global.get 2]]
+        (int? form) (box-i (i64c form))
+        (float? form) (box-f (f64c (em-float-bits form)))
+        :else (em-unsupported (pr-str form))))
+
+;; ---------------------------------------------------------------------------
+;; Fns and the module
+
+(defn- em-arity
+  "One wasm function for the arity [params body..]: params are locals 0..k-1,
+   the body sits in a loop that fn-level recur branches to."
+  [params body m]
+  (let [p (parse-params params)
+        _ (when (:variadic p) (em-unsupported "& (a variadic fn)"))
+        names (:names p) k (count names)
+        fctx (atom {:n k})
+        ce {:locals (reduce (fn [acc i] (assoc acc (str (nth names i)) i)) {} (range k))
+            :depth 1 :tail true :fctx fctx :m m
+            :loop {:label 1 :locals (vec (range k)) :fn? true}}
+        code (ins [:loop em-eqref] (em-body body ce true) [:end])]
+    {:argc k :params (vec (repeat k em-eqref)) :results [em-eqref] :locals (vec (repeat (- (:n @fctx) k) em-eqref)) :body code}))
+
+(defn- em-fn-specs [fstar]
+  (let [f (next fstar)
+        h (first f)]
+    (cond (vector? h) [(cons h (next f))]
+          (seq? h) (mapv (fn [e] (if (and (seq? e) (vector? (first e))) e (em-unsupported "fn* (malformed)"))) f)
+          :else (em-unsupported "fn* (malformed)"))))
+
+(defn- em-fn-form
+  "Register the arities of the fn* form under nm (nil for an anonymous fn,
+   which is then exported as lw fn K), then emit each."
+  [nm fstar m]
+  (let [specs (em-fn-specs fstar)
+        argcs (mapv (fn [sp] (count (:names (parse-params (first sp))))) specs)
+        _ (when (not= (count argcs) (count (distinct argcs))) (em-fail (str "two arities of the same count in " (or nm "fn") " (named limit)")))
+        _ (when (and nm (get (:fns @m) (str nm))) (em-fail (str "redefinition of " nm " (named limit)")))
+        base (count (:code @m))
+        xname (if nm (str nm) (str "lw fn " (:anon @m)))
+        arities (into {} (map-indexed (fn [i n] [n (+ base i)]) argcs))]
+    (swap! m (fn [s] (cond-> (update s :code into (repeat (count specs) nil))
+                       nm (assoc-in [:fns (str nm)] arities)
+                       (nil? nm) (update :anon inc))))
+    (doseq [[i sp] (map-indexed vector specs)]
+      (let [a (em-arity (first sp) (rest sp) m)
+            ex (if (= 1 (count specs)) xname (str xname "/" (:argc a)))]
+        (swap! m assoc-in [:code (+ base i)] (assoc a :export ex))))))
+
+(defn- em-top [form m]
+  (let [h (when (and (seq? form) (symbol? (first form))) (first form))]
+    (cond (nil? h) (em-unsupported (str (pr-str form) " (at top level)"))
+          (= h 'fn*) (em-fn-form nil form m)
+          (= h 'def) (let [args (vec (rest form))
+                           v (last args)]
+                       (when-not (and (<= 2 (count args) 3) (seq? v)) (em-unsupported "def (of a non-fn value)"))
+                       (let [v (loop [v v]
+                                 (let [vh (first v)]
+                                   (cond (= vh 'fn*) v
+                                         (and (symbol? vh) (find-macro vh)) (recur (expand (find-macro vh) vh v))
+                                         :else (em-unsupported "def (of a non-fn value)"))))]
+                         (em-fn-form (unmeta (first args)) v m)))
+          :else (if-let [mf (find-macro h)]
+                  (em-top (expand mf h form) m)
+                  (em-unsupported (str h " (at top level)"))))))
+
+;; Link: number the helpers the code reaches (transitively), rewrite the
+;; symbolic calls, intern the func types, and lay out the section model.
+
+(defn- em-callees [body]
+  (keep (fn [i] (when (and (= :call (first i)) (keyword? (second i))) (second i))) body))
+
+(defn- em-reach [code]
+  (loop [todo (vec (concat (map first em-abi) (mapcat (fn [f] (em-callees (:body f))) code)))
+         seen #{} order []]
+    (if (empty? todo)
+      order
+      (let [k (first todo) todo (subvec todo 1)]
+        (if (contains? seen k)
+          (recur todo seen order)
+          (recur (into todo (em-callees (:body (em-helper k)))) (conj seen k) (conj order k)))))))
+
+(def ^:private em-rec
+  {:rec [[:struct [{:type :i64 :mut? false}]]
+         [:struct [{:type :f64 :mut? false}]]
+         [:struct [{:type :i32 :mut? false}]]]})
+
+(defn- em-link [s]
+  (let [code (:code s)
+        nfn (count code)
+        hs (em-reach code)
+        hidx (into {} (map-indexed (fn [i k] [k (+ nfn i)]) hs))
+        fns (vec (concat code (map (fn [k] (em-helper k)) hs)))
+        sigs (distinct (map (fn [f] [(:params f) (:results f)]) fns))
+        tidx (into {} (map-indexed (fn [i sg] [sg (+ 3 i)]) sigs))   ; after the rec group's 3 types
+        fix (fn [i] (if (= :call (first i))
+                      (let [t (second i)] [:call (if (keyword? t) (get hidx t) (second t))])
+                      i))]
+    (wasm.wasmbin/encode-module
+     {:types (into [em-rec] (map (fn [[p r]] [:func p r]) sigs))
+      :funcs (mapv (fn [f] (get tidx [(:params f) (:results f)])) fns)
+      :globals [{:type :i32 :mut? true :init [(i32c 0)]}
+                {:type em-eqref :mut? false :init [(i32c 1) [:struct.new 2]]}
+                {:type em-eqref :mut? false :init [(i32c 0) [:struct.new 2]]}]
+      :exports (vec (concat (map-indexed (fn [i f] {:name (:export f) :kind :func :index i}) code)
+                            (map (fn [[k nm]] {:name nm :kind :func :index (get hidx k)}) em-abi)
+                            [{:name "lw err" :kind :global :index 0}]))
+      :code (mapv (fn [f] {:locals (:locals f) :body (mapv fix (:body f))}) fns)})))
+
+(defn emit-module
+  "The bytes (ints 0-255) of a standalone module exporting the fns forms
+   define: each form a defn, defn- or fn of fixed arities over the 3a subset
+   (this file's header); anything else raises wasm.emit: unsupported form."
+  [forms]
+  (ensure-hook!)
+  (let [m (atom {:fns {} :code [] :anon 0})]
+    (doseq [f forms] (em-top f m))
+    (em-link @m)))
