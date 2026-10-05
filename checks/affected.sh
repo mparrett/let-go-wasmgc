@@ -93,6 +93,7 @@ P7.R	corpus/review5/
 P7.7	oracle corpus/review5/fix-eval/ checks/run-corpus.sh
 P7.8	oracle corpus/review5/fix-rt/ checks/run-corpus.sh
 P7.9	oracle corpus/review5/fix-backend/ checks/run-corpus.sh
+P7.10	rt/ corpus/eval/ corpus/review5/fix-eval/ checks/eval-native.sh checks/oracle.sh checks/env.sh
 P8.0	src/ rt/ checks/gc-byte-identity.sh corpus/scalar/ corpus/eval/
 P8.1	src/ rt/ checks/target-check.sh checks/linear-refuse-check.lg checks/fixtures/linear-target.lg checks/wasm-run.sh corpus/refused/linear/
 P8.2	src/ rt/ checks/linear-layout-check.sh checks/linear-layout-check.lg
