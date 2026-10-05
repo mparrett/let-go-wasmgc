@@ -1,0 +1,10 @@
+# checks/emit-linked.sh (row P10.2): a leg's disagreement with native that
+# was traced to a component outside the compiled path. One per line:
+# <program> <leg> <reason>. The check reports these and does not fail on them.
+#
+# eval leg: the evaluator calls the core VALUE inc/dec, whose overflow is
+# the value form's "integer overflow"; native compiles (inc x) as the IR op,
+# "ExecutionError: integer overflow" once caught. The compiled leg calls the
+# op form (wasm.eval/lk-inc, lk-dec) and matches native (2026-10-05).
+corpus/opmatrix/inc.lg eval the core value inc lacks the op form's "ExecutionError: " overflow prefix
+corpus/opmatrix/dec.lg eval the core value dec lacks the op form's "ExecutionError: " overflow prefix
