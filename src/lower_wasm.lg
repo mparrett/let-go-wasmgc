@@ -3057,6 +3057,13 @@
                (fn [g] (str "(global.set $" g " (struct.get $List 0 (ref.cast (ref $List) (global.get $bs_" g "))))"
                             " (global.set $bs_" g " (struct.get $List 1 (ref.cast (ref $List) (global.get $bs_" g "))))"))))))
 
+;; LW_EXPORT_RT=1 (D193, self-host stage 3b): the helper text gains the
+;; exports code compiled at run time links against (export-rt-wat, after
+;; rec-group). Off, `runtime` returns the text it always did.
+(def export-rt? (= "1" (os/getenv "LW_EXPORT_RT")))
+(declare export-rt-wat)
+(defn- with-export-rt [text] (if (and export-rt? *rt*) (str text (export-rt-wat text)) text))
+
 (defn runtime []
   (let [boxed (fn [op]
                 ;; unbox once into $x/$y: the inline overflow test repeats its operands
@@ -3091,6 +3098,7 @@
                      "  (if (i32.eqz (ref.test (ref $Int) (local.get $v)))\n"
                      "    (then (throw $lgex " (rt-error-wat (unbox-msg op) (unbox-msg op)) ")))\n"
                      "  (struct.get $Int 0 (ref.cast (ref $Int) (local.get $v))))\n"))]
+    (with-export-rt
     (str "(import \"env\" \"print_i64\" (func $print_i64 (param i64)))\n"
          "(import \"env\" \"print_str\" (func $print_str (param i32 i32)))\n"
          "(import \"env\" \"print_nl\" (func $print_nl))\n"
@@ -3172,7 +3180,7 @@
          (boxed :add) (boxed :sub) (boxed :mul)
          (apply str (map unbox (sort (keys op-names))))
          (print-runtime) "\n" (exn-runtime) (fn-runtime)
-         (when *rt* (bframe-runtime)))))
+         (when *rt* (bframe-runtime))))))
 
 ;; Shared with the P1.5 census, which must expand units exactly as the driver.
 (def core-minus #'clojure.core/-)
@@ -3957,6 +3965,110 @@
                     (str "  (type " t " (struct" (apply str (map #(str " (field " (wt %) ")") kinds)) "))\n")))
        ")\n"))
 
+;; ---------------------------------------------------------------------------
+;; LW_EXPORT_RT=1 (D193, docs/SELF-HOST-SPEC.md decisions 4-5): what code
+;; compiled at run time links against. Every runtime function is exported
+;; as "lw rt <id>", <id> its wat id without the `$`: the helpers ($rt_add,
+;; $rt_invoke1, ..) and every lowered runtime defn (wasm.core/assoc#3,
+;; wasm.eval/lk-const#1__box); the program's var slots as "lw var <id>";
+;; $true and $false as "lw rt true" / "lw rt false". The exports are export
+;; forms in the helper text, so they are roots and nothing runtime-side is
+;; shaken. A program that never reaches the runtime gets the bare helpers
+;; and no exports. With LW_RUNTIME_COMPILE=1 as well: the rec group's
+;; binary type entries and type names as data, and the entries "lw compile"
+;; and "lw eval" (their ABI: host/node-host.mjs's header).
+
+(defn- export-form [kind nm id]
+  (str "(export \"" (wat-str nm) "\" (" kind " " id "))\n"))
+
+(defn- data-hex [bs]
+  (apply str (map (fn [b] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b)))) bs)))
+
+(defn- load-rt-file
+  "Load rt/wasm/<f> (a stock-lg namespace the driver does not load) once."
+  [ns-sym f]
+  (when-not (find-ns ns-sym)
+    (let [cur (ns-name *ns*)]
+      (load-string (slurp (str lw-rt/rt-dir "/" f)))
+      (in-ns cur))))
+
+(defn rec-group-constant
+  "[bytes names]: the payload of the type section of (module <rec group>)
+   (the count, 1, then the one rec entry), encoded under stock lg by
+   wasm.watread and wasm.wasmbin (P10.0: their bytes are wasm-tools'), and
+   the group's type names in order, space-separated."
+  []
+  (load-rt-file 'wasm.wasmbin "wasmbin.lg")
+  (load-rt-file 'wasm.watread "watread.lg")
+  (let [text (rec-group)
+        model ((resolve 'wasm.watread/module-model) (str "(module\n" text ")"))
+        bs ((resolve 'wasm.wasmbin/encode-module) {:types (:types model)})
+        ;; 8 header bytes, the section id, its LEB128 size, then the payload
+        start (loop [i 9] (if (zero? (bit-and (nth bs i) 128)) (inc i) (recur (inc i))))
+        names (map second (re-seq #"\(type (\$[^\s()]+)" text))
+        group (:rec (first (:types model)))]
+    (when-not (= (count names) (count group))
+      (fail "rec-group-constant: type names and rec entries disagree" {:names (count names) :types (count group)}))
+    [(subvec bs start) (str/join " " names)]))
+
+(defn- compile-entries-wat
+  "lw compile / lw eval and the data they pass (LW_RUNTIME_COMPILE=1)."
+  []
+  (let [c (rec-group-constant)
+        types (first c)
+        names (second c)]
+    (str "(data $lw_rt_types \"" (data-hex types) "\")\n"
+         "(data $lw_rt_names \"" (wat-str names) "\")\n"
+         ;; a Str of the n bytes at p of lw mem
+         "(func $lw_mem_str (param $p i32) (param $n i32) (result (ref null eq)) (local $b (ref $Bytes)) (local $i i32)\n"
+         "  (local.set $b (array.new_default $Bytes (local.get $n)))\n"
+         "  (block $done (loop $l\n"
+         "    (br_if $done (i32.ge_u (local.get $i) (local.get $n)))\n"
+         "    (array.set $Bytes (local.get $b) (local.get $i) (i32.load8_u (i32.add (local.get $p) (local.get $i))))\n"
+         "    (local.set $i (i32.add (local.get $i) (i32.const 1)))\n"
+         "    (br $l)))\n"
+         "  (struct.new $Str (local.get $b) (i64.const -1)))\n"
+         ;; the bodies are items (not exported), so the boxed wrappers they
+         ;; call are seen by rt-fixpoint! and made
+         "(func $lw_compile (export \"lw compile\") (param $p i32) (param $n i32) (result i32)\n"
+         "  (call $lw_compile_body (local.get $p) (local.get $n)))\n"
+         "(func $lw_compile_body (param $p i32) (param $n i32) (result i32) (local $o (ref $Bytes))\n"
+         "  (local.set $o (ref.cast (ref $Bytes) (struct.get $Arr 1 (ref.cast (ref $Arr)\n"
+         "    (call $wasm.eval/compile-text#3__box (call $lw_mem_str (local.get $p) (local.get $n))\n"
+         "      (struct.new $Arr (i32.const 0) (array.new_data $Bytes $lw_rt_types (i32.const 0) (i32.const " (count types) ")))\n"
+         "      (struct.new $Str (array.new_data $Bytes $lw_rt_names (i32.const 0) (i32.const " (count names) ")) (i64.const -1)))))))\n"
+         "  (call $rt_mem_put (local.get $p) (local.get $o))\n"
+         "  (array.len (local.get $o)))\n"
+         "(func $lw_eval (export \"lw eval\") (param $p i32) (param $n i32)\n"
+         "  (call $lw_eval_body (local.get $p) (local.get $n)))\n"
+         "(func $lw_eval_body (param $p i32) (param $n i32)\n"
+         "  (drop (call $wasm.eval/eval-text#1__box (call $lw_mem_str (local.get $p) (local.get $n)))))\n"
+         ;; never called: it names the boxed seam entries compiled code
+         ;; imports (rt/wasm/emit.lg's linked mode), so they are made and,
+         ;; being lowered, exported
+         "(func $lw_rt_seams (param $x (ref null eq)) (result (ref null eq))\n"
+         "  (drop (call $wasm.eval/lk-const#1__box (local.get $x)))\n"
+         "  (drop (call $wasm.eval/lk-cell-get#1__box (local.get $x)))\n"
+         "  (drop (call $wasm.eval/lk-var-value#1__box (local.get $x)))\n"
+         "  (drop (call $wasm.eval/lk-def-root!#2__box (local.get $x) (local.get $x)))\n"
+         "  (drop (call $wasm.eval/lk-conj#2__box (local.get $x) (local.get $x)))\n"
+         "  (local.get $x))\n"
+         (export-form "func" "lw rt lw_rt_seams" "$lw_rt_seams"))))
+
+(defn export-rt-wat
+  "The export forms (and, under LW_RUNTIME_COMPILE=1, the compile entries)
+   appended to the helper text `text`."
+  [text]
+  (let [helpers (distinct (map second (re-seq #"\(func (\$rt_[^\s()]+)" text)))
+        lowered (sort (keys (:lowered @*rt*)))
+        export-fn (fn [id] (export-form "func" (str "lw rt " (subs id 1)) id))
+        export-var (fn [g] (export-form "global" (str "lw var " (subs g 1)) g))]
+    (str (apply str (map export-fn (concat helpers lowered)))
+         (apply str (map export-var (sort (vals *var-globals*))))
+         (export-form "global" "lw rt true" "$true")
+         (export-form "global" "lw rt false" "$false")
+         (when lw-rt/runtime-compile? (compile-entries-wat)))))
+
 (defn form-name
   "The $name a shakeable top-level form defines (func, import, global,
    data), or nil."
@@ -4220,7 +4332,9 @@
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
                             (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
-                            [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")]))))
+                            [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
+                             ;; D193: the emitter's rows of the load order
+                             (if lw-rt/runtime-compile? "|runtime-compile" "")]))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))

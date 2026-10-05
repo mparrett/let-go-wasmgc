@@ -7,8 +7,10 @@
 ;; this returns wasm instructions; wasm.wasmbin turns the module into bytes.
 ;;
 ;; DIALECT: plain lg, as eval.lg (core fns only, no interop, no regex), so the
-;; backend can compile it once the module links it (stage 3b). Not in
-;; rt/wasm/README.md's load order yet: nothing in a module loads this file.
+;; backend compiles it: rt/wasm/README.md's load order lists it (row 20)
+;; for a module built with LW_RUNTIME_COMPILE=1 (D193), which then compiles
+;; forms at run time in LINKED MODE (below the 3a sections) through the
+;; entries "lw compile" and "lw eval" (src/lower_wasm.lg's export-rt-wat).
 ;;
 ;; Selection by load order, as rt/wasm/eval_native.lg: the first ns form
 ;; requires wasm.eval (the evaluator core) and wasm.wasmbin, the second
@@ -16,7 +18,8 @@
 ;; namespace and reaches its private fns directly; eval.lg has no hook for
 ;; this file. A host file must be loaded as well (under stock lg,
 ;; (require 'wasm.eval-native)), because resolution goes through the seam.
-;; Entry: (wasm.eval/emit-module forms) -> the module's bytes, ints 0-255.
+;; Entry: (wasm.eval/emit-module forms) -> the module's bytes, ints 0-255;
+;; (wasm.eval/compile-form form) -> a linked module's bytes (LINKED MODE).
 ;;
 ;; THE SUBSET (3a: pure scalar, standalone). Each form is (defn name [params]
 ;; body..), (defn- ..), (defn name ([..] ..) ([..] ..)) with fixed arities, or
@@ -543,7 +546,11 @@
 (defn- em-test [t ce]
   (if (or (keyword? t) (string? t))
     [(i32c 1)]
-    (ins (em* t (assoc ce :tail false)) [:call :truthy])))
+    (let [c (em* t (assoc ce :tail false))]
+      ;; linked: a comparison's i32 is the test itself (no Bool round trip)
+      (if (and (:lk ce) (= [:call :box_b] (peek c)))
+        (pop c)
+        (ins c [:call :truthy])))))
 
 (defn- em-if [form ce]
   (let [args (vec (rest form)) l (count args)]
@@ -642,8 +649,11 @@
           (nil? (resolve-global sym)) (cant-resolve sym)
           :else (em-unsupported sym))))
 
+(declare lk*)
+
 (defn- em* [form ce]
-  (cond (symbol? form) (em-sym form ce)
+  (cond (:lk ce) (lk* form ce)
+        (symbol? form) (em-sym form ce)
         (seq? form) (if (seq form) (em-seq (apply list form) ce) (em-unsupported "()"))
         (nil? form) [[:ref.null :eq]]
         (true? form) [[:global.get 1]]
@@ -755,12 +765,392 @@
                             [{:name "lw err" :kind :global :index 0}]))
       :code (mapv (fn [f] {:locals (:locals f) :body (mapv fix (:body f))}) fns)})))
 
+
+
+;; ---------------------------------------------------------------------------
+;; LINKED MODE (stage 3b-i, D193): a module that runs against the module
+;; that compiled it. Selected by (emit-module forms {:linked host}); host is
+;; the running module's rec group, set once by set-host-types! (the module's
+;; "lw compile" entry passes it from the data LW_EXPORT_RT=1 writes).
+;;   types   entry 0 is the host's rec group, copied byte for byte (decision
+;;           4: iso-recursive types are shared only by an identical group),
+;;           so $Int, $Float, $Bool, $Str, $Fn, $FnInfo, $CodeN are the
+;;           host's; the module's own func types follow it, interned.
+;;   imports module "host", each name an export of the host module (the
+;;           JS import object is the host instance's exports): the funcs
+;;           in lk-import-order that the code calls, then the globals
+;;           "lw rt true" / "lw rt false" (the runtime's Bools), then the
+;;           tag "lw lgex" when the code throws.
+;;   values  as the runtime's: ints D41 hybrid (i31 in range, else through
+;;           the imported $rt_box_int), floats $Float, strings, keywords and
+;;           quoted data through the constant table (lk-const), nil
+;;           ref.null, booleans the imported globals.
+;;   calls   + - * of two args and < <= > >= of two through the runtime's
+;;           boxed helpers ($rt_add, $rt_cmp_lt, ..: the host backend's
+;;           op-form paths, overflow and type errors included), (throw x)
+;;           as throw $lgex; every other call through the fn value
+;;           ($rt_invoke0-4: core fns by value as eval calls them, vars,
+;;           locals). Vars: a free symbol is a const (core value), a
+;;           cell-get of the cell key, or a var-value of the program var,
+;;           as comp-sym; def interns at compile time (def-var!, as sf-def)
+;;           and sets the root at run time (lk-def-root!).
+;;   fns     fn* with fixed arities 0-4 and no captures: one function of
+;;           the group's $CodeN per arity (the closure first, as D52), the
+;;           value a $Fn of them with a $FnInfo (the def's name, if any).
+;;   exports "lw run": the forms in order, the last one's value.
+;; Outside: captures (closures), variadic and named fn*, arities past 4,
+;; calls of more than 4 args, collection literals, try, set!, var, letfn*:
+;; "wasm.emit: unsupported form <x>", the named error 3b-ii narrows.
+
+;; The constant table: values compiled code reads by index (core fns,
+;; cell keys, var stand-ins, string/keyword/quoted literals). It only grows.
+(def ^:private em-consts (atom []))
+
+(defn lk-const "Constant i of the table (compiled code's import)." [i] (nth @em-consts i))
+(defn lk-cell-get "The seam's cell-get, boxed for compiled code." [key] (cell-get key))
+(defn lk-var-value "The seam's var-value, boxed for compiled code." [v] (var-value v))
+(defn lk-def-root! "The seam's def-root!, boxed for compiled code." [key x] (def-root! key x))
+(defn lk-conj "conj, for the argument vector of a call of more than 4 args." [v x] (conj v x))
+
+(def ^:private em-host (atom nil))
+
+(defn- lk-split-names [s]
+  (loop [i 0 start 0 acc []]
+    (cond (>= i (count s)) (if (> i start) (conj acc (subs s start i)) acc)
+          (= (nth s i) \space) (recur (inc i) (inc i) (if (> i start) (conj acc (subs s start i)) acc))
+          :else (recur (inc i) start acc))))
+
+(defn set-host-types!
+  "The host's rec group: types, the payload of (module <rec group>)'s type
+   section as ints 0-255 (the count 1, then the rec entry); names, the
+   group's type names in order, space-separated."
+  [types names]
+  (let [nv (lk-split-names names)]
+    (reset! em-host {:types (vec types) :names nv :tix (zipmap nv (range (count nv)))})
+    nil))
+
+(defn- lk-literal?
+  "A collection literal of literals only (no symbol, no form): eval would
+   build an equal value each time; compiled code reads it as a constant."
+  [x]
+  (cond (or (symbol? x) (seq? x)) false
+        (map? x) (every? (fn [kv] (and (lk-literal? (key kv)) (lk-literal? (val kv)))) x)
+        (or (vector? x) (set? x)) (every? lk-literal? x)
+        :else true))
+
+(defn- lk-konst [ce v]
+  (let [i (count @em-consts)]
+    (swap! em-consts conj v)
+    (ins (i32c i) [:ref.i31] [:call :const])))
+
+(defn- lk-int [n]
+  (if (and (>= n -1073741824) (<= n 1073741823))
+    (ins (i32c n) [:ref.i31])
+    (ins (i64c n) [:call :box_i])))
+
+(defn- lk-op-key [nm n]
+  (if (= n 2)
+    (cond (= nm "+") :add (= nm "-") :sub (= nm "*") :mul
+          (= nm "<") :lt (= nm "<=") :le (= nm ">") :gt (= nm ">=") :ge
+          :else nil)
+    nil))
+
+(defn- lk-local? [ce h]
+  (and (symbol? h) (nil? (namespace h))
+       (or (some? (get (:locals ce) (str h))) (contains? (:outer ce) (str h)))))
+
+(defn- lk-call [form ce]
+  (let [h (first form)
+        n (count (rest form))
+        g (when (and (symbol? h) (not (lk-local? ce h))) (resolve-global h))
+        core (when (= :core (:kind g)) (:name g))
+        op (when core (lk-op-key core n))]
+    (cond op (if (contains? #{:lt :le :gt :ge} op)
+               (ins (em-args form ce) [:call op] [:call :box_b])
+               (ins (em-args form ce) [:call op]))
+          (and (= core "throw") (= n 1)) (ins (em-args form ce) [:throw :lgex])
+          ;; past $rt_invoke4: the args into a vector, then $rt_apply_vec
+          (> n 4) (ins (lk* h (assoc ce :tail false)) (lk-konst ce [])
+                       (map (fn [a] (ins a [:call :conj])) (em-args form ce))
+                       [:call :apply-vec])
+          :else (ins (lk* h (assoc ce :tail false)) (em-args form ce)
+                     [:call (nth [:invoke0 :invoke1 :invoke2 :invoke3 :invoke4] n)]))))
+
+(defn- lk-sym [sym ce]
+  (let [bare? (nil? (namespace sym))
+        l (when bare? (get (:locals ce) (str sym)))]
+    (cond l [(lget l)]
+          (and bare? (contains? (:outer ce) (str sym)))
+          (em-unsupported (str sym " (a local captured by a fn: closures are 3b-ii)"))
+          (or (= sym '*ns*) (= sym '*out*) (= sym '*err*)) (em-unsupported sym)
+          :else
+          (let [g (resolve-global sym)]
+            (cond (nil? g) (cant-resolve sym)
+                  (= :core (:kind g)) (lk-konst ce (:val g))
+                  (= :cell (:kind g)) (ins (lk-konst ce (:key g)) [:call :cell-get])
+                  (= :prog (:kind g)) (ins (lk-konst ce (:var g)) [:call :var-value])
+                  :else (cant-resolve sym))))))
+
+(defn- lk-quote [form ce] (lk-konst ce (if (next form) (second form) nil)))
+
+(defn- lk-def
+  "sf-def's checks and compile-time intern; at run time the root is set
+   through the seam and the var (taken at compile time) is the value."
+  [form ce]
+  (let [args (vec (rest form)) l (count args)]
+    (when (or (< l 1) (> l 3)) (cerr (str "def: wrong number of forms (" l "), need 1, 2 or 3")))
+    (when (and (= l 3) (not (string? (nth args 1))))
+      (cerr "def: 3-arg form requires a docstring (String) as second argument"))
+    (let [doc (when (= l 3) (nth args 1))
+          valf (cond (= l 3) (nth args 2) (= l 2) (nth args 1) :else nil)
+          sym0 (nth args 0)
+          wm? (and (seq? sym0) (= 'with-meta (first sym0)))
+          _ (when (and (seq? sym0) (not wm?)) (cerr (str "def: first argument must be a symbol, got (" (pr-str sym0) ")")))
+          sym (if wm? (second sym0) sym0)
+          m (if wm? (nth sym0 2) nil)
+          _ (when-not (symbol? sym) (cerr (str "def: first argument must be a symbol, got (" (pr-str sym) ")")))
+          m (if doc (assoc (or m {}) :doc doc) m)
+          m (assoc (or m {}) :name sym)
+          key (def-var! (cur-ns) sym m)
+          v (var-of key)]
+      (if (= l 1)
+        (lk-konst ce v)
+        (ins (lk-konst ce key)
+             (lk* valf (assoc ce :tail false :fn-name (str sym)))
+             [:call :def-root!] [:drop]
+             (lk-konst ce v))))))
+
+(defn- lk-name-bytes
+  "A string's UTF-8 bytes (wasm.wasmbin's name encoding less its length)."
+  [s]
+  (let [bs (wasm.wasmbin/encode-name s)
+        skip (loop [j 0] (if (zero? (bit-and (nth bs j) 128)) (inc j) (recur (inc j))))]
+    (subvec bs skip)))
+
+(defn- lk-arity
+  "One function of the group's $Code<k> for [params body..]: the closure is
+   local 0, the params 1..k, the body in a loop fn-level recur targets.
+   Returns its index in the module's code."
+  [params body ce]
+  (let [p (parse-params params)
+        _ (when (:variadic p) (em-unsupported "& (a variadic fn, 3b-ii)"))
+        names (:names p) k (count names)
+        _ (when (> k 4) (em-unsupported (str "a fn of " k " params (3b-ii)")))
+        fctx (atom {:n (inc k)})
+        ce2 {:lk true :m (:m ce) :fctx fctx :depth 1 :tail true
+             :locals (reduce (fn [acc i] (assoc acc (str (nth names i)) (inc i))) {} (range k))
+             :outer (reduce (fn [acc nm] (conj acc nm)) (or (:outer ce) #{}) (keys (:locals ce)))
+             :loop {:label 1 :locals (vec (range 1 (inc k))) :fn? true}}
+        code (ins [:loop em-eqref] (em-body body ce2 true) [:end])
+        m (:m ce)
+        i (count (:code @m))]
+    (swap! m update :code conj {:type [:t (str "$Code" k)] :params (vec (repeat (inc k) em-eqref)) :results [em-eqref]
+                                :locals (vec (repeat (- (:n @fctx) (inc k)) em-eqref)) :body code})
+    [k i]))
+
+(defn- lk-fn [form ce]
+  (when (symbol? (second form)) (em-unsupported "fn* with a name (3b-ii)"))
+  (let [specs (em-fn-specs form)
+        argcs (mapv (fn [sp] (count (:names (parse-params (first sp))))) specs)
+        _ (when (not= (count argcs) (count (distinct argcs))) (em-fail "two arities of the same count (named limit)"))
+        ks (into {} (map (fn [sp] (lk-arity (first sp) (rest sp) ce)) specs))
+        nm (:fn-name ce)
+        slot (fn [a] (if (contains? ks a) [[:ref.func [:fn (get ks a)]]] [[:ref.null [:t (str "$Code" a)]]]))
+        multi? (> (count specs) 1)]
+    (ins (slot 0) (slot 1) (slot 2) [[:ref.null :eq]] (slot 3) (slot 4)
+         (i32c (if multi? 1 0)) (i32c (if multi? 0 (first argcs)))
+         (if nm
+           (let [bs (lk-name-bytes nm)] (ins (map i32c bs) [:array.new_fixed [:t "$Bytes"] (count bs)]))
+           [[:ref.null :eq]])
+         [:struct.new [:t "$FnInfo"]]
+         (i64c 0)
+         [:struct.new [:t "$Fn"]])))
+
+(defn- lk-specials []
+  {"if" em-if "do" em-do "let*" em-let "loop*" em-loop "recur" em-recur
+   "quote" lk-quote "def" lk-def "fn*" lk-fn})
+
+(def ^:private lk-specials-cache (atom nil))
+(defn- lk-special [nm] (get (or @lk-specials-cache (reset! lk-specials-cache (lk-specials))) nm))
+
+(defn- lk-seq
+  "comp-seq's dispatch: special form, local call, macro, call. A def's name
+   (:fn-name) reaches the fn* its value is, through macros, and nothing else."
+  [form ce]
+  (let [h (first form)
+        nm (:fn-name ce)
+        ce (dissoc ce :fn-name)]
+    (if (symbol? h)
+      (let [bare? (nil? (namespace h))
+            sf (when bare? (lk-special (str h)))]
+        (cond sf (sf form (if (= (str h) "fn*") (assoc ce :fn-name nm) ce))
+              (and bare? (special-of (str h))) (em-unsupported h)
+              (lk-local? ce h) (lk-call form ce)
+              :else (if-let [mf (find-macro h)]
+                      (lk* (expand mf h form) (assoc ce :fn-name nm))
+                      (lk-call form ce))))
+      (lk-call form ce))))
+
+(defn- lk* [form ce]
+  (cond (symbol? form) (lk-sym form ce)
+        (seq? form) (if (seq form) (lk-seq (apply list form) ce) (lk-konst ce form))
+        (nil? form) [[:ref.null :eq]]
+        (true? form) [[:global.get :true]]
+        (false? form) [[:global.get :false]]
+        (int? form) (lk-int form)
+        (float? form) (ins (f64c (em-float-bits form)) [:call :box_f])
+        (or (vector? form) (map? form) (set? form))
+        (if (and (nil? (meta form)) (lk-literal? form))
+          (lk-konst ce form)
+          (em-unsupported "a collection literal with evaluated elements (3b-ii)"))
+        :else (lk-konst ce form)))
+
+;; Link: imports (only what the code calls), the code fns, "lw run", the
+;; private helpers; symbolic immediates resolved; the host's group spliced
+;; in as the first type entry.
+
+(defn- lk-import-table []
+  (let [e em-eqref]
+    {:truthy ["lw rt rt_truthy" [e] [:i32]]
+     :box_i ["lw rt rt_box_int" [:i64] [e]]
+     :add ["lw rt rt_add" [e e] [e]] :sub ["lw rt rt_sub" [e e] [e]] :mul ["lw rt rt_mul" [e e] [e]]
+     :lt ["lw rt rt_cmp_lt" [e e] [:i32]] :le ["lw rt rt_cmp_lte" [e e] [:i32]]
+     :gt ["lw rt rt_cmp_gt" [e e] [:i32]] :ge ["lw rt rt_cmp_gte" [e e] [:i32]]
+     :invoke0 ["lw rt rt_invoke0" [e] [e]] :invoke1 ["lw rt rt_invoke1" [e e] [e]]
+     :invoke2 ["lw rt rt_invoke2" [e e e] [e]] :invoke3 ["lw rt rt_invoke3" [e e e e] [e]]
+     :invoke4 ["lw rt rt_invoke4" [e e e e e] [e]]
+     :const ["lw rt wasm.eval/lk-const#1__box" [e] [e]]
+     :cell-get ["lw rt wasm.eval/lk-cell-get#1__box" [e] [e]]
+     :var-value ["lw rt wasm.eval/lk-var-value#1__box" [e] [e]]
+     :def-root! ["lw rt wasm.eval/lk-def-root!#2__box" [e e] [e]]
+     :conj ["lw rt wasm.eval/lk-conj#2__box" [e e] [e]]
+     :apply-vec ["lw rt rt_apply_vec" [e e] [e]]}))
+
+(def ^:private lk-import-order
+  [:truthy :box_i :add :sub :mul :lt :le :gt :ge :invoke0 :invoke1 :invoke2 :invoke3 :invoke4
+   :const :cell-get :var-value :def-root! :conj :apply-vec])
+
+(defn- lk-helpers []
+  {:box_f {:params [:f64] :results [em-eqref] :locals [] :body (ins (lget 0) [:struct.new [:t "$Float"]])}
+   :box_b {:params [:i32] :results [em-eqref] :locals []
+           :body (ins (lget 0) [:if em-eqref] [:global.get :true] [:else] [:global.get :false] [:end])}})
+
+(defn- lk-calls [body] (keep (fn [i] (when (and (= :call (first i)) (keyword? (second i))) (second i))) body))
+
+(defn- lk-type-idx [tix nm]
+  (let [i (get tix nm)] (if (nil? i) (em-fail (str "the host's rec group has no type " nm)) i)))
+
+(defn- lk-imm [x tix]
+  (cond (and (vector? x) (= :t (first x))) (lk-type-idx tix (second x))
+        (and (vector? x) (or (= :ref (first x)) (= :ref-null (first x)))) [(first x) (lk-imm (second x) tix)]
+        :else x))
+
+(defn- leb-len [bs i] (loop [j i] (if (zero? (bit-and (nth bs j) 128)) (- (inc j) i) (recur (inc j)))))
+
+(defn- lk-type-section
+  "Section 1: the host's rec entry, then own-types."
+  [host own-types]
+  (let [hb (:types host)
+        rec (subvec hb (leb-len hb 0))
+        ob (wasm.wasmbin/encode-module {:types own-types})
+        p (+ 9 (leb-len ob 9))
+        opay (subvec ob p)
+        oent (subvec opay (leb-len opay 0))
+        payload (into (into (wasm.wasmbin/u32 (inc (count own-types))) rec) oent)]
+    (into (into [1] (wasm.wasmbin/u32 (count payload))) payload)))
+
+(defn- lk-link [s host]
+  (let [tix (:tix host)
+        nrec (count (:names host))
+        table (lk-import-table)
+        helpers (lk-helpers)
+        code (conj (:code s) (:run s))
+        ncode (count code)
+        used (set (mapcat (fn [f] (lk-calls (:body f))) code))
+        hs (vec (filter (fn [k] (contains? used k)) [:box_f :box_b]))
+        used (into used (mapcat (fn [k] (lk-calls (:body (get helpers k)))) hs))
+        _ (doseq [k used] (when-not (or (contains? table k) (contains? helpers k)) (em-fail (str "no import " k))))
+        imps (vec (filter (fn [k] (contains? used k)) lk-import-order))
+        ni (count imps)
+        fidx (merge (into {} (map-indexed (fn [i k] [k i]) imps))
+                    (into {} (map-indexed (fn [i k] [k (+ ni ncode i)]) hs)))
+        throws? (some (fn [f] (some (fn [i] (= :throw (first i))) (:body f))) code)
+        tag-sig [[em-eqref] []]
+        own-sigs (vec (distinct (concat (map (fn [k] [(nth (get table k) 1) (nth (get table k) 2)]) imps)
+                                        (keep (fn [f] (when (nil? (:type f)) [(:params f) (:results f)])) code)
+                                        (map (fn [k] [(:params (get helpers k)) (:results (get helpers k))]) hs)
+                                        (when throws? [tag-sig]))))
+        sidx (into {} (map-indexed (fn [i sg] [sg (+ nrec i)]) own-sigs))
+        ftype (fn [f] (if (:type f) (lk-imm (:type f) tix) (get sidx [(:params f) (:results f)])))
+        refd (atom #{})
+        fix (fn [i]
+              (let [op (first i)]
+                (cond (= op :call) (let [t (second i)] [:call (if (keyword? t) (get fidx t) (+ ni (second t)))])
+                      (= op :ref.func) (let [k (+ ni (second (second i)))] (swap! refd conj k) [:ref.func k])
+                      (= op :global.get) (let [g (second i)] [:global.get (cond (= g :true) 0 (= g :false) 1 :else g)])
+                      (= op :throw) [:throw 0]
+                      :else (vec (cons op (map (fn [x] (lk-imm x tix)) (rest i)))))))
+        bool [:ref (lk-type-idx tix "$Bool")]
+        model {:imports (vec (concat (map (fn [k] {:module "host" :name (first (get table k)) :desc [:func (get sidx [(nth (get table k) 1) (nth (get table k) 2)])]}) imps)
+                                     [{:module "host" :name "lw rt true" :desc [:global bool false]}
+                                      {:module "host" :name "lw rt false" :desc [:global bool false]}]
+                                     (when throws? [{:module "host" :name "lw lgex" :desc [:tag (get sidx tag-sig)]}])))
+               :funcs (vec (concat (map ftype code) (map (fn [k] (get sidx [(:params (get helpers k)) (:results (get helpers k))])) hs)))
+               :exports [{:name "lw run" :kind :func :index (+ ni (dec ncode))}]
+               :code (vec (concat (map (fn [f] {:locals (:locals f) :body (mapv fix (:body f))}) code)
+                                  (map (fn [k] {:locals [] :body (mapv fix (:body (get helpers k)))}) hs)))}
+        model (if (seq @refd) (assoc model :elems [{:mode :declare :funcs (vec (sort @refd))}]) model)
+        bs (wasm.wasmbin/encode-module model)]
+    (into (into (subvec bs 0 8) (lk-type-section host (mapv (fn [sg] [:func (first sg) (second sg)]) own-sigs)))
+          (subvec bs 8))))
+
+(defn- lk-module [forms host]
+  (let [m (atom {:code []})
+        fctx (atom {:n 0})
+        ce {:lk true :m m :fctx fctx :depth 0 :tail false :locals {} :outer #{} :loop nil}
+        body (em-body forms ce false)]
+    (lk-link {:code (:code @m) :run {:params [] :results [em-eqref] :locals (vec (repeat (:n @fctx) em-eqref)) :body body}}
+             host)))
+
 (defn emit-module
-  "The bytes (ints 0-255) of a standalone module exporting the fns forms
-   define: each form a defn, defn- or fn of fixed arities over the 3a subset
-   (this file's header); anything else raises wasm.emit: unsupported form."
-  [forms]
-  (ensure-hook!)
-  (let [m (atom {:fns {} :code [] :anon 0})]
-    (doseq [f forms] (em-top f m))
-    (em-link @m)))
+  "The bytes (ints 0-255) of a module. Standalone (3a): forms are defn,
+   defn- or fn forms of fixed arities over the 3a subset (this file's
+   header), one export per fn. Linked (opts {:linked host}, host as
+   set-host-types! keeps it; 3b-i, LINKED MODE above): forms are top-level
+   forms, run in order by the export \"lw run\". Anything else raises
+   wasm.emit: unsupported form."
+  ([forms] (emit-module forms nil))
+  ([forms opts]
+   (ensure-hook!)
+   (if (:linked opts)
+     (lk-module forms (:linked opts))
+     (let [m (atom {:fns {} :code [] :anon 0})]
+       (doseq [f forms] (em-top f m))
+       (em-link @m)))))
+
+(defn- named-limit? [msg] (string/starts-with? (str msg) "wasm.emit: "))
+
+(defn compile-form
+  "form (as read) -> the bytes of a linked module whose \"lw run\" evaluates
+   it against the running module (set-host-types! first). A form outside
+   the subset raises the emitter's named error; any other compile error is
+   raised as the evaluator raises it (its compile runs to give the same
+   CompileError chain), so compiled and evaluated code fail alike."
+  [form]
+  (when (nil? @em-host) (em-fail "no host rec group (a module built without LW_EXPORT_RT=1 and LW_RUNTIME_COMPILE=1)"))
+  (try (emit-module [form] {:linked @em-host})
+       (catch Exception e
+         (let [msg (ex-message e)]
+           (when-not (named-limit? msg) (compile form))
+           (raise msg)))))
+
+(defn compile-text
+  "\"lw compile\"'s entry: read one form from src in the current ns, compile
+   it; a byte-array. types and names are the host's group (the module's
+   data), kept on the first call."
+  [src types names]
+  (when (nil? @em-host) (set-host-types! types names))
+  (byte-array (compile-form (read-string src))))
+
+(defn eval-text "\"lw eval\"'s entry: read one form from src and eval it." [src]
+  (eval (read-string src)))
