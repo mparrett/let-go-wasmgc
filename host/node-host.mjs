@@ -24,6 +24,35 @@
 // resourceLimits.stackSizeMb (run.mjs, D33) does not reach that stack, so
 // this host runs on the main thread and re-execs node with both flags when
 // they are missing; 256 MB matches run.mjs (1M-deep int recursion passes).
+//
+// Compiling at run time (stage 3b-i of docs/SELF-HOST-SPEC.md, D193):
+//
+//   node host/node-host.mjs <host.wasm> --forms <program.lg> [--mode compile|eval]
+//
+// <host.wasm> is a module built with LW_EXPORT_RT=1 LW_RUNTIME_COMPILE=1
+// (corpus/emit/host/host.lg). Its `lw main` runs first; then each top-level
+// form of the program, in order, is either compiled in the module and linked
+// (compile, the default) or evaluated in the module (eval). The ABI:
+//   lw compile (param p i32) (param n i32) (result i32)
+//       the n UTF-8 bytes at p of `lw mem` are one form's source text, read
+//       in the module's current ns; the result is the byte length of the
+//       compiled module, written at p (memory grows as needed). A form the
+//       emitter cannot compile, or a compile error, is thrown as the
+//       runtime's exception (tag `lw lgex`); a message starting
+//       "wasm.emit: " is the emitter's named limit.
+//   lw eval (param p i32) (param n i32)
+//       the same input, evaluated by wasm.eval/eval; errors are thrown.
+//   the compiled module imports, from module "host", only exports of the
+//       running instance: "lw rt <id>" (every runtime function, <id> its
+//       wat id without the `$`), "lw rt true" / "lw rt false" and the tag
+//       "lw lgex"; so its import object is { host: instance.exports }
+//       (linkCompiled below, the one host import stage 4 makes
+//       env.instantiate). It exports "lw run" () -> the form's value.
+// A top-level (try body.. (catch ..)..) is compiled as a def of a thunk of
+// its body, then the try itself is evaluated around a call of that thunk,
+// so the evaluated try catches what the compiled code throws.
+// Exit: 0, 1 (an uncaught error, printed as `error: <report>`), 4 (a
+// wasm.emit named limit in compile mode).
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -36,13 +65,15 @@ if (!process.execArgv.some((a) => a.startsWith('--wasm-stack-switching-stack-siz
 
 const { LgWasmHost } = await import('./lg-wasm-host.js');
 const args = process.argv.slice(2);
-const opts = { wasm: null, keys: null, env: {}, url: null, cols: 80, rows: 24, coalesce: false };
+const opts = { wasm: null, keys: null, env: {}, url: null, cols: 80, rows: 24, coalesce: false, forms: null, mode: 'compile' };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--keys') opts.keys = args[++i];
   else if (a === '--env') { const [k, ...v] = args[++i].split('='); opts.env[k] = v.join('='); }
   else if (a === '--url') opts.url = args[++i];
   else if (a === '--coalesce') opts.coalesce = true;
+  else if (a === '--forms') opts.forms = args[++i];
+  else if (a === '--mode') opts.mode = args[++i];
   else if (a === '--size') { const [c, r] = args[++i].split('x').map(Number); opts.cols = c; opts.rows = r; }
   else if (a.startsWith('-')) { console.error(`node-host.mjs: unknown flag ${a}`); process.exit(2); }
   else if (opts.wasm) { console.error(`node-host.mjs: unexpected argument '${a}' after the module path (a trailing shell comment pasted into zsh does this)`); process.exit(2); }
@@ -58,6 +89,7 @@ const host = new LgWasmHost({
   coalesceKeys: opts.coalesce,
   onOutput: (text, fd) => fs.writeSync(fd === 2 ? 2 : 1, text),
 });
+if (opts.forms !== null) process.exit(await runForms(host, fs.readFileSync(opts.wasm), fs.readFileSync(opts.forms, 'utf8'), opts.mode));
 const done = host.run(fs.readFileSync(opts.wasm));
 // keys are only accepted once the module is running (pre-boot keys are
 // dropped, as in let-go); run() sets `running` just before entering lw main
@@ -81,3 +113,132 @@ const r = await done;
 if (tty) process.stdin.setRawMode(false);
 if (process.env.LG_HOST_TIMING) fs.writeSync(2, `timing first=${r.tFirstOutput == null ? '-' : r.tFirstOutput.toFixed(1)}ms total=${r.tTotal.toFixed(1)}ms\n`);
 process.exit(r.code);
+
+// ---- compiling at run time (header) ----------------------------------------
+
+// Top-level forms of lg source text: brackets, strings, char literals and
+// comments are respected; reader prefixes (' ` ~ @ # ^meta) stay with their form.
+export function splitForms(s) {
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (/[\s,]/.test(c)) { i++; continue; }
+    if (c === ';') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    const start = i;
+    i = skipForm(s, i);
+    out.push(s.slice(start, i));
+  }
+  return out;
+}
+
+function skipWs(s, i) {
+  for (;;) {
+    while (i < s.length && /[\s,]/.test(s[i])) i++;
+    if (s[i] !== ';') return i;
+    while (i < s.length && s[i] !== '\n') i++;
+  }
+}
+
+function skipForm(s, i) {
+  while ("'`~@^#".includes(s[i])) {
+    if (s[i] === '^') { i = skipWs(s, skipForm(s, skipWs(s, i + 1))); continue; }
+    if (s[i] === '#' && s[i + 1] === '_') { i = skipWs(s, skipForm(s, skipWs(s, i + 2))); continue; }
+    i++;
+  }
+  const c = s[i];
+  if (c === '"') return skipString(s, i);
+  if (c === '\\') { i += 2; while (i < s.length && /[A-Za-z0-9]/.test(s[i])) i++; return i; }
+  if (c === '(' || c === '[' || c === '{') {
+    let depth = 0;
+    while (i < s.length) {
+      const d = s[i];
+      if (d === '"') { i = skipString(s, i); continue; }
+      if (d === ';') { while (i < s.length && s[i] !== '\n') i++; continue; }
+      if (d === '\\') { i += 2; continue; }
+      if (d === '(' || d === '[' || d === '{') depth++;
+      else if (d === ')' || d === ']' || d === '}') { depth--; if (depth === 0) return i + 1; }
+      i++;
+    }
+    return i;
+  }
+  while (i < s.length && !/[\s,()\[\]{}";]/.test(s[i])) i++;
+  return i;
+}
+
+function skipString(s, i) {
+  i++;
+  while (i < s.length && s[i] !== '"') i += s[i] === '\\' ? 2 : 1;
+  return i + 1;
+}
+
+// A top-level (try body.. clause..) as [def of a thunk of the body, the try
+// around a call of it], or null for any other form.
+function liftTry(form, k) {
+  if (!/^\(try[\s,]/.test(form)) return null;
+  const kids = splitForms(form.slice(1, -1)).slice(1);
+  const at = kids.findIndex((x) => /^\((catch|finally)[\s,]/.test(x));
+  if (at <= 0 || kids.slice(at).some((x) => !/^\((catch|finally)[\s,]/.test(x))) return null;
+  const nm = `__lw_try_${k}`;
+  return [`(def ${nm} (fn* [] ${kids.slice(0, at).join(' ')}))`, `(try (${nm}) ${kids.slice(at).join(' ')})`];
+}
+
+// Instantiate compiled bytes against the running instance and run them.
+export async function linkCompiled(hostExports, bytes) {
+  const { instance } = await WebAssembly.instantiate(bytes, { host: hostExports });
+  const run = instance.exports['lw run'];
+  return (WebAssembly.promising ? WebAssembly.promising(run) : run)();
+}
+
+async function runForms(host, wasmBytes, src, mode) {
+  const promising = (f) => (WebAssembly.promising ? WebAssembly.promising(f) : f);
+  let ex;
+  try {
+    ex = (await WebAssembly.instantiate(await WebAssembly.compile(wasmBytes), host.imports())).exports;
+  } catch (e) {
+    host.emitText(2, `error: ${(e && e.message) || e}\n`);
+    return host.finish(1, null).code;
+  }
+  host.mem = ex['lw mem'];
+  const lgex = ex['lw lgex'];
+  const P = 1024;
+  const put = (text) => {
+    const b = new TextEncoder().encode(text);
+    const need = P + b.length;
+    if (host.mem.buffer.byteLength < need) host.mem.grow(Math.ceil((need - host.mem.buffer.byteLength) / 65536));
+    new Uint8Array(host.mem.buffer, P, b.length).set(b);
+    return b.length;
+  };
+  const compile = async (text) => {
+    const n = await promising(ex['lw compile'])(P, put(text));
+    return new Uint8Array(host.mem.buffer, P, n).slice();
+  };
+  const evalText = async (text) => { await promising(ex['lw eval'])(P, put(text)); };
+  const run = async (text) => linkCompiled(ex, await compile(text));
+  let phase = 'main';
+  try {
+    host.running = true;
+    await promising(ex['lw main'])();
+    let k = 0;
+    for (const form of splitForms(src)) {
+      if (mode === 'eval') { phase = 'eval'; await evalText(form); continue; }
+      const lifted = liftTry(form, k++);
+      phase = 'compile';
+      if (lifted) { await run(lifted[0]); phase = 'eval'; await evalText(lifted[1]); } else await run(form);
+    }
+    return host.finish(0, null).code;
+  } catch (e) {
+    host.outFd = 2;
+    let captured = '';
+    const prev = host.onOutput;
+    host.onOutput = (t, fd) => { if (fd === 2) captured += t; prev(t, fd); };
+    host.emitText(2, 'error: ');
+    if (lgex && e instanceof WebAssembly.Exception && e.is(lgex)) ex['lw report'](e.getArg(lgex, 0));
+    else if (ex['lw trap'] && ex['lw trap']()) { /* the module printed the trap's message */ }
+    else host.emitText(2, String((e && e.message) || e));
+    host.emitText(2, '\n');
+    host.onOutput = prev;
+    const named = phase === 'compile' && captured.startsWith('error: wasm.emit: ');
+    return host.finish(named ? 4 : 1, captured.replace(/\n$/, '')).code;
+  }
+}

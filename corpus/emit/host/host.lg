@@ -1,0 +1,8 @@
+;; The compiler host of row P10.2 (checks/emit-linked.sh, D193): built once
+;; with LW_EXPORT_RT=1 LW_RUNTIME_COMPILE=1, so the module exports its
+;; runtime and the entries "lw compile" and "lw eval"; host/node-host.mjs
+;; --forms then feeds it a program one top-level form at a time. Its own
+;; program only has to reach the evaluator (the module then carries eval's
+;; host and the program table); it prints nothing. In a subdirectory so
+;; row P10.1, which runs corpus/emit/*.lg, does not take it for a program.
+(eval nil)
