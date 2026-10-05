@@ -26,6 +26,13 @@
 ;; block-arg chains and runs for every value many times; unmemoised, a
 ;; 2000-inst runtime fn took ~60 s to lower (wasm.str/round-shortest!)
 (def ^:dynamic *memo* nil)
+
+(defn memo-for
+  "*memo* when the caller already bound it for f, else a fresh one. Its
+   entries (src-of results, the block-arg leaves) depend on f alone, so the
+   passes over one fn share them instead of each recomputing (P4)."
+  [f]
+  (if (and *memo* (identical? *f* f)) *memo* (atom {})))
 (def ^:dynamic *fname* nil)
 (def ^:dynamic *ret-type* nil)
 ;; enclosing loops, innermost first: ({:id header-bid :exit exit-bid-or-nil} ...)
@@ -251,11 +258,29 @@
   (let [inc-of (into {} (for [b (ir/blocks *f*)
                               [idx p] (map-indexed vector (ir/block-params b *f*))]
                           [p (vec (incoming b idx))]))
-        step (fn [L] (into {} (for [[ba xs] inc-of]
-                                [ba (reduce (fn [acc x] (if (contains? inc-of x) (into acc (get L x)) (conj acc x)))
-                                            (get L ba #{}) xs)])))]
-    (loop [L {}]
-      (let [L2 (step L)] (if (= L2 L) L (recur L2))))))
+        ;; a worklist instead of whole-map rounds: rebuilding and comparing
+        ;; every param's set until nothing changed was ~11% of a warm legmacs
+        ;; build (P4 profile). Same least fixpoint: a param's set grows only
+        ;; by a feeding param's set, and each growth requeues its dependents.
+        ;; No destructuring or #() here: each takes a gensym when this file
+        ;; loads, and the counter reaches the program's expansions, whose
+        ;; local numbering then shifts (the emitted WAT stays byte-identical
+        ;; only at the same count).
+        deps (reduce (fn [m e]
+                       (reduce (fn [m x] (if (contains? inc-of x) (update m x (fnil conj []) (key e)) m))
+                               m (val e)))
+                     {} inc-of)
+        L0 (into {} (for [[ba xs] inc-of] [ba (into #{} (remove (fn [x] (contains? inc-of x)) xs))]))]
+    (loop [L L0 work (vec (keys inc-of))]
+      (if (empty? work)
+        L
+        (let [x (peek work)
+              lx (get L x)
+              r (reduce (fn [acc ba]
+                          (let [L (nth acc 0) cur (get L ba) nxt (into cur lx)]
+                            (if (= (count nxt) (count cur)) acc [(assoc L ba nxt) (conj (nth acc 1) ba)])))
+                        [L (pop work)] (get deps x))]
+          (recur (nth r 0) (nth r 1)))))))
 
 ;; P2.11 (F2): two constants are the same value only when they are the same
 ;; kind with the same bits, all the way down. `=` is not that: [] = (), 0.0 =
@@ -455,6 +480,21 @@
 ;; Generated names are content-addressed, not counters, so the cached
 ;; runtime library (rt-library) and a program compiled against it agree on
 ;; every name without renumbering.
+;; [strings-map names] for string-name's collision check: the set of data
+;; names in that *strings* map. Scanning every name per new string was ~7% of
+;; a warm legmacs build (the map holds the runtime library's strings; P4
+;; profile, 2026-10-04). Keyed by the map's identity, so a session switch or
+;; a restored snapshot rebuilds it.
+(def string-names-cache (atom nil))
+
+(defn string-names [m]
+  (let [c @string-names-cache]
+    (if (and c (identical? (nth c 0) m))
+      (nth c 1)
+      ;; #(..) rather than vals: string-name used to read one here, and each
+      ;; takes a gensym when this file loads (see block-arg-leaves)
+      (let [names (set (map #(nth % 1) m))] (reset! string-names-cache [m names]) names))))
+
 (defn string-name [s]
   (or (get @*strings* s)
       ;; short strings are named by their bytes (exact: phm_test interns
@@ -463,10 +503,13 @@
       (let [bs (map #(bit-and % 255) (.getBytes s))
             nm (if (<= (count bs) 24)
                  (str "$s_" (apply str (map #(format "%02x" %) bs)))
-                 (str "$s" (hex32 s) (hex32 (apply str (reverse s))) "_" (count bs)))]
-        (when (some #(= nm %) (vals @*strings*))
+                 (str "$s" (hex32 s) (hex32 (apply str (reverse s))) "_" (count bs)))
+            m @*strings*
+            names (string-names m)]
+        (when (contains? names nm)
           (fail "string data name collision" {:s s :name nm :other (first (filter #(= nm (get @*strings* %)) (keys @*strings*)))}))
-        (swap! *strings* assoc s nm)
+        ;; the driver is single-threaded: the map swapped is m
+        (reset! string-names-cache [(swap! *strings* assoc s nm) (conj names nm)])
         nm)))
 
 (defn bytes-wat [s]
@@ -2039,7 +2082,7 @@
       (fail "unsupported tree node" {:tag tag :fn *fname*}))))
 
 (defn all-values [f]
-  (binding [*f* f *memo* (atom {})]
+  (binding [*f* f *memo* (memo-for f)]
     (doall (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
                  :when (not (no-local? i))]
              i))))
@@ -2128,7 +2171,7 @@
       :else false)))
 
 (defn compute-func-vals [f params]
-  (binding [*f* f *memo* (atom {})]
+  (binding [*f* f *memo* (memo-for f)]
     (let [nids (all-insts f)]
       (loop [fs #{}]
         (let [fs2 (into fs (filter #(and (not (contains? fs %)) (func-producer? % fs params)) nids))]
@@ -2145,20 +2188,21 @@
 (defn analyze-opt
   "analyze-ir after optimize-fn has run (the census times the stages apart)."
   [fname f]
-  (let [{:keys [tree fallbacks absorbed-blocks absorbed-insts]} (st/structurize f)]
+  (let [{:keys [tree fallbacks absorbed-blocks absorbed-insts]} (st/structurize f)
+        memo (atom {})]
     (check-absorbed fname f (or absorbed-blocks #{}) (or absorbed-insts #{}))
     ;; structurize's :fallbacks also counts :multi-exit loops, whose tree is
     ;; complete (see walk's :loop); only a :goto node is unlowerable.
     (when (has-node? :goto tree)
       (fail "structurize fallback (:goto)" {:fn fname :fallbacks fallbacks :tree tree}))
-    (let [fparams (binding [*f* f *memo* (atom {}) *func-vals* #{}] (func-params f))
-          params0 (binding [*f* f *memo* (atom {}) *func-vals* #{}]
+    (let [fparams (binding [*f* f *memo* memo *func-vals* #{}] (func-params f))
+          params0 (binding [*f* f *memo* memo *func-vals* #{}]
                     (vec (for [i (range (ir/fn-arity f))]
                            (if (contains? fparams i)
                              :func
                              (let [nid (ir/fn-load-arg f i)] (if nid (ty nid) :box))))))
-          fvals (compute-func-vals f params0)]
-      (binding [*f* f *memo* (atom {}) *func-vals* fvals]
+          fvals (binding [*f* f *memo* memo] (compute-func-vals f params0))]
+      (binding [*f* f *memo* memo *func-vals* fvals]
         (let [params params0
               rvals (for [b (ir/blocks f)
                           :let [t (ir/block-term b f)]
@@ -2313,7 +2357,7 @@
   "[linked try-srcs] for f: closure-chain nodes a later link consumes, and
    every node of a chain a :try consumes (see closure-hidden?)."
   [f]
-  (binding [*f* f *memo* (atom {})]
+  (binding [*f* f *memo* (memo-for f)]
     (let [insts (for [b (ir/blocks f) i (ir/block-insts b f)] i)
           chain (fn chain [n]
                   (let [n (src-of n)]
@@ -2330,8 +2374,9 @@
    env struct `env` (field kinds `env-kinds`). `caps` are a try region's
    captures, passed as trailing params $c0.."
   [{:keys [name f tree params ret caps export? export-name code env env-kinds absorbed func-vals]}]
-  (let [[linked tries] (binding [*func-vals* (or func-vals #{})] (closure-sets f))]
-  (binding [*f* f *memo* (atom {}) *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
+  (let [memo (atom {})
+        [linked tries] (binding [*func-vals* (or func-vals #{}) *f* f *memo* memo] (closure-sets f))]
+  (binding [*f* f *memo* memo *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
             *box-inline* true *env-type* env *linked* linked *try-srcs* tries
             *absorbed* (or absorbed #{}) *func-vals* (or func-vals #{}) *tail-nid* nil]
     (let [locals (distinct (all-values f))
