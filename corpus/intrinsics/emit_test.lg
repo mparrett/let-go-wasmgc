@@ -169,6 +169,17 @@
     ["(fn [x] (when (pos? x) (if (> x 10) 10 x)))" (ones [-1 0 5 50 2.5])]
     ["(fn ^long [^long n] n)" (ones [4])]]))
 
+(deftest evaluation-order
+  ;; review of PR #6 (2026-10-05): fold-left called the helper before the
+  ;; third argument was evaluated, so the overflow of (+ MAX 1) hid the
+  ;; divide by zero native raises first
+  (check-table
+   [["(fn [] (+ 9223372036854775807 1 (quot 1 0)))" [[]]]
+    ["(fn [a] (* a 2 (quot a 0)))" (ones [MAX 3 0])]
+    ["(fn [a b] (- a b (/ a 0.0) (quot 1 b)))" (pairs [MIN 1] [0 1])]
+    ["(fn [a] (/ 1.0 2.0 (quot a 0)))" (ones [1])]
+    ["(fn [a b c] (+ a b c))" (triples [MAX 1 -1 nil])]]))
+
 (deftest literals
   ;; f64.const travels as IEEE bits (em-float-bits, plain lg); each literal
   ;; through the module prints as native prints it

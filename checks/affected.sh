@@ -109,7 +109,7 @@ P8.12	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/linear-runner-abi-c
 P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
-P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh
+P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

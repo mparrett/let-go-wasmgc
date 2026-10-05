@@ -12,7 +12,8 @@
 //   "lw kind" v -> 0 nil, 1 Int, 2 Float, 3 false, 4 true;
 //   "lw unbox_i" v -> BigInt, "lw unbox_f" v -> Number.
 // A fn with one arity is exported under its name, one with several as
-// name/N; this runner tries name/N first, then name.
+// name/N; this runner tries name/N first, then name, and refuses a call
+// whose argument count is not the export's (native's arity error).
 // Errors: a helper that raises sets the mutable global "lw err" to
 // code + 256*ka + 4096*kb and traps; the runner resets it before each call,
 // and on a trap maps it to native's two texts, the uncaught one (`error:
@@ -120,7 +121,19 @@ function errorTexts(v) {
 function call(item) {
   const n = item.args.length;
   const f = X[`${item.call}/${n}`] ?? X[item.call];
+  const multi = Object.keys(X).some((k) => k.startsWith(`${item.call}/`));
+  // JS ignores extra wasm arguments and fills missing ones with null, so a
+  // call of the wrong arity would run; native refuses it (the address in
+  // its text normalises to 0xADDR in the oracle)
+  if (multi && typeof f !== "function") {
+    const m = `function <mfn ${item.call} 0x0> doesn't have a ${n}-arity variant`;
+    throw new LgError(m, `ExecutionError: ${m}`);
+  }
   if (typeof f !== "function") throw new LgError(`emit-run: no export ${item.call} of ${n} args`, "");
+  if (f.length !== n) {
+    const m = `function <fn ${item.call} 0x0> expected ${f.length} args, got ${n}`;
+    throw new LgError(m, `ExecutionError: ${m}`);
+  }
   err.value = 0;
   try {
     return f(...item.args.map(box));

@@ -4,8 +4,9 @@
 # compiles each fitting program's fns to a standalone wasm module under
 # stock lg; node runs it; the result must equal native lg's.
 #
-# Programs: corpus/scalar/*, corpus/opmatrix/*.lg, corpus/typed/*.lg (or the
-# ones named). A program FITS when its top level is only
+# Programs: corpus/scalar/*, corpus/opmatrix/*.lg, corpus/typed/*.lg and
+# corpus/emit/*.lg, the programs this path's own review found (or the ones
+# named). A program FITS when its top level is only
 #   - defn / defn- / fn forms (the module: every fn in it),
 #   - (println item..), item a string, a scalar literal, or an expression,
 #   - the op-matrix row (try (println item..) (catch Exception e
@@ -51,7 +52,7 @@ if [ $# -gt 0 ]; then progs=("$@"); else
   progs=()
   while IFS= read -r f; do progs+=("$f"); done < <(
     { find corpus/scalar -maxdepth 1 -type f \( -name '*.lg' -o -name '*.clj' \)
-      find corpus/opmatrix corpus/typed -maxdepth 1 -type f -name '*.lg'; } | LC_ALL=C sort)
+      find corpus/opmatrix corpus/typed corpus/emit -maxdepth 1 -type f -name '*.lg'; } | LC_ALL=C sort)
 fi
 
 # The driver: one stock-lg process reads every program, classifies it and,

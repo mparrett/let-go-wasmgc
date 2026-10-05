@@ -1,0 +1,5 @@
+;; PR #6 review (2026-10-05): every argument of a folded (+ a b c ..) is
+;; evaluated before the first addition; native's error is the divide by
+;; zero, not the overflow of the first two
+(defn f [] (+ 9223372036854775807 1 (quot 1 0)))
+(println (f))

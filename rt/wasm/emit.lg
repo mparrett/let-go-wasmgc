@@ -442,18 +442,26 @@
 (defn- fixed [nm k helper]
   (fn [as n ce] (if (= n k) (ins as [:call helper]) (em-arity-error nm n))))
 
-(defn- fold-left [as op]
-  (reduce (fn [acc a] (ins acc a [:call op])) (first as) (rest as)))
+(defn- em-new-local [ce]
+  (let [f (:fctx ce) i (:n @f)] (swap! f update :n inc) i))
+
+(defn- fold-left
+  "(op a b c ..) of three or more: every argument evaluated into a local
+   first (native evaluates all of a call's arguments before entering +, so
+   (+ MAX 1 (quot 1 0)) is divide by zero, not overflow), then the helper
+   folded left over their values."
+  [as ce op]
+  (let [ts (mapv (fn [_] (em-new-local ce)) as)]
+    (ins (map (fn [a t] (ins a (lset t))) as ts)
+         (lget (first ts))
+         (map (fn [t] (ins (lget t) [:call op])) (rest ts)))))
 
 (defn- arith [nm unit one two many]
   (fn [as n ce]
     (cond (= n 0) (if unit unit (em-arity-error nm n))
           (= n 1) (if one (ins (first as) one) (first as))
           (= n 2) (ins as [:call two])
-          :else (fold-left as many))))
-
-(defn- em-new-local [ce]
-  (let [f (:fctx ce) i (:n @f)] (swap! f update :n inc) i))
+          :else (fold-left as ce many))))
 
 (defn- chain
   "(op a b c ..): every argument evaluated first, then the pairwise tests
@@ -483,7 +491,7 @@
    "/" (fn [as n ce]
          (cond (= n 0) (em-arity-error "/" n)
                (= n 1) (ins (box-i (i64c 1)) (first as) [:call :div])
-               :else (fold-left as :div)))
+               :else (fold-left as ce :div)))
    "quot" (fixed "quot" 2 :quot) "rem" (fixed "rem" 2 :rem) "mod" (fixed "mod" 2 :mod)
    "inc" (fixed "inc" 1 :inc) "dec" (fixed "dec" 1 :dec)
    "zero?" (fixed "zero?" 1 :zero?) "pos?" (fixed "pos?" 1 :pos?) "neg?" (fixed "neg?" 1 :neg?)
