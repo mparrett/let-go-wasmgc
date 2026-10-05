@@ -36,8 +36,7 @@
 
 (ns wasm.eval
   (:refer-clojure :exclude [eval compile])
-  (:require [clojure.string :as string]
-            [wasm.natives :as n]))
+  (:require [clojure.string :as string]))
 
 (defn- raise [msg] (throw (ex-info msg {})))
 (defn- var-value [v] (raise "program var in the native tier"))
@@ -81,8 +80,11 @@
            (contains? plumbing (str sym)) {:kind :core :name (str sym) :val (get plumbing (str sym))}
            :else nil))))
 
-(defn- canon [q]
-  (if-let [ns (ns-of-alias q)] (str (ns-name ns)) (n/canon* q)))
+(defn- canon
+  "The ns name an alias of *ns* stands for, else q itself: let-go's aliases are
+   the only alias table on this host."
+  [q]
+  (if-let [ns (ns-of-alias q)] (str (ns-name ns)) q))
 
 (defn- local-def? [t] (contains? (ns-interns *ns*) (symbol t)))
 
