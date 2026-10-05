@@ -1,16 +1,18 @@
-;; P7.0: wasm.eval (rt/wasm/eval.lg) under native lg. The evaluator is plain
-;; lg over core fns, so with `native-tier` set it runs on native values: each
-;; form is evaluated by it and by native `eval`, and the printed results (or
-;; the error messages, CompileError chains included) must be equal. This
-;; checks the compile step (special forms, macro expanders, resolution,
-;; error layers) and the closures it builds; the module tier
-;; (checks/run-corpus.sh corpus/eval/*/) checks the same through the backend.
-;; Program vars, the program table, var stand-ins and the wasm.natives fns
-;; the core table names (format, resolve, push-binding! for binding,
-;; defonce's bound?) are module-only and are not exercised here.
+;; P7.0: wasm.eval (rt/wasm/eval.lg) under native lg, on its native host seam
+;; (rt/wasm/eval_native.lg, required below: real namespaces and vars). Each
+;; form is evaluated by it and by native `eval` in the same ns, and the
+;; printed results (or the error messages, CompileError chains included)
+;; must be equal. This checks the compile step (special forms, macro
+;; expanders, resolution, error layers) and the closures it builds; the
+;; module tier (checks/run-corpus.sh corpus/eval/*/) checks the same through
+;; the backend, and checks/eval-native.sh runs the eval corpora on this seam.
+;; The wasm host's own parts (rt/wasm/eval_wasm.lg: the registry of cells,
+;; the program table, var stand-ins, the core table) are module-only and are
+;; not exercised here.
 (ns eval-test
   (:require [test :refer [deftest is testing]]
             [wasm.eval :as ev]
+            [wasm.eval-native]
             [string]))
 
 (defn- res [f] (try [:ok (pr-str (f))] (catch Exception e [:err (ex-message e)])))
@@ -22,10 +24,9 @@
     [(res (fn [] (eval form))) (res (fn [] (ev/eval form)))]))
 
 (defn- same-ns!
-  "Evaluate in the namespace native eval uses here (the test's *ns*)."
-  []
-  (reset! ev/native-tier true)
-  (wasm.natives/set-cur! (wasm.natives/add-ns* (str (ns-name *ns*)))))
+  "The native host (wasm.eval-native, required above) evaluates in *ns*,
+   the namespace native eval uses here; nothing to set up."
+  [] nil)
 
 (defn- check-all [srcs]
   (same-ns!)
@@ -96,6 +97,20 @@
     "(clojure.core/inc 1)" "(core/inc 1)" "(pr-str [1 \"s\" :k])" "(read-string \"(1 2)\")"
     "(eval '(+ 1 2))" "(eval (list '* 6 7))" "(first 1)" "(+ 1 :a)" "(nth [1] 5)" "(throw (ex-info \"x\" {:a 1}))"]))
 
+(deftest native-seam
+  ;; what only real vars can show: dynamic binding and set! of an evaluated
+  ;; def, var identity, :private/:macro on the var, core names outside the
+  ;; wasm core table (limits on wasm, see corpus/eval/native-ledger.md)
+  (check-all
+   ["(do (def ^:dynamic ev-dyn 1) (binding [ev-dyn 2] ev-dyn))" "(do (def ev-sv 1) (set! ev-sv 2) ev-sv)"
+    "[(binding [ev-dyn 5] (set! ev-dyn 6) ev-dyn) ev-dyn]" "(= (var ev-sv) (resolve 'ev-sv))"
+    "(do (defn- ev-p [] 1) (:private (meta (var ev-p))))" "(do (defmacro ev-m3 [x] x) (:macro (meta (var ev-m3))))"
+    "(reductions + [1 2 3])" "(macroexpand-1 '(when 1 2))" "(with-out-str (binding [*out* *out*] (print 1)))"
+    ;; PR #4 review: dynamic core vars read when the form runs; (var m) of a core macro
+    "(binding [*assert* false] *assert*)" "(binding [clojure.core/*assert* false] clojure.core/*assert*)"
+    "(with-redefs [*assert* false] *assert*)" "*assert*" "(str (var when))" "(str (var let))"
+    "(= (var when) (resolve 'when))"]))
+
 (deftest syntax-quote-expansion
   (same-ns!)
   (doseq [s ["`x" "`if" "`(a b)" "`(a ~b ~@c)" "`[a# a# b#]" "`{:a ~x}" "`#{~x}" "`(1 \"s\" :k nil)" "`[]" "`()"
@@ -105,7 +120,13 @@
       (is (= (pr-str native) (pr-str mine)) s))))
 
 (deftest dialect
-  ;; eval.lg is plain lg like natives.lg; what this file relies on is that
-  ;; the evaluator touches the runtime only behind native-tier (raise) or in
-  ;; module-only paths (var stand-ins), so it runs here at all.
-  (is (string/includes? (slurp "rt/wasm/eval.lg") "DIALECT: plain lg")))
+  ;; eval.lg is plain lg like natives.lg and host-free (D187): its ns form
+  ;; requires clojure.string only, it defines no seam fn and nothing in it
+  ;; switches on the host at run time; the host file loaded after it (here
+  ;; eval_native.lg, in a module eval_wasm.lg) defines the seam.
+  (let [text (slurp "rt/wasm/eval.lg")
+        ns-form (read-string text)]
+    (is (string/includes? text "DIALECT: plain lg"))
+    (is (= '(:require [clojure.string :as string]) (last ns-form)))
+    (is (not (string/includes? text "native-tier")))
+    (is (not (string/includes? text "alter-var-root")))))
