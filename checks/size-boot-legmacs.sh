@@ -80,7 +80,7 @@ fi
 # ---- boot ------------------------------------------------------------------------
 boot_lane() {  # boot_lane <dir> <label> coi|plain
   local p; p=$(free_port)
-  if [ "$3" = coi ]; then python3 "$ws/local-scripts/coi-serve.py" "$p" "$1" >"$t/$2.server.log" 2>&1 & pids+=($!)
+  if [ "$3" = coi ]; then python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$p" "$1" >"$t/$2.server.log" 2>&1 & pids+=($!)
   else python3 -m http.server --bind 127.0.0.1 --directory "$1" "$p" >"$t/$2.server.log" 2>&1 & pids+=($!); fi
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/index.html" && break; sleep 0.1; done
   node "$here/checks/browser-boot.mjs" --legmacs-time "http://127.0.0.1:$p" "$REPS" >"$t/boot-$2.json" 2>&1

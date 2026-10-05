@@ -44,7 +44,7 @@ XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LETGO=${LETGO:-$LW_ROOT/let-go}
 COMMIT=4e769212
 SEED=${SEED:-424242}
-pw=$ws/local-scripts/browser-smoke-playwright
+pw=${LW_BROWSER_TOOLS:-$ws/local-scripts}/browser-smoke-playwright
 t=$(mktemp -d); pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
@@ -62,7 +62,7 @@ if [ ! -f "$stock/index.html" ]; then
   if ! (cd "$XSOFY" && LETGO_SRC="$src" "$LG" -w "$stock.tmp" -w-shell none main.lg) >"$t/stock-build.log" 2>&1; then
     echo "FAIL: stock lane build"; tail -20 "$t/stock-build.log"; exit 1
   fi
-  "$ws/local-scripts/inject-shell.sh" "$stock.tmp/index.html" "$XSOFY/tools/xsofy-shell.html" >/dev/null || exit 1
+  "${LW_BROWSER_TOOLS:-$ws/local-scripts}/inject-shell.sh" "$stock.tmp/index.html" "$XSOFY/tools/xsofy-shell.html" >/dev/null || exit 1
   rm -rf "$stock"; command mv "$stock.tmp" "$stock"
 fi
 
@@ -72,8 +72,8 @@ fi
 
 # ---- walks ----------------------------------------------------------------------
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
-ps=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$ps" "$stock" >"$t/s.log" 2>&1 & pids+=($!)
-pl=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$pl" "$t/lw" >"$t/l.log" 2>&1 & pids+=($!)
+ps=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$ps" "$stock" >"$t/s.log" 2>&1 & pids+=($!)
+pl=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$pl" "$t/lw" >"$t/l.log" 2>&1 & pids+=($!)
 for p in "$ps" "$pl"; do for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/index.html" && break; sleep 0.1; done; done
 
 harness=0

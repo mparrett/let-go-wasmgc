@@ -1,4 +1,5 @@
-import { createRequire } from 'node:module'; import { pathToFileURL } from 'node:url'; const pwm = await import(pathToFileURL(createRequire(new URL('../../../local-scripts/browser-smoke-playwright/package.json', import.meta.url).pathname).resolve('playwright')).href); const chromium = (pwm.default ?? pwm).chromium;
+import path from 'node:path'; // External browser tools configuration (2026-10-03).
+import { createRequire } from 'node:module'; import { pathToFileURL } from 'node:url'; const pwm = await import(pathToFileURL(createRequire(process.env.LW_BROWSER_TOOLS ? path.join(path.resolve(process.env.LW_BROWSER_TOOLS), 'browser-smoke-playwright/package.json') : new URL('../../../local-scripts/browser-smoke-playwright/package.json', import.meta.url).pathname).resolve('playwright')).href); const chromium = (pwm.default ?? pwm).chromium;
 const b = await chromium.launch(); const p = await b.newPage();
 const errs = []; p.on('pageerror', e => errs.push(String(e)));
 await p.goto('http://127.0.0.1:8262/repl.html', { waitUntil: 'domcontentloaded' });

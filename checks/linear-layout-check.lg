@@ -1,0 +1,9 @@
+;; Structural check of the numeric module skeleton before instruction families.
+(require 'lower-wasm)
+(lower-wasm/with-session*
+  (lower-wasm/new-session {} {} {:target :linear})
+  (fn []
+    (spit (first *command-line-args*)
+      (lower-wasm/representation-wat
+        (str "(module " (lower-wasm/rec-group)
+             " (func $probe (export \"probe\") (result i32) (call $lin_alloc (i32.const 70000))))")))))
