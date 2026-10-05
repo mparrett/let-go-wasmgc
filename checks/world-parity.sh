@@ -44,7 +44,7 @@ done
 # the module this run used: the newest in the cache
 m=""; for f in "$cache"/*.wasm; do [ -f "$f" ] && { [ -z "$m" ] || [ "$f" -nt "$m" ]; } && m=$f; done
 if [ -n "$m" ]; then
-  opt=$(/opt/homebrew/opt/binaryen/bin/wasm-opt -O3 --enable-gc --enable-reference-types --enable-exception-handling \
+  opt=$("$WASM_OPT" -O3 --enable-gc --enable-reference-types --enable-exception-handling \
         --enable-bulk-memory --enable-tail-call --enable-multivalue "$m" -o - 2>/dev/null | wc -c | tr -d ' ')
   echo "module: $(wc -c <"$m" | tr -d ' ') bytes raw, $opt bytes after wasm-opt -O3"
 fi
