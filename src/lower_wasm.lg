@@ -480,6 +480,21 @@
 ;; Generated names are content-addressed, not counters, so the cached
 ;; runtime library (rt-library) and a program compiled against it agree on
 ;; every name without renumbering.
+;; [strings-map names] for string-name's collision check: the set of data
+;; names in that *strings* map. Scanning every name per new string was ~7% of
+;; a warm legmacs build (the map holds the runtime library's strings; P4
+;; profile, 2026-10-04). Keyed by the map's identity, so a session switch or
+;; a restored snapshot rebuilds it.
+(def string-names-cache (atom nil))
+
+(defn string-names [m]
+  (let [c @string-names-cache]
+    (if (and c (identical? (nth c 0) m))
+      (nth c 1)
+      ;; #(..) rather than vals: string-name used to read one here, and each
+      ;; takes a gensym when this file loads (see block-arg-leaves)
+      (let [names (set (map #(nth % 1) m))] (reset! string-names-cache [m names]) names))))
+
 (defn string-name [s]
   (or (get @*strings* s)
       ;; short strings are named by their bytes (exact: phm_test interns
@@ -488,10 +503,13 @@
       (let [bs (map #(bit-and % 255) (.getBytes s))
             nm (if (<= (count bs) 24)
                  (str "$s_" (apply str (map #(format "%02x" %) bs)))
-                 (str "$s" (hex32 s) (hex32 (apply str (reverse s))) "_" (count bs)))]
-        (when (some #(= nm %) (vals @*strings*))
+                 (str "$s" (hex32 s) (hex32 (apply str (reverse s))) "_" (count bs)))
+            m @*strings*
+            names (string-names m)]
+        (when (contains? names nm)
           (fail "string data name collision" {:s s :name nm :other (first (filter #(= nm (get @*strings* %)) (keys @*strings*)))}))
-        (swap! *strings* assoc s nm)
+        ;; the driver is single-threaded: the map swapped is m
+        (reset! string-names-cache [(swap! *strings* assoc s nm) (conj names nm)])
         nm)))
 
 (defn bytes-wat [s]
