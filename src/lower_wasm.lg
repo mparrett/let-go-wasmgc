@@ -20,6 +20,7 @@
             [ir.passes.purity] [ir.passes.licm] [ir.passes.cse] [ir.passes.constfold] [ir.lattice :as lat] [ir.passes.infer-arg-types]
             [clojure.string :as str] [lw-rt]))
 
+(def ^:dynamic *target* :gc)
 (def ^:dynamic *f* nil)
 ;; per-*f* memo of src-of (an atom, rebound wherever *f* is): src-of walks
 ;; block-arg chains and runs for every value many times; unmemoised, a
@@ -1864,6 +1865,9 @@
       ;; a stack-VM marker cleanup strips; nothing to emit if one survives
       (= op :pop) nil
       (= op :set-var) (set-var-wat nid)
+      ;; D177: a general integer division may need absent Ratio/BigInt values.
+      (if (= *target* :linear) (if (= op :div) (not-any? #{:float} (map ty refs)) false) false)
+      (fail "unsupported op :div under linear (Ratio/BigInt result)" {:nid nid :fn *fname*})
       ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
       (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
@@ -3800,7 +3804,7 @@
    compiles every runtime defn and keeps every helper (size measurement)."
   ([sigs var-globals] (new-session sigs var-globals {}))
   ([sigs var-globals opts]
-   {:sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+   {:target (or (:target opts) :gc) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
     :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
@@ -3813,7 +3817,7 @@
 
 
 (defn with-session* [ss thunk]
-  (binding [*sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
+  (binding [*target* (or (:target ss) :gc) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
@@ -3970,11 +3974,12 @@
         ;; helpers as generated WITHOUT runtime paths (that variant of
         ;; $rt_print_other names nothing), and reuse that text when the
         ;; answer is no, so a scalar module's bytes do not change
-        bare-helpers (when *rt* (top-forms (binding [*rt* nil] (runtime))))
+        ;; (linear keeps every runtime path, so it never needs the bare variant)
+        bare-helpers (when (and *rt* (not= *target* :linear)) (top-forms (binding [*rt* nil] (runtime))))
         reach-items (merge base-items (by-name (filter form-name bare-helpers)))
-        rt? (and *rt* (or (rt-reached? reach-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
+        rt? (and *rt* (if (= *target* :linear) true (or (rt-reached? reach-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
                           (some #(re-find #"\$rt_reify|struct\.new \$Atom" %)
-                                (cons program (keep base-items (live-set base-items {} (refs-of program)))))))
+                                (cons program (keep base-items (live-set base-items {} (refs-of program))))))))
         helper-forms (if rt? (top-forms (runtime)) (or bare-helpers (top-forms (binding [*rt* nil] (runtime)))))
         ;; after the helpers: generating them registers their strings
         datas (into {} (for [[s nm] @*strings*] [nm (str "(data " nm " \"" (wat-bytes s) "\")")]))
@@ -4091,6 +4096,21 @@
       (when (seq stmts)
         (str "(func $_rt_init\n  " (str/join "\n  " stmts) ")\n(start $_rt_init)\n")))))
 
+;; The linear representation lives in lower_linear.lg and loads only on demand.
+;; Compiling extra case macros under native lg consumes gensyms and changes
+;; some runtime IR even in the GC lane. Keep that compiler state untouched.
+(defn ensure-linear-representation! []
+  (require 'lower-linear))
+
+(defn representation-wat
+  "Render the shared instruction stream for the selected representation.
+   GC is deliberately verbatim, including instruction and declaration order."
+  [text]
+  (if (= *target* :gc)
+    text
+    (do (ensure-linear-representation!)
+        ((resolve 'lower-wasm/linear-module) text))))
+
 (defn session-module
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
@@ -4106,7 +4126,7 @@
                        info? #(str/starts-with? % "(global $info_")]
                    (concat (filter info? gs) (remove info? gs)))
               elem (filter #(live (str "$" %)) (sort @*elem*))]
-          (str "(module\n"
+          (representation-wat (str "(module\n"
                (str/join "\n" (ordered "(import")) "\n"
                (rec-group)
                (str/join "\n" fixed) "\n"
@@ -4116,7 +4136,7 @@
                (str/join "\n" (ordered "(func")) "\n"
                program "\n"
                (rt-init-wat live items)
-               ")\n"))))))
+               ")\n")))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.
@@ -4155,7 +4175,7 @@
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
                             (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
-                            [(if lw-rt/no-eval? "|no-eval" "")]))))
+                            [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")]))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
@@ -4218,7 +4238,8 @@
   "Start the current session from the cached runtime library, building and
    saving it first if the runtime or the backend changed."
   []
-  (let [f (str rtlib-dir "/rtlib-" (rtlib-key) ".edn")]
+  (let [prefix (str "rtlib-" (name *target*) "-")
+        f (str rtlib-dir "/" prefix (rtlib-key) ".edn")]
     (if (some? (try (os/stat f) (catch e nil)))
       (rtlib-restore! (read-string (slurp f)))
       (let [fails (build-rtlib!)
@@ -4228,6 +4249,8 @@
         (os/rename tmp f)
         ;; a library for older sources is dead weight (~3.5 MB each)
         (doseq [old (os/ls rtlib-dir)
-                :when (and (str/starts-with? old "rtlib-") (str/ends-with? old ".edn")
+                :when (and (or (and (str/starts-with? old prefix) (str/ends-with? old ".edn"))
+                               ;; named before the target joined the key, so no prefix matches it
+                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old))
                            (not= (str rtlib-dir "/" old) f))]
           (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))

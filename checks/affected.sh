@@ -94,6 +94,19 @@ P7.7	oracle corpus/review5/fix-eval/ checks/run-corpus.sh
 P7.8	oracle corpus/review5/fix-rt/ checks/run-corpus.sh
 P7.9	oracle corpus/review5/fix-backend/ checks/run-corpus.sh
 P7.10	rt/ corpus/eval/ corpus/review5/fix-eval/ checks/eval-native.sh checks/oracle.sh checks/env.sh
+P8.0	src/ rt/ checks/gc-byte-identity.sh corpus/scalar/ corpus/eval/
+P8.1	src/ rt/ checks/target-check.sh checks/linear-refuse-check.lg checks/fixtures/linear-target.lg checks/wasm-run.sh corpus/refused/linear/
+P8.2	src/ rt/ checks/linear-layout-check.sh checks/linear-layout-check.lg
+P8.3	src/ rt/ host/wazero/ checks/linear-representation-check.sh checks/linear-representation-check.lg
+P8.6	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/scalar/
+P8.7	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/opmatrix/ corpus/typed/
+P8.8	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/control/
+P8.9	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/closure/
+P8.10	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/seqs/
+P8.4	src/ rt/ host/wazero/ checks/linear-host-check.sh checks/linear-host-check.lg
+P8.5	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/oracle.sh corpus/scalar/fib.clj
+P8.12	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/linear-runner-abi-check.sh checks/fixtures/linear-argv.lg checks/fixtures/linear-large-host.lg checks/oracle.sh
+P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 EOF
 }

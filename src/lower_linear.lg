@@ -1,0 +1,634 @@
+;; lower-linear: the linear-memory representation of lower-wasm's shared
+;; instruction stream (D174/D175). Part of the lower-wasm namespace, but
+;; required only by ensure-linear-representation! on the first linear
+;; build, so a GC build never reads or compiles it.
+(in-ns 'lower-wasm)
+
+;; Representation layer. GC text is returned verbatim; the linear lane lowers
+;; the shared instruction stream after shaking, when nominal layouts and the
+;; complete set of taken function addresses are known.
+(defn repr-tokens [text]
+  (remove (fn [token] (str/starts-with? token ";;"))
+          (re-seq #"\"(?:\\.|[^\"\\])*\"|;;[^\n]*|[()]|[^\s()]+" text)))
+
+(defn repr-read [text]
+  (loop [ts (repr-tokens text) stack [] out []]
+    (if (empty? ts)
+      (do (when (seq stack) (fail "unbalanced representation text" {})) (first out))
+      (let [t (first ts)]
+        (case t
+          "(" (recur (rest ts) (conj stack out) [])
+          ")" (recur (rest ts) (pop stack) (conj (peek stack) out))
+          (recur (rest ts) stack (conj out t)))))))
+
+(defn repr-write [node]
+  (if (vector? node) (str "(" (str/join " " (map repr-write node)) ")") node))
+
+(defn repr-value-type [t]
+  (cond (and (vector? t) (= "ref" (first t)) (not= "exn" (last t))) "i32"
+        (= "funcref" t) "i32"
+        :else t))
+
+(defn repr-types [node]
+  (let [t (repr-value-type node)]
+    (if (vector? t) (mapv repr-types t) t)))
+
+(defn repr-type-body [d]
+  (let [b (nth d 2)] (if (= "sub" (first b)) (last b) b)))
+
+(defn repr-width [t] (case t ("i64" "f64") 8 "i8" 1 4))
+(defn repr-field-type [f]
+  (let [t (second f)] (repr-value-type (if (and (vector? t) (= "mut" (first t))) (second t) t))))
+
+(def repr-kind
+  {"$Int" 1 "$List" 3 "$Cons" 4 "$LazySeq" 5 "$ChunkedCons" 6
+   "$Range" 7 "$InfiniteRange" 8 "$Repeat" 9 "$PVecSeq" 10 "$PVec" 11
+   "$ArrayChunk" 12 "$ChunkBuffer" 13 "$Reduced" 14 "$Bool" 15
+   "$Fn" 16 "$FnV" 16 "$FnX" 16 "$Str" 17 "$Char" 19 "$Kw" 20
+   "$Sym" 21 "$Float" 22 "$MapEntry" 23 "$Atom" 24 "$Volatile" 25
+   "$Err" 26 "$ArrSeq" 27})
+
+(defn repr-layouts [decls]
+  (into {}
+        (map-indexed
+          (fn [id d]
+            (let [tn (second d) b (repr-type-body d) fs (mapv repr-field-type (rest b))
+                  offsets (vec (butlast (reductions + 12 (map repr-width fs))))]
+              [tn {:id (inc id) :kind (get repr-kind tn 18) :shape (first b)
+                   :fields fs :offsets offsets :size (reduce + 12 (map repr-width fs))
+                   :elem (when (= "array" (first b)) (repr-field-type ["field" (second b)]))}]))
+          (remove (fn [decl] (= "func" (first (repr-type-body decl)))) decls))))
+
+(defn repr-name [op tn] (str "$lin_" op "_" (subs tn 1)))
+(defn repr-const [n] (str "(i32.const " n ")"))
+(defn repr-param [n t] (str " (param $p" n " " t ")"))
+(defn repr-local [n] (str "(local.get $p" n ")"))
+(def ^:dynamic *linear-state* nil)
+(def linear-instructions (atom {}))
+
+(defn linear-word [n width]
+  (mapv (fn [i] (bit-and 255 (unsigned-bit-shift-right n (* 8 i)))) (range width)))
+(defn linear-align [n] (bit-and (+ n 7) -8))
+(defn linear-data [ptr bytes]
+  (str "(data (i32.const " ptr ") \""
+       (apply str (map (fn [b] (format "\\%02x" b)) bytes)) "\")"))
+
+(defn linear-error! [msg]
+  (let [errors (:errors *linear-state*)]
+    (if-let [ptr (get @errors msg)] ptr
+      (let [ptr @(:static-top *linear-state*) b (+ ptr 32)
+            bs (mapv (fn [x] (bit-and x 255)) (.getBytes msg)) size (linear-align (+ 16 (count bs)))
+            layouts (:layouts *linear-state*)
+            words (concat [26 32 (:id (layouts "$Err")) 1 b b 0 0]
+                          [18 size (:id (layouts "$Bytes")) (count bs)])
+            bytes (concat (mapcat (fn [x] (linear-word x 4)) words) bs
+                          (repeat (- size 16 (count bs)) 0))]
+        (when (> (+ b size) 131072) (fail "linear static area exhausted" {}))
+        (swap! (:data *linear-state*) conj (linear-data ptr bytes))
+        (reset! (:static-top *linear-state*) (+ b size))
+        (swap! errors assoc msg ptr)
+        ptr))))
+
+(defn linear-fail [msg] (str "(throw $lgex (i32.const " (linear-error! msg) "))"))
+
+(defn linear-helper! [nm build]
+  (let [helpers (:helpers *linear-state*)]
+    (when-not (contains? @helpers nm)
+      (swap! helpers assoc nm nil)
+      (swap! helpers assoc nm (build)))
+    nm))
+
+(defn linear-allocator! []
+  (linear-helper! "$lin_alloc"
+    (fn []
+      (let [oom (linear-fail "lower-wasm: linear allocator exhausted")]
+        (str "(func $lin_alloc (param $n i32) (result i32) (local $p i32) (local $end i64) (local $pages i32)"
+             " (local.set $p (global.get $heap_top))"
+             " (local.set $end (i64.add (i64.extend_i32_u (local.get $p))"
+             " (i64.and (i64.add (i64.extend_i32_u (local.get $n)) (i64.const 7)) (i64.const -8))))"
+             " (if (i64.gt_u (local.get $end) (i64.const 4294967280)) (then " oom "))"
+             " (local.set $pages (i32.wrap_i64 (i64.shr_u (i64.add (local.get $end) (i64.const 65535)) (i64.const 16))))"
+             " (if (i32.gt_u (local.get $pages) (memory.size))"
+             " (then (if (i32.eq (memory.grow (i32.sub (local.get $pages) (memory.size))) (i32.const -1)) (then " oom "))))"
+             " (global.set $heap_top (i32.wrap_i64 (local.get $end))) (local.get $p))")))))
+
+(defn linear-nodes [node]
+  (if (vector? node) (cons node (mapcat linear-nodes (filter vector? node))) []))
+
+(defn linear-func-signature [node]
+  (let [slots (filter (fn [x] (and (vector? x) (contains? #{"param" "result"} (first x)))) node)
+        ts (fn [slot] (map repr-value-type (remove (fn [x] (and (string? x) (str/starts-with? x "$"))) (rest slot))))]
+    [(vec (mapcat ts (filter (fn [x] (= "param" (first x))) slots)))
+     (vec (mapcat ts (filter (fn [x] (= "result" (first x))) slots)))]))
+
+(declare linear-dispatch)
+(defn linear-flat-value [node]
+  (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" node)
+    (fail (str "unsupported op " node " (flat instruction) under linear") {})
+    (repr-value-type node)))
+(declare linear-function)
+(defn linear-node [node]
+  (if-not (vector? node)
+    (linear-flat-value node)
+    (cond
+      (= "func" (first node)) (linear-function node)
+      (= "ref" (first node)) (repr-value-type node)
+      :else
+      (let [op (first node) args (mapv linear-node (rest node))]
+        (if (re-find #"^(ref\.|struct\.|array\.|i31\.|br_on_cast|call_ref$|return_call_ref$)" op)
+          (if-let [lower (get @linear-instructions op)]
+            (linear-dispatch node args lower)
+            (fail (str "unsupported op " op " under linear") {}))
+          (into [op] args))))))
+
+(declare linear-host-twin)
+(declare linear-entry-wrapper)
+(defn linear-module [text]
+  (let [root (repr-read text) forms (rest root)
+        decls (vec (mapcat (fn [f] (cond (= "rec" (first f)) (rest f)
+                                       (= "type" (first f)) [f] :else [])) forms))
+        layouts (repr-layouts decls)
+        taken (sort (distinct (map second (filter (fn [n] (= "ref.func" (first n))) (linear-nodes root)))))
+        table (into {} (map-indexed (fn [i nm] [nm (inc i)]) taken))
+        state {:forms forms :layouts layouts :decls decls :table table
+               :functions (into {} (map (fn [f] [(second f) f]) (filter (fn [f] (and (= "func" (first f)) (string? (second f)) (str/starts-with? (second f) "$"))) (linear-nodes root))))
+               :stack-helpers (atom {}) :helpers (atom {}) :errors (atom {}) :data (atom []) :static-top (atom 65584)}]
+    (binding [*linear-state* state]
+      (linear-allocator!)
+      (let [starts (map second (filter (fn [f] (= "start" (first f))) forms))
+            boots (atom [])
+            ordinary (remove (fn [f] (contains? #{"rec" "type" "memory" "elem" "start"} (first f))) forms)
+            lower-top (fn [f]
+                        (if (= "global" (first f))
+                          (let [nm (second f) tp (repr-types (nth f 2))]
+                            (cond (= nm "$true") ["global" nm "i32" ["i32.const" "65536"]]
+                                  (= nm "$false") ["global" nm "i32" ["i32.const" "65560"]]
+                                  :else
+                                  (let [init (linear-node (nth f 3))]
+                                    (if (contains? #{"i32.const" "i64.const" "f64.const" "ref.null"} (first init))
+                                      ["global" nm tp init]
+                                      (let [tp (if (and (vector? tp) (= "mut" (first tp))) (second tp) tp)]
+                                        (swap! boots conj ["global.set" nm init])
+                                        ["global" nm ["mut" tp] [(str tp ".const") "0"]])))))
+                          (linear-node (linear-host-twin f))))
+            lowered (mapv lower-top ordinary)
+            funcs (mapv (fn [d] ["type" (second d) (repr-types (repr-type-body d))])
+                        (filter (fn [d] (= "func" (first (repr-type-body d)))) decls))
+            bool-id (:id (layouts "$Bool"))
+            bool-bytes (fn [v] (concat (mapcat (fn [x] (linear-word x 4)) [15 24 bool-id])
+                                      (linear-word v 8) (repeat 4 0)))
+            has-tag (some (fn [f] (= "tag" (first f))) ordinary)]
+        (str "(module\n"
+             (str/join "\n" (map repr-write (filter (fn [f] (= "import" (first f))) lowered))) "\n"
+             (str/join "\n" (map repr-write funcs)) "\n"
+             "(memory (export \"lw mem\") 3)\n(global $heap_top (mut i32) (i32.const 131072))\n"
+             "(table $lin_functions " (inc (count taken)) " funcref)\n"
+             (when (seq taken) (str "(elem (i32.const 1) func " (str/join " " taken) ")\n"))
+             (when-not has-tag "(tag $lgex (param i32))\n")
+             (str/join "\n" (map repr-write (remove (fn [f] (= "import" (first f))) lowered))) "\n"
+             (linear-data 65536 (bool-bytes 1)) "\n" (linear-data 65560 (bool-bytes 0)) "\n"
+             (str/join "\n" @(:data state)) "\n"
+             (str/join "\n" (map val (sort-by key @(:helpers state)))) "\n"
+             (linear-entry-wrapper forms)
+             "(func $lin_init " (str/join " " (map repr-write @boots))
+             (apply str (map (fn [nm] (str " (call " nm ")")) starts)) ")\n(start $lin_init)\n)")))))
+
+(defn linear-descends? [tn ancestor]
+  (if (= tn ancestor) true
+    (let [decl (some (fn [d] (when (= tn (second d)) d)) (:decls *linear-state*))
+          sub (nth decl 2 nil)
+          parent (when (= "sub" (first sub))
+                   (some (fn [x] (when (and (string? x) (str/starts-with? x "$")) x)) (rest sub)))]
+      (and parent (linear-descends? parent ancestor)))))
+
+(defn linear-or [exprs]
+  (reduce (fn [a b] (str "(i32.or " a " " b ")")) "(i32.const 0)" exprs))
+
+;; Preserve GC signature distinctions when references become numeric (2026-10-03).
+(defn linear-original-signature [node]
+  (let [slots (filter (fn [x] (and (vector? x) (contains? #{"param" "result"} (first x)))) node)
+        type (some (fn [x] (when (and (vector? x) (= "type" (first x))) (second x))) node)
+        declared (when type (some (fn [d] (when (= type (second d)) (repr-type-body d))) (:decls *linear-state*)))
+        slots (if (and (empty? slots) declared)
+                (filter (fn [x] (and (vector? x) (contains? #{"param" "result"} (first x)))) declared) slots)
+        ts (fn [slot] (remove (fn [x] (and (string? x) (str/starts-with? x "$"))) (rest slot)))]
+    [(vec (mapcat ts (filter (fn [x] (= "param" (first x))) slots)))
+     (vec (mapcat ts (filter (fn [x] (= "result" (first x))) slots)))]))
+(defn linear-function-matches? [tn decl function]
+  (let [type (some (fn [x] (when (and (vector? x) (= "type" (first x))) (second x))) function)]
+    (or (and type (linear-descends? type tn))
+        (= (linear-original-signature (repr-type-body decl)) (linear-original-signature function)))))
+
+(defn linear-type-test! [tp]
+  (let [tn (last tp) nullable (= "null" (second tp))
+        nm (str "$lin_test_" (str/replace tn "$" "") (when nullable "_null"))]
+    (linear-helper! nm
+      (fn []
+        (let [p "(local.get $p0)"
+              layout (get (:layouts *linear-state*) tn)
+              decl (some (fn [d] (when (= tn (second d)) d)) (:decls *linear-state*))
+              fun? (and decl (= "func" (first (repr-type-body decl))))
+              body (cond
+                     (= tn "i31") (str "(i32.and " p " (i32.const 1))")
+                     (contains? #{"none" "nofunc" "noextern"} tn) "(i32.const 0)"
+                     (contains? #{"eq" "any"} tn) "(i32.const 1)"
+                     fun? (linear-or
+                            (for [[fnm idx] (:table *linear-state*)
+                                  :when (linear-function-matches? tn decl (get (:functions *linear-state*) fnm))]
+                              (str "(i32.eq " p " " (repr-const idx) ")")))
+                     (or layout (contains? #{"array" "struct"} tn)) (str "(if (result i32) (i32.or (i32.and " p " (i32.const 7))"
+                                 " (i32.or (i32.lt_u " p " (i32.const 65536)) (i32.gt_u " p " (i32.sub (global.get $heap_top) (i32.const 12)))))"
+                                 " (then (i32.const 0)) (else "
+                                 (linear-or
+                                   (for [[type info] (:layouts *linear-state*) :when (if layout (linear-descends? type tn) (= tn (:shape info)))]
+                                     (str "(i32.eq (i32.load offset=8 " p ") " (repr-const (:id info)) ")"))) "))")
+                     :else (fail (str "unsupported op ref.cast type " tn " under linear") {}))]
+          (str "(func " nm " (param $p0 i32) (result i32)"
+               " (if (result i32) (i32.eqz " p ") (then " (repr-const (if nullable 1 0)) ") (else " body ")))"))))))
+
+(defn linear-cast! [tp]
+  (let [nm (str "$lin_cast_" (str/replace (last tp) "$" "") (when (= "null" (second tp)) "_null"))]
+    (linear-helper! nm
+      (fn []
+        (let [test (linear-type-test! tp)]
+          (str "(func " nm " (param $p0 i32) (result i32)"
+               " (if (i32.eqz (call " test " (local.get $p0))) (then " (linear-fail "illegal cast") "))"
+               " (local.get $p0))"))))))
+
+(swap! linear-instructions assoc "ref.cast"
+  (fn [node args] ["call" (linear-cast! (second node)) (last args)]))
+
+(defn linear-struct-get! [tn field]
+  (let [nm (str (repr-name "get" tn) "_" field)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn)
+              idx (parse-long field) tp (nth (:fields layout) idx)
+              offset (nth (:offsets layout) idx)]
+          (str "(func " nm " (param $p0 i32) (result " tp ")"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " (" tp ".load offset=" offset " (local.get $p0)))"))))))
+
+(swap! linear-instructions assoc "struct.get"
+  (fn [node args] ["call" (linear-struct-get! (second node) (nth node 2)) (last args)]))
+
+(swap! linear-instructions assoc "ref.null"
+  (fn [node args]
+    (if (= "exn" (second node)) node ["i32.const" "0"])))
+
+(swap! linear-instructions assoc "ref.test"
+  (fn [node args] ["call" (linear-type-test! (second node)) (last args)]))
+
+(defn linear-store [tp offset ptr value]
+  (str "(" (if (= tp "i8") "i32.store8" (str tp ".store")) " offset=" offset " " ptr " " value ")"))
+
+(defn linear-struct-new! [tn]
+  (let [nm (repr-name "new" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn)
+              fields (:fields layout) size (linear-align (:size layout))
+              p "(local.get $obj)"
+              kind (if (= tn "$List")
+                     "(if (result i32) (i64.eqz (local.get $p2)) (then (i32.const 2)) (else (i32.const 3)))"
+                     (repr-const (:kind layout)))]
+          (str "(func " nm (apply str (map-indexed repr-param fields)) " (result i32) (local $obj i32)"
+               " (local.set $obj (call $lin_alloc " (repr-const size) "))"
+               " " (linear-store "i32" 0 p kind)
+               " " (linear-store "i32" 4 p (repr-const size))
+               " " (linear-store "i32" 8 p (repr-const (:id layout)))
+               (apply str (map-indexed (fn [i tp] (str " " (linear-store tp (nth (:offsets layout) i) p (repr-local i)))) fields))
+               " " p ")"))))))
+
+(swap! linear-instructions assoc "struct.new"
+  (fn [node args] (into ["call" (linear-struct-new! (second node))] (rest args))))
+
+(defn linear-array-len! []
+  (linear-helper! "$lin_array_len"
+    (fn []
+      (str "(func $lin_array_len (param $p0 i32) (result i32)"
+           " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+           " (i32.load offset=12 (local.get $p0)))"))))
+(swap! linear-instructions assoc "array.len"
+  (fn [node args] (into ["call" (linear-array-len!)] args)))
+
+(swap! linear-instructions assoc "ref.i31"
+  (fn [node args] ["i32.or" ["i32.shl" (first args) ["i32.const" "1"]] ["i32.const" "1"]]))
+
+(swap! linear-instructions assoc "ref.is_null"
+  (fn [node args] (into ["i32.eqz"] args)))
+
+(defn linear-non-null! []
+  (linear-helper! "$lin_non_null"
+    (fn []
+      (str "(func $lin_non_null (param $p0 i32) (result i32)"
+           " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") ")) (local.get $p0))"))))
+(swap! linear-instructions assoc "ref.as_non_null"
+  (fn [node args] (into ["call" (linear-non-null!)] args)))
+
+(defn linear-array-new! [tn]
+  (let [nm (repr-name "array_new" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn) width (repr-width (:elem layout))
+              p "(local.get $obj)"]
+          (str "(func " nm " (param $p0 i32) (result i32) (local $sz i64) (local $obj i32)"
+               " (local.set $sz (i64.add (i64.const 16) (i64.mul (i64.extend_i32_u (local.get $p0)) (i64.const " width "))))"
+               " (if (i64.gt_u (local.get $sz) (i64.const 4294967280)) (then " (linear-fail "lower-wasm: linear allocator exhausted") "))"
+               " (local.set $obj (call $lin_alloc (i32.wrap_i64 (local.get $sz))))"
+               " " (linear-store "i32" 0 p (repr-const (:kind layout)))
+               " " (linear-store "i32" 4 p "(i32.and (i32.add (i32.wrap_i64 (local.get $sz)) (i32.const 7)) (i32.const -8))")
+               " " (linear-store "i32" 8 p (repr-const (:id layout)))
+               " " (linear-store "i32" 12 p (repr-local 0))
+               " " p ")"))))))
+(swap! linear-instructions assoc "array.new_default"
+  (fn [node args] ["call" (linear-array-new! (second node)) (last args)]))
+
+(defn linear-array-address! [tn]
+  (let [nm (repr-name "array_address" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) tn)))]
+          (str "(func " nm " (param $p0 i32) (param $p1 i32) (result i32)"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " (if (i32.ge_u (local.get $p1) (i32.load offset=12 (local.get $p0))) (then " (linear-fail "array index out of bounds") "))"
+               " (i32.add (i32.add (local.get $p0) (i32.const 16)) (i32.mul (local.get $p1) (i32.const " width "))))"))))))
+(swap! linear-instructions assoc "array.set"
+  (fn [node args]
+    (let [tn (second node) tp (:elem (get (:layouts *linear-state*) tn))]
+      [(if (= tp "i8") "i32.store8" (str tp ".store"))
+       ["call" (linear-array-address! tn) (nth args 1) (nth args 2)] (nth args 3)])))
+
+(defn linear-array-range! [tn]
+  (let [nm (repr-name "array_range" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) tn))) bad (linear-fail "array index out of bounds")]
+          (str "(func " nm " (param $p0 i32) (param $p1 i32) (param $p2 i32) (result i32) (local $len i32)"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " (local.set $len (i32.load offset=12 (local.get $p0)))"
+               " (if (i32.gt_u (local.get $p1) (local.get $len)) (then " bad "))"
+               " (if (i32.gt_u (local.get $p2) (i32.sub (local.get $len) (local.get $p1))) (then " bad "))"
+               " (i32.add (i32.add (local.get $p0) (i32.const 16)) (i32.mul (local.get $p1) (i32.const " width "))))"))))))
+(defn linear-array-copy! [dst src]
+  (let [nm (str (repr-name "array_copy" dst) "_" (subs src 1))]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) dst)))
+              srcwidth (repr-width (:elem (get (:layouts *linear-state*) src)))]
+          (when-not (= width srcwidth) (fail "unsupported op array.copy with incompatible layouts under linear" {}))
+          (str "(func " nm (apply str (map (fn [i] (repr-param i "i32")) (range 5)))
+               " (memory.copy (call " (linear-array-range! dst) " " (repr-local 0) " " (repr-local 1) " " (repr-local 4) ")"
+               " (call " (linear-array-range! src) " " (repr-local 2) " " (repr-local 3) " " (repr-local 4) ")"
+               " (i32.mul " (repr-local 4) " (i32.const " width "))))"))))))
+(swap! linear-instructions assoc "array.copy"
+  (fn [node args] (into ["call" (linear-array-copy! (second node) (nth node 2))] (drop 2 args))))
+
+(defn linear-i31-get! []
+  (linear-helper! "$lin_i31_get"
+    (fn []
+      (str "(func $lin_i31_get (param $p0 i32) (result i32)"
+           " (if (i32.eqz (i32.and (local.get $p0) (i32.const 1))) (then " (linear-fail "illegal cast") "))"
+           " (i32.shr_s (local.get $p0) (i32.const 1)))"))))
+(swap! linear-instructions assoc "i31.get_s"
+  (fn [node args] (into ["call" (linear-i31-get!)] args)))
+
+(swap! linear-instructions assoc "array.get_u"
+  (fn [node args]
+    (let [tn (second node)]
+      ["i32.load8_u" ["call" (linear-array-address! tn) (nth args 1) (nth args 2)]])))
+
+;; On installation, collect every named func node from linear-nodes root in
+;; the :functions map, including imported funcs; top-level funcs alone omit
+;; imported-function signatures needed by code casts (2026-10-03).
+(swap! linear-instructions assoc "ref.func"
+  (fn [node args] ["i32.const" (str (get (:table *linear-state*) (second node)))]))
+
+(defn linear-indirect! [tn tail?]
+  (let [nm (repr-name (if tail? "tail_indirect" "indirect") tn)]
+    (linear-helper! nm
+      (fn []
+        (let [decl (some (fn [d] (when (= tn (second d)) d)) (:decls *linear-state*))
+              [params results] (linear-func-signature (repr-type-body decl))
+              countp (count params) code (repr-local countp)]
+          (str "(func " nm (apply str (map-indexed repr-param (conj params "i32")))
+               (apply str (map (fn [tp] (str " (result " tp ")")) results))
+               " (if (i32.eqz (call " (linear-type-test! ["ref" tn]) " " code ")) (then " (linear-fail "illegal cast") "))"
+               " (" (if tail? "return_call_indirect" "call_indirect") " (type " tn ")"
+               (apply str (map (fn [i] (str " " (repr-local i))) (range countp))) " " code "))"))))))
+(swap! linear-instructions assoc "return_call_ref"
+  (fn [node args] (into ["return_call" (linear-indirect! (second node) true)] (rest args))))
+
+(swap! linear-instructions assoc "ref.eq"
+  (fn [node args] (into ["i32.eq"] args)))
+
+(defn linear-struct-set! [tn field]
+  (let [nm (str (repr-name "set" tn) "_" field)]
+    (linear-helper! nm
+      (fn []
+        (let [layout (get (:layouts *linear-state*) tn) idx (parse-long field)
+              tp (nth (:fields layout) idx) offset (nth (:offsets layout) idx)]
+          (str "(func " nm " (param $p0 i32) (param $p1 " tp ")"
+               " (if (i32.eqz (local.get $p0)) (then " (linear-fail "null reference") "))"
+               " " (linear-store tp offset (repr-local 0) (repr-local 1)) ")"))))))
+(swap! linear-instructions assoc "struct.set"
+  (fn [node args] ["call" (linear-struct-set! (second node) (nth node 2)) (nth args 2) (nth args 3)]))
+
+(swap! linear-instructions assoc "call_ref"
+  (fn [node args] (into ["call" (linear-indirect! (second node) false)] (rest args))))
+
+;; On installation, add :forms forms to linear-module state so passive data
+;; lengths remain available to the checked memory.init helper (2026-10-03).
+(defn linear-data-size [forms data]
+  (let [decl (some (fn [f] (when (and (= "data" (first f)) (= data (second f))) f)) forms)]
+    (when-not decl (fail "unsupported op array.new_data with missing segment under linear" {:segment data}))
+    (reduce + (map (fn [token]
+                     (reduce + (map (fn [piece] (if (str/starts-with? piece "\\") 1 (count (.getBytes piece))))
+                                    (re-seq #"\\[0-9a-fA-F]{2}|\\.|[^\\]" (subs token 1 (dec (count token)))))))
+                   (filter (fn [token] (and (string? token) (str/starts-with? token "\""))) (drop 2 decl))))))
+
+(defn linear-array-data! [tn data]
+  (let [nm (str (repr-name "array_data" tn) "_" (subs data 1))]
+    (linear-helper! nm
+      (fn []
+        (let [width (repr-width (:elem (get (:layouts *linear-state*) tn)))
+              size (linear-data-size (:forms *linear-state*) data) bad (linear-fail "data segment index out of bounds")]
+          (str "(func " nm " (param $p0 i32) (param $p1 i32) (result i32) (local $bytes i64) (local $obj i32)"
+               " (local.set $bytes (i64.mul (i64.extend_i32_u " (repr-local 1) ") (i64.const " width ")))"
+               " (if (i64.gt_u (i64.add (i64.extend_i32_u " (repr-local 0) ") (local.get $bytes)) (i64.const " size ")) (then " bad "))"
+               " (local.set $obj (call " (linear-array-new! tn) " " (repr-local 1) "))"
+               " (memory.init " data " (i32.add (local.get $obj) (i32.const 16)) " (repr-local 0) " (i32.wrap_i64 (local.get $bytes)))"
+               " (local.get $obj))"))))))
+(swap! linear-instructions assoc "array.new_data"
+  (fn [node args] (into ["call" (linear-array-data! (second node) (nth node 2))] (drop 2 args))))
+
+(defn linear-array-fill! [tn]
+  (let [nm (repr-name "array_fill" tn)]
+    (linear-helper! nm
+      (fn []
+        (let [tp (:elem (get (:layouts *linear-state*) tn)) width (repr-width tp) argtype (if (= tp "i8") "i32" tp)]
+          (str "(func " nm " (param $p0 " argtype ") (param $p1 i32) (result i32) (local $obj i32) (local $i i32)"
+               " (local.set $obj (call " (linear-array-new! tn) " " (repr-local 1) "))"
+               " (block $done (loop $fill (br_if $done (i32.ge_u (local.get $i) " (repr-local 1) "))"
+               " " (linear-store tp 16 (str "(i32.add (local.get $obj) (i32.mul (local.get $i) (i32.const " width ")))" ) (repr-local 0))
+               " (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $fill))) (local.get $obj))"))))))
+(swap! linear-instructions assoc "array.new"
+  (fn [node args] (into ["call" (linear-array-fill! (second node))] (rest args))))
+
+(swap! linear-instructions assoc "array.get"
+  (fn [node args]
+    (let [tn (second node) tp (:elem (get (:layouts *linear-state*) tn))]
+      [(str tp ".load") ["call" (linear-array-address! tn) (nth args 1) (nth args 2)]])))
+
+(defn linear-array-fixed! [tn n]
+  (let [nm (str (repr-name "array_fixed" tn) "_" n)]
+    (linear-helper! nm
+      (fn []
+        (let [tp (:elem (get (:layouts *linear-state*) tn)) width (repr-width tp) argtype (if (= tp "i8") "i32" tp)]
+          (str "(func " nm (apply str (map (fn [i] (repr-param i argtype)) (range n))) " (result i32) (local $obj i32)"
+               " (local.set $obj (call " (linear-array-new! tn) " " (repr-const n) "))"
+               (apply str (map (fn [i] (str " " (linear-store tp (+ 16 (* i width)) "(local.get $obj)" (repr-local i)))) (range n)))
+               " (local.get $obj))"))))))
+(swap! linear-instructions assoc "array.new_fixed"
+  (fn [node args] (into ["call" (linear-array-fixed! (second node) (parse-long (nth node 2)))] (drop 2 args))))
+
+;; Folded GC operators can consume operands already on the stack (2026-10-03).
+;; A numeric helper preserves that operand order without a second emitter.
+(defn linear-stack-profile [node]
+  (let [op (first node) tn (second node) layout (get (:layouts *linear-state*) tn)
+        field (fn [] (nth (:fields layout) (parse-long (nth node 2))))
+        numeric (fn [tp] (if (= tp "i8") "i32" tp))]
+    (cond
+      (contains? #{"ref.cast" "ref.test"} op) [1 ["i32"] ["i32"]]
+      (= op "struct.get") [2 ["i32"] [(numeric (field))]]
+      (= op "struct.set") [2 ["i32" (numeric (field))] []]
+      (= op "ref.i31") [0 ["i32"] ["i32"]]
+      (= op "array.set") [1 ["i32" "i32" (numeric (:elem layout))] []]
+      (= op "array.get_u") [1 ["i32" "i32"] ["i32"]]
+      (= op "array.get") [1 ["i32" "i32"] [(numeric (:elem layout))]]
+      :else nil)))
+(defn linear-dispatch [node args lower]
+  (if-let [[immediate params results] (linear-stack-profile node)]
+    (let [operands (drop immediate args)]
+      (if (= (count params) (count operands)) (lower node args)
+        (let [key [(first node) (vec (take immediate (rest node)))]
+              names (:stack-helpers *linear-state*)
+              nm (or (get @names key)
+                     (let [nm (str "$lin_stack_" (count @names))] (swap! names assoc key nm) nm))]
+          (linear-helper! nm
+            (fn []
+              (let [locals (mapv (fn [i] ["local.get" (str "$p" i)]) (range (count params)))
+                    body (lower node (vec (concat (take immediate args) locals)))]
+                (str "(func " nm (apply str (map-indexed repr-param params))
+                     (apply str (map (fn [tp] (str " (result " tp ")")) results))
+                     " " (repr-write body) ")"))))
+          (into ["call" nm] operands))))
+    (lower node args)))
+
+;; Per-function temporaries preserve single operand evaluation (2026-10-03).
+(def ^:dynamic *linear-function-locals* nil)
+(defn linear-function [node]
+  (when (and (string? (second node)) (str/starts-with? (second node) "$wasm.math/div"))
+    (fail "unsupported op :div under linear (Ratio/BigInt result)" {}))
+  (binding [*linear-function-locals* (atom [])]
+    (let [parts (mapv linear-node (rest node))
+          declaration? (fn [slot]
+                         (or (and (string? slot) (str/starts-with? slot "$"))
+                             (and (vector? slot) (contains? #{"export" "type" "param" "result" "local"} (first slot)))))
+          header (take-while declaration? parts)
+          body (drop (count header) parts)]
+      (into ["func"] (concat header @*linear-function-locals* body)))))
+(defn linear-cast-branch [fail?]
+  (fn [node args]
+    (when-not *linear-function-locals* (fail "unsupported op br_on_cast outside function under linear" {}))
+    (let [temp (str "$lin_cast_" (count @*linear-function-locals*))
+          value ["local.get" temp]
+          label (second node)
+          label (if (str/starts-with? label "$") label (str (+ 2 (parse-long label))))
+          test ["call" (linear-type-test! (nth node 3)) value]]
+      (swap! *linear-function-locals* conj ["local" temp "i32"])
+      (into ["block"]
+        (concat (when (empty? (drop 3 args)) [["param" "i32"]])
+                [["result" "i32"] (into ["local.set" temp] (drop 3 args))
+                 ["if" (if fail? ["i32.eqz" test] test) ["then" ["br" label value]]]
+                 value])))))
+(swap! linear-instructions assoc "br_on_cast" (linear-cast-branch false) "br_on_cast_fail" (linear-cast-branch true))
+
+;; Direct payload pointers and allocator-owned copy buffers (D176, 2026-10-03).
+(defn linear-host-copy-twin [name host arg?]
+  (let [params (if arg? "(param $i i32)" "(param $nm i32)")
+        input (if arg? "(local.get $i)" "(i32.add (local.get $nm) (i32.const 16)) (i32.load offset=12 (local.get $nm))")
+        invoke (fn [buf cap] (str "(call " host " " input " " buf " " cap ")"))]
+    (str "(func " name " " params " (result i32) (local $cap i32) (local $len i32) (local $r i32)"
+         (when-not arg? " (drop (call $lin_array_len (local.get $nm)))")
+         " (local.set $len " (invoke "(i32.const 0)" "(i32.const 0)") ")"
+         " (loop $retry"
+         " (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (i32.const 0))))"
+         " (local.set $cap (local.get $len))"
+         " (local.set $r (call " (linear-array-new! "$Bytes") " (local.get $cap)))"
+         " (local.set $len " (invoke "(i32.add (local.get $r) (i32.const 16))" "(local.get $cap)") ")"
+         " (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (i32.const 0))))"
+         " (br_if $retry (i32.gt_u (local.get $len) (local.get $cap)))"
+         " (i32.store offset=12 (local.get $r) (local.get $len))) "
+         (if arg? (str "(call " (linear-struct-new! "$Str") " (local.get $r) (i64.const -1))") "(local.get $r)")
+         ")")))
+(declare linear-quoted-output)
+(defn linear-host-twin [f]
+  (if-not (= "func" (first f)) f
+    (let [nm (second f) twin
+          (cond
+            (= nm "$rt_print_quoted") (repr-write (linear-quoted-output f))
+            (= nm "$rt_print_bytes")
+            "(func $rt_print_bytes (param $s i32) (call $print_str (i32.add (local.get $s) (i32.const 16)) (call $lin_array_len (local.get $s))))"
+            (= nm "$rt_host_emit")
+            "(func $rt_host_emit (param $n i32) (param $j i32) (call $host_emit (i32.add (local.get $n) (i32.const 16)) (call $lin_array_len (local.get $n)) (i32.add (local.get $j) (i32.const 16)) (call $lin_array_len (local.get $j))))"
+            (= nm "$rt_host_write")
+            "(func $rt_host_write (param $fd i32) (param $b i32) (result i32) (local $n i32) (local.set $n (call $lin_array_len (local.get $b))) (if (i32.eq (local.get $fd) (i32.const -2)) (then (call $rt_capture_append (local.get $b)) (return (local.get $n)))) (call $host_write (local.get $fd) (i32.add (local.get $b) (i32.const 16)) (local.get $n)))"
+            (= nm "$rt_host_getenv") (linear-host-copy-twin nm "$host_getenv" false)
+            (= nm "$rt_host_url_param") (linear-host-copy-twin nm "$host_url_param" false)
+            (= nm "$rt_host_arg") (linear-host-copy-twin nm "$host_arg" true)
+            :else nil)]
+      (if twin (do (linear-array-len!) (repr-read twin)) f))))
+
+;; Quoted output owns its escaped payload instead of writing below the heap (D178, 2026-10-03).
+(defn linear-quote-node [node]
+  (if-not (vector? node) node
+    (let [op (first node) buf ["local.get" "$lin_quote_buffer"]
+          payload (fn [off address] ["i32.add" ["i32.add" buf ["i32.const" (str (+ 16 off))]] address])]
+      (cond
+        (= node ["local" "$need" "i32"]) ["local" "$need" "i64"]
+        (and (= op "local.set") (= (second node) "$need"))
+        ["local.set" "$need" ["i64.add" ["i64.mul" ["i64.extend_i32_u" ["local.get" "$n"]] ["i64.const" "6"]] ["i64.const" "2"]]]
+        (and (= op "if") (= (get-in node [1 1]) ["local.get" "$need"]))
+        ["block"
+         ["if" ["i64.gt_u" ["local.get" "$need"] ["i64.const" "4294967264"]]
+          ["then" (repr-read (linear-fail "lower-wasm: linear allocator exhausted"))]]
+         ["local.set" "$lin_quote_buffer" ["call" (linear-array-new! "$Bytes") ["i32.wrap_i64" ["local.get" "$need"]]]]]
+        (and (= op "i32.store8") (string? (second node)) (str/starts-with? (second node) "offset="))
+        (let [off (parse-long (subs (second node) 7))]
+          (when-not (<= 32 off 37) (fail "unsupported op quoted output store under linear" {}))
+          [op (payload (- off 32) (linear-quote-node (nth node 2))) (linear-quote-node (nth node 3))])
+        (and (= op "call") (= (second node) "$print_str") (= (nth node 2) ["i32.const" "32"]))
+        (let [len (linear-quote-node (nth node 3))]
+          ["block" ["i32.store" "offset=12" buf len]
+           ["call" "$print_str" (payload 0 ["i32.const" "0"]) len]])
+        :else (into [op] (mapv linear-quote-node (rest node)))))))
+(defn linear-quoted-output [f]
+  (let [parts (mapv linear-quote-node (rest f))
+        declaration? (fn [slot]
+                       (or (and (string? slot) (str/starts-with? slot "$"))
+                           (and (vector? slot) (contains? #{"export" "type" "param" "result" "local"} (first slot)))))
+        header (take-while declaration? parts)]
+    (into ["func"] (concat header [["local" "$lin_quote_buffer" "i32"]] (drop (count header) parts)))))
+
+;; Catch managed exceptions inside Wasm so the Go host can format their payload.
+(defn linear-entry-wrapper [forms]
+  (when-let [main (some (fn [f]
+                        (when (and (= "func" (first f))
+                                   (some (fn [slot] (= slot ["export" "\"lw main\""])) f))
+                          (second f))) forms)]
+    (str "(func $lin_run (export \"lw run\") (result i32 i32) (local $error i32)"
+         " (local.set $error (block $caught (result i32) (try_table (catch $lgex $caught)"
+         " (drop (call " main ")) (return (i32.const 0) (i32.const 0))) (i32.const 0)))"
+         " (i32.const 1) (local.get $error))\n")))
+
