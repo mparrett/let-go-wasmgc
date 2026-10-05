@@ -20,7 +20,7 @@
 # named limit (node-host exit 4), or when a leg stops at the evaluator's own
 # limit, shared by both legs (its core table lacks a name native resolves:
 # "Can't resolve"; a core value with no runtime twin, D139; or a
-# "lower-wasm: ... (named limit)"), while native runs.
+# "lower-wasm: ... (named limit)") where native's run says no such thing.
 # A leg whose disagreement was traced (by asking native) to a component
 # outside the compiled path is reported, not failed: the evaluator's
 # declared arity-text limit (eval.lg header), and corpus/emit/KNOWN's rows
@@ -77,7 +77,7 @@ n=${#progs[@]} fit=0 match=0 bad=0 skips=() knowns=()
 for ((i=0; i<n; i++)); do
   f=${progs[$i]}
   if why=$(listed "$f"); then skips+=("$f: $(dirname "$f")/SKIP: $why"); echo "SKIP $f"; continue; fi
-  "$LG" "$f" >/dev/null 2>&1; nx=$?
+  "$LG" "$f" >"$t/native.txt" 2>&1
   for m in compile eval; do
     d=$t/$i/$m; mkdir -p "$d"
     timeout "$limit" node host/node-host.mjs "$host" --forms "$f" --mode "$m" >"$d/out" 2>"$d/err"; echo $? >"$d/x"
@@ -85,10 +85,11 @@ for ((i=0; i<n; i++)); do
   cx=$(cat "$t/$i/compile/x") ex=$(cat "$t/$i/eval/x")
   why=""
   if [ "$cx" = 4 ]; then why="named limit: $(first_err "$t/$i/compile" | sed 's/^error: //')"
-  elif [ "$nx" = 0 ]; then
+  else
     for m in compile eval; do
       e=$(grep -h -m1 -o -E "Can't resolve [^ ]+ in this context|lower-wasm: [^ ]+ has no twin|lower-wasm: .*\(named limit\)" "$t/$i/$m/err" "$t/$i/$m/out" | head -1)
-      [ -z "$e" ] || { why="the evaluator's limit ($m leg): $e"; break; }
+      # native's own run says the same: not the evaluator's limit
+      if [ -n "$e" ] && ! grep -q -F "$e" "$t/native.txt"; then why="the evaluator's limit ($m leg): $e"; break; fi
     done
   fi
   if [ -n "$why" ]; then skips+=("$f: $why"); echo "SKIP $f"; continue; fi
