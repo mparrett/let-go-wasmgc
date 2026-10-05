@@ -26,6 +26,13 @@
 ;; block-arg chains and runs for every value many times; unmemoised, a
 ;; 2000-inst runtime fn took ~60 s to lower (wasm.str/round-shortest!)
 (def ^:dynamic *memo* nil)
+
+(defn memo-for
+  "*memo* when the caller already bound it for f, else a fresh one. Its
+   entries (src-of results, the block-arg leaves) depend on f alone, so the
+   passes over one fn share them instead of each recomputing (P4)."
+  [f]
+  (if (and *memo* (identical? *f* f)) *memo* (atom {})))
 (def ^:dynamic *fname* nil)
 (def ^:dynamic *ret-type* nil)
 ;; enclosing loops, innermost first: ({:id header-bid :exit exit-bid-or-nil} ...)
@@ -2057,7 +2064,7 @@
       (fail "unsupported tree node" {:tag tag :fn *fname*}))))
 
 (defn all-values [f]
-  (binding [*f* f *memo* (atom {})]
+  (binding [*f* f *memo* (memo-for f)]
     (doall (for [b (ir/blocks f) i (concat (ir/block-params b f) (ir/block-insts b f))
                  :when (not (no-local? i))]
              i))))
@@ -2146,7 +2153,7 @@
       :else false)))
 
 (defn compute-func-vals [f params]
-  (binding [*f* f *memo* (atom {})]
+  (binding [*f* f *memo* (memo-for f)]
     (let [nids (all-insts f)]
       (loop [fs #{}]
         (let [fs2 (into fs (filter #(and (not (contains? fs %)) (func-producer? % fs params)) nids))]
@@ -2163,20 +2170,21 @@
 (defn analyze-opt
   "analyze-ir after optimize-fn has run (the census times the stages apart)."
   [fname f]
-  (let [{:keys [tree fallbacks absorbed-blocks absorbed-insts]} (st/structurize f)]
+  (let [{:keys [tree fallbacks absorbed-blocks absorbed-insts]} (st/structurize f)
+        memo (atom {})]
     (check-absorbed fname f (or absorbed-blocks #{}) (or absorbed-insts #{}))
     ;; structurize's :fallbacks also counts :multi-exit loops, whose tree is
     ;; complete (see walk's :loop); only a :goto node is unlowerable.
     (when (has-node? :goto tree)
       (fail "structurize fallback (:goto)" {:fn fname :fallbacks fallbacks :tree tree}))
-    (let [fparams (binding [*f* f *memo* (atom {}) *func-vals* #{}] (func-params f))
-          params0 (binding [*f* f *memo* (atom {}) *func-vals* #{}]
+    (let [fparams (binding [*f* f *memo* memo *func-vals* #{}] (func-params f))
+          params0 (binding [*f* f *memo* memo *func-vals* #{}]
                     (vec (for [i (range (ir/fn-arity f))]
                            (if (contains? fparams i)
                              :func
                              (let [nid (ir/fn-load-arg f i)] (if nid (ty nid) :box))))))
-          fvals (compute-func-vals f params0)]
-      (binding [*f* f *memo* (atom {}) *func-vals* fvals]
+          fvals (binding [*f* f *memo* memo] (compute-func-vals f params0))]
+      (binding [*f* f *memo* memo *func-vals* fvals]
         (let [params params0
               rvals (for [b (ir/blocks f)
                           :let [t (ir/block-term b f)]
@@ -2331,7 +2339,7 @@
   "[linked try-srcs] for f: closure-chain nodes a later link consumes, and
    every node of a chain a :try consumes (see closure-hidden?)."
   [f]
-  (binding [*f* f *memo* (atom {})]
+  (binding [*f* f *memo* (memo-for f)]
     (let [insts (for [b (ir/blocks f) i (ir/block-insts b f)] i)
           chain (fn chain [n]
                   (let [n (src-of n)]
@@ -2348,8 +2356,9 @@
    env struct `env` (field kinds `env-kinds`). `caps` are a try region's
    captures, passed as trailing params $c0.."
   [{:keys [name f tree params ret caps export? export-name code env env-kinds absorbed func-vals]}]
-  (let [[linked tries] (binding [*func-vals* (or func-vals #{})] (closure-sets f))]
-  (binding [*f* f *memo* (atom {}) *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
+  (let [memo (atom {})
+        [linked tries] (binding [*func-vals* (or func-vals #{}) *f* f *memo* memo] (closure-sets f))]
+  (binding [*f* f *memo* memo *param-kinds* params *cap-kinds* (if code env-kinds caps) *fname* name *ret-type* ret
             *box-inline* true *env-type* env *linked* linked *try-srcs* tries
             *absorbed* (or absorbed #{}) *func-vals* (or func-vals #{}) *tail-nid* nil]
     (let [locals (distinct (all-values f))
