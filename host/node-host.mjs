@@ -52,7 +52,8 @@
 // its body, then the try itself is evaluated around a call of that thunk,
 // so the evaluated try catches what the compiled code throws.
 // Exit: 0, 1 (an uncaught error, printed as `error: <report>`), 4 (a
-// wasm.emit named limit in compile mode).
+// wasm.emit named limit in compile mode). LG_HOST_TIMING=1 prints, per
+// compiled form, its byte size and the compile / link / run times.
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -214,7 +215,20 @@ async function runForms(host, wasmBytes, src, mode) {
     return new Uint8Array(host.mem.buffer, P, n).slice();
   };
   const evalText = async (text) => { await promising(ex['lw eval'])(P, put(text)); };
-  const run = async (text) => linkCompiled(ex, await compile(text));
+  // LG_HOST_TIMING=1: one line per compiled form on stderr
+  const timing = !!process.env.LG_HOST_TIMING;
+  let nform = 0;
+  const run = async (text) => {
+    const t0 = performance.now();
+    const bytes = await compile(text);
+    const t1 = performance.now();
+    if (!timing) return linkCompiled(ex, bytes);
+    const { instance } = await WebAssembly.instantiate(bytes, { host: ex });
+    const t2 = performance.now();
+    const r = await promising(instance.exports['lw run'])();
+    fs.writeSync(2, `timing form=${nform++} bytes=${bytes.length} compile=${(t1 - t0).toFixed(2)}ms link=${(t2 - t1).toFixed(2)}ms run=${(performance.now() - t2).toFixed(2)}ms\n`);
+    return r;
+  };
   let phase = 'main';
   try {
     host.running = true;
