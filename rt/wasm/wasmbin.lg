@@ -1,0 +1,386 @@
+;; wasm.wasmbin — a WebAssembly binary encoder: a module described as plain data
+;; (the section model below) in, the module's bytes out, as a vector of ints
+;; 0-255. Nothing here prints or parses WAT; the bytes are what wasm-tools
+;; produces for the same module (checks/wasmbin-roundtrip.sh, row P10.0).
+;;
+;; DIALECT: plain lg like natives.lg and eval.lg, over clojure.core only (no
+;; require, no interop, no regex), so it runs under stock lg and can be
+;; compiled by the backend like any program. Bytes are ints in persistent
+;; vectors (built through transients); the arithmetic is bit-and, bit-or,
+;; bit-shift-right and unsigned-bit-shift-right on 64-bit ints. Floats never
+;; appear: an f64.const carries its IEEE bit pattern as an int, so the
+;; encoder needs no float-to-bits conversion. Errors are ex-info with a
+;; "wasm.wasmbin: " message.
+;;
+;; THE SECTION MODEL (every key optional; a section is emitted when its key
+;; is present, in the binary's section order):
+;;   :types    [entry ...]; entry = {:rec [subtype ...]} or a subtype.
+;;             subtype = a composite (final, no supertypes: encoded bare) or
+;;             {:final? bool :supers [typeidx ...] :comp composite}.
+;;             composite = [:func [valtype ...] [valtype ...]]
+;;                       | [:struct [field ...]] | [:array field];
+;;             field = {:type storage :mut? bool}; storage = valtype | :i8 | :i16.
+;;   valtype   :i32 :i64 :f32 :f64, or [:ref heap] / [:ref-null heap]; heap is
+;;             a typeidx or one of :func :nofunc :extern :noextern :any :eq
+;;             :i31 :struct :array :none :exn :noexn. A nullable abstract ref
+;;             is written in its one-byte short form (eqref, funcref, ...).
+;;   :imports  [{:module str :name str :desc desc}]; desc = [:func typeidx]
+;;             | [:tag typeidx] | [:global valtype mut?] | [:memory limits]
+;;             | [:table reftype limits]. limits = {:min n} or {:min n :max n}.
+;;   :funcs    [typeidx ...]            the function section
+;;   :tables   [{:type reftype :limits limits}]
+;;   :memories [limits ...]
+;;   :tags     [typeidx ...]
+;;   :globals  [{:type valtype :mut? bool :init instrs}]
+;;   :exports  [{:name str :kind kind :index n}]; kind :func :table :memory
+;;             :global :tag
+;;   :start    funcidx
+;;   :elems    [{:mode m :funcs [funcidx ...]}]; m = :declare | :passive |
+;;             {:offset instrs} (active, table 0)
+;;   :data-count n                      the data count section
+;;   :code     [{:locals [valtype ...] :body instrs}]; consecutive equal
+;;             local types are written as one run (count, type)
+;;   :data     [{:mode m :bytes [int ...]}]; m = :passive | {:offset instrs}
+;;             (active, memory 0)
+;;   :names    the "name" custom section, written last: {:module str,
+;;             :funcs :types :tables :memories :globals :elems :data :tags
+;;             as [[index str] ...], :locals :labels :fields as
+;;             [[index [[index str] ...]] ...]}; entries sorted by index here.
+;;   instrs    [instr ...]; instr = [opname imm ...], opname a keyword
+;;             spelled as in WAT (:i32.const, :struct.get, :return_call_ref).
+;;             Immediates by kind (see `ops`): index ints (labels as depths);
+;;             a blocktype is :empty, a valtype or a typeidx; :ref.null takes
+;;             a heap type; :ref.test/:ref.cast take a reftype; memory ops
+;;             take [align-log2 offset]; :i32.const an int in
+;;             [-2^31, 2^32), :i64.const an int64, :f64.const the int64 bits;
+;;             :try_table takes a blocktype and [[:catch tag label] |
+;;             [:catch_ref tag label] | [:catch_all label] |
+;;             [:catch_all_ref label] ...]. The structured instructions are
+;;             flat: :block ... :end, :if ... :else ... :end, each :end
+;;             explicit, and the body's own final :end is added here.
+;; The instruction table covers the opcodes the backend's modules use
+;; (corpus/scalar/ and corpus/eval/*/, checked by P10.0); any other opname is
+;; a named error.
+(ns wasm.wasmbin)
+
+(defn- fail [msg] (throw (ex-info (str "wasm.wasmbin: " msg) {})))
+
+(defn- append! [tv v] (reduce conj! tv v))
+
+;; ---------------------------------------------------------------------------
+;; LEB128
+
+(defn- uleb! [tv n]
+  (loop [tv tv n n]
+    (let [b (bit-and n 127) m (unsigned-bit-shift-right n 7)]
+      (if (= m 0) (conj! tv b) (recur (conj! tv (bit-or b 128)) m)))))
+
+(defn- sleb! [tv n]
+  (loop [tv tv n n]
+    (let [b (bit-and n 127) m (bit-shift-right n 7)]
+      (if (if (= m 0) (= 0 (bit-and b 64)) (if (= m -1) (not= 0 (bit-and b 64)) false))
+        (conj! tv b)
+        (recur (conj! tv (bit-or b 128)) m)))))
+
+(defn- check-int [n what lo hi]
+  (if (int? n)
+    (if (< n lo) (fail (str what " out of range: " n)) (if (> n hi) (fail (str what " out of range: " n)) n))
+    (fail (str what " expects an int, got " (pr-str n)))))
+
+(defn- u32! [tv n] (uleb! tv (check-int n "u32" 0 4294967295)))
+(defn- s32! [tv n] (sleb! tv (check-int n "s32" -2147483648 2147483647)))
+(defn- s33! [tv n] (sleb! tv (check-int n "s33" -4294967296 4294967295)))
+(defn- s64! [tv n] (sleb! tv (check-int n "s64" -9223372036854775808 9223372036854775807)))
+
+(defn u32 "The unsigned LEB128 bytes of n, 0 <= n < 2^32." [n] (persistent! (u32! (transient []) n)))
+(defn s32 "The signed LEB128 bytes of n, -2^31 <= n < 2^31." [n] (persistent! (s32! (transient []) n)))
+(defn s33 "The signed LEB128 bytes of n, -2^32 <= n < 2^32 (block types, heap types)." [n] (persistent! (s33! (transient []) n)))
+(defn s64 "The signed LEB128 bytes of an int64." [n] (persistent! (s64! (transient []) n)))
+
+;; ---------------------------------------------------------------------------
+;; Names (UTF-8 from the string's code points) and vectors
+
+(defn- utf8! [tv s]
+  (reduce (fn [tv ch]
+            (let [c (int ch)]
+              (cond (< c 128) (conj! tv c)
+                    (< c 2048) (-> tv (conj! (bit-or 192 (bit-shift-right c 6)))
+                                   (conj! (bit-or 128 (bit-and c 63))))
+                    (< c 65536) (-> tv (conj! (bit-or 224 (bit-shift-right c 12)))
+                                    (conj! (bit-or 128 (bit-and (bit-shift-right c 6) 63)))
+                                    (conj! (bit-or 128 (bit-and c 63))))
+                    :else (-> tv (conj! (bit-or 240 (bit-shift-right c 18)))
+                              (conj! (bit-or 128 (bit-and (bit-shift-right c 12) 63)))
+                              (conj! (bit-or 128 (bit-and (bit-shift-right c 6) 63)))
+                              (conj! (bit-or 128 (bit-and c 63)))))))
+          tv (seq s)))
+
+(defn- name! [tv s]
+  (if (string? s)
+    (let [b (persistent! (utf8! (transient []) s))]
+      (append! (u32! tv (count b)) b))
+    (fail (str "a name must be a string, got " (pr-str s)))))
+
+(defn encode-name "A wasm name: the u32 length of s's UTF-8 bytes, then the bytes." [s]
+  (persistent! (name! (transient []) s)))
+
+(defn- vec! [tv xs f]
+  (reduce f (u32! tv (count xs)) xs))
+
+(defn- bytes! [tv bs]
+  (append! (u32! tv (count bs)) bs))
+
+;; ---------------------------------------------------------------------------
+;; Types
+
+(def ^:private heap-codes
+  {:func 0x70 :nofunc 0x73 :extern 0x6F :noextern 0x72 :any 0x6E :eq 0x6D
+   :i31 0x6C :struct 0x6B :array 0x6A :none 0x71 :exn 0x69 :noexn 0x74})
+
+(def ^:private num-codes {:i32 0x7F :i64 0x7E :f32 0x7D :f64 0x7C})
+
+(defn- heap! [tv h]
+  (if (int? h)
+    (s33! tv (check-int h "type index" 0 4294967295))
+    (let [c (get heap-codes h)]
+      (if c (conj! tv c) (fail (str "unknown heap type " (pr-str h)))))))
+
+(defn- reftype! [tv t]
+  (let [[k h] t]
+    (cond (= k :ref-null) (if (int? h) (heap! (conj! tv 0x63) h) (heap! tv h))
+          (= k :ref) (heap! (conj! tv 0x64) h)
+          :else (fail (str "not a reference type: " (pr-str t))))))
+
+(defn- valtype! [tv t]
+  (if (vector? t)
+    (reftype! tv t)
+    (let [c (get num-codes t)]
+      (if c (conj! tv c) (fail (str "unknown value type " (pr-str t)))))))
+
+(defn- storage! [tv t]
+  (cond (= t :i8) (conj! tv 0x78)
+        (= t :i16) (conj! tv 0x77)
+        :else (valtype! tv t)))
+
+(defn- field! [tv f]
+  (conj! (storage! tv (:type f)) (if (:mut? f) 1 0)))
+
+(defn- composite! [tv c]
+  (let [[k a b] c]
+    (cond (= k :func) (vec! (vec! (conj! tv 0x60) a valtype!) b valtype!)
+          (= k :struct) (vec! (conj! tv 0x5F) a field!)
+          (= k :array) (field! (conj! tv 0x5E) a)
+          :else (fail (str "unknown composite type " (pr-str c))))))
+
+(defn- subtype! [tv st]
+  (if (map? st)
+    (composite! (vec! (conj! tv (if (:final? st) 0x4F 0x50)) (:supers st) u32!) (:comp st))
+    (composite! tv st)))
+
+(defn- type-entry! [tv e]
+  (if (if (map? e) (contains? e :rec) false)
+    (vec! (conj! tv 0x4E) (:rec e) subtype!)
+    (subtype! tv e)))
+
+(defn- limits! [tv l]
+  (if (:max l)
+    (u32! (u32! (conj! tv 1) (:min l)) (:max l))
+    (u32! (conj! tv 0) (:min l))))
+
+;; ---------------------------------------------------------------------------
+;; Instructions: opname -> [opcode-bytes immediate-kind]. The 0xFB (GC)
+;; sub-opcodes are u32 LEB and all below 128, so each is one byte here.
+
+(def ^:private ops
+  {:unreachable [[0x00] :none] :block [[0x02] :bt] :loop [[0x03] :bt] :if [[0x04] :bt]
+   :else [[0x05] :none] :throw [[0x08] :idx] :throw_ref [[0x0A] :none] :end [[0x0B] :none]
+   :br [[0x0C] :idx] :br_if [[0x0D] :idx] :return [[0x0F] :none] :call [[0x10] :idx]
+   :return_call [[0x12] :idx] :call_ref [[0x14] :idx] :return_call_ref [[0x15] :idx]
+   :drop [[0x1A] :none] :select [[0x1B] :none] :try_table [[0x1F] :try]
+   :local.get [[0x20] :idx] :local.set [[0x21] :idx] :global.get [[0x23] :idx] :global.set [[0x24] :idx]
+   :i32.load8_u [[0x2D] :mem] :i32.store8 [[0x3A] :mem]
+   :memory.size [[0x3F 0x00] :none] :memory.grow [[0x40 0x00] :none]
+   :i32.const [[0x41] :i32] :i64.const [[0x42] :i64] :f64.const [[0x44] :f64]
+   :i32.eqz [[0x45] :none] :i32.eq [[0x46] :none] :i32.lt_s [[0x48] :none] :i32.lt_u [[0x49] :none]
+   :i32.gt_s [[0x4A] :none] :i32.gt_u [[0x4B] :none] :i32.ge_u [[0x4F] :none]
+   :i64.eqz [[0x50] :none] :i64.eq [[0x51] :none] :i64.ne [[0x52] :none] :i64.lt_s [[0x53] :none]
+   :i64.lt_u [[0x54] :none] :i64.gt_s [[0x55] :none] :i64.le_s [[0x57] :none] :i64.ge_s [[0x59] :none]
+   :f64.eq [[0x61] :none] :f64.lt [[0x63] :none] :f64.gt [[0x64] :none] :f64.le [[0x65] :none]
+   :f64.ge [[0x66] :none]
+   :i32.add [[0x6A] :none] :i32.sub [[0x6B] :none] :i32.mul [[0x6C] :none] :i32.div_u [[0x6E] :none]
+   :i32.rem_u [[0x70] :none] :i32.and [[0x71] :none] :i32.or [[0x72] :none] :i32.shr_u [[0x76] :none]
+   :i64.popcnt [[0x7B] :none] :i64.add [[0x7C] :none] :i64.sub [[0x7D] :none] :i64.mul [[0x7E] :none]
+   :i64.div_s [[0x7F] :none] :i64.and [[0x83] :none] :i64.or [[0x84] :none] :i64.xor [[0x85] :none]
+   :i64.shl [[0x86] :none] :i64.shr_s [[0x87] :none] :i64.shr_u [[0x88] :none]
+   :f64.neg [[0x9A] :none] :f64.add [[0xA0] :none] :f64.sub [[0xA1] :none] :f64.mul [[0xA2] :none]
+   :f64.div [[0xA3] :none]
+   :i32.wrap_i64 [[0xA7] :none] :i64.extend_i32_s [[0xAC] :none] :i64.extend_i32_u [[0xAD] :none]
+   :i64.trunc_f64_s [[0xB0] :none] :f64.convert_i64_s [[0xB9] :none] :i64.reinterpret_f64 [[0xBD] :none]
+   :ref.null [[0xD0] :heap] :ref.is_null [[0xD1] :none] :ref.func [[0xD2] :idx] :ref.eq [[0xD3] :none]
+   :ref.as_non_null [[0xD4] :none]
+   :struct.new [[0xFB 0] :idx] :struct.get [[0xFB 2] :idx2] :struct.set [[0xFB 5] :idx2]
+   :array.new [[0xFB 6] :idx] :array.new_default [[0xFB 7] :idx] :array.new_fixed [[0xFB 8] :idx2]
+   :array.new_data [[0xFB 9] :idx2] :array.get [[0xFB 11] :idx] :array.get_u [[0xFB 13] :idx]
+   :array.set [[0xFB 14] :idx] :array.len [[0xFB 15] :none] :array.copy [[0xFB 17] :idx2]
+   :ref.test [[0xFB 20] :cast] :ref.cast [[0xFB 22] :cast]
+   :ref.i31 [[0xFB 28] :none] :i31.get_s [[0xFB 29] :none]})
+
+(defn opnames "The opnames the instruction table covers." [] (set (keys ops)))
+
+(def ^:private catch-codes {:catch 0 :catch_ref 1 :catch_all 2 :catch_all_ref 3})
+
+(defn- catch! [tv c]
+  (let [k (first c) code (get catch-codes k)]
+    (cond (nil? code) (fail (str "unknown catch clause " (pr-str c)))
+          (< code 2) (u32! (u32! (conj! tv code) (nth c 1)) (nth c 2))
+          :else (u32! (conj! tv code) (nth c 1)))))
+
+(defn- blocktype! [tv bt]
+  (cond (= bt :empty) (conj! tv 0x40)
+        (int? bt) (s33! tv bt)
+        :else (valtype! tv bt)))
+
+(defn- arity! [instr n]
+  (if (= (count instr) (inc n)) instr
+      (fail (str (pr-str (first instr)) " takes " n " immediate(s), got " (pr-str instr)))))
+
+(defn- instr! [tv instr]
+  (let [op (if (vector? instr) (first instr) (fail (str "an instruction is a vector, got " (pr-str instr))))
+        e (get ops op)]
+    (if (nil? e)
+      (fail (str "unknown opcode " (pr-str op)))
+      (let [[code kind] e
+            ;; the nullable reftype form of ref.test/ref.cast is the next opcode (20/21, 22/23)
+            code (if (= kind :cast) (if (= :ref-null (first (nth instr 1 nil))) [0xFB (inc (nth code 1))] code) code)
+            tv (append! tv code)]
+        (cond
+          (= kind :none) (do (arity! instr 0) tv)
+          (= kind :idx) (do (arity! instr 1) (u32! tv (nth instr 1)))
+          (= kind :idx2) (do (arity! instr 2) (u32! (u32! tv (nth instr 1)) (nth instr 2)))
+          (= kind :bt) (do (arity! instr 1) (blocktype! tv (nth instr 1)))
+          (= kind :i32) (do (arity! instr 1)
+                            (let [n (check-int (nth instr 1) "i32.const" -2147483648 4294967295)]
+                              (s32! tv (if (> n 2147483647) (- n 4294967296) n))))
+          (= kind :i64) (do (arity! instr 1) (s64! tv (nth instr 1)))
+          (= kind :f64) (do (arity! instr 1)
+                            (let [b (check-int (nth instr 1) "f64.const bits" -9223372036854775808 9223372036854775807)]
+                              (loop [tv tv i 0]
+                                (if (= i 8) tv
+                                    (recur (conj! tv (bit-and (unsigned-bit-shift-right b (* 8 i)) 255)) (inc i))))))
+          (= kind :mem) (do (arity! instr 1)
+                            (let [[a o] (nth instr 1)] (u32! (u32! tv a) o)))
+          (= kind :heap) (do (arity! instr 1) (heap! tv (nth instr 1)))
+          (= kind :cast) (do (arity! instr 1)
+                             (let [t (nth instr 1)]
+                               (if (if (vector? t) (contains? #{:ref :ref-null} (first t)) false)
+                                 (heap! tv (nth t 1))
+                                 (fail (str "not a reference type: " (pr-str t))))))
+          (= kind :try) (do (arity! instr 2)
+                            (vec! (blocktype! tv (nth instr 1)) (nth instr 2) catch!))
+          :else (fail (str "bad table entry for " (pr-str op))))))))
+
+(defn encode-instrs "The bytes of a flat instruction vector (no final end added)." [instrs]
+  (persistent! (reduce instr! (transient []) instrs)))
+
+(defn- expr! [tv instrs] (conj! (reduce instr! tv instrs) 0x0B))
+
+;; ---------------------------------------------------------------------------
+;; Sections
+
+(defn- section! [tv id body]
+  (bytes! (conj! tv id) body))
+
+(defn- build [f x] (persistent! (f (transient []) x)))
+
+(def ^:private kind-codes {:func 0 :table 1 :memory 2 :global 3 :tag 4})
+
+(defn- kind-code [k]
+  (let [c (get kind-codes k)] (if c c (fail (str "unknown external kind " (pr-str k))))))
+
+(defn- import! [tv im]
+  (let [tv (name! (name! tv (:module im)) (:name im))
+        [k a b] (:desc im)]
+    (cond (= k :func) (u32! (conj! tv 0) a)
+          (= k :table) (limits! (reftype! (conj! tv 1) a) b)
+          (= k :memory) (limits! (conj! tv 2) a)
+          (= k :global) (conj! (valtype! (conj! tv 3) a) (if b 1 0))
+          (= k :tag) (u32! (conj! (conj! tv 4) 0) a)
+          :else (fail (str "unknown import " (pr-str (:desc im)))))))
+
+(defn- global! [tv g]
+  (expr! (conj! (valtype! tv (:type g)) (if (:mut? g) 1 0)) (:init g)))
+
+(defn- export! [tv ex]
+  (u32! (conj! (name! tv (:name ex)) (kind-code (:kind ex))) (:index ex)))
+
+(defn- elem! [tv el]
+  (let [m (:mode el)]
+    (cond (= m :passive) (vec! (conj! (conj! tv 1) 0) (:funcs el) u32!)
+          (= m :declare) (vec! (conj! (conj! tv 3) 0) (:funcs el) u32!)
+          (map? m) (vec! (expr! (conj! tv 0) (:offset m)) (:funcs el) u32!)
+          :else (fail (str "unknown element mode " (pr-str m))))))
+
+(defn- local-runs [ts]
+  (reduce (fn [runs t]
+            (let [l (peek runs)]
+              (if (if l (= (nth l 1) t) false)
+                (conj (pop runs) [(inc (nth l 0)) t])
+                (conj runs [1 t]))))
+          [] ts))
+
+(defn- code! [tv f]
+  (let [body (persistent!
+              (expr! (vec! (transient []) (local-runs (:locals f))
+                           (fn [tv [n t]] (valtype! (u32! tv n) t)))
+                     (:body f)))]
+    (bytes! tv body)))
+
+(defn- data! [tv d]
+  (let [m (:mode d)]
+    (cond (= m :passive) (bytes! (conj! tv 1) (:bytes d))
+          (map? m) (bytes! (expr! (conj! tv 0) (:offset m)) (:bytes d))
+          :else (fail (str "unknown data mode " (pr-str m))))))
+
+(defn- namemap! [tv m]
+  (vec! tv (sort-by first m) (fn [tv [i s]] (name! (u32! tv i) s))))
+
+(defn- indirect! [tv m]
+  (vec! tv (sort-by first m) (fn [tv [i inner]] (namemap! (u32! tv i) inner))))
+
+;; subsection id, model key, writer: the name section's order (custom section
+;; "name" of the extended name section proposal, ids 0-11)
+(def ^:private name-subs
+  [[1 :funcs namemap!] [2 :locals indirect!] [3 :labels indirect!] [4 :types namemap!]
+   [5 :tables namemap!] [6 :memories namemap!] [7 :globals namemap!] [8 :elems namemap!]
+   [9 :data namemap!] [10 :fields indirect!] [11 :tags namemap!]])
+
+(defn encode-names "The payload of the \"name\" custom section (after its own name)." [names]
+  (let [tv (if (:module names) (section! (transient []) 0 (encode-name (:module names))) (transient []))]
+    (persistent!
+     (reduce (fn [tv [id k f]]
+               (let [m (get names k)]
+                 (if (seq m) (section! tv id (build f m)) tv)))
+             tv name-subs))))
+
+(defn- custom! [tv nm payload]
+  (section! tv 0 (persistent! (append! (name! (transient []) nm) payload))))
+
+(defn encode-module "The bytes of the module the section model describes." [m]
+  (let [sec (fn [tv id k f]
+              (if (contains? m k) (section! tv id (build (fn [tv xs] (vec! tv xs f)) (get m k))) tv))
+        tv (append! (transient []) [0x00 0x61 0x73 0x6D 0x01 0x00 0x00 0x00])
+        tv (-> tv
+               (sec 1 :types type-entry!)
+               (sec 2 :imports import!)
+               (sec 3 :funcs u32!)
+               (sec 4 :tables (fn [tv t] (limits! (reftype! tv (:type t)) (:limits t))))
+               (sec 5 :memories limits!)
+               (sec 13 :tags (fn [tv t] (u32! (conj! tv 0) t)))
+               (sec 6 :globals global!)
+               (sec 7 :exports export!))
+        tv (if (contains? m :start) (section! tv 8 (u32 (:start m))) tv)
+        tv (sec tv 9 :elems elem!)
+        tv (if (contains? m :data-count) (section! tv 12 (u32 (:data-count m))) tv)
+        tv (-> tv (sec 10 :code code!) (sec 11 :data data!))
+        tv (if (contains? m :names) (custom! tv "name" (encode-names (:names m))) tv)]
+    (persistent! tv)))
