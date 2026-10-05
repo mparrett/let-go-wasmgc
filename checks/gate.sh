@@ -44,7 +44,7 @@ for id in "${ids[@]}"; do rm -f "$logd/$id.log"; done
 # checks/run-corpus.sh: a wrong guess costs one compile, never a wrong result.
 if [ "$j" -gt 1 ] && [ -x checks/wasm-run.sh ]; then
   d=${LW_RTLIB_DIR:-src/.rtlib}
-  newest=$(ls -t "$d"/rtlib-*.edn 2>/dev/null | head -1)
+  newest=$(ls -t "$d"/rtlib-${LW_TARGET:-gc}-*.edn 2>/dev/null | head -1)
   if [ -z "$newest" ] || [ -n "$(find src rt/wasm -name '*.lg' -newer "$newest" 2>/dev/null | head -1)" ]; then
     w=$(mktemp -d)
     checks/sem.sh "$LG" -source-paths src src/driver.lg corpus/scalar/fib.clj "$w/m.wat" >/dev/null 2>&1 &

@@ -27,7 +27,7 @@ drv=("$LG" -source-paths "$here/src${sp:+:$sp}" "$here/src/driver.lg")
 key=""
 if [ -n "${LW_MODULE_CACHE:-}" ]; then
   mkdir -p "$LW_MODULE_CACHE"
-  key=$( { cat "$prog"; echo "$sp"; cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg;
+  key=$( { cat "$prog"; echo "$sp"; echo "target=${LW_TARGET:-gc}"; cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg;
            [ -n "$sp" ] && IFS=: read -r -a roots <<<"$sp" && for r in "${roots[@]}"; do find "$r" -name '*.lg' -not -path '*/worktrees/*' -print0 | sort -z | xargs -0 cat; done; } | md5 -q)
 fi
 if [ -n "$key" ] && [ -f "$LW_MODULE_CACHE/$key.wasm" ]; then

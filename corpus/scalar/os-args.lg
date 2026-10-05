@@ -1,0 +1,6 @@
+;; D182 regression. os/args is built by a handwritten helper ($rt_os_args)
+;; that reaches the vector runtime; the program itself names nothing in the
+;; runtime, so the helper-reachability decision must see the helper's own
+;; edges or the printer is emitted in its throwing form. No .expected: the
+;; output carries this machine's lg path, which the oracle compares live.
+(println os/args)

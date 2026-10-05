@@ -178,7 +178,7 @@ fi
 
 # ---- browser, with and without COI -----------------------------------------
 # servers start in this shell (not in a $(...) subshell) so cleanup can kill them
-pc=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
+pc=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
 pp=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$www" "$pp" >"$t/plain.server.log" 2>&1 & pids+=($!)
 wait_up() {
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$1/index.html" && return 0; sleep 0.1; done

@@ -1,0 +1,3 @@
+;; native: "1 1 <read-string>" -- a var def'd by evaluated code carries the form's :line/:column/:file (defCompiler reads the reader's FormSource); the evaluator's def gives nil nil nil on both seams: lg code has no accessor for FormSource (eval-seam, 2026-10-04)
+(let [m (meta (eval (read-string "(def r5-src 1)")))]
+  (println (:line m) (:column m) (:file m)))

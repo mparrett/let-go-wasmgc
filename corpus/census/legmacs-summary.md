@@ -1,4 +1,4 @@
-# Backend census: legmacs (2026-10-02)
+# Backend census: legmacs (2026-10-03)
 
 Each top-level fn unit (one row per arity) lowered alone by lower-wasm and its module validated with wasm-tools; nothing is run. Regenerate with `checks/census.sh legmacs`; per-unit rows in `legmacs.tsv`.
 

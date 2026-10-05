@@ -36,7 +36,9 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const pwDir = path.resolve(here, '../../../local-scripts/browser-smoke-playwright');
+// Explicit external tools root supports standalone checkouts (2026-10-03).
+const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
+const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
 const pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href);
 const chromium = pw.chromium || pw.default.chromium;   // resolve() lands on the CJS entry
 

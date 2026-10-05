@@ -20,6 +20,7 @@
             [ir.passes.purity] [ir.passes.licm] [ir.passes.cse] [ir.passes.constfold] [ir.lattice :as lat] [ir.passes.infer-arg-types]
             [clojure.string :as str] [lw-rt]))
 
+(def ^:dynamic *target* :gc)
 (def ^:dynamic *f* nil)
 ;; per-*f* memo of src-of (an atom, rebound wherever *f* is): src-of walks
 ;; block-arg chains and runs for every value many times; unmemoised, a
@@ -1864,6 +1865,9 @@
       ;; a stack-VM marker cleanup strips; nothing to emit if one survives
       (= op :pop) nil
       (= op :set-var) (set-var-wat nid)
+      ;; D177: a general integer division may need absent Ratio/BigInt values.
+      (if (= *target* :linear) (if (= op :div) (not-any? #{:float} (map ty refs)) false) false)
+      (fail "unsupported op :div under linear (Ratio/BigInt result)" {:nid nid :fn *fname*})
       ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
       (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
@@ -3800,7 +3804,7 @@
    compiles every runtime defn and keeps every helper (size measurement)."
   ([sigs var-globals] (new-session sigs var-globals {}))
   ([sigs var-globals opts]
-   {:sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+   {:target (or (:target opts) :gc) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
     :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
@@ -3808,9 +3812,12 @@
 
 (def ^:dynamic *shake* true)
 
+;; Build-local: exact helper text determines the split, including runtime paths.
+(def ^:dynamic *top-forms-cache* nil)
+
 
 (defn with-session* [ss thunk]
-  (binding [*sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
+  (binding [*target* (or (:target ss) :gc) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
@@ -3819,28 +3826,42 @@
             *var-k-max* (or (:var-k-max ss) (atom 4))]
     (thunk)))
 
-(defn top-forms
-  "Split WAT text into its top-level parenthesised forms (strings with
-   escapes and ;; comments are skipped over, so a paren inside either does
-   not count). Text outside any form is dropped."
+(defn top-forms*
+  "Split top-level WAT forms. A native regex scan groups ordinary text,
+   leaving only punctuation to interpret. Offsets remain rune indices,
+   matching count/subs; strings, escapes and ;; comments keep their rules."
   [text]
-  (let [n (count text)]
-    (loop [i 0 depth 0 start 0 in-str false out (transient [])]
-      (if (>= i n)
-        (persistent! out)
-        (let [c (nth text i)]
-          (cond
-            in-str (cond (= c \\) (recur (+ i 2) depth start true out)
-                         (= c \") (recur (inc i) depth start false out)
-                         :else (recur (inc i) depth start true out))
-            (= c \") (recur (inc i) depth start true out)
-            (and (= c \;) (< (inc i) n) (= \; (nth text (inc i))))
-            (let [e (or (str/index-of text "\n" i) n)] (recur e depth start false out))
-            (= c \() (recur (inc i) (inc depth) (if (zero? depth) i start) false out)
-            (= c \)) (if (= depth 1)
-                       (recur (inc i) 0 start false (conj! out (subs text start (inc i))))
-                       (recur (inc i) (dec depth) start false out))
-            :else (recur (inc i) depth start false out)))))))
+  (loop [tokens (seq (re-seq #"[()\";\\]|[^()\";\\]+" text))
+         i 0 depth 0 start 0 in-str false escaped false comment false
+         out (transient [])]
+    (if-let [token (first tokens)]
+      (let [end (+ i (count token)) more (next tokens)]
+        (cond
+          comment (recur more end depth start false false
+                         (nil? (str/index-of token "\n")) out)
+          escaped (recur more end depth start true false false out)
+          in-str (cond
+                   (= token "\\") (recur more end depth start true true false out)
+                   (= token "\"") (recur more end depth start false false false out)
+                   :else (recur more end depth start true false false out))
+          (= token "\"") (recur more end depth start true false false out)
+          (and (= token ";") (= (first more) ";"))
+          (recur (next more) (+ end 1) depth start false false true out)
+          (= token "(") (recur more end (inc depth) (if (zero? depth) i start) false false false out)
+          (= token ")") (if (= depth 1)
+                           (recur more end 0 start false false false (conj! out (subs text start end)))
+                           (recur more end (dec depth) start false false false out))
+          :else (recur more end depth start false false false out)))
+      (persistent! out))))
+
+(defn top-forms [text]
+  (if *top-forms-cache*
+    (if-let [forms (get @*top-forms-cache* text)]
+      forms
+      (let [forms (top-forms* text)]
+        (swap! *top-forms-cache* assoc text forms)
+        forms))
+    (top-forms* text)))
 
 (def wat-id #"\$[A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]+")
 (defn refs-of [t] (set (re-seq wat-id t)))
@@ -3947,10 +3968,19 @@
         base-items (merge (when *rt* (:lowered @*rt*)) gitems (by-name @*globals*) (by-name @*regions*) externs)
         ;; a program that catches exceptions or makes atoms may print one, and
         ;; only the runtime's printer prints those (P1.7 gap-02)
-        rt? (and *rt* (or (rt-reached? base-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
+        ;; the helpers can reach the runtime when the program does not name
+        ;; it: $rt_os_args builds its vector through wasm.pvec, so
+        ;; (println os/args) needs the runtime printer. Decide over the
+        ;; helpers as generated WITHOUT runtime paths (that variant of
+        ;; $rt_print_other names nothing), and reuse that text when the
+        ;; answer is no, so a scalar module's bytes do not change
+        ;; (linear keeps every runtime path, so it never needs the bare variant)
+        bare-helpers (when (and *rt* (not= *target* :linear)) (top-forms (binding [*rt* nil] (runtime))))
+        reach-items (merge base-items (by-name (filter form-name bare-helpers)))
+        rt? (and *rt* (if (= *target* :linear) true (or (rt-reached? reach-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
                           (some #(re-find #"\$rt_reify|struct\.new \$Atom" %)
-                                (cons program (keep base-items (live-set base-items {} (refs-of program)))))))
-        helper-forms (top-forms (binding [*rt* (when rt? *rt*)] (runtime)))
+                                (cons program (keep base-items (live-set base-items {} (refs-of program))))))))
+        helper-forms (if rt? (top-forms (runtime)) (or bare-helpers (top-forms (binding [*rt* nil] (runtime)))))
         ;; after the helpers: generating them registers their strings
         datas (into {} (for [[s nm] @*strings*] [nm (str "(data " nm " \"" (wat-bytes s) "\")")]))
         base-items (merge base-items datas)
@@ -4066,31 +4096,47 @@
       (when (seq stmts)
         (str "(func $_rt_init\n  " (str/join "\n  " stmts) ")\n(start $_rt_init)\n")))))
 
+;; The linear representation lives in lower_linear.lg and loads only on demand.
+;; Compiling extra case macros under native lg consumes gensyms and changes
+;; some runtime IR even in the GC lane. Keep that compiler state untouched.
+(defn ensure-linear-representation! []
+  (require 'lower-linear))
+
+(defn representation-wat
+  "Render the shared instruction stream for the selected representation.
+   GC is deliberately verbatim, including instruction and declaration order."
+  [text]
+  (if (= *target* :gc)
+    text
+    (do (ensure-linear-representation!)
+        ((resolve 'lower-wasm/linear-module) text))))
+
 (defn session-module
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
   [ss fns]
-  (with-session* ss
-    (fn []
-      (when *rt* (rt-fixpoint! fns))
-      (let [{:keys [fixed items live program]} (module-parts fns)
-            ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
-            ;; fn-value globals must come after the globals they read ($info_*)
-            gl (let [gs (ordered "(global")
-                     info? #(str/starts-with? % "(global $info_")]
-                 (concat (filter info? gs) (remove info? gs)))
-            elem (filter #(live (str "$" %)) (sort @*elem*))]
-        (str "(module\n"
-             (str/join "\n" (ordered "(import")) "\n"
-             (rec-group)
-             (str/join "\n" fixed) "\n"
-             (str/join "\n" gl) "\n"
-             (when (seq elem) (str "(elem declare func" (apply str (map #(str " $" %) elem)) ")\n"))
-             (str/join "\n" (ordered "(data")) "\n"
-             (str/join "\n" (ordered "(func")) "\n"
-             program "\n"
-             (rt-init-wat live items)
-             ")\n")))))
+  (binding [*top-forms-cache* (atom {})]
+    (with-session* ss
+      (fn []
+        (when *rt* (rt-fixpoint! fns))
+        (let [{:keys [fixed items live program]} (module-parts fns)
+              ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
+              ;; fn-value globals must come after the globals they read ($info_*)
+              gl (let [gs (ordered "(global")
+                       info? #(str/starts-with? % "(global $info_")]
+                   (concat (filter info? gs) (remove info? gs)))
+              elem (filter #(live (str "$" %)) (sort @*elem*))]
+          (representation-wat (str "(module\n"
+               (str/join "\n" (ordered "(import")) "\n"
+               (rec-group)
+               (str/join "\n" fixed) "\n"
+               (str/join "\n" gl) "\n"
+               (when (seq elem) (str "(elem declare func" (apply str (map #(str " $" %) elem)) ")\n"))
+               (str/join "\n" (ordered "(data")) "\n"
+               (str/join "\n" (ordered "(func")) "\n"
+               program "\n"
+               (rt-init-wat live items)
+               ")\n")))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.
@@ -4129,7 +4175,7 @@
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
                             (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
-                            [(if lw-rt/no-eval? "|no-eval" "")]))))
+                            [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")]))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
@@ -4163,6 +4209,12 @@
      :consts (:consts st) :const-order (:const-order st)
      :strings @*strings* :globals @*globals* :regions @*regions* :elem @*elem* :env-types @*env-types*
      :externs (into {} (for [[v g] @*externs*] [(var-sym v) g]))
+     ;; the two session counters size the dispatch helpers (var-k 0..max,
+     ;; $rt_invoke5..max); a runtime fn value raises them during the build
+     ;; (core update: [m k f x y z & more] gives var-k 6), and only the
+     ;; program's own lowering raises them again after a restore
+     :var-k-max (when *var-k-max* @*var-k-max*)
+     :invoke-max (when *invoke-max* @*invoke-max*)
      :failures (into fails (:failures st))}))
 
 (defn rtlib-restore! [snap]
@@ -4173,6 +4225,8 @@
                      :consts (:consts snap) :const-order (:const-order snap)
                      :failures (:failures snap)})
   (swap! *strings* merge (:strings snap))
+  (when (and *var-k-max* (:var-k-max snap)) (swap! *var-k-max* max (:var-k-max snap)))
+  (when (and *invoke-max* (:invoke-max snap)) (swap! *invoke-max* max (:invoke-max snap)))
   (swap! *globals* into (:globals snap))
   (swap! *regions* into (:regions snap))
   (swap! *elem* into (:elem snap))
@@ -4184,7 +4238,8 @@
   "Start the current session from the cached runtime library, building and
    saving it first if the runtime or the backend changed."
   []
-  (let [f (str rtlib-dir "/rtlib-" (rtlib-key) ".edn")]
+  (let [prefix (str "rtlib-" (name *target*) "-")
+        f (str rtlib-dir "/" prefix (rtlib-key) ".edn")]
     (if (some? (try (os/stat f) (catch e nil)))
       (rtlib-restore! (read-string (slurp f)))
       (let [fails (build-rtlib!)
@@ -4194,6 +4249,8 @@
         (os/rename tmp f)
         ;; a library for older sources is dead weight (~3.5 MB each)
         (doseq [old (os/ls rtlib-dir)
-                :when (and (str/starts-with? old "rtlib-") (str/ends-with? old ".edn")
+                :when (and (or (and (str/starts-with? old prefix) (str/ends-with? old ".edn"))
+                               ;; named before the target joined the key, so no prefix matches it
+                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old))
                            (not= (str rtlib-dir "/" old) f))]
           (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))
