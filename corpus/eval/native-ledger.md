@@ -1,8 +1,8 @@
 # The evaluator on its native seam: ledger (eval-seam, 2026-10-04)
 
-`rt/wasm/eval.lg` reaches its host only through the seam fns its header lists; their bodies
-there are the wasm implementation. `rt/wasm/eval_native.lg` rebinds them under stock lg to real
-namespaces and vars. `checks/eval-native.sh` (row P7.10) runs every program of `corpus/eval/*/`,
+`rt/wasm/eval.lg` reaches its host only through the seam fns its header lists and defines none
+of them (D187); a host file loaded after it defines them. `rt/wasm/eval_wasm.lg` is the module's
+host, `rt/wasm/eval_native.lg` the host over real let-go namespaces and vars under stock lg. `checks/eval-native.sh` (row P7.10) runs every program of `corpus/eval/*/`,
 `corpus/eval/program/multi/` and `corpus/review5/fix-eval/` under stock lg twice, with let-go's
 `eval` and with `eval` rebound to `wasm.eval/eval` on that seam, and compares them through
 `checks/oracle.sh`.

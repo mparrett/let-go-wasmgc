@@ -53,7 +53,7 @@ Runtime globals (D39), one per namespace that has state: `wasm.seq/hooks`
 (three Handler slots, the hashing printer, the seqable and ifn hooks, the type namer), `wasm.str/globals` (intern
 table, its count, the print hook), `wasm.core/globals` (gensym counter,
 interned types), `wasm.arrays/globals` (the type-name hook), `wasm.sorted/globals` (the comparator hook),
-`wasm.math/globals` (rand-int's xorshift state), `wasm.natives/registry` (the ns/var table, P6.0) and wasm.eval's atoms (`native-tier`, the recur sentinel, its table caches, P7.0; wasm.reader has none: the reader's code hook is the wasm.core var root of `#'wasm.reader/code-hook`), `wasm.xxhash/globals` (the
+`wasm.math/globals` (rand-int's xorshift state), `wasm.natives/registry` (the ns/var table, P6.0) and wasm.eval's atoms (the recur sentinel, its table caches, P7.0; wasm.reader has none: the reader's code hook is the wasm.core var root of `#'wasm.reader/code-hook`), `wasm.xxhash/globals` (the
 default secret, built on first use) and `wasm.host/globals` (the stdout and
 stderr handles).
 
