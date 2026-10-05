@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-05 at
 # 138f341, after D185-D187; earlier 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).
-# Inputs: src/, rt/, corpus/scalar/, corpus/eval/, pinned baseline commit.
+# Inputs: src/, rt/, corpus/scalar/, corpus/eval/, legmacs' main.lg, pinned baseline commit.
 # --capture compiles the baseline only; otherwise compare default and explicit GC.
-# Each current lane gets an independent fresh rtlib, matching the baseline
-# capture sequence. The original emitter has cold/warm cache byte variance.
+# Covers the default option set from a fresh rtlib only (no --no-rt, --test,
+# --no-shake, LW_NO_EVAL or warm cache). legmacs is here because load-time
+# compiler state (D174) shifted its IR numbering while every small program
+# stayed identical.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
@@ -14,10 +16,14 @@ mkdir -p "$cache"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 git archive "$base" src rt | tar -xf - -C "$t"
 find corpus/scalar corpus/eval -type f \( -name '*.lg' -o -name '*.clj' \) ! -path '*/lib/*' | LC_ALL=C sort > "$t/programs"
+echo "$LEGMACS/main.lg" >> "$t/programs"
+# a moved corpus or a wrong tree must not pass with nothing compared
+n=$(wc -l < "$t/programs" | tr -d ' ')
+[ "$n" -ge 21 ] || { echo "GC byte identity: only $n programs found, expected at least 21" >&2; exit 1; }
 compile() {
   local source=$1 f=$2 out=$3 target=${4:-} sp="" lane=baseline
   if [ "$source" = "$PWD" ]; then lane=${target:-default}; fi
-  case "$f" in */multi/*) sp="$PWD/corpus/eval/program/multi/lib" ;; esac
+  case "$f" in */multi/*) sp="$PWD/corpus/eval/program/multi/lib" ;; "$LEGMACS"/*) sp=$LEGMACS ;; esac
   local args=("$LG" -source-paths "$source/src${sp:+:$sp}" "$source/src/driver.lg")
   [ -z "$sp" ] || args+=(-source-paths "$sp")
   [ -z "$target" ] || args+=(--target "$target")
@@ -41,4 +47,4 @@ while IFS= read -r f; do
     echo "CAPTURED $f"
   fi
 done < "$t/programs"
-echo "GC byte identity: $(wc -l < "$t/programs" | tr -d ' ') programs (baseline $base)"
+echo "GC byte identity: $n programs (baseline $base)"
