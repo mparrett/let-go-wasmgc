@@ -8,7 +8,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: build-repl-serve.sh <dir>}
 . "$(dirname "$0")/../checks/env.sh"
-OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
+OPT=$WASM_OPT
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 "$here/checks/sem.sh" "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$here/corpus/host/repl.lg" "$t/repl.wat" >"$t/drv.log" 2>&1 || { grep -v catalog "$t/drv.log" >&2; exit 1; }
 wasm-tools parse "$t/repl.wat" -o "$t/raw.wasm"

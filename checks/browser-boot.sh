@@ -55,7 +55,7 @@ case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; --xsofy) mode=xsofy ;; --leg
 here=$(cd "$(dirname "$0")/.." && pwd)
 ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
-MERGE=/opt/homebrew/opt/binaryen/bin/wasm-merge
+MERGE=$WASM_MERGE
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
@@ -178,7 +178,7 @@ fi
 
 # ---- browser, with and without COI -----------------------------------------
 # servers start in this shell (not in a $(...) subshell) so cleanup can kill them
-pc=$(free_port); python3 "$ws/local-scripts/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
+pc=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
 pp=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$www" "$pp" >"$t/plain.server.log" 2>&1 & pids+=($!)
 wait_up() {
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$1/index.html" && return 0; sleep 0.1; done

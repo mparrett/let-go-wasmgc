@@ -7,8 +7,8 @@
 # LW_ROOT is found automatically when this repository sits beside let-go/
 # (a plain clone next to its siblings) or three levels below it (inside a
 # workspace); otherwise set it. Each path can still be overridden on its own
-# (LG, LETGO, XSOFY, LEGMACS). Exported so the driver (lw_rt.lg reads
-# LETGO) and the row commands in items.tsv see the same values.
+# (LG, LETGO, XSOFY, LEGMACS, WASM_OPT, WASM_MERGE). Exported so the driver
+# (lw_rt.lg reads LETGO) and the row commands in items.tsv see the same values.
 # Works when sourced from bash (the scripts) and from an interactive zsh.
 if [ -n "${BASH_SOURCE:-}" ]; then lw_env_src=${BASH_SOURCE[0]}; else eval 'lw_env_src=${(%):-%x}'; fi
 lw_env_here=$(cd "$(dirname "$lw_env_src")/.." && pwd)
@@ -24,5 +24,10 @@ LG=${LG:-$LW_ROOT/lg-bin/lg-4e76921230}
 LETGO=${LETGO:-$LW_ROOT/let-go}
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
-export LW_ROOT LG LETGO XSOFY LEGMACS
-unset lw_env_here lw_env_src lw_c
+# binaryen: the Homebrew install when present, else whatever is on PATH.
+# Override with WASM_OPT / WASM_MERGE.
+lw_brew=/opt/homebrew/opt/binaryen/bin
+WASM_OPT=${WASM_OPT:-$( [ -x "$lw_brew/wasm-opt" ] && echo "$lw_brew/wasm-opt" || command -v wasm-opt || echo wasm-opt)}
+WASM_MERGE=${WASM_MERGE:-$( [ -x "$lw_brew/wasm-merge" ] && echo "$lw_brew/wasm-merge" || command -v wasm-merge || echo wasm-merge)}
+export LW_ROOT LG LETGO XSOFY LEGMACS WASM_OPT WASM_MERGE
+unset lw_env_here lw_env_src lw_c lw_brew

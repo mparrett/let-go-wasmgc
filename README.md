@@ -57,6 +57,15 @@ body at the call (D162); the evaluator has no interop, `deftype`,
 `defprotocol` or `defmulti` (D160). [FINDINGS.md](FINDINGS.md) lists native
 let-go behaviours we met along the way.
 
+As of 2026-10-03, `--target linear` (or `LW_TARGET=linear`) selects an
+experimental linear-memory module with a leaking allocator; WasmGC remains
+the default. Run it with `checks/wasm-run-linear.sh`. The Go host uses
+[nooga/wazero](https://github.com/nooga/wazero) pinned at
+`v1.12.1-0.20260911172836-0ec6142ae8c7`, with
+`experimental.CoreFeaturesTailCall` and
+`experimental.CoreFeaturesExceptionHandling` enabled and GC disabled.
+Milestone corpus results and named refusals are recorded in STATUS.md.
+
 ## Prerequisites
 
 The checks and build scripts find their inputs under one root, `LW_ROOT`,
@@ -65,6 +74,7 @@ resolved by `checks/env.sh`: it is the directory holding `let-go/`,
 repository is cloned beside those checkouts; otherwise set `LW_ROOT`, or
 override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 
+- **Go 1.25 or newer** for the linear runner (2026-10-03).
 - **Native lg built from let-go commit 4e76921**, at
   `$LW_ROOT/lg-bin/lg-4e76921230` or wherever `LG` points. The driver runs
   under this lg and uses let-go's IR passes from it.
@@ -73,15 +83,20 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   at that commit with `git show`, and fails with a message naming the path
   when it cannot.
 - **wasm-tools** on `PATH` (WAT to binary).
-- **binaryen's wasm-opt** at `/opt/homebrew/opt/binaryen/bin/wasm-opt`, used
-  by the module build scripts in `host/`. `LW_NO_OPT=1` skips it.
+- **binaryen's wasm-opt** (and `wasm-merge` for `checks/browser-boot.sh`):
+  the Homebrew install when present, otherwise the one on `PATH`; set
+  `WASM_OPT` / `WASM_MERGE` to choose another. Used by the module build
+  scripts in `host/`. `LW_NO_OPT=1` skips it.
 - **brotli**, for the size lines the build scripts print.
 - **node** with WasmGC, wasm exception handling and JSPI. We develop on
   node 25. `src/run.mjs` and `host/node-host.mjs` set their own stack sizes.
 - **Chromium through Playwright** for the browser checks
   (`checks/browser-boot.sh`, `checks/repl-page-check.mjs`). These currently
-  resolve Playwright from `../../../local-scripts/browser-smoke-playwright`
-  relative to `checks/`, a path outside this repo.
+  accept `LW_BROWSER_TOOLS` naming the external `local-scripts` directory
+  containing `browser-smoke-playwright/`, `coi-serve.py` and `inject-shell.sh`
+  (2026-10-03).
+  The default remains `../../../local-scripts` relative to `checks/`.
+  Standalone checkouts must configure their installed tools directory.
 - **xsofy and legmacs checkouts** (`$XSOFY`, `$LEGMACS`) for those corpora.
   Multi-namespace programs name their source roots through `LG_ARGS`, as
   row P7.3 in `checks/items.tsv` does:
@@ -91,6 +106,7 @@ Environment variables that matter:
 
 | variable | effect |
 |---|---|
+| `LW_BROWSER_TOOLS` | external browser-tools directory for Playwright, COI serving, shell injection and boot probes (2026-10-03) |
 | `LW_ROOT` | the root holding `let-go/`, `xsofy/`, `legmacs/`, `lg-bin/` (`checks/env.sh`) |
 | `LG` | native lg used by the driver and as the oracle's reference |
 | `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |

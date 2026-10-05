@@ -1,0 +1,4 @@
+(require 'lower-wasm)
+(lower-wasm/with-session*
+ (lower-wasm/new-session {} {} {:target :linear})
+ (fn [] (spit (second *command-line-args*) (lower-wasm/representation-wat (slurp (first *command-line-args*))))))

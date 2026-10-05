@@ -1,0 +1,18 @@
+;; Host buffer ownership probe (2026-10-03).
+(require 'lower-wasm)
+(lower-wasm/ensure-linear-representation!)
+(lower-wasm/with-session*
+ (lower-wasm/new-session {} {} {:target :linear})
+ (fn []
+  (spit (first *command-line-args*)
+   (lower-wasm/representation-wat
+    (str "(module " (lower-wasm/rec-group)
+     " (import \"env\" \"getenv\" (func $host_getenv (param i32 i32 i32 i32) (result i32)))"
+     " (global $r (mut (ref null $Bytes)) (ref.null none))"
+     " (func $rt_host_getenv (param $nm (ref $Bytes)) (result (ref null eq)) (ref.null none))"
+     " (func $probe (export \"probe\") (result i32) (local $nm (ref $Bytes))"
+     " (local.set $nm (array.new_default $Bytes (i32.const 1)))"
+     " (array.set $Bytes (local.get $nm) (i32.const 0) (i32.const 88))"
+     " (global.set $r (ref.cast (ref $Bytes) (call $rt_host_getenv (local.get $nm))))"
+     " (array.len (global.get $r)))"
+     " (func $object (export \"object\") (result (ref null $Bytes)) (global.get $r)))")))))

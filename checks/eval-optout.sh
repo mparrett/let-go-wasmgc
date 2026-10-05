@@ -16,7 +16,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
-OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
+OPT=$WASM_OPT
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory
           --enable-tail-call --enable-multivalue)
 named="lower-wasm: core/eval has no twin"

@@ -16,7 +16,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: build-xsofy-module.sh <out.wasm>}
 . "$(dirname "$0")/../checks/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
-OPT=/opt/homebrew/opt/binaryen/bin/wasm-opt
+OPT=$WASM_OPT
 optflags=(-O3 --enable-gc --enable-reference-types --enable-exception-handling --enable-bulk-memory
           --enable-tail-call --enable-multivalue)
 cache=${LW_XSOFY_CACHE:-${TMPDIR:-/tmp}/lw-xsofy-module}; mkdir -p "$cache"

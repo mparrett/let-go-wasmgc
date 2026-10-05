@@ -16,4 +16,4 @@ mkdir -p "$out"
 command cp "$here/xsofy.html" "$out/index.html"
 command cp "$here/xsofy-shell-adapter.js" "$here/lg-wasm-host.js" "$out/"
 for m in "$@"; do command cp "$m" "$out/"; done
-"$ws/local-scripts/inject-shell.sh" "$out/index.html" "$XSOFY/tools/xsofy-shell.html" >/dev/null
+"${LW_BROWSER_TOOLS:-$ws/local-scripts}/inject-shell.sh" "$out/index.html" "$XSOFY/tools/xsofy-shell.html" >/dev/null
