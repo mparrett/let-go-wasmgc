@@ -19,6 +19,11 @@
 (def rt-dir (let [d (os/getenv "LW_RT_DIR")] (if (seq d) d (str src-dir "/../rt/wasm"))))
 
 (def ^:private row-file #"^\| [0-9]+ \| `([A-Za-z0-9_.-]+\.lg)` \|")
+;; LW_RUNTIME_COMPILE=1 (self-host stage 3b, D193): also load the rows whose
+;; text names the flag (wasm.wasmbin and the emitter, rt/wasm/emit.lg), so
+;; the module can compile forms at run time. Part of the rtlib cache key.
+(def runtime-compile? (= "1" (os/getenv "LW_RUNTIME_COMPILE")))
+(defn- flag-row? [l] (str/includes? l "LW_RUNTIME_COMPILE"))
 
 (defn readme-order
   "Files from README.md's load-order table (`| n | `file.lg` | ...`). Every
@@ -27,6 +32,7 @@
   []
   (let [rows (filter #(re-find #"^\| [0-9]+ \| `[^`]+\.lg` \|" %)
                      (str/split-lines (slurp (str rt-dir "/README.md"))))
+        rows (if runtime-compile? rows (remove flag-row? rows))
         bad (remove #(re-find row-file %) rows)]
     (when (seq bad)
       (throw (ex-info (str "lw-rt: unreadable load-order rows in rt/wasm/README.md: " (vec bad)) {})))
@@ -37,14 +43,17 @@
 (defn read-forms [path] (read-string (str "[" (slurp path) "\n]")))
 
 (def file-forms
-  ;; [[path ns-sym [form ...]] ...] in load order; each file is also loaded
+  ;; [[path ns-sym [form ...]] ...] in load order; each file is also loaded.
+  ;; ns-sym is the LAST ns form's: a file that names its own ns and then
+  ;; re-enters another (D187's shape, rt/wasm/emit.lg) defines into the
+  ;; second, which is where its defns and defs must be looked up (D193)
   (do
     (vec (for [f files]
            (let [path (str rt-dir "/" f)
                  text (slurp path)]
              (load-string text)
              (let [forms (read-string (str "[" text "\n]"))
-                   ns-sym (some #(when (and (seq? %) (= 'ns (first %))) (second %)) forms)]
+                   ns-sym (last (keep #(when (and (seq? %) (= 'ns (first %))) (second %)) forms))]
                [path ns-sym forms]))))))
 
 ;; load-string's ns forms leave the compiler in the last runtime ns
