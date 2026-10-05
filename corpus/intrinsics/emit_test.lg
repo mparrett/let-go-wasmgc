@@ -11,6 +11,7 @@
             [wasm.eval :as ev]
             [wasm.eval-native]
             [wasm.emit]
+            [wasm.wasmbin :as wb]
             [clojure.string :as string]))
 
 (def ^:private hexd "0123456789abcdef")
@@ -249,6 +250,128 @@
     (is (= "CompileError: recur argument count must match function argument count" (emit-err "(fn [x] (recur))")))
     (is (= "CompileError: recur argument count must match loop bindings count" (emit-err "(fn [] (loop [a 1] (recur)))")))
     (is (= "CompileError: if: wrong number of forms (1), need 2 or 3" (emit-err "(fn [] (if 1))")))))
+
+;; ---------------------------------------------------------------------------
+;; Linked mode (stage 3b-i, D193): rows that need no host module. lk-group
+;; stands in for the host's rec group (the types the emitter names, in an
+;; order of its own); P10.2 (checks/emit-linked.sh) runs linked modules
+;; against a real host.
+
+(def ^:private lk-e [:ref-null :eq])
+(defn- lk-f [t] {:type t :mut? false})
+(def ^:private lk-group
+  {:rec [[:array {:type :i8 :mut? true}]
+         [:struct [(lk-f :i64)]] [:struct [(lk-f :f64)]] [:struct [(lk-f :i64)]]
+         [:struct [(lk-f lk-e) {:type :i64 :mut? true}]]
+         [:func [lk-e] [lk-e]] [:func [lk-e lk-e] [lk-e]] [:func [lk-e lk-e lk-e] [lk-e]]
+         [:func [lk-e lk-e lk-e lk-e] [lk-e]] [:func [lk-e lk-e lk-e lk-e lk-e] [lk-e]]
+         [:struct [(lk-f :i32) (lk-f :i32) (lk-f lk-e)]]
+         {:final? false :supers []
+          :comp [:struct [(lk-f [:ref-null 5]) (lk-f [:ref-null 6]) (lk-f [:ref-null 7]) (lk-f lk-e)
+                          (lk-f [:ref-null 8]) (lk-f [:ref-null 9]) (lk-f lk-e) {:type :i64 :mut? true}]]}]})
+(def ^:private lk-names "$Bytes $Int $Float $Bool $Str $Code0 $Code1 $Code2 $Code3 $Code4 $FnInfo $Fn")
+
+(defn- uleb [bs i]
+  (loop [i i shift 0 v 0]
+    (let [b (nth bs i) v (bit-or v (bit-shift-left (bit-and b 127) shift))]
+      (if (zero? (bit-and b 128)) [v (inc i)] (recur (inc i) (+ shift 7) v)))))
+
+(defn- sections "[[id payload] ...] of a module's bytes." [bs]
+  (loop [i 8 acc []]
+    (if (>= i (count bs)) acc
+        (let [[n j] (uleb bs (inc i))] (recur (+ j n) (conj acc [(nth bs i) (subvec bs j (+ j n))]))))))
+
+(defn- section [bs id] (some (fn [[k p]] (when (= k id) p)) (sections bs)))
+
+(defn- import-names "[[module name kind] ...] of an import section payload." [p]
+  (let [[n i0] (uleb p 0)
+        text (fn [i] (let [[l j] (uleb p i)] [(apply str (map char (subvec p j (+ j l)))) (+ j l)]))]
+    (loop [k 0 i i0 acc []]
+      (if (= k n) acc
+          (let [[m i] (text i) [nm i] (text i) kind (nth p i) i (inc i)
+                i (cond (= kind 0) (second (uleb p i))
+                        (= kind 3) (if (contains? #{0x63 0x64} (nth p i)) (+ i 3) (+ i 2))
+                        :else (second (uleb p (inc i))))]
+            (recur (inc k) i (conj acc [m nm kind])))))))
+
+(defn- host-payload []
+  (let [bs (wb/encode-module {:types [lk-group]})] (subvec bs (second (uleb bs 9)))))
+
+(defn- lk-host! [] (ev/set-host-types! (host-payload) lk-names))
+(defn- lk-run [src] (:body (:run (#'ev/lk-parts [(read-string src)]))))
+(defn- lk-err [src] (try (ev/compile-form (read-string src)) "no error" (catch Exception e (ex-message e))))
+
+(defn- validates? [bs]
+  (let [f (str (string/trim (:out (os/sh "mktemp"))))]
+    (os/sh "sh" "-c" (str "printf '%s' " (hex bs) " | xxd -r -p > " f))
+    (let [r (os/sh "wasm-tools" "validate" f)] (os/sh "rm" "-f" f) (= 0 (:exit r)))))
+
+(deftest linked-types
+  ;; decision 4: the host's group is type entry 0, byte for byte; the
+  ;; module's own func types follow it, numbered after the group
+  (lk-host!)
+  (let [hp (host-payload)
+        bs (ev/compile-form '(defn lkt-f [x] (+ x 1.5)))
+        [id p] (first (sections bs))
+        [n i] (uleb p 0)]
+    (is (= 1 id))
+    (is (= (subvec hp 1) (subvec p i (+ i (dec (count hp))))))
+    (is (< 1 n))
+    (is (validates? bs))
+    (testing "an arity's function has the group's $CodeN, the value is the group's $Fn"
+      (let [fs (#'ev/lk-parts ['(fn [a b] a)])]
+        (is (= [:t "$Code2"] (:type (first (:code fs)))))
+        (is (= [:struct.new [:t "$Fn"]] (peek (:body (:run fs)))))))))
+
+(deftest linked-imports
+  ;; only what the code calls, all from module "host" under the host's
+  ;; export names, then the two Bools; no memory, no "lw err"
+  (lk-host!)
+  (ev/eval '(def lkt-a 1))
+  (let [bs (ev/compile-form '(println (+ lkt-a 1) (inc 2) "s"))]
+    (is (= [["host" "lw rt rt_add" 0] ["host" "lw rt rt_invoke3" 0] ["host" "lw rt wasm.eval/lk-const#1__box" 0]
+            ["host" "lw rt wasm.eval/lk-cell-get#1__box" 0] ["host" "lw rt wasm.eval/lk-inc#1__box" 0]
+            ["host" "lw rt true" 3] ["host" "lw rt false" 3]]
+           (import-names (section bs 2))))
+    (is (validates? bs)))
+  (testing "two-arg + - * and comparisons are the runtime's helpers; other calls go through the value"
+    (is (= [[:local.get 1] [:local.get 2] [:call :lt]] (subvec (:body (first (:code (#'ev/lk-parts ['(fn [a b] (if (< a b) 1 2))])))) 1 4)))
+    (is (some #{[:call :invoke2]} (lk-run "(max 1 2)")))
+    (is (some #{[:call :apply-vec]} (lk-run "(println 1 2 3 4 5)")))))
+
+(deftest linked-throw
+  ;; errors are the runtime's exception: throw $lgex through the imported
+  ;; tag, never unreachable and an error global
+  (lk-host!)
+  (let [body (lk-run "(throw (ex-info \"x\" {}))")
+        bs (ev/compile-form '(throw (ex-info "x" {})))]
+    (is (= [:throw :lgex] (peek body)))
+    (is (not-any? #{[:unreachable]} body))
+    (is (= ["host" "lw lgex" 4] (last (import-names (section bs 2)))))
+    (is (validates? bs))))
+
+(deftest linked-d41
+  ;; an int literal is i31 inside 31 signed bits, else the runtime's $Int
+  ;; through the imported $rt_box_int (the canonical D41 hybrid)
+  (is (= [[:i32.const 1073741823] [:ref.i31]] (#'ev/lk-int 1073741823)))
+  (is (= [[:i32.const -1073741824] [:ref.i31]] (#'ev/lk-int -1073741824)))
+  (is (= [[:i64.const 1073741824] [:call :box_i]] (#'ev/lk-int 1073741824)))
+  (is (= [[:i64.const -1073741825] [:call :box_i]] (#'ev/lk-int -1073741825)))
+  (is (= [[:i64.const MIN] [:call :box_i]] (#'ev/lk-int MIN)))
+  (is (= [[:f64.const 4609434218613702656] [:call :box_f]] (lk-run "1.5"))))
+
+(deftest linked-named-errors
+  (lk-host!)
+  (is (= "wasm.emit: unsupported form try" (lk-err "(try 1 (catch Exception e 2))")))
+  (is (= "wasm.emit: unsupported form x (a local captured by a fn: closures are 3b-ii)" (lk-err "(let [x 1] (fn [] x))")))
+  (is (= "wasm.emit: unsupported form & (a variadic fn, 3b-ii)" (lk-err "(fn [& xs] xs)")))
+  (is (= "wasm.emit: unsupported form fn* with a name (3b-ii)" (lk-err "(fn* f [x] x)")))
+  (is (= "wasm.emit: unsupported form a fn of 5 params (3b-ii)" (lk-err "(fn [a b c d e] a)")))
+  (is (= "wasm.emit: unsupported form a collection literal with evaluated elements (3b-ii)" (lk-err "(let [x 1] [x])")))
+  (is (= "wasm.emit: unsupported form set!" (lk-err "(set! *warn-on-reflection* true)")))
+  (testing "a compile error outside the named limits is the evaluator's, context layers included"
+    (is (= (lk-err "(if 1)") (try (ev/eval '(if 1)) (catch Exception e (ex-message e)))))
+    (is (= (lk-err "(defn lkt-h [] (nope))") (try (ev/eval '(defn lkt-h [] (nope))) (catch Exception e (ex-message e)))))))
 
 (deftest dialect
   ;; emit.lg is plain lg like eval.lg: its first ns form requires the
