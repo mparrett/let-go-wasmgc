@@ -4249,6 +4249,8 @@
         (os/rename tmp f)
         ;; a library for older sources is dead weight (~3.5 MB each)
         (doseq [old (os/ls rtlib-dir)
-                :when (and (str/starts-with? old prefix) (str/ends-with? old ".edn")
+                :when (and (or (and (str/starts-with? old prefix) (str/ends-with? old ".edn"))
+                               ;; named before the target joined the key, so no prefix matches it
+                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old))
                            (not= (str rtlib-dir "/" old) f))]
           (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))
