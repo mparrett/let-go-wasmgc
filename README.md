@@ -111,6 +111,8 @@ Environment variables that matter:
 | `LG` | native lg used by the driver and as the oracle's reference |
 | `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |
 | `LW_NO_EVAL=1` | build without the evaluator and the program table (D163) |
+| `LW_EXPORT_RT=1` | export every runtime function as `lw rt <id>` and the var slots, for code compiled at run time (D193) |
+| `LW_RUNTIME_COMPILE=1` | load the emitter into the runtime; with `LW_EXPORT_RT=1` the module exports `lw compile` and `lw eval` (D193) |
 | `LW_NO_OPT=1` | skip wasm-opt in the module build scripts in `host/` |
 | `LW_MODULE_CACHE=<dir>` | `checks/wasm-run.sh` reuses the compiled module of an unchanged program |
 | `LW_RTLIB_DIR=<abs dir>` | where the compiled runtime library is cached (default `src/.rtlib`) |
@@ -231,6 +233,19 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   vars and macros, so evaluated code resolves the program's own vars (D161).
   `LW_NO_EVAL=1` leaves out the evaluator and the table; modules that never
   reach `eval` are byte-identical either way (D163).
+- **Compiling at run time** (docs/SELF-HOST-SPEC.md, stages 3a and 3b-i):
+  `rt/wasm/emit.lg` is a second output of the evaluator's front end, a
+  baseline emitter of wasm bytes. Built with `LW_EXPORT_RT=1
+  LW_RUNTIME_COMPILE=1`, a module carries it and exports its whole runtime;
+  `lw compile` turns one form's text into a module that declares the
+  host's rec group byte for byte (so its structs are the host's) and
+  imports what it calls from the running instance's exports, which is the
+  whole import object. The compiled form shares the evaluator's vars,
+  values and exceptions: an evaluated `try` catches what compiled code
+  throws. Scalar forms, `def`, `fn` without captures and calls through any
+  value are in; closures, `try` and collections built from expressions are
+  the next stage (D191, D193; rows P10.1, P10.2). Without the flags the
+  module's bytes do not change.
 
 ## Where it might go
 

@@ -136,6 +136,7 @@ existing directory of programs and expected outputs.
   program agrees on every row of the operator matrix, including the D16
   quirks and the named errors (division by zero, overflow where native
   overflows).
+  Status (2026-10-05): done, D191, row P10.1.
 - **3b. Calls into the runtime and the program (needs the two flags).**
   `LW_EXPORT_RT=1` exports every runtime function with a stable name and
   every program var slot; the rec-group constant from decision 4 is emitted
@@ -147,6 +148,9 @@ existing directory of programs and expected outputs.
   `eval` (a `compile-form` fn in the module that returns bytes; the host
   instantiates and runs them). Done when those directories MATCH native and
   the default build's bytes are unchanged.
+  Status (2026-10-05): first half (3b-i) done, D193, row P10.2: both
+  flags, the module's own `lw compile`, linking over the scalar subset;
+  coverage of those four directories is 3b-ii.
 - **4. Linking inside the module.** The REPL and legmacs call
   `(compile-fn 'sym)`; the module itself asks the host to instantiate the
   bytes (one host import, `env.instantiate(ptr, len) -> i32 handle`, since
@@ -154,10 +158,13 @@ existing directory of programs and expected outputs.
   into the var. Oracle: the REPL `(compile ..)` agrees with `(eval ..)` on
   every example in `host/repl.html`'s picker and on `corpus/eval/`; legmacs
   `C-x C-e` on a `defn` followed by a call gives the same result either way.
+  Status (2026-10-05): not started; node's side of the host import exists
+  (`linkCompiled` in host/node-host.mjs, D193).
 - **5. Policy and measurement.** When to compile: a `defn` evaluated twice,
   or legmacs's eval-buffer by default. Measure on fib(25) and on legmacs's
   eval tests: interpreted, baseline-compiled, host-compiled, with dates.
   Decide the default from the numbers and record it.
+  Status (2026-10-05): not started.
 
 Stage 1 of ROUND4's list, the binary encoder adopted by the host driver,
 is deliberately after all of the above: it changes host emission, which is
