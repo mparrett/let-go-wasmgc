@@ -251,11 +251,29 @@
   (let [inc-of (into {} (for [b (ir/blocks *f*)
                               [idx p] (map-indexed vector (ir/block-params b *f*))]
                           [p (vec (incoming b idx))]))
-        step (fn [L] (into {} (for [[ba xs] inc-of]
-                                [ba (reduce (fn [acc x] (if (contains? inc-of x) (into acc (get L x)) (conj acc x)))
-                                            (get L ba #{}) xs)])))]
-    (loop [L {}]
-      (let [L2 (step L)] (if (= L2 L) L (recur L2))))))
+        ;; a worklist instead of whole-map rounds: rebuilding and comparing
+        ;; every param's set until nothing changed was ~11% of a warm legmacs
+        ;; build (P4 profile). Same least fixpoint: a param's set grows only
+        ;; by a feeding param's set, and each growth requeues its dependents.
+        ;; No destructuring or #() here: each takes a gensym when this file
+        ;; loads, and the counter reaches the program's expansions, whose
+        ;; local numbering then shifts (the emitted WAT stays byte-identical
+        ;; only at the same count).
+        deps (reduce (fn [m e]
+                       (reduce (fn [m x] (if (contains? inc-of x) (update m x (fnil conj []) (key e)) m))
+                               m (val e)))
+                     {} inc-of)
+        L0 (into {} (for [[ba xs] inc-of] [ba (into #{} (remove (fn [x] (contains? inc-of x)) xs))]))]
+    (loop [L L0 work (vec (keys inc-of))]
+      (if (empty? work)
+        L
+        (let [x (peek work)
+              lx (get L x)
+              r (reduce (fn [acc ba]
+                          (let [L (nth acc 0) cur (get L ba) nxt (into cur lx)]
+                            (if (= (count nxt) (count cur)) acc [(assoc L ba nxt) (conj (nth acc 1) ba)])))
+                        [L (pop work)] (get deps x))]
+          (recur (nth r 0) (nth r 1)))))))
 
 ;; P2.11 (F2): two constants are the same value only when they are the same
 ;; kind with the same bits, all the way down. `=` is not that: [] = (), 0.0 =
