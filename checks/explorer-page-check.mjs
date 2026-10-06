@@ -8,7 +8,11 @@
 //           encoder's sections and a hex view starting with the wasm magic;
 //   limit   (defn f [] [1]): the compiled pane shows the emitter's named
 //           limit as text, the eval pane the var, the page keeps working;
-//   reader  (+ 1 2)): both panes show native's reader error.
+//   reader  (+ 1 2)): both panes show native's reader error;
+//   print   (do (print "x") 1): output without a newline is output, 1 the value;
+//   shadow  (def prn ..) then 42: the value still prints, both panes agree;
+//   prefix  ' 1 is one form, value 1; ' then a comment then 1 is two forms,
+//           as native reads it.
 // Exit 0 all pass, 1 a failed assertion (each printed), 2 the page or its
 // build script does not exist yet. Playwright comes from the workspace's
 // smoke-script install, as in checks/browser-boot.mjs.
@@ -125,6 +129,32 @@ try {
     check(text === `${nativeReader}\n`, `reader: the ${pane} pane shows native's reader error`, text);
   }
   check(r.agree === 'agree' && !r.ex.error, 'reader: the indicator says agree, no host error', [r.agree, r.ex.error]);
+  // 4. output without a newline stays output; the value is split at the
+  // page's boundary, by one rule in both panes
+  const o = await submit('(do (print "x") 1)');
+  for (const [pane, text] of [['eval', o.ev], ['compiled', o.co]]) {
+    check(text === '(do (print "x") 1)\nx\n=> 1\n', `print: the ${pane} pane shows x as output and 1 as the value`, text);
+  }
+  check(o.agree === 'agree', 'print: the indicator says agree', o.agree);
+
+  // 5. a source that redefines prn does not change how values print
+  const d = await submit('(def prn (fn [x] 7))\n42');
+  check(d.ev === d.co && /\n42\n=> 42\n$/.test(d.ev), 'shadowed prn: both panes show 42 as the value', [d.ev, d.co]);
+  check(d.agree === 'agree', 'shadowed prn: the indicator says agree', d.agree);
+
+  // 6. a reader prefix reads its operand across whitespace: ' 1 is one form
+  const q = await submit("' 1");
+  for (const [pane, text] of [['eval', q.ev], ['compiled', q.co]]) {
+    check(text === "' 1\n=> 1\n", `prefix: the ${pane} pane shows ' 1 as one form whose value is 1`, text);
+  }
+  check(q.agree === 'agree', 'prefix: the indicator says agree', q.agree);
+  // ... but not across a comment: native quotes Go's VOID there and reads
+  // the 1 as the next form ([' ;; c\n1] has two elements), so the prefix is
+  // a form of its own; the module's reader cannot read a lone quote, and
+  // both panes stop at that same error
+  const qc = await submit("'\n;; a comment\n1");
+  check(qc.ev.startsWith("'\nerror: ") && qc.ev === qc.co, 'prefix then comment: the quote is a form of its own, both panes show the same reader error', [qc.ev, qc.co]);
+  check(qc.agree === 'agree', 'prefix then comment: the indicator says agree', qc.agree);
   check(errs.length === 0, 'no uncaught page errors', errs);
 } catch (e) {
   failed++;
