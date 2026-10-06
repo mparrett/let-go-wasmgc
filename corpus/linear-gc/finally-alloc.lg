@@ -1,0 +1,5 @@
+;; A pending exception crosses an allocating finally: its payload must stay
+;; rooted until the rethrow (docs/LINEAR-TARGET-SPEC.md, decision 5)
+(defn f [] (try (throw (ex-info "body" {:a (vec (range 10))})) (finally (atom (vec (range 100))))))
+(dotimes [_ 1000] (try (f) (catch Exception e nil)))
+(println (try (f) (catch Exception e [(ex-message e) (count (:a (ex-data e)))])))

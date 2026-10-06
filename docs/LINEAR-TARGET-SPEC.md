@@ -234,10 +234,14 @@ precise is known at that point.
    call.
 3. **Operand-stack values.** In `(call $f (call $g) (call $h))`, `$g`'s
    result sits on the operand stack, invisible to the collector, while
-   `$h` may allocate. Phase 1 moves every ref-typed argument that is not a
-   `local.get`, `global.get` or constant (call results, block results, a
-   catch's payload) into a fresh framed local, uniformly. Phase 3 narrows
-   this to arguments followed by a sibling that contains a call. As of
+   `$h` may allocate. A `global.get` or `local.get` argument is not safe
+   either: a later sibling can replace that global (`(into x (do (def x
+   nil) ...))`) or rewrite that local, leaving the original only on the
+   operand stack. Phase 1 moves every ref-typed argument except a constant
+   (call results, block results, a catch's payload, global and local
+   reads) into a fresh framed local whenever a later sibling contains a
+   call. Phase 3 may exempt a `local.get` that no later sibling writes and
+   a `global.get` of an immutable global, nothing else. As of
    2026-10-06 (main 38accbc), `corpus/linear-gc/seq-pipeline.clj`'s module has 119 call
    results held across a later sibling call among 6,689 call sites, and
    fib 8 of 153; the count is an upper bound, since it includes `i64`
@@ -249,13 +253,25 @@ precise is known at that point.
    running their restores, so every `try_table` handler resets `$lin_shadow_sp`
    to its own function's frame top, saved in a local on entry, and
    `lw run`'s handler resets it to the base.
-5. **No local writes inside `try_table` bodies.** The runner's wazero pin
+5. **Pending exceptions.** `try-wat` lowers `finally` as `catch_all_ref`
+   into an `exnref` local, a call of the lifted finally function, then
+   `throw_ref`. Across that call the thrown value is reachable only
+   through the opaque exception, which no scan can trace, and decision 4
+   has already dropped the body's roots, so an allocating `finally` could
+   free it before the rethrow. Linear rewrites that shape to `catch $lgex`,
+   stores the payload in a framed slot across the finally call, and
+   rethrows with `throw $lgex` from the slot. `$lgex` is the only tag in a
+   module and no import throws, so nothing else can arrive there; a module
+   with another tag is refused under linear by name. This also leaves no
+   `exnref` in linear output, which keeps it clear of wazero/wazero#2522
+   on the runner's current pin.
+6. **No local writes inside `try_table` bodies.** The runner's wazero pin
    (`0ec6142a`, as of 2026-10-06) predates wazero/wazero#2504: a caught
    exception reverts locals written inside the body to their values at
    block entry. Today every `try_table` body is a single call, so frames
    must not change that: slot stores stay outside `try_table` bodies until
    the pin includes that fix. Row P11.3 checks it.
-6. **Tracing.** The rewriter emits a layout table as a data segment: for
+7. **Tracing.** The rewriter emits a layout table as a data segment: for
    each layout id, its size and the offsets of its reference fields; for
    arrays, whether elements are references. `funcref` fields (closure code
    slots hold table indices), `i64`, `f64`, `i8` and non-reference `i32`
@@ -263,28 +279,34 @@ precise is known at that point.
    alongside the `i32` it maps to. A traced value is followed only if it
    is untagged, non-zero and in `[131072, $heap_top)`; statics are never
    marked or swept, and phase 0 checks they hold no heap pointers.
-7. **Heap blocks.** Every block, live or free, starts with the header, so
+8. **Heap blocks.** Every block, live or free, starts with the header, so
    the sweep walks the heap by `size`. The mark bit is bit 31 of the size
    word, cleared by the sweep. Free blocks get kind 0, adjacent free blocks
    coalesce during the sweep, and free lists are segregated by size in
    8-byte steps up to 512 bytes with one first-fit list above that.
-8. **Roots.** The shadow stack between its base and `$lin_shadow_sp`, every
+9. **Roots.** The shadow stack between its base and `$lin_shadow_sp`, every
    ref-typed global (the var table, constants and runtime globals are all
    globals after `lin_init`), and nothing else. The mark stack is explicit
    (lazy-seq chains are deep) and lives above `$heap_top`, outside the
    heap, grown with `memory.grow` when needed.
-9. **When to collect.** `$lin_alloc` tries the free lists, then bumps
+10. **When to collect.** `$lin_alloc` tries the free lists, then bumps
    within the current memory, then collects once the bytes allocated since
    the last collection pass a threshold (1 MiB to start, then the live size
    after the last collection, at least 1 MiB), and only then grows memory.
    Phase 2 tunes these numbers against the gate budget and records them.
-10. **Testing modes.** Three build flags, read by the driver like
+11. **Testing modes.** Three build flags, read by the driver like
     `LW_NO_EVAL`: `LW_GC_VERIFY=1` marks and checks every traced pointer
     lands on a valid header but frees nothing; `LW_GC_STRESS=1` collects
-    at every allocation; `LW_GC_POISON=1` fills freed blocks with a fixed
-    pattern and kind. Stress turns a missing root into a deterministic
-    corpus failure, which is why phase 1 runs it before anything is freed.
-11. **The GC target never moves.** `checks/gate.sh 11` also runs P8.0, so
+    at every allocation; `LW_GC_POISON=1` overwrites every unmarked block
+    with a fixed pattern and kind 0. Verify alone cannot find a missing
+    root: an unvisited object is never checked, and if nothing overwrites
+    it the program keeps working. So from phase 1, before the free lists
+    exist, a collection poisons unmarked blocks without reusing them; a
+    missing root then reads poison and the corpus stops matching native.
+    A phase that claims its root checks work shows them failing with one
+    spill or root deliberately removed, and records that in its DECISIONS
+    entry.
+12. **The GC target never moves.** `checks/gate.sh 11` also runs P8.0, so
     every phase's gate includes GC byte identity.
 
 ### Phases and rows
@@ -295,10 +317,10 @@ Each phase is its own pull request; its rows exit 2 until it lands
 
 | Phase | Builds | Rows |
 |---|---|---|
-| 0 | Layout table, root enumeration, decision 10's verify mode; no frames, nothing freed | P11.0: the gate-8 corpus directories MATCH with `LW_GC_VERIFY=1`, collecting at program exit, zero bad pointers. P11.1: no static object holds a heap pointer. |
-| 1 | Shadow frames, operand-stack spills, decision 4's restores | P11.2: the gate-8 corpus MATCHes with verify and stress together. P11.3: no `try_table` body writes a local. |
-| 2 | Sweep, free lists, coalescing, the trigger | P11.4: the gate-8 corpus MATCHes with stress and poison. P11.5: `corpus/linear-gc/alloc-loop.lg`'s peak RSS at 10x the iterations is under 2x its peak RSS at 1x (bounded, not growing with run length). |
-| 3 | Narrowed frames and spills; legmacs | P11.6: legmacs boots under the runner and its deftest count matches the GC lane's. P11.7: the gate-8 corpus still MATCHes under stress after narrowing. |
+| 0 | Layout table, root enumeration, decision 11's verify mode; no frames, nothing freed | P11.0: the gate-8 corpus directories MATCH with `LW_GC_VERIFY=1`, collecting at program exit, zero bad pointers. P11.1: no static object holds a heap pointer. |
+| 1 | Shadow frames, operand-stack spills, decision 4's restores, decision 5's finally rewrite, poisoning without reuse | P11.2: the gate-8 corpus directories and `corpus/linear-gc/` MATCH with verify, stress and poison together; with decision 3's spills disabled it must fail. P11.3: a structural audit of linear modules: no `try_table` body writes a local, no ref-typed argument other than a constant is followed by a calling sibling without a spill, and no `exnref` remains. |
+| 2 | Sweep, free lists, coalescing, the trigger | P11.4: the gate-8 corpus directories and `corpus/linear-gc/` MATCH with stress and poison, freed blocks now reused. P11.5: `corpus/linear-gc/alloc-loop.lg`'s peak RSS at 10x the iterations is under 2x its peak RSS at 1x (bounded, not growing with run length). |
+| 3 | Narrowed frames and spills; legmacs | P11.6: legmacs boots under the runner and its deftest count matches the GC lane's. P11.7: the gate-8 corpus directories and `corpus/linear-gc/` still MATCH under stress and poison after narrowing. |
 
 Measure startup, fib 35 and `corpus/linear-gc/seq-pipeline.clj` against the WasmGC
 lane at the end of phases 2 and 3, dated, in the phase's DECISIONS.md
