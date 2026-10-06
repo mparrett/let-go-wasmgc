@@ -25,5 +25,115 @@ if (!fs.existsSync(path.join(root, 'host/explorer.html')) || !fs.existsSync(path
   console.log('NOT IMPLEMENTED: host/explorer.html or host/build-explorer-serve.sh missing');
   process.exit(2);
 }
-console.log('NOT IMPLEMENTED: assertions');
-process.exit(2);
+const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
+const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
+const pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href);
+const chromium = pw.chromium || pw.default.chromium;   // resolve() lands on the CJS entry
+
+// native's reader error for the third source, the text both panes must show
+const LG = process.env.LG;
+if (!LG) { console.log('LG unset (source checks/env.sh)'); process.exit(2); }
+const READER_SRC = '(+ 1 2))';
+const nat = spawnSync(LG, ['-e', READER_SRC], { encoding: 'utf8' });
+const nativeReader = (nat.stdout + nat.stderr).replace(/\x1b\[[0-9;]*m/g, '').trimEnd();
+
+let dir = process.env.LW_EXPLORER_DIR, tmp = null;
+if (!dir) {
+  tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'explorer-page.'));
+  dir = tmp;
+  const r = spawnSync('bash', [path.join(root, 'host/build-explorer-serve.sh'), dir], { stdio: ['ignore', 'inherit', 'inherit'] });
+  if (r.status !== 0) { console.log(`build-explorer-serve.sh failed (exit ${r.status})`); process.exit(1); }
+}
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
+const server = http.createServer((req, res) => {
+  const f = path.join(dir, path.normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^(\.\.[/\\])+/, ''));
+  fs.readFile(f, (err, data) => {
+    if (err) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' });
+    res.end(data);
+  });
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const base = `http://127.0.0.1:${server.address().port}`;
+
+let failed = 0;
+const check = (ok, what, got) => {
+  if (ok) console.log(`ok   ${what}`);
+  else { failed++; console.log(`FAIL ${what}${got === undefined ? '' : `\n     got: ${JSON.stringify(got)}`}`); }
+};
+
+const b = await chromium.launch();
+const p = await b.newPage();
+const errs = [];
+p.on('pageerror', (e) => errs.push(String(e)));
+const state = () => p.evaluate(() => ({
+  ex: { ...window.__explorer, timing: undefined },
+  ev: document.getElementById('eval-out').textContent,
+  co: document.getElementById('compiled-out').textContent,
+  agree: document.getElementById('agree').dataset.state,
+  agreeText: document.getElementById('agree').textContent,
+  size: document.getElementById('mod-size').textContent,
+  sections: [...document.querySelectorAll('#mod-sections tbody tr')].map((r) => [r.dataset.key, ...[...r.cells].slice(1).map((c) => c.textContent)]),
+  hex: document.getElementById('mod-hex').textContent,
+  picks: document.getElementById('mod-pick').options.length,
+}));
+// submit a source and wait for its run to finish (the page runs its default
+// source on load first; the explorer's run counter orders the two)
+const submit = async (text) => {
+  const n = await p.evaluate(() => window.__explorer.runs);
+  await p.fill('#src', text);
+  await p.click('#run');
+  await p.waitForFunction((n) => window.__explorer.runs > n, n, { timeout: 180000 });
+  return state();
+};
+
+try {
+  await p.goto(`${base}/explorer.html`, { waitUntil: 'domcontentloaded' });
+  await p.waitForFunction(() => window.__explorer && (window.__explorer.runs >= 1 || window.__explorer.error), null, { timeout: 180000 });
+  const boot = await state();
+  check(boot.ex.ready && !boot.ex.error, 'the page loads the compiler host and runs its default source', boot.ex);
+
+  // 1. a scalar defn and a call
+  const s = await submit('(defn sq [x] (* x x))\n(sq 7)');
+  for (const [pane, text] of [['eval', s.ev], ['compiled', s.co]]) {
+    check(text === "(defn sq [x] (* x x))\n=> #'user/sq\n(sq 7)\n=> 49\n", `scalar: the ${pane} pane shows the var and 49`, text);
+  }
+  // the indicator must say what the panes say, not only "agree"
+  check(s.agree === (s.ev === s.co ? 'agree' : 'disagree') && s.agree === 'agree', 'scalar: the indicator says agree, and the panes are equal', [s.agree, s.agreeText]);
+  check(s.picks === 2, 'scalar: one compiled module per form', s.picks);
+  const bytes = Number((s.size.match(/^(\d+) bytes/) || [])[1]);
+  check(bytes > 8, 'scalar: the module pane shows the module size', s.size);
+  const keys = s.sections.map((r) => r[0]);
+  check([':types', ':imports', ':funcs', ':exports', ':code'].every((k) => keys.includes(k)), 'scalar: the section table names the encoder model sections', keys);
+  const sum = s.sections.reduce((a, r) => a + Number(r[1]), 0);
+  check(sum > 0 && sum < bytes, 'scalar: section sizes fit inside the module', [sum, bytes]);
+  check((s.sections.find((r) => r[0] === ':exports') || [])[3] === 'func "lw run"', 'scalar: the module exports "lw run" only', s.sections.find((r) => r[0] === ':exports'));
+  check(/func host "lw rt /.test((s.sections.find((r) => r[0] === ':imports') || [])[3] || ''), 'scalar: the module imports the runtime from module "host"', s.sections.find((r) => r[0] === ':imports'));
+  check(s.hex.startsWith('000000  00 61 73 6d 01 00 00 00'), 'scalar: the hex view starts with the wasm magic and version', s.hex.slice(0, 60));
+
+  // 2. an emitter named limit
+  const l = await submit('(defn f [] [1])');
+  check(l.ev === "(defn f [] [1])\n=> #'user/f\n", 'limit: the eval pane shows the var', l.ev);
+  check(/^\(defn f \[\] \[1\]\)\nnamed limit: wasm\.emit: unsupported form [^\n]+\n$/.test(l.co), 'limit: the compiled pane shows the named limit as text', l.co);
+  check(l.agree === 'limit' && !l.ex.error, 'limit: the indicator says not compared, no host error', [l.agree, l.ex.error]);
+  check(l.picks === 0 && l.hex === '', 'limit: no module is shown', [l.picks, l.size]);
+
+  // 3. a reader error
+  const r = await submit(READER_SRC);
+  check(/^error: Syntax error reading source at \(EXPR:1:9\)\.\nunmatched delimiter \)$/.test(nativeReader), 'reader: native lg -e prints the reader error', nativeReader);
+  for (const [pane, text] of [['eval', r.ev], ['compiled', r.co]]) {
+    check(text === `${nativeReader}\n`, `reader: the ${pane} pane shows native's reader error`, text);
+  }
+  check(r.agree === 'agree' && !r.ex.error, 'reader: the indicator says agree, no host error', [r.agree, r.ex.error]);
+  check(errs.length === 0, 'no uncaught page errors', errs);
+} catch (e) {
+  failed++;
+  console.log(`FAIL the check stopped: ${(e && e.message) || e}`);
+  try { console.log(JSON.stringify(await state())); } catch {}
+} finally {
+  await b.close();
+  server.close();
+  if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+}
+console.log(failed ? `P10.3: ${failed} failed` : 'P10.3: all passed');
+process.exit(failed ? 1 : 0);
