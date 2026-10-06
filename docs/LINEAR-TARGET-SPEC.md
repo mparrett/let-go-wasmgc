@@ -34,7 +34,7 @@ described so that 1 does not paint them out.
   under a wazero runner through `checks/oracle.sh`, and the WasmGC output
   is byte-identical to before for every program in `corpus/scalar/` and
   `corpus/eval/`.
-- **M2, precise collector** (design and phases: Milestone 2 below, D196). A non-moving mark-sweep collector with a shadow
+- **M2, precise collector** (design and phases: Milestone 2 below, D197). A non-moving mark-sweep collector with a shadow
   stack for roots, modelled on the two collectors in
   [wallisp](https://github.com/mparrett/wallisp): `engines/bytecode_gc.c`
   (non-moving mark-sweep over a uniform cell heap, mark bits plus an
@@ -184,7 +184,7 @@ described so that 1 does not paint them out.
    wazero fork and the two feature flags named, and the prerequisites
    section lists Go.
 
-## Milestone 2: precise collector (D196)
+## Milestone 2: precise collector (D197)
 
 Added 2026-10-06, after M1 and D195. "M2" here is always the linear
 target's milestone; the self-host course uses M0/M1/M2 for something else
