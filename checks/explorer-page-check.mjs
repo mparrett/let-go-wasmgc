@@ -170,6 +170,12 @@ try {
   check(p1.run === 1 && p2.run === 2, 'pulse: the Run button pulses once per run', [p1.run, p2.run]);
   check(s.evT === 2 && s.coT === 2, 'timing: each value line in both panes carries its run time', [s.evT, s.coT]);
 
+  // each form runs once: a repeated form would repeat its side effect
+  const at = await submit('(def c (atom 0))\n(swap! c inc)\n@c');
+  for (const [pane, text] of [['eval', at.ev], ['compiled', at.co]]) {
+    check(/\n@c\n=> 1\n$/.test(text), `once: the ${pane} pane shows => 1 for @c after one swap!`, text);
+  }
+
   // a loop: both legs ran, so the ratio shows, compiled ahead
   const lp = await submit('(loop [i 0 s 0] (if (< i 100000) (recur (inc i) (+ s i)) s))');
   check(lp.agree === 'agree' && /^compiled \d+× faster$/.test(lp.ratio || ''), 'ratio: the loop shows compiled N× faster', [lp.agree, lp.ratio]);
