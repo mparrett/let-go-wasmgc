@@ -19,7 +19,14 @@
 <title>let-go eval vs compiled</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
-  :root { --bg: #0a0e14; --panel: #0f1520; --line: #1f2937; --fg: #d4c5a0; --dim: #7c8594; --in: #9ecbff; --err: #ff6b6b; --ok: #7bd88f; --warn: #e7c66b; --hi: #e7d7a8; }
+  :root { --bg: #0a0e14; --panel: #0f1520; --line: #1f2937; --fg: #d4c5a0; --dim: #7c8594; --in: #9ecbff; --err: #ff6b6b; --ok: #7bd88f; --warn: #e7c66b; --hi: #e7d7a8;
+    /* metadata roles: --time every "N ms" figure, --size every KB and
+       bytes figure, --label the words and separators around them;
+       agreement keeps --ok */
+    --time: #d2a8ff; --size: #7dd3c8; --label: var(--dim); }
+  .t { color: var(--time); }
+  .sz { color: var(--size); }
+  .lbl { color: var(--label); }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
   body { min-height: 100vh; font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace; display: flex; flex-direction: column; align-items: center; }
   main { width: min(1100px, 100% - 32px); margin: 24px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
@@ -28,6 +35,7 @@
   h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--hi); }
   p { margin: 0; }
   #status, .note { color: var(--dim); font-size: 12px; }
+  #sizes { font-size: 11px; margin-top: -8px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
   #src { display: block; width: 100%; min-height: 110px; resize: vertical; background: transparent; color: var(--fg); border: 0; outline: none; font: inherit; padding: 0; }
   .src-panel:focus-within { border-color: #3b82f6; }
@@ -35,6 +43,16 @@
   button, select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; }
   button { cursor: pointer; color: var(--in); }
   button:disabled { opacity: .5; cursor: default; }
+  #run { background: var(--ok); border-color: var(--ok); color: var(--bg); font-weight: 600; }
+  #run:hover:not(:disabled) { background: #a3e8b1; border-color: #a3e8b1; }
+  #run:focus-visible { outline: 2px solid var(--in); outline-offset: 2px; }
+  /* a pane whose content a run has just replaced */
+  @keyframes pulse { from { border-color: var(--ok); background: #13261b; } to { border-color: var(--line); background: var(--panel); } }
+  .pulse { animation: pulse .6s ease-out; }
+  /* the Run button keeps its fill and flashes a ring as a run starts */
+  @keyframes pulse-run { from { box-shadow: 0 0 0 4px #7bd88f99; } to { box-shadow: 0 0 0 0 #7bd88f00; } }
+  #run.pulse { animation: pulse-run .6s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .pulse, #run.pulse { animation: none; } }
   .panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
   .pane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
   .out { margin: 0; white-space: pre-wrap; word-break: break-word; min-height: 3em; max-height: 40vh; overflow-y: auto; }
@@ -46,6 +64,7 @@
   #agree[data-state="agree"] { color: var(--ok); border-color: var(--ok); }
   #agree[data-state="disagree"] { color: var(--err); border-color: var(--err); }
   #agree[data-state="limit"] { color: var(--warn); border-color: var(--warn); }
+  #ratio { font-size: 12px; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--dim); font-weight: 500; }
@@ -62,15 +81,17 @@
 <p class="note">Type let-go forms. Each runs twice in the module: interpreted by its evaluator, and compiled by its
   emitter to a small wasm module that links against the running instance. The panes show what each path prints and returns.</p>
 <div id="status">loading…</div>
+<div id="sizes" class="note" hidden></div>
 <div class="panel src-panel"><textarea id="src" spellcheck="false" autocomplete="off" aria-label="let-go source"></textarea></div>
 <div class="bar">
   <button id="run" disabled>Run (Ctrl+Enter)</button>
   <span>Examples: <select id="examples"><option value="">pick one…</option></select></span>
   <span id="agree" data-state="none">not run</span>
+  <span id="ratio" class="t" hidden title="run time only; compile time is shown in the module pane. Calls through vars go through the registry cell on both paths, so recursion-heavy forms show a smaller ratio"></span>
 </div>
 <div class="panes">
-  <section class="panel"><div class="pane-head"><h2>eval</h2><span class="note">wasm.eval/eval, value by core/prn</span></div><pre class="out" id="eval-out"></pre></section>
-  <section class="panel"><div class="pane-head"><h2>compiled</h2><span class="note">wasm.emit, linked and run</span></div><pre class="out" id="compiled-out"></pre></section>
+  <section class="panel" id="eval-pane"><div class="pane-head"><h2>eval</h2><span class="note">wasm.eval/eval, value by core/prn</span></div><pre class="out" id="eval-out"></pre></section>
+  <section class="panel" id="compiled-pane"><div class="pane-head"><h2>compiled</h2><span class="note">wasm.emit, linked and run</span></div><pre class="out" id="compiled-out"></pre></section>
 </div>
 <section class="panel" id="module">
   <div class="pane-head"><h2>compiled module</h2><span class="note">form <select id="mod-pick"></select></span></div>
@@ -91,12 +112,13 @@ const url = new URLSearchParams(location.search).get('module') || 'explorer.wasm
 const DEFAULT = '(defn fib [n]\n  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))\n(fib 20)';
 const EXAMPLES = [
   ['a defn and a call', DEFAULT],
+  ['a loop, where compiled code pulls ahead', '(loop [i 0 s 0] (if (< i 100000) (recur (inc i) (+ s i)) s))'],
   ['arithmetic and comparison', '(defn clamp [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))\n(clamp 42 0 10)\n(clamp -3 0 10)'],
   ['println inside a fn', '(defn greet [s] (println "hello," s) (count s))\n(greet "wasm")'],
   ['an error both paths throw', '(defn boom [x] (throw (ex-info (str "boom " x) {})))\n(boom 7)'],
   ['int64 overflow', '(defn big [x] (* x x))\n(big 3000000000)\n(big 4000000000)'],
-  ['a named limit: a vector literal', '(defn f [] [1])'],
-  ['a named limit: a closure', '(defn adder [n] (fn [x] (+ x n)))'],
+  ['cannot compile yet: a vector literal', '(defn f [] [1])'],
+  ['cannot compile yet: a closure', '(defn adder [n] (fn [x] (+ x n)))'],
   ['a reader error', '(+ 1 2))'],
 ];
 const picker = $('examples');
@@ -130,6 +152,31 @@ function splitResult(raw) {
   return { out: raw.slice(0, k), value: raw.slice(k + RESULT.length).replace(/\n$/, '') };
 }
 
+// A form's run time, measured once: running a form again would repeat its
+// side effects, so a sub-millisecond figure shows as <1 ms instead.
+// r.ms is set even when f throws, so a failed form's cost is recorded.
+async function timed(r, f) {
+  const t = performance.now();
+  try { await f(); } finally { r.ms = performance.now() - t; }
+}
+// Text with styled figures, built as DOM nodes: every string, whatever its
+// source (the URL, sizes.json, module output), goes in as text. A part is
+// a string or {cls, id, text} / {cls, kids}.
+function setParts(el, parts) {
+  el.textContent = '';
+  for (const p of parts) {
+    if (typeof p === 'string') { el.append(p); continue; }
+    const sp = document.createElement('span');
+    if (p.cls) sp.className = p.cls;
+    if (p.id) sp.id = p.id;
+    if (p.kids) setParts(sp, p.kids); else sp.textContent = p.text;
+    el.append(sp);
+  }
+}
+const kbPart = (id, n) => ({ cls: 'sz', kids: [{ id, text: String(kb(n)) }, ' KB'] });
+
+const fmtMs = (ms) => (ms < 1 ? '<1 ms' : ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`);
+
 // Run every form through one path; returns [{form, out, value?, error?, limit?}].
 async function runLeg(forms, mode) {
   const tb = performance.now();
@@ -148,16 +195,18 @@ async function runLeg(forms, mode) {
         // wrapper. The form is read from its own text, as the compiled leg
         // reads it, so a reader error inside it is reported identically.
         const lit = form.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        await c.evalText(`(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`);
+        const text = `(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`;
+        await timed(r, () => c.evalText(text));
       } else {
         const t0 = performance.now();
         const bytes = await c.compile(form);
         const t1 = performance.now();
         modules.push({ form, bytes, compileMs: t1 - t0 });
-        const v = await c.link(bytes);
-        modules[modules.length - 1].runMs = performance.now() - t1;
+        let v;
+        await timed(r, async () => { v = await c.link(bytes); });
         raw += RESULT;
         c.ex['lw rt wasm.host/prn#1'](v);
+        modules[modules.length - 1].runMs = r.ms;
       }
       Object.assign(r, splitResult(raw));
       window.__explorer.timing.push([mode, form.slice(0, 20), performance.now() - tf]);
@@ -174,6 +223,33 @@ async function runLeg(forms, mode) {
   return recs;
 }
 
+// Restart the pane's pulse even when its new content equals the old; the
+// class goes on animationend, or at once when reduced motion stops the
+// animation.
+const still = matchMedia('(prefers-reduced-motion: reduce)');
+function pulse(el) {
+  el.classList.remove('pulse');
+  void el.offsetWidth;
+  el.classList.add('pulse');
+  if (still.matches) requestAnimationFrame(() => el.classList.remove('pulse'));
+}
+for (const id of ['eval-pane', 'compiled-pane', 'module', 'run']) $(id).addEventListener('animationend', (e) => e.currentTarget.classList.remove('pulse'));
+
+// Total run time of each leg, compared when both ran every form. The
+// slower leg must take at least 1 ms; the faster may be under it (a
+// compiled loop is), as long as the timer registered it.
+const ratioEl = $('ratio');
+function showRatio(ev, co) {
+  ratioEl.hidden = true;
+  if (!ev) return;
+  const sum = (rs) => rs.reduce((a, r) => a + (r.ms ?? 0), 0);
+  const e = sum(ev), c = sum(co);
+  if (Math.max(e, c) < 1 || Math.min(e, c) <= 0) return;
+  const x = Math.round(Math.max(e, c) / Math.min(e, c));
+  ratioEl.textContent = x <= 1 ? 'eval and compiled about even' : `${e > c ? 'compiled' : 'eval'} ${x}× faster`;
+  ratioEl.hidden = false;
+}
+
 function show(pane, recs) {
   const el = $(pane); el.textContent = '';
   const add = (text, cls) => { const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = text; el.append(s); };
@@ -181,7 +257,7 @@ function show(pane, recs) {
     if (r.form != null) add(`${r.form}\n`, 'form');
     if (r.out) add(r.out.endsWith('\n') ? r.out : `${r.out}\n`);
     if (r.error != null) add(`${r.limit ? 'named limit: ' : 'error: '}${r.error}\n`, r.limit ? 'limit' : 'err');
-    else if (r.value != null) add(`=> ${r.value}\n`, 'val');
+    else if (r.value != null) { add(`=> ${r.value}`, 'val'); if (r.ms != null) add(`  ${fmtMs(r.ms)}`, 't'); add('\n'); }
   }
 }
 
@@ -190,6 +266,7 @@ const transcript = (recs) => JSON.stringify(recs.map((r) => [r.form, r.out, r.va
 async function run() {
   if (!module || window.__explorer.busy) return;
   window.__explorer.busy = true; runBtn.disabled = true;
+  pulse(runBtn);
   const text = src.value;
   modules = [];
   let ev, co;
@@ -207,7 +284,12 @@ async function run() {
     agree.dataset.state = state;
     agree.textContent = { agree: 'eval and compiled agree', disagree: 'eval and compiled DISAGREE', limit: 'not compared: the emitter stopped at a named limit' }[state];
     window.__explorer.agree = state;
+    // compared only when every form completed on both legs: two legs that
+    // stop at the same exception agree but did not run the same work
+    const done = (rs) => forms && rs.length === forms.length && rs.every((r) => r.error == null);
+    showRatio(state === 'agree' && done(ev) && done(co) ? ev : null, co);
     showModules();
+    for (const id of ['eval-pane', 'compiled-pane', 'module']) pulse($(id));
   } catch (e) {
     // a host failure, not a let-go error: say so rather than leave stale panes
     status.textContent = `host error: ${String((e && e.message) || e)}`; status.className = 'err';
@@ -263,17 +345,17 @@ function sections(b) {
   return out;
 }
 
-function hex(b) {
-  const rows = [];
+function hex(el, b) {
+  el.textContent = '';
   const max = Math.min(b.length, 65536);
   for (let o = 0; o < max; o += 16) {
     const row = Array.from(b.subarray(o, Math.min(o + 16, max)));
-    const h = row.map((x) => x.toString(16).padStart(2, '0')).join(' ').padEnd(47);
-    const a = row.map((x) => (x >= 32 && x < 127 ? String.fromCharCode(x) : '.')).join('');
-    rows.push(`${o.toString(16).padStart(6, '0')}  <b>${h}</b>  ${a.replace(/&/g, '&amp;').replace(/</g, '&lt;')}`);
+    const h = document.createElement('b');
+    h.textContent = row.map((x) => x.toString(16).padStart(2, '0')).join(' ').padEnd(47);
+    el.append(`${o > 0 ? '\n' : ''}${o.toString(16).padStart(6, '0')}  `, h,
+      `  ${row.map((x) => (x >= 32 && x < 127 ? String.fromCharCode(x) : '.')).join('')}`);
   }
-  if (b.length > max) rows.push(`… ${b.length - max} more bytes`);
-  return rows.join('\n');
+  if (b.length > max) el.append(`\n… ${b.length - max} more bytes`);
 }
 
 const pick = $('mod-pick');
@@ -290,17 +372,44 @@ function showModule(k) {
   const tbl = $('mod-sections'), hx = $('mod-hex'), sz = $('mod-size');
   tbl.textContent = ''; hx.textContent = '';
   if (!m) { sz.textContent = 'no module: the emitter returned none for this source'; return; }
-  sz.textContent = `${m.bytes.length} bytes · compiled in ${m.compileMs.toFixed(1)} ms` + (m.runMs != null ? ` · linked and run in ${m.runMs.toFixed(1)} ms` : '');
+  setParts(sz, [{ cls: 'sz', text: `${m.bytes.length} bytes` }, ' · compiled in ', { cls: 't', text: fmtMs(m.compileMs) },
+    ...(m.runMs != null ? [' · linked and run in ', { cls: 't', text: fmtMs(m.runMs) }] : []),
+    // the emitter's bytes as produced; only the host is wasm-opt'd
+    ' · not optimized']);
   const head = tbl.createTHead().insertRow();
   for (const [t, c] of [['section', ''], ['bytes', 'num'], ['entries', 'num'], ['names', '']]) { const th = document.createElement('th'); th.textContent = t; if (c) th.className = c; head.append(th); }
   const body = tbl.createTBody();
   for (const s of sections(m.bytes)) {
     const tr = body.insertRow();
     tr.dataset.key = s.key;
-    const cells = [[s.key, ''], [s.size, 'num'], [s.count ?? '', 'num'], [s.names.join(', '), 'names']];
+    const cells = [[s.key, ''], [s.size, 'num sz'], [s.count ?? '', 'num'], [s.names.join(', '), 'names']];
     for (const [v, c] of cells) { const cell = tr.insertCell(); cell.textContent = v; if (c) cell.className = c; }
   }
-  hx.innerHTML = hex(m.bytes);
+  hex(hx, m.bytes);
+}
+
+// The header: the module's size, then the bytes that crossed the wire when
+// the server compressed them. Under it, from the sizes.json the build
+// script writes beside the module, what the evaluator and runtime, the
+// exports kept for linking and the compiler each take.
+const kb = (n) => Math.round(n / 1024);
+function sizeParts(n) {
+  const parts = [url, ' · ', kbPart('size-total', n)];
+  const r = performance.getEntriesByType('resource').find((e) => e.name === new URL(url, location.href).href);
+  if (r && r.encodedBodySize > 0 && r.encodedBodySize < r.decodedBodySize) parts.push(' · ', kbPart('size-wire', r.encodedBodySize), ' over the wire');
+  return parts;
+}
+async function showBreakdown(n) {
+  try {
+    const z = await (await fetch(new URL('sizes.json', new URL(url, location.href)))).json();
+    if (z.served !== n) return;
+    const el = $('sizes');
+    if (z.stage !== 'raw') $('size-total').title = `optimized with ${z.stage}; raw ${kb(z.raw)} KB before`;
+    setParts(el, ['evaluator and runtime ', kbPart('size-eval', z.evaluator_and_runtime),
+      ' · kept for linking ', kbPart('size-link', z.kept_for_linking), ' · compiler ', kbPart('size-compiler', z.compiler)]);
+    el.title = `${z.stage === 'raw' ? 'not optimized' : `after ${z.stage} (binaryen ${z.binaryen})`}, uncompressed; the deltas are from three builds of the same source (${z.date})`;
+    el.hidden = false;
+  } catch { /* no sizes.json: no breakdown */ }
 }
 
 runBtn.addEventListener('click', run);
@@ -311,7 +420,8 @@ try {
   const t0 = performance.now();
   const bytes = await (await fetch(url)).arrayBuffer();
   module = await WebAssembly.compile(bytes);
-  status.textContent = `${url} · ${(bytes.byteLength / 1024).toFixed(0)} KB · compiled in ${(performance.now() - t0).toFixed(0)} ms`;
+  setParts(status, [...sizeParts(bytes.byteLength), ' · compiled in ', { cls: 't', text: fmtMs(performance.now() - t0) }]);
+  await showBreakdown(bytes.byteLength);
   window.__explorer.ready = true;
   await run();
 } catch (e) {
