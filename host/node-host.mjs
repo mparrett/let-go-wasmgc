@@ -157,7 +157,17 @@ function skipForm(s, i) {
   while ("'`~@^#".includes(s[i])) {
     if (s[i] === '^') { i = skipWs(s, skipForm(s, skipWs(s, i + 1))); continue; }
     if (s[i] === '#' && s[i + 1] === '_') { i = skipWs(s, skipForm(s, skipWs(s, i + 2))); continue; }
-    i++;
+    // a dispatch # takes its next character directly (#( #{ #" #'), but
+    // quote, syntax-quote, unquote and deref read the next form across
+    // whitespace, as native's reader does: ' 1 is one form. A comment, a
+    // #_ or the end there gives native's prefix nothing to read (it takes
+    // Go's VOID), so the prefix is a form of its own and what follows is
+    // the next form: native reads [' ;; c\n1] as two elements.
+    if (s[i] === '#') { i++; continue; }
+    let j = i + 1;
+    while (j < s.length && /[\s,]/.test(s[j])) j++;
+    if (j >= s.length || s[j] === ';' || (s[j] === '#' && s[j + 1] === '_')) return i + 1;
+    i = j;
   }
   const c = s[i];
   if (c === '"') return skipString(s, i);
