@@ -1,0 +1,5 @@
+;; An argument read from a global, then a later argument that replaces the
+;; global and allocates: the first value lives only on the operand stack
+;; (docs/LINEAR-TARGET-SPEC.md, decision 3)
+(def x (vec (range 5)))
+(println (count (into x (do (def x nil) (vec (range 100))))))

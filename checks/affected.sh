@@ -110,12 +110,12 @@ P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-divi
 P8.13	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric/
 P11.0	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
-P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
+P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P11.3	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
-P11.4	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
+P11.4	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P11.5	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P11.6	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh legmacs
-P11.7	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
+P11.7	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
 P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh

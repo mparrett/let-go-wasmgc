@@ -93,9 +93,9 @@ P10.3	10	node checks/explorer-page-check.mjs	2026-10-05 (D194): host/explorer.ht
 P8.13	8	env WASM_RUN=checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric	2026-10-06: Floats through untyped params reach the boxed numeric helpers and MATCH native lg under the linear runner (D195)
 P11.0	11	checks/linear-gc.sh P11.0	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories MATCH with LW_GC_VERIFY=1, collecting at program exit; zero bad pointers
 P11.1	11	checks/linear-gc.sh P11.1	2026-10-06 (D196): not built yet (exit 2). no static object (below 131072) holds a heap pointer
-P11.2	11	checks/linear-gc.sh P11.2	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories MATCH with LW_GC_VERIFY=1 and LW_GC_STRESS=1
-P11.3	11	checks/linear-gc.sh P11.3	2026-10-06 (D196): not built yet (exit 2). no try_table body writes a local (wazero pin predates wazero/wazero#2504)
-P11.4	11	checks/linear-gc.sh P11.4	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories MATCH with LW_GC_STRESS=1 and LW_GC_POISON=1
+P11.2	11	checks/linear-gc.sh P11.2	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories and corpus/linear-gc/ MATCH with LW_GC_VERIFY=1, LW_GC_STRESS=1 and LW_GC_POISON=1 (unmarked blocks poisoned, not reused); must fail with decision 3's spills disabled
+P11.3	11	checks/linear-gc.sh P11.3	2026-10-06 (D196): not built yet (exit 2). structural audit of linear modules: no try_table body writes a local; no ref-typed argument other than a constant precedes a calling sibling unspilled; no exnref remains
+P11.4	11	checks/linear-gc.sh P11.4	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories and corpus/linear-gc/ MATCH with LW_GC_STRESS=1 and LW_GC_POISON=1, freed blocks reused
 P11.5	11	checks/linear-gc.sh P11.5	2026-10-06 (D196): not built yet (exit 2). corpus/linear-gc/alloc-loop.lg peak RSS at 10x iterations under 2x its peak at 1x
 P11.6	11	checks/linear-gc.sh P11.6	2026-10-06 (D196): not built yet (exit 2). legmacs boots under the linear runner; deftest count matches the GC lane
-P11.7	11	checks/linear-gc.sh P11.7	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories MATCH under LW_GC_STRESS=1 after narrowed frames and spills
+P11.7	11	checks/linear-gc.sh P11.7	2026-10-06 (D196): not built yet (exit 2). gate-8 corpus directories and corpus/linear-gc/ MATCH under LW_GC_STRESS=1 and LW_GC_POISON=1 after narrowed frames and spills
