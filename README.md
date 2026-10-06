@@ -153,6 +153,18 @@ host/build-repl-serve.sh /tmp/lw-repl
 python3 -m http.server 8262 -d /tmp/lw-repl
 ```
 
+Build and serve the eval/compile explorer, then open
+http://localhost:8263/explorer.html. Type let-go forms; the page shows what
+the module's evaluator returns and what the module's emitter compiles them
+to, linked into the running module and run, with an agree indicator and the
+compiled module's size, sections and bytes (D194). The first build of its
+compiler host takes a few minutes and is cached:
+
+```sh
+host/build-explorer-serve.sh /tmp/lw-explorer
+python3 -m http.server 8263 -d /tmp/lw-explorer
+```
+
 Play xsofy in a terminal, with its dev console enabled (backtick opens it):
 
 ```sh
@@ -191,7 +203,7 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   `rt/wasm/README.md` has the load-order table, the value kind table and the
   declared differences from native.
 - `host/` JS hosts (`lg-wasm-host.js`, `node-host.mjs`), the import ABI
-  (`ABI.md`), the REPL, xsofy and legmacs pages, and their build scripts.
+  (`ABI.md`), the REPL, explorer, xsofy and legmacs pages, and their build scripts.
 - `checks/` the oracle, the row table `items.tsv`, the gate runner and the
   check scripts.
 - `corpus/` inputs and expected outputs for every check, one directory per
