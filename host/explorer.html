@@ -19,7 +19,14 @@
 <title>let-go eval vs compiled</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
-  :root { --bg: #0a0e14; --panel: #0f1520; --line: #1f2937; --fg: #d4c5a0; --dim: #7c8594; --in: #9ecbff; --err: #ff6b6b; --ok: #7bd88f; --warn: #e7c66b; --hi: #e7d7a8; }
+  :root { --bg: #0a0e14; --panel: #0f1520; --line: #1f2937; --fg: #d4c5a0; --dim: #7c8594; --in: #9ecbff; --err: #ff6b6b; --ok: #7bd88f; --warn: #e7c66b; --hi: #e7d7a8;
+    /* metadata roles: --time every "N ms" figure, --size every KB and
+       bytes figure, --label the words and separators around them;
+       agreement keeps --ok */
+    --time: #d2a8ff; --size: #7dd3c8; --label: var(--dim); }
+  .t { color: var(--time); }
+  .sz { color: var(--size); }
+  .lbl { color: var(--label); }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
   body { min-height: 100vh; font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace; display: flex; flex-direction: column; align-items: center; }
   main { width: min(1100px, 100% - 32px); margin: 24px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
@@ -42,7 +49,10 @@
   /* a pane whose content a run has just replaced */
   @keyframes pulse { from { border-color: var(--ok); background: #13261b; } to { border-color: var(--line); background: var(--panel); } }
   .pulse { animation: pulse .6s ease-out; }
-  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+  /* the Run button keeps its fill and flashes a ring as a run starts */
+  @keyframes pulse-run { from { box-shadow: 0 0 0 4px #7bd88f99; } to { box-shadow: 0 0 0 0 #7bd88f00; } }
+  #run.pulse { animation: pulse-run .6s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .pulse, #run.pulse { animation: none; } }
   .panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
   .pane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
   .out { margin: 0; white-space: pre-wrap; word-break: break-word; min-height: 3em; max-height: 40vh; overflow-y: auto; }
@@ -54,6 +64,7 @@
   #agree[data-state="agree"] { color: var(--ok); border-color: var(--ok); }
   #agree[data-state="disagree"] { color: var(--err); border-color: var(--err); }
   #agree[data-state="limit"] { color: var(--warn); border-color: var(--warn); }
+  #ratio { font-size: 12px; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--dim); font-weight: 500; }
@@ -76,6 +87,7 @@
   <button id="run" disabled>Run (Ctrl+Enter)</button>
   <span>Examples: <select id="examples"><option value="">pick one…</option></select></span>
   <span id="agree" data-state="none">not run</span>
+  <span id="ratio" class="t" hidden title="run time only; compile time is shown in the module pane. Calls through vars go through the registry cell on both paths, so recursion-heavy forms show a smaller ratio"></span>
 </div>
 <div class="panes">
   <section class="panel" id="eval-pane"><div class="pane-head"><h2>eval</h2><span class="note">wasm.eval/eval, value by core/prn</span></div><pre class="out" id="eval-out"></pre></section>
@@ -100,12 +112,13 @@ const url = new URLSearchParams(location.search).get('module') || 'explorer.wasm
 const DEFAULT = '(defn fib [n]\n  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))\n(fib 20)';
 const EXAMPLES = [
   ['a defn and a call', DEFAULT],
+  ['a loop, where compiled code pulls ahead', '(loop [i 0 s 0] (if (< i 100000) (recur (inc i) (+ s i)) s))'],
   ['arithmetic and comparison', '(defn clamp [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))\n(clamp 42 0 10)\n(clamp -3 0 10)'],
   ['println inside a fn', '(defn greet [s] (println "hello," s) (count s))\n(greet "wasm")'],
   ['an error both paths throw', '(defn boom [x] (throw (ex-info (str "boom " x) {})))\n(boom 7)'],
   ['int64 overflow', '(defn big [x] (* x x))\n(big 3000000000)\n(big 4000000000)'],
-  ['a named limit: a vector literal', '(defn f [] [1])'],
-  ['a named limit: a closure', '(defn adder [n] (fn [x] (+ x n)))'],
+  ['cannot compile yet: a vector literal', '(defn f [] [1])'],
+  ['cannot compile yet: a closure', '(defn adder [n] (fn [x] (+ x n)))'],
   ['a reader error', '(+ 1 2))'],
 ];
 const picker = $('examples');
@@ -139,6 +152,23 @@ function splitResult(raw) {
   return { out: raw.slice(0, k), value: raw.slice(k + RESULT.length).replace(/\n$/, '') };
 }
 
+// A form's run time: one measurement, or, when that is under 5 ms, the
+// median of three (the first call carries instantiation and warm-up). The
+// repeats run with output discarded; after(), when given, follows the first
+// run only (it prints the value).
+async function timed(f, setSink, after) {
+  let t = performance.now();
+  await f();
+  const first = performance.now() - t;
+  if (after) after();
+  if (first >= 5) return first;
+  const ms = [first];
+  setSink(null);
+  for (let k = 0; k < 2; k++) { t = performance.now(); await f(); ms.push(performance.now() - t); }
+  return ms.sort((a, b) => a - b)[1];
+}
+const fmtMs = (ms) => (ms < 1 ? '<1 ms' : ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`);
+
 // Run every form through one path; returns [{form, out, value?, error?, limit?}].
 async function runLeg(forms, mode) {
   const tb = performance.now();
@@ -157,16 +187,16 @@ async function runLeg(forms, mode) {
         // wrapper. The form is read from its own text, as the compiled leg
         // reads it, so a reader error inside it is reported identically.
         const lit = form.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        await c.evalText(`(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`);
+        const text = `(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`;
+        r.ms = await timed(async () => { await c.evalText(text); }, setSink);
       } else {
         const t0 = performance.now();
         const bytes = await c.compile(form);
         const t1 = performance.now();
         modules.push({ form, bytes, compileMs: t1 - t0 });
-        const v = await c.link(bytes);
-        modules[modules.length - 1].runMs = performance.now() - t1;
-        raw += RESULT;
-        c.ex['lw rt wasm.host/prn#1'](v);
+        let v;
+        r.ms = await timed(async () => { v = await c.link(bytes); }, setSink, () => { raw += RESULT; c.ex['lw rt wasm.host/prn#1'](v); });
+        modules[modules.length - 1].runMs = r.ms;
       }
       Object.assign(r, splitResult(raw));
       window.__explorer.timing.push([mode, form.slice(0, 20), performance.now() - tf]);
@@ -193,7 +223,22 @@ function pulse(el) {
   el.classList.add('pulse');
   if (still.matches) requestAnimationFrame(() => el.classList.remove('pulse'));
 }
-for (const id of ['eval-pane', 'compiled-pane', 'module']) $(id).addEventListener('animationend', (e) => e.currentTarget.classList.remove('pulse'));
+for (const id of ['eval-pane', 'compiled-pane', 'module', 'run']) $(id).addEventListener('animationend', (e) => e.currentTarget.classList.remove('pulse'));
+
+// Total run time of each leg, compared when both ran every form. The
+// slower leg must take at least 1 ms; the faster may be under it (a
+// compiled loop is), as long as the timer registered it.
+const ratioEl = $('ratio');
+function showRatio(ev, co) {
+  ratioEl.hidden = true;
+  if (!ev) return;
+  const sum = (rs) => rs.reduce((a, r) => a + (r.ms ?? 0), 0);
+  const e = sum(ev), c = sum(co);
+  if (Math.max(e, c) < 1 || Math.min(e, c) <= 0) return;
+  const x = Math.round(Math.max(e, c) / Math.min(e, c));
+  ratioEl.textContent = x <= 1 ? 'eval and compiled about even' : `${e > c ? 'compiled' : 'eval'} ${x}× faster`;
+  ratioEl.hidden = false;
+}
 
 function show(pane, recs) {
   const el = $(pane); el.textContent = '';
@@ -202,7 +247,7 @@ function show(pane, recs) {
     if (r.form != null) add(`${r.form}\n`, 'form');
     if (r.out) add(r.out.endsWith('\n') ? r.out : `${r.out}\n`);
     if (r.error != null) add(`${r.limit ? 'named limit: ' : 'error: '}${r.error}\n`, r.limit ? 'limit' : 'err');
-    else if (r.value != null) add(`=> ${r.value}\n`, 'val');
+    else if (r.value != null) { add(`=> ${r.value}`, 'val'); if (r.ms != null) add(`  ${fmtMs(r.ms)}`, 't'); add('\n'); }
   }
 }
 
@@ -211,6 +256,7 @@ const transcript = (recs) => JSON.stringify(recs.map((r) => [r.form, r.out, r.va
 async function run() {
   if (!module || window.__explorer.busy) return;
   window.__explorer.busy = true; runBtn.disabled = true;
+  pulse(runBtn);
   const text = src.value;
   modules = [];
   let ev, co;
@@ -228,6 +274,7 @@ async function run() {
     agree.dataset.state = state;
     agree.textContent = { agree: 'eval and compiled agree', disagree: 'eval and compiled DISAGREE', limit: 'not compared: the emitter stopped at a named limit' }[state];
     window.__explorer.agree = state;
+    showRatio(state === 'agree' ? ev : null, co);
     showModules();
     for (const id of ['eval-pane', 'compiled-pane', 'module']) pulse($(id));
   } catch (e) {
@@ -312,7 +359,8 @@ function showModule(k) {
   const tbl = $('mod-sections'), hx = $('mod-hex'), sz = $('mod-size');
   tbl.textContent = ''; hx.textContent = '';
   if (!m) { sz.textContent = 'no module: the emitter returned none for this source'; return; }
-  sz.textContent = `${m.bytes.length} bytes · compiled in ${m.compileMs.toFixed(1)} ms` + (m.runMs != null ? ` · linked and run in ${m.runMs.toFixed(1)} ms` : '')
+  sz.innerHTML = `<span class="sz">${m.bytes.length} bytes</span> · compiled in <span class="t">${fmtMs(m.compileMs)}</span>`
+    + (m.runMs != null ? ` · linked and run in <span class="t">${fmtMs(m.runMs)}</span>` : '')
     // the emitter's bytes as produced; only the host is wasm-opt'd
     + ' · not optimized';
   const head = tbl.createTHead().insertRow();
@@ -321,7 +369,7 @@ function showModule(k) {
   for (const s of sections(m.bytes)) {
     const tr = body.insertRow();
     tr.dataset.key = s.key;
-    const cells = [[s.key, ''], [s.size, 'num'], [s.count ?? '', 'num'], [s.names.join(', '), 'names']];
+    const cells = [[s.key, ''], [s.size, 'num sz'], [s.count ?? '', 'num'], [s.names.join(', '), 'names']];
     for (const [v, c] of cells) { const cell = tr.insertCell(); cell.textContent = v; if (c) cell.className = c; }
   }
   hx.innerHTML = hex(m.bytes);
@@ -333,9 +381,9 @@ function showModule(k) {
 // exports kept for linking and the compiler each take.
 const kb = (n) => Math.round(n / 1024);
 function sizeLine(n) {
-  let line = `${url} · <span id="size-total">${kb(n)}</span> KB`;
+  let line = `${url} · <span class="sz"><span id="size-total">${kb(n)}</span> KB</span>`;
   const r = performance.getEntriesByType('resource').find((e) => e.name === new URL(url, location.href).href);
-  if (r && r.encodedBodySize > 0 && r.encodedBodySize < r.decodedBodySize) line += ` · <span id="size-wire">${kb(r.encodedBodySize)}</span> KB over the wire`;
+  if (r && r.encodedBodySize > 0 && r.encodedBodySize < r.decodedBodySize) line += ` · <span class="sz"><span id="size-wire">${kb(r.encodedBodySize)}</span> KB</span> over the wire`;
   return line;
 }
 async function showBreakdown(n) {
@@ -344,9 +392,9 @@ async function showBreakdown(n) {
     if (z.served !== n) return;
     const el = $('sizes');
     if (z.stage !== 'raw') $('size-total').title = `optimized with ${z.stage}; raw ${kb(z.raw)} KB before`;
-    el.innerHTML = `evaluator and runtime <span id="size-eval">${kb(z.evaluator_and_runtime)}</span> KB`
-      + ` · kept for linking <span id="size-link">${kb(z.kept_for_linking)}</span> KB`
-      + ` · compiler <span id="size-compiler">${kb(z.compiler)}</span> KB`;
+    el.innerHTML = `evaluator and runtime <span class="sz"><span id="size-eval">${kb(z.evaluator_and_runtime)}</span> KB</span>`
+      + ` · kept for linking <span class="sz"><span id="size-link">${kb(z.kept_for_linking)}</span> KB</span>`
+      + ` · compiler <span class="sz"><span id="size-compiler">${kb(z.compiler)}</span> KB</span>`;
     el.title = `${z.stage === 'raw' ? 'not optimized' : `after ${z.stage} (binaryen ${z.binaryen})`}, uncompressed; the deltas are from three builds of the same source (${z.date})`;
     el.hidden = false;
   } catch { /* no sizes.json: no breakdown */ }
@@ -360,7 +408,7 @@ try {
   const t0 = performance.now();
   const bytes = await (await fetch(url)).arrayBuffer();
   module = await WebAssembly.compile(bytes);
-  status.innerHTML = sizeLine(bytes.byteLength) + ` · compiled in ${(performance.now() - t0).toFixed(0)} ms`;
+  status.innerHTML = sizeLine(bytes.byteLength) + ` · compiled in <span class="t">${fmtMs(performance.now() - t0)}</span>`;
   await showBreakdown(bytes.byteLength);
   window.__explorer.ready = true;
   await run();
