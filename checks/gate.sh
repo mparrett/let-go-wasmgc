@@ -29,7 +29,7 @@ while IFS= read -r id; do ids+=("$id"); done < <(awk -F'\t' -v p="$ph" '$1 !~ /^
 # beside P7.5's (D194)
 case $ph in 7) ids+=(P10.3) ;; esac
 # every linear M2 phase also checks that the GC target's bytes do not move
-# (D196)
+# (D197)
 case $ph in 11) ids+=(P8.0) ;; esac
 if [ -n "${LW_GATE_ROWS:-}" ]; then ids=(); for id in $LW_GATE_ROWS; do ids+=("$id"); done; fi   # test hook (attest.sh)
 [ ${#ids[@]} -gt 0 ] || exit 0
