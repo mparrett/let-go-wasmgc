@@ -46,13 +46,13 @@ variant() {
 variant host LW_EXPORT_RT=1 LW_RUNTIME_COMPILE=1
 variant host-default
 variant host-export LW_EXPORT_RT=1
-if [ -n "${LW_NO_OPT:-}" ]; then sfx=wasm stage=raw; else sfx=opt.wasm stage="wasm-opt -O3"; fi
+if [ -n "${LW_NO_OPT:-}" ]; then sfx=wasm stage=raw ver=""; else sfx=opt.wasm stage="wasm-opt -O3" ver=$("$OPT" --version | head -1 | sed 's/^wasm-opt version //' | tr -d '"\\' | sed 's/[[:space:]]*$//'); fi
 command cp "$hd/host.$sfx" "$t/explorer.wasm"
 sz() { wc -c <"$hd/$1.$sfx" | tr -d ' '; }
 d=$(sz host-default) e=$(sz host-export) b=$(sz host)
 br=$(brotli -c "$t/explorer.wasm" | wc -c | tr -d ' ')
 cat >"$t/sizes.json" <<JSON
-{"date": "$(date +%F)", "key": "$key", "stage": "$stage",
+{"date": "$(date +%F)", "key": "$key", "stage": "$stage", "binaryen": "$ver", "raw": $(wc -c <"$hd/host.wasm" | tr -d ' '),
  "default": $d, "export_rt": $e, "both": $b,
  "evaluator_and_runtime": $d, "kept_for_linking": $((e - d)), "compiler": $((b - e)),
  "served": $b, "served_brotli": $br}
