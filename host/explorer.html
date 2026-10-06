@@ -4,7 +4,8 @@
      LW_RUNTIME_COMPILE=1, then wasm-opt -O3; host/build-explorer-serve.sh).
      Each run instantiates it twice, one instance per pane, so neither
      pane's defs reach the other. Every top-level form of the source goes
-     through "lw eval" as (prn <form>) in the eval pane, and through
+     through "lw eval" in the eval pane, wrapped to print a
+     boundary and then (core/prn <value>), and through
      "lw compile" in the compiled pane, whose bytes are instantiated against
      that instance's exports and run, the value printed by the runtime's
      prn. A pane stops at its first error, as a program does. The module
@@ -68,7 +69,7 @@
   <span id="agree" data-state="none">not run</span>
 </div>
 <div class="panes">
-  <section class="panel"><div class="pane-head"><h2>eval</h2><span class="note">wasm.eval/eval, as (prn form)</span></div><pre class="out" id="eval-out"></pre></section>
+  <section class="panel"><div class="pane-head"><h2>eval</h2><span class="note">wasm.eval/eval, value by core/prn</span></div><pre class="out" id="eval-out"></pre></section>
   <section class="panel"><div class="pane-head"><h2>compiled</h2><span class="note">wasm.emit, linked and run</span></div><pre class="out" id="compiled-out"></pre></section>
 </div>
 <section class="panel" id="module">
@@ -118,6 +119,17 @@ async function boot() {
   return { c, setSink: (f) => { sink = f; } };
 }
 
+// The boundary between what a form printed and its value: control
+// characters ordinary output does not produce. Both legs put it after the
+// form's own output and before the value's prn line, and splitResult cuts
+// at its last occurrence, so the two transcripts are split by one rule.
+const RESULT = '\u0001LW-RESULT\u0001';
+function splitResult(raw) {
+  const k = raw.lastIndexOf(RESULT);
+  if (k < 0) return { out: raw };
+  return { out: raw.slice(0, k), value: raw.slice(k + RESULT.length).replace(/\n$/, '') };
+}
+
 // Run every form through one path; returns [{form, out, value?, error?, limit?}].
 async function runLeg(forms, mode) {
   const tb = performance.now();
@@ -127,13 +139,16 @@ async function runLeg(forms, mode) {
   for (const form of forms) {
     const r = { form, out: '' }, tf = performance.now();
     recs.push(r);
-    setSink((t) => { r.out += t; });
+    let raw = '';
+    setSink((t) => { raw += t; });
     try {
       if (mode === 'eval') {
-        await c.evalText(`(prn ${form})`);
-        // prn's line is the value: split it off what the form printed itself
-        const m = r.out.match(/(^|\n)([^\n]*)\n$/);
-        r.value = m ? m[2] : ''; r.out = m ? r.out.slice(0, r.out.length - m[2].length - 1) : r.out;
+        // let* is a special form and core/ names the core namespace, so a
+        // source that redefines prn, print or let does not change the
+        // wrapper. The form is read from its own text, as the compiled leg
+        // reads it, so a reader error inside it is reported identically.
+        const lit = form.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        await c.evalText(`(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`);
       } else {
         const t0 = performance.now();
         const bytes = await c.compile(form);
@@ -141,14 +156,14 @@ async function runLeg(forms, mode) {
         modules.push({ form, bytes, compileMs: t1 - t0 });
         const v = await c.link(bytes);
         modules[modules.length - 1].runMs = performance.now() - t1;
-        let line = '';
-        setSink((t) => { line += t; });
+        raw += RESULT;
         c.ex['lw rt wasm.host/prn#1'](v);
-        r.value = line.replace(/\n$/, '');
       }
+      Object.assign(r, splitResult(raw));
       window.__explorer.timing.push([mode, form.slice(0, 20), performance.now() - tf]);
     } catch (e) {
       setSink(null);
+      r.out = splitResult(raw).out;
       const text = c.describe(e);
       r.error = text;
       r.limit = mode === 'compile' && text.startsWith('wasm.emit: ');
@@ -164,7 +179,7 @@ function show(pane, recs) {
   const add = (text, cls) => { const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = text; el.append(s); };
   for (const r of recs) {
     if (r.form != null) add(`${r.form}\n`, 'form');
-    if (r.out) add(r.out);
+    if (r.out) add(r.out.endsWith('\n') ? r.out : `${r.out}\n`);
     if (r.error != null) add(`${r.limit ? 'named limit: ' : 'error: '}${r.error}\n`, r.limit ? 'limit' : 'err');
     else if (r.value != null) add(`=> ${r.value}\n`, 'val');
   }
