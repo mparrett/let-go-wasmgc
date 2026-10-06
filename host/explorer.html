@@ -152,20 +152,12 @@ function splitResult(raw) {
   return { out: raw.slice(0, k), value: raw.slice(k + RESULT.length).replace(/\n$/, '') };
 }
 
-// A form's run time: one measurement, or, when that is under 5 ms, the
-// median of three (the first call carries instantiation and warm-up). The
-// repeats run with output discarded; after(), when given, follows the first
-// run only (it prints the value).
-async function timed(f, setSink, after) {
-  let t = performance.now();
+// A form's run time, measured once: running a form again would repeat its
+// side effects, so a sub-millisecond figure shows as <1 ms instead.
+async function timed(f) {
+  const t = performance.now();
   await f();
-  const first = performance.now() - t;
-  if (after) after();
-  if (first >= 5) return first;
-  const ms = [first];
-  setSink(null);
-  for (let k = 0; k < 2; k++) { t = performance.now(); await f(); ms.push(performance.now() - t); }
-  return ms.sort((a, b) => a - b)[1];
+  return performance.now() - t;
 }
 const fmtMs = (ms) => (ms < 1 ? '<1 ms' : ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`);
 
@@ -188,14 +180,16 @@ async function runLeg(forms, mode) {
         // reads it, so a reader error inside it is reported identically.
         const lit = form.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const text = `(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`;
-        r.ms = await timed(async () => { await c.evalText(text); }, setSink);
+        r.ms = await timed(() => c.evalText(text));
       } else {
         const t0 = performance.now();
         const bytes = await c.compile(form);
         const t1 = performance.now();
         modules.push({ form, bytes, compileMs: t1 - t0 });
         let v;
-        r.ms = await timed(async () => { v = await c.link(bytes); }, setSink, () => { raw += RESULT; c.ex['lw rt wasm.host/prn#1'](v); });
+        r.ms = await timed(async () => { v = await c.link(bytes); });
+        raw += RESULT;
+        c.ex['lw rt wasm.host/prn#1'](v);
         modules[modules.length - 1].runMs = r.ms;
       }
       Object.assign(r, splitResult(raw));
