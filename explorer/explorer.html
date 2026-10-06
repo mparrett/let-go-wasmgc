@@ -1,0 +1,324 @@
+<!doctype html>
+<!-- Eval and compile, side by side (D194): explorer.wasm is the compiler
+     host of row P10.2 (corpus/emit/host/host.lg built with LW_EXPORT_RT=1
+     LW_RUNTIME_COMPILE=1, then wasm-opt -O3; host/build-explorer-serve.sh).
+     Each run instantiates it twice, one instance per pane, so neither
+     pane's defs reach the other. Every top-level form of the source goes
+     through "lw eval" in the eval pane, wrapped to print a
+     boundary and then (core/prn <value>), and through
+     "lw compile" in the compiled pane, whose bytes are instantiated against
+     that instance's exports and run, the value printed by the runtime's
+     prn. A pane stops at its first error, as a program does. The module
+     pane shows what "lw compile" returned for one form. ?module=<url> picks
+     the .wasm (default explorer.wasm). Serve with host/lg-wasm-host.js
+     beside it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>let-go eval vs compiled</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root { --bg: #0a0e14; --panel: #0f1520; --line: #1f2937; --fg: #d4c5a0; --dim: #7c8594; --in: #9ecbff; --err: #ff6b6b; --ok: #7bd88f; --warn: #e7c66b; --hi: #e7d7a8; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body { min-height: 100vh; font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace; display: flex; flex-direction: column; align-items: center; }
+  main { width: min(1100px, 100% - 32px); margin: 24px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .02em; }
+  h1 small { color: var(--dim); font-weight: 400; margin-left: 8px; }
+  h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--hi); }
+  p { margin: 0; }
+  #status, .note { color: var(--dim); font-size: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  #src { display: block; width: 100%; min-height: 110px; resize: vertical; background: transparent; color: var(--fg); border: 0; outline: none; font: inherit; padding: 0; }
+  .src-panel:focus-within { border-color: #3b82f6; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+  button, select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; }
+  button { cursor: pointer; color: var(--in); }
+  button:disabled { opacity: .5; cursor: default; }
+  .panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .pane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .out { margin: 0; white-space: pre-wrap; word-break: break-word; min-height: 3em; max-height: 40vh; overflow-y: auto; }
+  .form { color: var(--in); }
+  .val { color: var(--fg); }
+  .err { color: var(--err); }
+  .limit { color: var(--warn); }
+  #agree { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  #agree[data-state="agree"] { color: var(--ok); border-color: var(--ok); }
+  #agree[data-state="disagree"] { color: var(--err); border-color: var(--err); }
+  #agree[data-state="limit"] { color: var(--warn); border-color: var(--warn); }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.names { color: var(--dim); word-break: break-word; }
+  #mod-hex { margin: 8px 0 0; font-size: 12px; line-height: 1.45; max-height: 40vh; overflow: auto; white-space: pre; color: var(--dim); }
+  #mod-hex b { color: var(--fg); font-weight: 400; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+<h1>let-go: eval vs compiled <small>both in one WasmGC module, in your browser</small></h1>
+<p class="note">Type let-go forms. Each runs twice in the module: interpreted by its evaluator, and compiled by its
+  emitter to a small wasm module that links against the running instance. The panes show what each path prints and returns.</p>
+<div id="status">loading…</div>
+<div class="panel src-panel"><textarea id="src" spellcheck="false" autocomplete="off" aria-label="let-go source"></textarea></div>
+<div class="bar">
+  <button id="run" disabled>Run (Ctrl+Enter)</button>
+  <span>Examples: <select id="examples"><option value="">pick one…</option></select></span>
+  <span id="agree" data-state="none">not run</span>
+</div>
+<div class="panes">
+  <section class="panel"><div class="pane-head"><h2>eval</h2><span class="note">wasm.eval/eval, value by core/prn</span></div><pre class="out" id="eval-out"></pre></section>
+  <section class="panel"><div class="pane-head"><h2>compiled</h2><span class="note">wasm.emit, linked and run</span></div><pre class="out" id="compiled-out"></pre></section>
+</div>
+<section class="panel" id="module">
+  <div class="pane-head"><h2>compiled module</h2><span class="note">form <select id="mod-pick"></select></span></div>
+  <p id="mod-size" class="note">no module yet</p>
+  <div class="scroll"><table id="mod-sections"></table></div>
+  <pre id="mod-hex"></pre>
+</section>
+<p class="note">The section names are the keys of the encoder's section model (rt/wasm/wasmbin.lg). Forms the emitter
+  does not compile yet stop the compiled pane with its named limit. Code and design record:
+  <a href="https://github.com/mparrett/let-go-wasmgc" style="color: var(--in)">github.com/mparrett/let-go-wasmgc</a>.</p>
+</main>
+<script type="module">
+import { LgWasmHost, LgCompiler, splitForms, hasJSPI, noJSPIMessage } from './lg-wasm-host.js';
+const $ = (id) => document.getElementById(id);
+const status = $('status'), src = $('src'), runBtn = $('run'), agree = $('agree');
+const url = new URLSearchParams(location.search).get('module') || 'explorer.wasm';
+
+const DEFAULT = '(defn fib [n]\n  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))\n(fib 20)';
+const EXAMPLES = [
+  ['a defn and a call', DEFAULT],
+  ['arithmetic and comparison', '(defn clamp [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))\n(clamp 42 0 10)\n(clamp -3 0 10)'],
+  ['println inside a fn', '(defn greet [s] (println "hello," s) (count s))\n(greet "wasm")'],
+  ['an error both paths throw', '(defn boom [x] (throw (ex-info (str "boom " x) {})))\n(boom 7)'],
+  ['int64 overflow', '(defn big [x] (* x x))\n(big 3000000000)\n(big 4000000000)'],
+  ['a named limit: a vector literal', '(defn f [] [1])'],
+  ['a named limit: a closure', '(defn adder [n] (fn [x] (+ x n)))'],
+  ['a reader error', '(+ 1 2))'],
+];
+const picker = $('examples');
+for (const [name, code] of EXAMPLES) { const o = document.createElement('option'); o.value = code; o.textContent = name; picker.append(o); }
+picker.addEventListener('change', () => { if (picker.value) { src.value = picker.value; run(); } picker.selectedIndex = 0; });
+src.value = DEFAULT;
+
+// what the Playwright check (checks/explorer-page-check.mjs) reads back
+window.__explorer = { ready: false, busy: false, runs: 0, agree: null, error: null, timing: [] };
+
+let module = null;                  // the compiled host, compiled once
+let modules = [];                   // [{form, bytes}] of the last run, compiled pane
+
+// One pane's run: a fresh instance, its output into `lines`.
+async function boot() {
+  let sink = null;
+  const host = new LgWasmHost({ keyCapacity: Infinity, coalesceKeys: false, onOutput: (t) => { if (sink) sink(t); } });
+  const c = new LgCompiler(host);
+  await c.start(module);
+  return { c, setSink: (f) => { sink = f; } };
+}
+
+// The boundary between what a form printed and its value: control
+// characters ordinary output does not produce. Both legs put it after the
+// form's own output and before the value's prn line, and splitResult cuts
+// at its last occurrence, so the two transcripts are split by one rule.
+const RESULT = '\u0001LW-RESULT\u0001';
+function splitResult(raw) {
+  const k = raw.lastIndexOf(RESULT);
+  if (k < 0) return { out: raw };
+  return { out: raw.slice(0, k), value: raw.slice(k + RESULT.length).replace(/\n$/, '') };
+}
+
+// Run every form through one path; returns [{form, out, value?, error?, limit?}].
+async function runLeg(forms, mode) {
+  const tb = performance.now();
+  const { c, setSink } = await boot();
+  window.__explorer.timing.push([mode, 'boot', performance.now() - tb]);
+  const recs = [];
+  for (const form of forms) {
+    const r = { form, out: '' }, tf = performance.now();
+    recs.push(r);
+    let raw = '';
+    setSink((t) => { raw += t; });
+    try {
+      if (mode === 'eval') {
+        // let* is a special form and core/ names the core namespace, so a
+        // source that redefines prn, print or let does not change the
+        // wrapper. The form is read from its own text, as the compiled leg
+        // reads it, so a reader error inside it is reported identically.
+        const lit = form.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        await c.evalText(`(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`);
+      } else {
+        const t0 = performance.now();
+        const bytes = await c.compile(form);
+        const t1 = performance.now();
+        modules.push({ form, bytes, compileMs: t1 - t0 });
+        const v = await c.link(bytes);
+        modules[modules.length - 1].runMs = performance.now() - t1;
+        raw += RESULT;
+        c.ex['lw rt wasm.host/prn#1'](v);
+      }
+      Object.assign(r, splitResult(raw));
+      window.__explorer.timing.push([mode, form.slice(0, 20), performance.now() - tf]);
+    } catch (e) {
+      setSink(null);
+      r.out = splitResult(raw).out;
+      const text = c.describe(e);
+      r.error = text;
+      r.limit = mode === 'compile' && text.startsWith('wasm.emit: ');
+      break;
+    }
+  }
+  setSink(null);
+  return recs;
+}
+
+function show(pane, recs) {
+  const el = $(pane); el.textContent = '';
+  const add = (text, cls) => { const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = text; el.append(s); };
+  for (const r of recs) {
+    if (r.form != null) add(`${r.form}\n`, 'form');
+    if (r.out) add(r.out.endsWith('\n') ? r.out : `${r.out}\n`);
+    if (r.error != null) add(`${r.limit ? 'named limit: ' : 'error: '}${r.error}\n`, r.limit ? 'limit' : 'err');
+    else if (r.value != null) add(`=> ${r.value}\n`, 'val');
+  }
+}
+
+const transcript = (recs) => JSON.stringify(recs.map((r) => [r.form, r.out, r.value ?? null, r.error ?? null]));
+
+async function run() {
+  if (!module || window.__explorer.busy) return;
+  window.__explorer.busy = true; runBtn.disabled = true;
+  const text = src.value;
+  modules = [];
+  let ev, co;
+  try {
+    let forms;
+    try { forms = splitForms(text, 'EXPR'); } catch (e) {
+      if (!e.lgReader) throw e;
+      // native reads the whole source before running any of it
+      ev = co = [{ form: null, out: '', error: e.message }];
+    }
+    if (forms) { ev = await runLeg(forms, 'eval'); co = await runLeg(forms, 'compile'); }
+    show('eval-out', ev); show('compiled-out', co);
+    const lim = co.find((r) => r.limit);
+    const state = lim ? 'limit' : transcript(ev) === transcript(co) ? 'agree' : 'disagree';
+    agree.dataset.state = state;
+    agree.textContent = { agree: 'eval and compiled agree', disagree: 'eval and compiled DISAGREE', limit: 'not compared: the emitter stopped at a named limit' }[state];
+    window.__explorer.agree = state;
+    showModules();
+  } catch (e) {
+    // a host failure, not a let-go error: say so rather than leave stale panes
+    status.textContent = `host error: ${String((e && e.message) || e)}`; status.className = 'err';
+    window.__explorer.error = String((e && e.message) || e);
+  } finally {
+    window.__explorer.busy = false; window.__explorer.runs += 1; runBtn.disabled = false;
+  }
+}
+
+// ---- the module pane --------------------------------------------------------
+// Section ids to the encoder's model keys (rt/wasm/wasmbin.lg, THE SECTION
+// MODEL); 0 is a custom section, "name" being the model's :names.
+const SECTIONS = { 1: ':types', 2: ':imports', 3: ':funcs', 4: ':tables', 5: ':memories', 6: ':globals', 7: ':exports', 8: ':start', 9: ':elems', 10: ':code', 11: ':data', 12: ':data-count', 13: ':tags' };
+const KINDS = ['func', 'table', 'memory', 'global', 'tag'];
+const td = new TextDecoder();
+
+function reader(b, i) {
+  const r = { i };
+  r.u32 = () => { let x = 0, s = 0, c; do { c = b[r.i++]; x += (c & 127) * 2 ** s; s += 7; } while (c & 128); return x; };
+  r.name = () => { const n = r.u32(); const s = td.decode(b.subarray(r.i, r.i + n)); r.i += n; return s; };
+  // a valtype: one byte, or 0x63/0x64 and an s33 heap type
+  r.valtype = () => { const c = b[r.i++]; if (c === 0x63 || c === 0x64) { while (b[r.i++] & 128); } };
+  return r;
+}
+
+function sections(b) {
+  const out = [];
+  let i = 8;
+  while (i < b.length) {
+    const id = b[i];
+    const r = reader(b, i + 1);
+    const size = r.u32();
+    const body = r.i, end = body + size;
+    const s = { id, size, key: SECTIONS[id] || `section ${id}`, count: null, names: [] };
+    try {
+      if (id === 0) { const n = r.name(); s.key = n === 'name' ? ':names' : `custom "${n}"`; }
+      else if (id === 8) s.names = [`func ${r.u32()}`];
+      else if (id === 12) s.count = r.u32();
+      else {
+        s.count = r.u32();
+        if (id === 2) for (let k = 0; k < s.count; k++) {
+          const mod = r.name(), nm = r.name(), kind = b[r.i++];
+          if (kind === 0) r.u32(); else if (kind === 4) { r.i++; r.u32(); }
+          else if (kind === 3) { r.valtype(); r.i++; } else break;   // tables and memories never appear here
+          s.names.push(`${KINDS[kind]} ${mod} "${nm}"`);
+        }
+        if (id === 7) for (let k = 0; k < s.count; k++) { const nm = r.name(); const kind = b[r.i++]; r.u32(); s.names.push(`${KINDS[kind]} "${nm}"`); }
+      }
+    } catch { /* a summary, not a validator: keep what was read */ }
+    out.push(s);
+    i = end;
+  }
+  return out;
+}
+
+function hex(b) {
+  const rows = [];
+  const max = Math.min(b.length, 65536);
+  for (let o = 0; o < max; o += 16) {
+    const row = Array.from(b.subarray(o, Math.min(o + 16, max)));
+    const h = row.map((x) => x.toString(16).padStart(2, '0')).join(' ').padEnd(47);
+    const a = row.map((x) => (x >= 32 && x < 127 ? String.fromCharCode(x) : '.')).join('');
+    rows.push(`${o.toString(16).padStart(6, '0')}  <b>${h}</b>  ${a.replace(/&/g, '&amp;').replace(/</g, '&lt;')}`);
+  }
+  if (b.length > max) rows.push(`… ${b.length - max} more bytes`);
+  return rows.join('\n');
+}
+
+const pick = $('mod-pick');
+pick.addEventListener('change', () => showModule(Number(pick.value)));
+
+function showModules() {
+  pick.textContent = '';
+  modules.forEach((m, k) => { const o = document.createElement('option'); o.value = k; o.textContent = `${k + 1}: ${m.form.length > 48 ? m.form.slice(0, 47) + '…' : m.form}`; pick.append(o); });
+  showModule(0);
+}
+
+function showModule(k) {
+  const m = modules[k];
+  const tbl = $('mod-sections'), hx = $('mod-hex'), sz = $('mod-size');
+  tbl.textContent = ''; hx.textContent = '';
+  if (!m) { sz.textContent = 'no module: the emitter returned none for this source'; return; }
+  sz.textContent = `${m.bytes.length} bytes · compiled in ${m.compileMs.toFixed(1)} ms` + (m.runMs != null ? ` · linked and run in ${m.runMs.toFixed(1)} ms` : '');
+  const head = tbl.createTHead().insertRow();
+  for (const [t, c] of [['section', ''], ['bytes', 'num'], ['entries', 'num'], ['names', '']]) { const th = document.createElement('th'); th.textContent = t; if (c) th.className = c; head.append(th); }
+  const body = tbl.createTBody();
+  for (const s of sections(m.bytes)) {
+    const tr = body.insertRow();
+    tr.dataset.key = s.key;
+    const cells = [[s.key, ''], [s.size, 'num'], [s.count ?? '', 'num'], [s.names.join(', '), 'names']];
+    for (const [v, c] of cells) { const cell = tr.insertCell(); cell.textContent = v; if (c) cell.className = c; }
+  }
+  hx.innerHTML = hex(m.bytes);
+}
+
+runBtn.addEventListener('click', run);
+src.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); } });
+
+try {
+  if (!hasJSPI) throw new Error(noJSPIMessage());
+  const t0 = performance.now();
+  const bytes = await (await fetch(url)).arrayBuffer();
+  module = await WebAssembly.compile(bytes);
+  status.textContent = `${url} · ${(bytes.byteLength / 1024).toFixed(0)} KB · compiled in ${(performance.now() - t0).toFixed(0)} ms`;
+  window.__explorer.ready = true;
+  await run();
+} catch (e) {
+  status.textContent = `${status.textContent === 'loading…' ? '' : status.textContent + ' · '}host error: ${String((e && e.message) || e)}`;
+  status.className = 'err';
+  window.__explorer.error = String((e && e.message) || e);
+}
+</script>
+</body>
+</html>
