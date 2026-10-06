@@ -260,3 +260,161 @@ export class LgWasmHost {
     return { code, error, tFirstOutput: this.tFirstOutput, tTotal: now() - this.tStart };
   }
 }
+
+// ---- compiling at run time, in the page (D194) -----------------------------
+// The browser half of host/node-host.mjs --forms (D193; the `lw compile` /
+// `lw eval` ABI is that file's header): a compiler host, a module built with
+// LW_EXPORT_RT=1 LW_RUNTIME_COMPILE=1, is instantiated with this host's
+// imports and its `lw main` run; then source text goes in through `lw mem`,
+// and the bytes `lw compile` returns are instantiated against the live
+// instance (linkCompiled) and run. Every call into the module goes through
+// WebAssembly.promising, as `lw main` does in run(), so a blocking import
+// still suspends instead of failing.
+
+// Top-level forms of lg source text, as node-host.mjs splits them (the two
+// copies must agree: P10.2 checks that one against native, P10.3 this one):
+// brackets, strings, char literals and comments are respected; reader
+// prefixes (' ` ~ @ # ^meta) stay with their form; a stray closing delimiter
+// is native's reader error.
+export function splitForms(s, name = 'source') {
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (/[\s,]/.test(c)) { i++; continue; }
+    if (c === ';') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (c === ')' || c === ']' || c === '}') throw readerError(s, i, name, `unmatched delimiter ${c}`);
+    const start = i;
+    i = skipForm(s, i);
+    if (i <= start) throw readerError(s, i, name, `unexpected ${JSON.stringify(s[start])}`);
+    out.push(s.slice(start, i));
+  }
+  return out;
+}
+
+// Native's two-line reader error: the position is the column after the
+// offending character (1-based line, so `)` at column 1 reports :1:2).
+function readerError(s, i, name, msg) {
+  const before = s.slice(0, i);
+  const line = before.split('\n').length;
+  const col = i - before.lastIndexOf('\n') + 1;
+  const e = new Error(`Syntax error reading source at (${name}:${line}:${col}).\n${msg}`);
+  e.lgReader = true;
+  return e;
+}
+
+function skipWs(s, i) {
+  for (;;) {
+    while (i < s.length && /[\s,]/.test(s[i])) i++;
+    if (s[i] !== ';') return i;
+    while (i < s.length && s[i] !== '\n') i++;
+  }
+}
+
+function skipForm(s, i) {
+  while ("'`~@^#".includes(s[i])) {
+    if (s[i] === '^') { i = skipWs(s, skipForm(s, skipWs(s, i + 1))); continue; }
+    if (s[i] === '#' && s[i + 1] === '_') { i = skipWs(s, skipForm(s, skipWs(s, i + 2))); continue; }
+    i++;
+  }
+  const c = s[i];
+  if (c === '"') return skipString(s, i);
+  if (c === '\\') { i += 2; while (i < s.length && /[A-Za-z0-9]/.test(s[i])) i++; return i; }
+  if (c === '(' || c === '[' || c === '{') {
+    let depth = 0;
+    while (i < s.length) {
+      const d = s[i];
+      if (d === '"') { i = skipString(s, i); continue; }
+      if (d === ';') { while (i < s.length && s[i] !== '\n') i++; continue; }
+      if (d === '\\') { i += 2; continue; }
+      if (d === '(' || d === '[' || d === '{') depth++;
+      else if (d === ')' || d === ']' || d === '}') { depth--; if (depth === 0) return i + 1; }
+      i++;
+    }
+    return i;
+  }
+  while (i < s.length && !/[\s,()\[\]{}";]/.test(s[i])) i++;
+  return i;
+}
+
+function skipString(s, i) {
+  i++;
+  while (i < s.length && s[i] !== '"') i += s[i] === '\\' ? 2 : 1;
+  return i + 1;
+}
+
+const promising = (f) => (hasJSPI ? WebAssembly.promising(f) : f);
+
+// Instantiate compiled bytes against the running instance and run them: the
+// compiled module imports only exports of that instance, from module
+// "host", so its import object is { host: instance.exports }. Resolves to
+// what its "lw run" returns (the form's value, a reference into the host's
+// heap). node-host.mjs's linkCompiled, the same step.
+export async function linkCompiled(hostExports, bytes) {
+  const { instance } = await WebAssembly.instantiate(bytes, { host: hostExports });
+  return promising(instance.exports['lw run'])();
+}
+
+// A compiler host running under `host` (an LgWasmHost). start() instantiates
+// it and runs its `lw main`; compile/evalText/link may then be called one at
+// a time (the module has one input buffer). A failed call rejects with what
+// the module threw; describe() turns that into the text native would print
+// after `error: ` (the module's own report, as run() prints it).
+export class LgCompiler {
+  constructor(host) { this.host = host; this.ex = null; }
+
+  async start(src) {
+    const h = this.host;
+    h.tStart = now(); h.tFirstOutput = null; h.outFd = 1;
+    const mod = src instanceof WebAssembly.Module ? src : await WebAssembly.compile(src);
+    this.ex = (await WebAssembly.instantiate(mod, h.imports())).exports;
+    for (const k of ['lw compile', 'lw eval', 'lw mem']) {
+      if (!this.ex[k]) throw new Error(`not a compiler host: no "${k}" export (build with LW_EXPORT_RT=1 LW_RUNTIME_COMPILE=1)`);
+    }
+    h.mem = this.ex['lw mem'];
+    h.running = true;
+    await promising(this.ex['lw main'])();
+  }
+
+  // the source's UTF-8 bytes at P of `lw mem`, which grows as needed
+  put(text) {
+    const P = 1024, b = enc.encode(text), mem = this.host.mem;
+    if (mem.buffer.byteLength < P + b.length) mem.grow(Math.ceil((P + b.length - mem.buffer.byteLength) / 65536));
+    new Uint8Array(mem.buffer, P, b.length).set(b);
+    return [P, b.length];
+  }
+
+  // one form's source -> the bytes of its linked module
+  async compile(text) {
+    const [p, n] = this.put(text);
+    const len = await promising(this.ex['lw compile'])(p, n);
+    return new Uint8Array(this.host.mem.buffer, p, len).slice();
+  }
+
+  async evalText(text) {
+    const [p, n] = this.put(text);
+    await promising(this.ex['lw eval'])(p, n);
+  }
+
+  link(bytes) { return linkCompiled(this.ex, bytes); }
+
+  // The error line's text for a rejection of the calls above, printed by
+  // the module itself for its own exceptions; the host's output is diverted
+  // into the result while it prints.
+  describe(e) {
+    const h = this.host, ex = this.ex, lgex = ex && ex['lw lgex'];
+    if (e && e.lgReader) return e.message;
+    let text = '';
+    const prev = h.onOutput, prevFd = h.outFd;
+    h.onOutput = (t) => { text += t; };
+    h.outFd = 2;
+    try {
+      if (lgex && e instanceof WebAssembly.Exception && e.is(lgex)) ex['lw report'](e.getArg(lgex, 0));
+      else if (ex && ex['lw trap'] && ex['lw trap']()) { /* the module printed the trap's message */ }
+      else h.emitText(2, String((e && e.message) || e));
+      const tail = h.decoders[2].decode();
+      if (tail) text += tail;
+    } finally { h.onOutput = prev; h.outFd = prevFd; }
+    return text;
+  }
+}
