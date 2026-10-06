@@ -111,6 +111,7 @@ P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-ca
 P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
 P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh
 P10.2	src/ rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ host/node-host.mjs host/lg-wasm-host.js checks/emit-linked.sh checks/oracle.sh checks/env.sh
+P10.3	src/ rt/ corpus/emit/host/ host/explorer.html host/build-explorer-serve.sh host/lg-wasm-host.js checks/explorer-page-check.mjs checks/sem.sh checks/env.sh
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

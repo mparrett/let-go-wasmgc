@@ -25,6 +25,9 @@ case $j in ''|*[!0-9]*|0) echo "LW_GATE_J must be a positive integer (got '$j')"
 . "$(dirname "$0")/env.sh"
 ids=()
 while IFS= read -r id; do ids+=("$id"); done < <(awk -F'\t' -v p="$ph" '$1 !~ /^#/ && $2==p && $1 !~ /GATE/{print $1}' checks/items.tsv)
+# rows of a later phase this gate also runs: P10.3 is a browser page check
+# beside P7.5's (D194)
+case $ph in 7) ids+=(P10.3) ;; esac
 if [ -n "${LW_GATE_ROWS:-}" ]; then ids=(); for id in $LW_GATE_ROWS; do ids+=("$id"); done; fi   # test hook (attest.sh)
 [ ${#ids[@]} -gt 0 ] || exit 0
 
