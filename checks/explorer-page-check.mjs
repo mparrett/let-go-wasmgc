@@ -72,8 +72,15 @@ const errs = [];
 p.on('pageerror', (e) => errs.push(String(e)));
 const state = () => p.evaluate(() => ({
   ex: { ...window.__explorer, timing: undefined },
-  ev: document.getElementById('eval-out').textContent,
-  co: document.getElementById('compiled-out').textContent,
+  // pane text without the timing figures, which vary run to run
+  ...Object.fromEntries([['ev', 'eval-out'], ['co', 'compiled-out']].map(([k, id]) => {
+    const c = document.getElementById(id).cloneNode(true);
+    c.querySelectorAll('.t').forEach((e) => e.remove());
+    return [k, c.textContent];
+  })),
+  evT: document.querySelectorAll('#eval-out .t').length,
+  coT: document.querySelectorAll('#compiled-out .t').length,
+  ratio: document.getElementById('ratio').hidden ? null : document.getElementById('ratio').textContent,
   agree: document.getElementById('agree').dataset.state,
   agreeText: document.getElementById('agree').textContent,
   size: document.getElementById('mod-size').textContent,
@@ -123,8 +130,17 @@ try {
   // record every time a pane gets the pulse class (the toggle, not its timing)
   await p.evaluate(() => {
     window.__pulses = {};
-    const mo = new MutationObserver((ms) => { for (const m of ms) if (m.target.classList.contains('pulse')) window.__pulses[m.target.id] = (window.__pulses[m.target.id] || 0) + 1; });
-    for (const id of ['eval-pane', 'compiled-pane', 'module']) mo.observe(document.getElementById(id), { attributes: true, attributeFilter: ['class'] });
+    // count transitions of the class attribute from without "pulse" to
+    // with it: a record's new value is the next record's old value for the
+    // same element, or the element's class now
+    const has = (v) => / ?pulse( |$)/.test(v || '');
+    const mo = new MutationObserver((ms) => {
+      ms.forEach((m, k) => {
+        const next = ms.slice(k + 1).find((x) => x.target === m.target);
+        if (!has(m.oldValue) && has(next ? next.oldValue : m.target.className)) window.__pulses[m.target.id] = (window.__pulses[m.target.id] || 0) + 1;
+      });
+    });
+    for (const id of ['eval-pane', 'compiled-pane', 'module', 'run']) mo.observe(document.getElementById(id), { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
   });
   const pulses = () => p.evaluate(() => ({ ...window.__pulses }));
 
@@ -151,6 +167,13 @@ try {
   await submit('(defn sq [x] (* x x))\n(sq 7)');
   const p2 = await pulses();
   check(['eval-pane', 'compiled-pane', 'module'].every((id) => p2[id] > p1[id]), 'pulse: a rerun with identical output pulses again', [p1, p2]);
+  check(p1.run === 1 && p2.run === 2, 'pulse: the Run button pulses once per run', [p1.run, p2.run]);
+  check(s.evT === 2 && s.coT === 2, 'timing: each value line in both panes carries its run time', [s.evT, s.coT]);
+
+  // a loop: both legs ran, so the ratio shows, compiled ahead
+  const lp = await submit('(loop [i 0 s 0] (if (< i 100000) (recur (inc i) (+ s i)) s))');
+  check(lp.agree === 'agree' && /^compiled \d+× faster$/.test(lp.ratio || ''), 'ratio: the loop shows compiled N× faster', [lp.agree, lp.ratio]);
+  console.log(`     ${lp.ratio}`);
 
   // 2. an emitter named limit
   const l = await submit('(defn f [] [1])');
@@ -158,6 +181,13 @@ try {
   check(/^\(defn f \[\] \[1\]\)\nnamed limit: wasm\.emit: unsupported form [^\n]+\n$/.test(l.co), 'limit: the compiled pane shows the named limit as text', l.co);
   check(l.agree === 'limit' && !l.ex.error, 'limit: the indicator says not compared, no host error', [l.agree, l.ex.error]);
   check(l.picks === 0 && l.hex === '', 'limit: no module is shown', [l.picks, l.size]);
+  check(l.ratio === null, 'limit: no ratio when the compiled leg did not run', l.ratio);
+  // the same source picked from the menu, under its new label
+  const nl = await p.evaluate(() => window.__explorer.runs);
+  await p.selectOption('#examples', { label: 'cannot compile yet: a vector literal' });
+  await p.waitForFunction((n) => window.__explorer.runs > n, nl, { timeout: 180000 });
+  const lm = await state();
+  check(lm.co === l.co, 'limit: the menu example "cannot compile yet: a vector literal" shows the named limit', lm.co);
 
   // 3. a reader error
   const r = await submit(READER_SRC);
