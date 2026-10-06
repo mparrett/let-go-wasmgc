@@ -34,7 +34,7 @@ described so that 1 does not paint them out.
   under a wazero runner through `checks/oracle.sh`, and the WasmGC output
   is byte-identical to before for every program in `corpus/scalar/` and
   `corpus/eval/`.
-- **M2, precise collector.** A non-moving mark-sweep collector with a shadow
+- **M2, precise collector** (design and phases: Milestone 2 below, D196). A non-moving mark-sweep collector with a shadow
   stack for roots, modelled on the two collectors in
   [wallisp](https://github.com/mparrett/wallisp): `engines/bytecode_gc.c`
   (non-moving mark-sweep over a uniform cell heap, mark bits plus an
@@ -184,22 +184,127 @@ described so that 1 does not paint them out.
    wazero fork and the two feature flags named, and the prerequisites
    section lists Go.
 
-## Milestone 2 outline (precise collector)
+## Milestone 2: precise collector (D196)
 
-- Read wallisp's two files first (links above); the protocol notes in
-  `lisp_gc.c`'s header are the part that is easy to get wrong.
-- Shadow stack: a region of linear memory with `global $sp`; every
-  function that holds a pointer across a call pushes it on entry and pops
-  on exit; the emitter knows which locals are pointers because the kind
-  table does. Pointer-typed arguments are pushed by the caller or callee,
-  pick one and record it. Tail calls pop before `return_call`.
-- Mark from the shadow stack, the globals and the var table; sweep into
-  size-class free lists; `alloc` tries the lists first and collects when
-  `memory.grow` would be needed, with a growth policy that keeps the
-  oracle's timings within the gate budget.
-- Done when legmacs boots and its suite matches the GC lane's count, and
-  when a long-running corpus program's memory stays bounded (add one that
-  allocates in a loop for a few seconds).
+Added 2026-10-06, after M1 and D195. "M2" here is always the linear
+target's milestone; the self-host course uses M0/M1/M2 for something else
+(the compiler compiling itself), so say "linear M2" where both could be
+meant. Read wallisp's two collectors first (links above); the protocol
+notes in `lisp_gc.c`'s header are the part that is easy to get wrong.
+
+### What M1 already gives the collector
+
+M1 is not a second emitter: `linear-module` in `src/lower_linear.lg`
+rewrites the shaken GC module text. Everything the collector needs to be
+precise is known at that point.
+
+- **Object maps.** Every heap object starts with a 12-byte header: `kind`,
+  `size` in bytes (header included), and a layout id. Each layout comes
+  from a GC struct or array type (`repr-layouts`), so the rewriter knows
+  which fields held references before they became `i32`.
+- **Local roots.** The rewriter sees which locals and params had ref types
+  in the GC text, and every function signature (`:functions`).
+- **Tags.** A value with the low bit set is a fixnum and 0 is `nil`
+  (decision 1), so "is this a pointer" is a tag test plus a range check.
+- **Allocation is always a call.** `struct.new` and the array allocators
+  lower to calls of `$lin_new_*`, which call `$lin_alloc`. No instruction
+  allocates on its own, so a collection can only start inside a call.
+- **Immortal statics.** Booleans, string constants and the named error
+  objects live in data segments below `131072`, and the static area is a
+  compile error past that (`lower_linear.lg`, "linear static area
+  exhausted"). The heap is `[131072, $heap_top)`.
+- **No re-entry from the host.** The runner calls `lw run`, then
+  `lw report` or `lw trap` after it returns; no import calls back into the
+  module.
+
+### Decisions (a deviation goes in DECISIONS.md with the next number)
+
+1. **Algorithm.** Non-moving mark-sweep, as the M2 bullet above says.
+   Objects never move, so a stale copy of a pointer can keep garbage alive
+   but can never point at the wrong object, and address-based identity
+   stays stable.
+2. **Shadow frames for locals.** A global `$lin_shadow_sp` points into a shadow
+   stack region of linear memory. A function with ref-typed params or
+   locals that makes any call gets a frame: on entry it moves `$lin_shadow_sp` by
+   one slot per such local, zeroes the slots and stores its ref params;
+   every `local.set`/`local.tee` of a ref local also stores to its slot.
+   The callee owns its frame (callers push nothing). Phase 1 frames every
+   such function; phase 3 narrows to functions that can reach `$lin_alloc`
+   (a `call_indirect` counts as reaching it) and to locals live across a
+   call.
+3. **Operand-stack values.** In `(call $f (call $g) (call $h))`, `$g`'s
+   result sits on the operand stack, invisible to the collector, while
+   `$h` may allocate. Phase 1 moves every ref-typed argument that is not a
+   `local.get`, `global.get` or constant (call results, block results, a
+   catch's payload) into a fresh framed local, uniformly. Phase 3 narrows
+   this to arguments followed by a sibling that contains a call. As of
+   2026-10-06 (main 38accbc), `corpus/linear-gc/seq-pipeline.clj`'s module has 119 call
+   results held across a later sibling call among 6,689 call sites, and
+   fib 8 of 153; the count is an upper bound, since it includes `i64`
+   results.
+4. **Stack pointer discipline.** A framed function restores `$lin_shadow_sp`
+   before every `return` and before `return_call`/`return_call_indirect`
+   (its arguments are already on the operand stack, and nothing allocates
+   between the restore and the call). A `throw` unwinds frames without
+   running their restores, so every `try_table` handler resets `$lin_shadow_sp`
+   to its own function's frame top, saved in a local on entry, and
+   `lw run`'s handler resets it to the base.
+5. **No local writes inside `try_table` bodies.** The runner's wazero pin
+   (`0ec6142a`, as of 2026-10-06) predates wazero/wazero#2504: a caught
+   exception reverts locals written inside the body to their values at
+   block entry. Today every `try_table` body is a single call, so frames
+   must not change that: slot stores stay outside `try_table` bodies until
+   the pin includes that fix. Row P11.3 checks it.
+6. **Tracing.** The rewriter emits a layout table as a data segment: for
+   each layout id, its size and the offsets of its reference fields; for
+   arrays, whether elements are references. `funcref` fields (closure code
+   slots hold table indices), `i64`, `f64`, `i8` and non-reference `i32`
+   fields are never traced, so `repr-field-type` keeps the GC field type
+   alongside the `i32` it maps to. A traced value is followed only if it
+   is untagged, non-zero and in `[131072, $heap_top)`; statics are never
+   marked or swept, and phase 0 checks they hold no heap pointers.
+7. **Heap blocks.** Every block, live or free, starts with the header, so
+   the sweep walks the heap by `size`. The mark bit is bit 31 of the size
+   word, cleared by the sweep. Free blocks get kind 0, adjacent free blocks
+   coalesce during the sweep, and free lists are segregated by size in
+   8-byte steps up to 512 bytes with one first-fit list above that.
+8. **Roots.** The shadow stack between its base and `$lin_shadow_sp`, every
+   ref-typed global (the var table, constants and runtime globals are all
+   globals after `lin_init`), and nothing else. The mark stack is explicit
+   (lazy-seq chains are deep) and lives above `$heap_top`, outside the
+   heap, grown with `memory.grow` when needed.
+9. **When to collect.** `$lin_alloc` tries the free lists, then bumps
+   within the current memory, then collects once the bytes allocated since
+   the last collection pass a threshold (1 MiB to start, then the live size
+   after the last collection, at least 1 MiB), and only then grows memory.
+   Phase 2 tunes these numbers against the gate budget and records them.
+10. **Testing modes.** Three build flags, read by the driver like
+    `LW_NO_EVAL`: `LW_GC_VERIFY=1` marks and checks every traced pointer
+    lands on a valid header but frees nothing; `LW_GC_STRESS=1` collects
+    at every allocation; `LW_GC_POISON=1` fills freed blocks with a fixed
+    pattern and kind. Stress turns a missing root into a deterministic
+    corpus failure, which is why phase 1 runs it before anything is freed.
+11. **The GC target never moves.** `checks/gate.sh 11` also runs P8.0, so
+    every phase's gate includes GC byte identity.
+
+### Phases and rows
+
+Each phase is its own pull request; its rows exit 2 until it lands
+(`checks/linear-gc.sh` is the placeholder they share). Run them with
+`checks/gate.sh 11`.
+
+| Phase | Builds | Rows |
+|---|---|---|
+| 0 | Layout table, root enumeration, decision 10's verify mode; no frames, nothing freed | P11.0: the gate-8 corpus directories MATCH with `LW_GC_VERIFY=1`, collecting at program exit, zero bad pointers. P11.1: no static object holds a heap pointer. |
+| 1 | Shadow frames, operand-stack spills, decision 4's restores | P11.2: the gate-8 corpus MATCHes with verify and stress together. P11.3: no `try_table` body writes a local. |
+| 2 | Sweep, free lists, coalescing, the trigger | P11.4: the gate-8 corpus MATCHes with stress and poison. P11.5: `corpus/linear-gc/alloc-loop.lg`'s peak RSS at 10x the iterations is under 2x its peak RSS at 1x (bounded, not growing with run length). |
+| 3 | Narrowed frames and spills; legmacs | P11.6: legmacs boots under the runner and its deftest count matches the GC lane's. P11.7: the gate-8 corpus still MATCHes under stress after narrowing. |
+
+Measure startup, fib 35 and `corpus/linear-gc/seq-pipeline.clj` against the WasmGC
+lane at the end of phases 2 and 3, dated, in the phase's DECISIONS.md
+entry. As of 2026-10-06 under the wazero runner (D195), fib 35 takes about
+95 ms of CPU and the allocating programs reach 0.3 to 0.9 GiB peak RSS,
+because M1 never frees.
 
 ## Milestone 3 outline (Asyncify artifact)
 
