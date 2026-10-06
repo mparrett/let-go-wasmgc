@@ -1,0 +1,6 @@
+;; PR #8 review (2026-10-05): native builds a non-empty literal afresh on each
+;; execution; a compiled shared constant printed true. Empty literals are
+;; shared in native (second value).
+(defn f [] [1])
+(defn g [] [])
+(println (identical? (f) (f)) (identical? (g) (g)))

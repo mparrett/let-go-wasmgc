@@ -1009,10 +1009,15 @@
         (false? form) [[:global.get :false]]
         (int? form) (lk-int form)
         (float? form) (ins (f64c (em-float-bits form)) [:call :box_f])
+        ;; native builds an unquoted non-empty literal afresh on every
+        ;; execution ((identical? (f) (f)) is false for (defn f [] [1])); a
+        ;; shared constant would make it true. Empty and quoted literals are
+        ;; shared in native too, so those stay constants.
         (or (vector? form) (map? form) (set? form))
-        (if (and (nil? (meta form)) (lk-literal? form))
-          (lk-konst ce form)
-          (em-unsupported "a collection literal with evaluated elements (3b-ii)"))
+        (cond (empty? form) (lk-konst ce form)
+              (and (nil? (meta form)) (lk-literal? form))
+              (em-unsupported "a non-empty collection literal (fresh per execution in native, 3b-ii)")
+              :else (em-unsupported "a collection literal with evaluated elements (3b-ii)"))
         :else (lk-konst ce form)))
 
 ;; Link: imports (only what the code calls), the code fns, "lw run", the

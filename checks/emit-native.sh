@@ -144,7 +144,8 @@ EOF
 # need ratios and bigints, D15) skips here too, with its comment as reason.
 listed() {
   local sf; sf=$(dirname "$1")/SKIP
-  [ -f "$sf" ] && awk -v b="$(basename "$1")" '/^#/ {c=$0; next} $1==b {sub(/^# */, "", c); print c; found=1} END {exit !found}' "$sf"
+  # a bare name skips the program in every check; "<row> name" in this row only
+  [ -f "$sf" ] && awk -v b="$(basename "$1")" -v r=P10.1 '/^#/ {c=$0; next} $1==b || ($1==r && $2==b) {sub(/^# */, "", c); print c; found=1} END {exit !found}' "$sf"
 }
 
 n=${#progs[@]} fit=0 match=0 bad=0 skips=()

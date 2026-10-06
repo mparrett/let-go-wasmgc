@@ -119,18 +119,30 @@ process.exit(r.code);
 
 // Top-level forms of lg source text: brackets, strings, char literals and
 // comments are respected; reader prefixes (' ` ~ @ # ^meta) stay with their form.
-export function splitForms(s) {
+export function splitForms(s, name = 'source') {
   const out = [];
   let i = 0;
   while (i < s.length) {
     const c = s[i];
     if (/[\s,]/.test(c)) { i++; continue; }
     if (c === ';') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (c === ')' || c === ']' || c === '}') throw readerError(s, i, name, `unmatched delimiter ${c}`);
     const start = i;
     i = skipForm(s, i);
+    // every form consumes text; a splitter that stood still would loop forever
+    if (i <= start) throw readerError(s, i, name, `unexpected ${JSON.stringify(s[start])}`);
     out.push(s.slice(start, i));
   }
   return out;
+}
+
+// Native's two-line reader error: the position is the column after the
+// offending character (1-based line, so `)` at column 1 reports :1:2).
+function readerError(s, i, name, msg) {
+  const before = s.slice(0, i);
+  const line = before.split('\n').length;
+  const col = i - before.lastIndexOf('\n') + 1;
+  return new Error(`Syntax error reading source at (${name}:${line}:${col}).\n${msg}`);
 }
 
 function skipWs(s, i) {
@@ -234,7 +246,7 @@ async function runForms(host, wasmBytes, src, mode) {
     host.running = true;
     await promising(ex['lw main'])();
     let k = 0;
-    for (const form of splitForms(src)) {
+    for (const form of splitForms(src, opts.forms.replace(/^.*\//, ''))) {
       if (mode === 'eval') { phase = 'eval'; await evalText(form); continue; }
       const lifted = liftTry(form, k++);
       phase = 'compile';
