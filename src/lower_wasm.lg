@@ -4142,9 +4142,18 @@
         ;; answer is no, so a scalar module's bytes do not change
         bare-helpers (when *rt* (top-forms (binding [*rt* nil] (runtime))))
         reach-items (merge base-items (by-name (filter form-name bare-helpers)))
+        ;; D195: a boxed numeric helper's bare variant throws the Phase-1
+        ;; limit on a Float where its runtime variant calls wasm.core's twin
+        ;; (num-twins). Linear keeps the runtime paths when the program reaches
+        ;; one; GC keeps its bytes and its named limit.
+        ;; mapcat, not for: a for here takes gensyms at load and renumbers
+        ;; every later program's IR (D192)
+        numeric-helpers (set (mapcat (fn [op] [(str "$rt_" (name op)) (str "$rt_" (name op) "_slow") (str "$rt_cmp_" (name op))])
+                                     (keys num-twins)))
         rt? (and *rt* (or (rt-reached? reach-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
                           (some #(re-find #"\$rt_reify|struct\.new \$Atom" %)
-                                (cons program (keep base-items (live-set base-items {} (refs-of program)))))))
+                                (cons program (keep base-items (live-set base-items {} (refs-of program)))))
+                          (and (= *target* :linear) (some numeric-helpers (live-set reach-items {} (refs-of program))))))
         helper-forms (if rt? (top-forms (runtime)) (or bare-helpers (top-forms (binding [*rt* nil] (runtime)))))
         ;; after the helpers: generating them registers their strings
         datas (into {} (for [[s nm] @*strings*] [nm (str "(data " nm " \"" (wat-bytes s) "\")")]))
