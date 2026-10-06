@@ -142,6 +142,7 @@ TOTAL ≈ $1,227
 | P7.9 | done 2026-10-02 (D166, D167) | opus B + runner | 7/7 backend fixes; _main ns tag regression caught by gate 5 and fixed |
 | P7.GATE | GREEN 2026-10-02 ~20:05 (D168) | runner | gate 7 11/11; gates 1-6 8/13/3/4/14/10, all LW_ATTEST=0 on d953b83 |
 | P9.0 | done 2026-10-03 (D181) | runner | rtlib cache transparent: cold/warm byte-identical on the D181 regression (differed before the fix) |
+| P9.1 | done 2026-10-06 (D196) | runner | gensym counter after driver load = 1129; a destructuring defn in src/ moves it to 1130, a `for` to 1133; #() takes none |
 | D182 | done 2026-10-03 | runner | (println os/args) MATCH on the GC lane; regression corpus/scalar/os-args.lg under P1.1; run.mjs argv[0] = lg path |
 | REPL page | done 2026-10-02 | runner | host/repl.html, 285 KB opt / 77 KB brotli, 13 examples, :8262 in lw-play |
 | cost round 3 | estimate 2026-10-02 | runner | ~1.9 M subagent tokens (9 Opus + 1 Sonnet dispatches) + runner; list-price estimate ~$1.5k (round 2 ~$1.26k, round 1 ~$4.5k); session total 558 M in / 1.45 M out across rounds 2-3 |
