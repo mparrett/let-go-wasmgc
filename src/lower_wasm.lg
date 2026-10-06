@@ -4140,12 +4140,11 @@
         ;; helpers as generated WITHOUT runtime paths (that variant of
         ;; $rt_print_other names nothing), and reuse that text when the
         ;; answer is no, so a scalar module's bytes do not change
-        ;; (linear keeps every runtime path, so it never needs the bare variant)
-        bare-helpers (when (and *rt* (not= *target* :linear)) (top-forms (binding [*rt* nil] (runtime))))
+        bare-helpers (when *rt* (top-forms (binding [*rt* nil] (runtime))))
         reach-items (merge base-items (by-name (filter form-name bare-helpers)))
-        rt? (and *rt* (if (= *target* :linear) true (or (rt-reached? reach-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
+        rt? (and *rt* (or (rt-reached? reach-items (set (concat (keys (:lowered @*rt*)) (keys gitems))) program)
                           (some #(re-find #"\$rt_reify|struct\.new \$Atom" %)
-                                (cons program (keep base-items (live-set base-items {} (refs-of program))))))))
+                                (cons program (keep base-items (live-set base-items {} (refs-of program)))))))
         helper-forms (if rt? (top-forms (runtime)) (or bare-helpers (top-forms (binding [*rt* nil] (runtime)))))
         ;; after the helpers: generating them registers their strings
         datas (into {} (for [[s nm] @*strings*] [nm (str "(data " nm " \"" (wat-bytes s) "\")")]))
