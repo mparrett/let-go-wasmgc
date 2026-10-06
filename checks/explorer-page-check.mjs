@@ -97,6 +97,34 @@ try {
   const boot = await state();
   check(boot.ex.ready && !boot.ex.error, 'the page loads the compiler host and runs its default source', boot.ex);
 
+  // the size breakdown: sizes.json beside the module, and the header's
+  // second line from it
+  let z = null;
+  try { z = JSON.parse(fs.readFileSync(path.join(dir, 'sizes.json'), 'utf8')); } catch {}
+  check(z && z.evaluator_and_runtime > 0 && z.kept_for_linking > 0 && z.compiler > 0
+    && z.evaluator_and_runtime + z.kept_for_linking + z.compiler === z.served
+    && z.served === fs.statSync(path.join(dir, 'explorer.wasm')).size,
+    'sizes.json: positive deltas that sum to the served module', z);
+  const hdr = await p.evaluate(() => {
+    const n = (id) => { const e = document.getElementById(id); return e ? Number(e.textContent) : null; };
+    const b = document.getElementById('sizes');
+    return { total: n('size-total'), ev: n('size-eval'), link: n('size-link'), comp: n('size-compiler'),
+      status: document.getElementById('status').textContent, line: b.hidden ? null : b.textContent, title: b.title };
+  });
+  check(hdr.ev > 0 && hdr.link > 0 && hdr.comp > 0 && Math.abs(hdr.ev + hdr.link + hdr.comp - hdr.total) <= 2,
+    'header: the three breakdown figures sum to the module size within rounding', hdr);
+  check(/^explorer\.wasm · \d+ KB( · \d+ KB over the wire)? · compiled in \d+ ms$/.test(hdr.status) && /uncompressed/.test(hdr.title),
+    'header: one status line, the breakdown note in the title', hdr);
+  console.log(`     ${hdr.status}\n     ${hdr.line}`);
+
+  // record every time a pane gets the pulse class (the toggle, not its timing)
+  await p.evaluate(() => {
+    window.__pulses = {};
+    const mo = new MutationObserver((ms) => { for (const m of ms) if (m.target.classList.contains('pulse')) window.__pulses[m.target.id] = (window.__pulses[m.target.id] || 0) + 1; });
+    for (const id of ['eval-pane', 'compiled-pane', 'module']) mo.observe(document.getElementById(id), { attributes: true, attributeFilter: ['class'] });
+  });
+  const pulses = () => p.evaluate(() => ({ ...window.__pulses }));
+
   // 1. a scalar defn and a call
   const s = await submit('(defn sq [x] (* x x))\n(sq 7)');
   for (const [pane, text] of [['eval', s.ev], ['compiled', s.co]]) {
@@ -114,6 +142,11 @@ try {
   check((s.sections.find((r) => r[0] === ':exports') || [])[3] === 'func "lw run"', 'scalar: the module exports "lw run" only', s.sections.find((r) => r[0] === ':exports'));
   check(/func host "lw rt /.test((s.sections.find((r) => r[0] === ':imports') || [])[3] || ''), 'scalar: the module imports the runtime from module "host"', s.sections.find((r) => r[0] === ':imports'));
   check(s.hex.startsWith('000000  00 61 73 6d 01 00 00 00'), 'scalar: the hex view starts with the wasm magic and version', s.hex.slice(0, 60));
+  const p1 = await pulses();
+  check(['eval-pane', 'compiled-pane', 'module'].every((id) => p1[id] >= 1), 'pulse: each pane gets the pulse class after a run', p1);
+  await submit('(defn sq [x] (* x x))\n(sq 7)');
+  const p2 = await pulses();
+  check(['eval-pane', 'compiled-pane', 'module'].every((id) => p2[id] > p1[id]), 'pulse: a rerun with identical output pulses again', [p1, p2]);
 
   // 2. an emitter named limit
   const l = await submit('(defn f [] [1])');
