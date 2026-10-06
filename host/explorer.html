@@ -154,11 +154,27 @@ function splitResult(raw) {
 
 // A form's run time, measured once: running a form again would repeat its
 // side effects, so a sub-millisecond figure shows as <1 ms instead.
-async function timed(f) {
+// r.ms is set even when f throws, so a failed form's cost is recorded.
+async function timed(r, f) {
   const t = performance.now();
-  await f();
-  return performance.now() - t;
+  try { await f(); } finally { r.ms = performance.now() - t; }
 }
+// Text with styled figures, built as DOM nodes: every string, whatever its
+// source (the URL, sizes.json, module output), goes in as text. A part is
+// a string or {cls, id, text} / {cls, kids}.
+function setParts(el, parts) {
+  el.textContent = '';
+  for (const p of parts) {
+    if (typeof p === 'string') { el.append(p); continue; }
+    const sp = document.createElement('span');
+    if (p.cls) sp.className = p.cls;
+    if (p.id) sp.id = p.id;
+    if (p.kids) setParts(sp, p.kids); else sp.textContent = p.text;
+    el.append(sp);
+  }
+}
+const kbPart = (id, n) => ({ cls: 'sz', kids: [{ id, text: String(kb(n)) }, ' KB'] });
+
 const fmtMs = (ms) => (ms < 1 ? '<1 ms' : ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`);
 
 // Run every form through one path; returns [{form, out, value?, error?, limit?}].
@@ -180,14 +196,14 @@ async function runLeg(forms, mode) {
         // reads it, so a reader error inside it is reported identically.
         const lit = form.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const text = `(let* [v (core/eval (core/read-string "${lit}"))] (core/print "${RESULT}") (core/prn v))`;
-        r.ms = await timed(() => c.evalText(text));
+        await timed(r, () => c.evalText(text));
       } else {
         const t0 = performance.now();
         const bytes = await c.compile(form);
         const t1 = performance.now();
         modules.push({ form, bytes, compileMs: t1 - t0 });
         let v;
-        r.ms = await timed(async () => { v = await c.link(bytes); });
+        await timed(r, async () => { v = await c.link(bytes); });
         raw += RESULT;
         c.ex['lw rt wasm.host/prn#1'](v);
         modules[modules.length - 1].runMs = r.ms;
@@ -268,7 +284,10 @@ async function run() {
     agree.dataset.state = state;
     agree.textContent = { agree: 'eval and compiled agree', disagree: 'eval and compiled DISAGREE', limit: 'not compared: the emitter stopped at a named limit' }[state];
     window.__explorer.agree = state;
-    showRatio(state === 'agree' ? ev : null, co);
+    // compared only when every form completed on both legs: two legs that
+    // stop at the same exception agree but did not run the same work
+    const done = (rs) => forms && rs.length === forms.length && rs.every((r) => r.error == null);
+    showRatio(state === 'agree' && done(ev) && done(co) ? ev : null, co);
     showModules();
     for (const id of ['eval-pane', 'compiled-pane', 'module']) pulse($(id));
   } catch (e) {
@@ -326,17 +345,17 @@ function sections(b) {
   return out;
 }
 
-function hex(b) {
-  const rows = [];
+function hex(el, b) {
+  el.textContent = '';
   const max = Math.min(b.length, 65536);
   for (let o = 0; o < max; o += 16) {
     const row = Array.from(b.subarray(o, Math.min(o + 16, max)));
-    const h = row.map((x) => x.toString(16).padStart(2, '0')).join(' ').padEnd(47);
-    const a = row.map((x) => (x >= 32 && x < 127 ? String.fromCharCode(x) : '.')).join('');
-    rows.push(`${o.toString(16).padStart(6, '0')}  <b>${h}</b>  ${a.replace(/&/g, '&amp;').replace(/</g, '&lt;')}`);
+    const h = document.createElement('b');
+    h.textContent = row.map((x) => x.toString(16).padStart(2, '0')).join(' ').padEnd(47);
+    el.append(`${o > 0 ? '\n' : ''}${o.toString(16).padStart(6, '0')}  `, h,
+      `  ${row.map((x) => (x >= 32 && x < 127 ? String.fromCharCode(x) : '.')).join('')}`);
   }
-  if (b.length > max) rows.push(`… ${b.length - max} more bytes`);
-  return rows.join('\n');
+  if (b.length > max) el.append(`\n… ${b.length - max} more bytes`);
 }
 
 const pick = $('mod-pick');
@@ -353,10 +372,10 @@ function showModule(k) {
   const tbl = $('mod-sections'), hx = $('mod-hex'), sz = $('mod-size');
   tbl.textContent = ''; hx.textContent = '';
   if (!m) { sz.textContent = 'no module: the emitter returned none for this source'; return; }
-  sz.innerHTML = `<span class="sz">${m.bytes.length} bytes</span> · compiled in <span class="t">${fmtMs(m.compileMs)}</span>`
-    + (m.runMs != null ? ` · linked and run in <span class="t">${fmtMs(m.runMs)}</span>` : '')
+  setParts(sz, [{ cls: 'sz', text: `${m.bytes.length} bytes` }, ' · compiled in ', { cls: 't', text: fmtMs(m.compileMs) },
+    ...(m.runMs != null ? [' · linked and run in ', { cls: 't', text: fmtMs(m.runMs) }] : []),
     // the emitter's bytes as produced; only the host is wasm-opt'd
-    + ' · not optimized';
+    ' · not optimized']);
   const head = tbl.createTHead().insertRow();
   for (const [t, c] of [['section', ''], ['bytes', 'num'], ['entries', 'num'], ['names', '']]) { const th = document.createElement('th'); th.textContent = t; if (c) th.className = c; head.append(th); }
   const body = tbl.createTBody();
@@ -366,7 +385,7 @@ function showModule(k) {
     const cells = [[s.key, ''], [s.size, 'num sz'], [s.count ?? '', 'num'], [s.names.join(', '), 'names']];
     for (const [v, c] of cells) { const cell = tr.insertCell(); cell.textContent = v; if (c) cell.className = c; }
   }
-  hx.innerHTML = hex(m.bytes);
+  hex(hx, m.bytes);
 }
 
 // The header: the module's size, then the bytes that crossed the wire when
@@ -374,11 +393,11 @@ function showModule(k) {
 // script writes beside the module, what the evaluator and runtime, the
 // exports kept for linking and the compiler each take.
 const kb = (n) => Math.round(n / 1024);
-function sizeLine(n) {
-  let line = `${url} · <span class="sz"><span id="size-total">${kb(n)}</span> KB</span>`;
+function sizeParts(n) {
+  const parts = [url, ' · ', kbPart('size-total', n)];
   const r = performance.getEntriesByType('resource').find((e) => e.name === new URL(url, location.href).href);
-  if (r && r.encodedBodySize > 0 && r.encodedBodySize < r.decodedBodySize) line += ` · <span class="sz"><span id="size-wire">${kb(r.encodedBodySize)}</span> KB</span> over the wire`;
-  return line;
+  if (r && r.encodedBodySize > 0 && r.encodedBodySize < r.decodedBodySize) parts.push(' · ', kbPart('size-wire', r.encodedBodySize), ' over the wire');
+  return parts;
 }
 async function showBreakdown(n) {
   try {
@@ -386,9 +405,8 @@ async function showBreakdown(n) {
     if (z.served !== n) return;
     const el = $('sizes');
     if (z.stage !== 'raw') $('size-total').title = `optimized with ${z.stage}; raw ${kb(z.raw)} KB before`;
-    el.innerHTML = `evaluator and runtime <span class="sz"><span id="size-eval">${kb(z.evaluator_and_runtime)}</span> KB</span>`
-      + ` · kept for linking <span class="sz"><span id="size-link">${kb(z.kept_for_linking)}</span> KB</span>`
-      + ` · compiler <span class="sz"><span id="size-compiler">${kb(z.compiler)}</span> KB</span>`;
+    setParts(el, ['evaluator and runtime ', kbPart('size-eval', z.evaluator_and_runtime),
+      ' · kept for linking ', kbPart('size-link', z.kept_for_linking), ' · compiler ', kbPart('size-compiler', z.compiler)]);
     el.title = `${z.stage === 'raw' ? 'not optimized' : `after ${z.stage} (binaryen ${z.binaryen})`}, uncompressed; the deltas are from three builds of the same source (${z.date})`;
     el.hidden = false;
   } catch { /* no sizes.json: no breakdown */ }
@@ -402,7 +420,7 @@ try {
   const t0 = performance.now();
   const bytes = await (await fetch(url)).arrayBuffer();
   module = await WebAssembly.compile(bytes);
-  status.innerHTML = sizeLine(bytes.byteLength) + ` · compiled in <span class="t">${fmtMs(performance.now() - t0)}</span>`;
+  setParts(status, [...sizeParts(bytes.byteLength), ' · compiled in ', { cls: 't', text: fmtMs(performance.now() - t0) }]);
   await showBreakdown(bytes.byteLength);
   window.__explorer.ready = true;
   await run();

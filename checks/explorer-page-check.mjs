@@ -45,7 +45,10 @@ let dir = process.env.LW_EXPLORER_DIR, tmp = null;
 if (!dir) {
   tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'explorer-page.'));
   dir = tmp;
-  const r = spawnSync('bash', [path.join(root, 'host/build-explorer-serve.sh'), dir], { stdio: ['ignore', 'inherit', 'inherit'] });
+  // both flags exported on purpose: each variant must set its own, or the
+  // deltas in sizes.json read zero (asserted below)
+  const r = spawnSync('bash', [path.join(root, 'host/build-explorer-serve.sh'), dir],
+    { stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, LW_EXPORT_RT: '1', LW_RUNTIME_COMPILE: '1' } });
   if (r.status !== 0) { console.log(`build-explorer-serve.sh failed (exit ${r.status})`); process.exit(1); }
 }
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
@@ -228,7 +231,19 @@ try {
   const qc = await submit("'\n;; a comment\n1");
   check(qc.ev.startsWith("'\nerror: ") && qc.ev === qc.co, 'prefix then comment: the quote is a form of its own, both panes show the same reader error', [qc.ev, qc.co]);
   check(qc.agree === 'agree', 'prefix then comment: the indicator says agree', qc.agree);
+  // two legs that stop at the same exception agree, but are not compared
+  const th = await submit('(loop [i 0 s 0] (if (< i 100000) (recur (inc i) (+ s i)) s))\n(throw 1)\n(println "never reached")');
+  check(th.agree === 'agree' && th.ratio === null, 'ratio: none when both legs stop at the same exception, the indicator still agrees', [th.agree, th.ratio]);
+
   check(errs.length === 0, 'no uncaught page errors', errs);
+
+  // the module URL parameter is shown as text, never parsed as markup
+  const bad = 'explorer.wasm#<img src=x onerror="window.__reviewXss=1">';
+  const xp = await b.newPage();
+  await xp.goto(`${base}/explorer.html?module=${encodeURIComponent(bad)}`, { waitUntil: 'domcontentloaded' });
+  await xp.waitForFunction(() => window.__explorer && (window.__explorer.runs >= 1 || window.__explorer.error), null, { timeout: 180000 });
+  const xs = await xp.evaluate(() => ({ xss: window.__reviewXss, status: document.getElementById('status').textContent, imgs: document.querySelectorAll('#status img').length }));
+  check(xs.xss === undefined && xs.imgs === 0 && xs.status.startsWith(bad + ' · '), 'url: a markup ?module= value shows as literal text and runs nothing', xs);
 } catch (e) {
   failed++;
   console.log(`FAIL the check stopped: ${(e && e.message) || e}`);
