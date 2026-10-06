@@ -31,7 +31,10 @@ variant() {
   local n=$1; shift
   if [ ! -f "$hd/$n.wasm" ]; then
     mkdir -p "$hd"
-    env "$@" LW_RTLIB_DIR="$hd/rtlib" \
+    # only the variant's own flags: a caller's exported LW_EXPORT_RT or
+    # LW_RUNTIME_COMPILE must not reach the other variants (the driver
+    # treats anything but "1" as off)
+    env -u LW_EXPORT_RT -u LW_RUNTIME_COMPILE "$@" LW_RTLIB_DIR="$hd/rtlib" \
       "$here/checks/sem.sh" "$LG" -source-paths "$here/src" "$here/src/driver.lg" corpus/emit/host/host.lg "$hd/$n.wat" >"$hd/$n.build.log" 2>&1 \
       || { echo "$n build failed:" >&2; tail -20 "$hd/$n.build.log" >&2; exit 1; }
     wasm-tools parse "$hd/$n.wat" -o "$hd/$n.wasm.tmp" && wasm-tools validate "$hd/$n.wasm.tmp" \
@@ -44,12 +47,14 @@ variant() {
   fi
 }
 variant host LW_EXPORT_RT=1 LW_RUNTIME_COMPILE=1
-variant host-default
-variant host-export LW_EXPORT_RT=1
+# the flags are in the cache names: host-default and host-export, the names
+# before this, could hold modules built with an exported flag
+variant host-rt0-rc0
+variant host-rt1-rc0 LW_EXPORT_RT=1
 if [ -n "${LW_NO_OPT:-}" ]; then sfx=wasm stage=raw ver=""; else sfx=opt.wasm stage="wasm-opt -O3" ver=$("$OPT" --version | head -1 | sed 's/^wasm-opt version //' | tr -d '"\\' | sed 's/[[:space:]]*$//'); fi
 command cp "$hd/host.$sfx" "$t/explorer.wasm"
 sz() { wc -c <"$hd/$1.$sfx" | tr -d ' '; }
-d=$(sz host-default) e=$(sz host-export) b=$(sz host)
+d=$(sz host-rt0-rc0) e=$(sz host-rt1-rc0) b=$(sz host)
 br=$(brotli -c "$t/explorer.wasm" | wc -c | tr -d ' ')
 cat >"$t/sizes.json" <<JSON
 {"date": "$(date +%F)", "key": "$key", "stage": "$stage", "binaryen": "$ver", "raw": $(wc -c <"$hd/host.wasm" | tr -d ' '),
