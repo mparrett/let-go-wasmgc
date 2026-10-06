@@ -368,6 +368,10 @@
   (is (= "wasm.emit: unsupported form fn* with a name (3b-ii)" (lk-err "(fn* f [x] x)")))
   (is (= "wasm.emit: unsupported form a fn of 5 params (3b-ii)" (lk-err "(fn [a b c d e] a)")))
   (is (= "wasm.emit: unsupported form a collection literal with evaluated elements (3b-ii)" (lk-err "(let [x 1] [x])")))
+  ;; PR #8 review: a shared constant made (identical? (f) (f)) true where native builds [1] afresh
+  (is (= "wasm.emit: unsupported form a non-empty collection literal (fresh per execution in native, 3b-ii)" (lk-err "(fn [] [1])")))
+  (is (= "wasm.emit: unsupported form a non-empty collection literal (fresh per execution in native, 3b-ii)" (lk-err "(fn [] {:a 1})")))
+  (is (= "no error" (lk-err "(fn [] [])")) "an empty literal is shared in native too")
   (is (= "wasm.emit: unsupported form set!" (lk-err "(set! *warn-on-reflection* true)")))
   (testing "a compile error outside the named limits is the evaluator's, context layers included"
     (is (= (lk-err "(if 1)") (try (ev/eval '(if 1)) (catch Exception e (ex-message e)))))
