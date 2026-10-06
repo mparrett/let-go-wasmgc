@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # host/build-pages.sh <out-dir> — the static demo site: index.html (the
-# landing page host/pages-index.html) plus the three demos in their own
+# landing page host/pages-index.html) plus the four demos in their own
 # directories, each produced by its serve script:
 #   repl/     host/build-repl-serve.sh        (compiles corpus/host/repl.lg)
+#   explorer/ host/build-explorer-serve.sh    (the P10.2 compiler host, D194)
 #   xsofy/    host/build-xsofy-serve.sh       (module from build-xsofy-module.sh)
 #   legmacs/  host/build-legmacs-serve.sh     (module from build-legmacs-module.sh)
 # Any static server serves the result; the JSPI lane needs no COOP/COEP (D91).
@@ -15,6 +16,7 @@ t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 mkdir -p "$out"
 command cp "$here/pages-index.html" "$out/index.html"
 "$here/build-repl-serve.sh" "$out/repl"
+"$here/build-explorer-serve.sh" "$out/explorer"
 "$here/build-xsofy-module.sh" "$t/xsofy.wasm"
 "$here/build-xsofy-serve.sh" "$out/xsofy" "$t/xsofy.wasm"
 command mv -f "$out/xsofy/xsofy.wasm" "$out/xsofy/module.wasm"
