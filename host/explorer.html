@@ -312,7 +312,9 @@ function showModule(k) {
   const tbl = $('mod-sections'), hx = $('mod-hex'), sz = $('mod-size');
   tbl.textContent = ''; hx.textContent = '';
   if (!m) { sz.textContent = 'no module: the emitter returned none for this source'; return; }
-  sz.textContent = `${m.bytes.length} bytes · compiled in ${m.compileMs.toFixed(1)} ms` + (m.runMs != null ? ` · linked and run in ${m.runMs.toFixed(1)} ms` : '');
+  sz.textContent = `${m.bytes.length} bytes · compiled in ${m.compileMs.toFixed(1)} ms` + (m.runMs != null ? ` · linked and run in ${m.runMs.toFixed(1)} ms` : '')
+    // the emitter's bytes as produced; only the host is wasm-opt'd
+    + ' · not optimized';
   const head = tbl.createTHead().insertRow();
   for (const [t, c] of [['section', ''], ['bytes', 'num'], ['entries', 'num'], ['names', '']]) { const th = document.createElement('th'); th.textContent = t; if (c) th.className = c; head.append(th); }
   const body = tbl.createTBody();
@@ -341,10 +343,11 @@ async function showBreakdown(n) {
     const z = await (await fetch(new URL('sizes.json', new URL(url, location.href)))).json();
     if (z.served !== n) return;
     const el = $('sizes');
+    if (z.stage !== 'raw') $('size-total').title = `optimized with ${z.stage}; raw ${kb(z.raw)} KB before`;
     el.innerHTML = `evaluator and runtime <span id="size-eval">${kb(z.evaluator_and_runtime)}</span> KB`
       + ` · kept for linking <span id="size-link">${kb(z.kept_for_linking)}</span> KB`
       + ` · compiler <span id="size-compiler">${kb(z.compiler)}</span> KB`;
-    el.title = `${z.stage === 'raw' ? 'unoptimized' : 'optimized'} module, uncompressed; the deltas are from three builds of the same source (${z.date})`;
+    el.title = `${z.stage === 'raw' ? 'not optimized' : `after ${z.stage} (binaryen ${z.binaryen})`}, uncompressed; the deltas are from three builds of the same source (${z.date})`;
     el.hidden = false;
   } catch { /* no sizes.json: no breakdown */ }
 }

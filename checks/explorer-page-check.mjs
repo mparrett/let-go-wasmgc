@@ -109,13 +109,16 @@ try {
     const n = (id) => { const e = document.getElementById(id); return e ? Number(e.textContent) : null; };
     const b = document.getElementById('sizes');
     return { total: n('size-total'), ev: n('size-eval'), link: n('size-link'), comp: n('size-compiler'),
-      status: document.getElementById('status').textContent, line: b.hidden ? null : b.textContent, title: b.title };
+      status: document.getElementById('status').textContent, line: b.hidden ? null : b.textContent, title: b.title,
+      sizeTitle: document.getElementById('size-total').title };
   });
   check(hdr.ev > 0 && hdr.link > 0 && hdr.comp > 0 && Math.abs(hdr.ev + hdr.link + hdr.comp - hdr.total) <= 2,
     'header: the three breakdown figures sum to the module size within rounding', hdr);
   check(/^explorer\.wasm · \d+ KB( · \d+ KB over the wire)? · compiled in \d+ ms$/.test(hdr.status) && /uncompressed/.test(hdr.title),
     'header: one status line, the breakdown note in the title', hdr);
-  console.log(`     ${hdr.status}\n     ${hdr.line}`);
+  check(/binaryen \S/.test(hdr.title) && /^optimized with wasm-opt -O3; raw \d+ KB before$/.test(hdr.sizeTitle),
+    'header: the titles name binaryen and the raw size', [hdr.title, hdr.sizeTitle]);
+  console.log(`     ${hdr.status}\n     ${hdr.line}\n     title: ${hdr.title}\n     size title: ${hdr.sizeTitle}`);
 
   // record every time a pane gets the pulse class (the toggle, not its timing)
   await p.evaluate(() => {
@@ -135,6 +138,7 @@ try {
   check(s.picks === 2, 'scalar: one compiled module per form', s.picks);
   const bytes = Number((s.size.match(/^(\d+) bytes/) || [])[1]);
   check(bytes > 8, 'scalar: the module pane shows the module size', s.size);
+  check(s.size.endsWith(' · not optimized'), 'scalar: the module pane says the compiled module is not optimized', s.size);
   const keys = s.sections.map((r) => r[0]);
   check([':types', ':imports', ':funcs', ':exports', ':code'].every((k) => keys.includes(k)), 'scalar: the section table names the encoder model sections', keys);
   const sum = s.sections.reduce((a, r) => a + Number(r[1]), 0);
