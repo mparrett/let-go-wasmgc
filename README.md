@@ -317,5 +317,5 @@ mirror of that workspace. In practice:
 
 ## License
 
-MIT; see [LICENSE](LICENSE), which also lists the material taken from
+MIT; see [LICENSE](LICENSE). [NOTICE](NOTICE) lists the material taken from
 let-go, xsofy and legmacs.

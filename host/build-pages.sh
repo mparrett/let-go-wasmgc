@@ -15,7 +15,7 @@ out=${1:?usage: build-pages.sh <out-dir>}
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 mkdir -p "$out"
 command cp "$here/pages-index.html" "$out/index.html"
-command cp "$here/../LICENSE" "$out/LICENSE"
+command cp "$here/../LICENSE" "$here/../NOTICE" "$out/"
 "$here/build-repl-serve.sh" "$out/repl"
 "$here/build-explorer-serve.sh" "$out/explorer"
 "$here/build-xsofy-module.sh" "$t/xsofy.wasm"
