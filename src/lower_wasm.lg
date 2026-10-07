@@ -4496,6 +4496,25 @@
   ;; sym-var, not resolve: an extern may be private (core/special-symbols)
   (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g]))))
 
+(defn gensyms-taken
+  "Call f and return {:result its value :gensyms how many gensyms it took}.
+   gensym is wrapped rather than read before and after, since a read takes
+   one: the build must take exactly the gensyms it took before (D200)."
+  [f]
+  (let [n (atom 0) g gensym]
+    (alter-var-root #'gensym (fn [_] (fn ([] (swap! n inc) (g)) ([p] (swap! n inc) (g p)))))
+    (try (let [r (f)] {:result r :gensyms @n})
+         (finally (alter-var-root #'gensym (fn [_] g))))))
+
+(defn replay-gensyms!
+  "Take the gensyms the library's build took (D200). A required namespace is
+   macroexpanded after load-rtlib!, so its locals are numbered from the
+   counter there; restoring without the replay renumbered them, and a
+   compile from the saved library differed from the one that saved it."
+  [snap]
+  (loop [i (or (:gensyms snap) 0)]
+    (when (pos? i) (gensym) (recur (dec i)))))
+
 (defn load-rtlib!
   "Start the current session from the cached runtime library, building and
    saving it first if the runtime or the backend changed."
@@ -4503,11 +4522,13 @@
   (let [prefix (str "rtlib-" (name *target*) "-")
         f (str rtlib-dir "/" prefix (rtlib-key) ".edn")]
     (if (some? (try (os/stat f) (catch e nil)))
-      (rtlib-restore! (read-string (slurp f)))
-      (let [fails (build-rtlib!)
+      (let [snap (read-string (slurp f))]
+        (rtlib-restore! snap)
+        (replay-gensyms! snap))
+      (let [built (gensyms-taken build-rtlib!)
             tmp (str f ".tmp" (rand-int 1000000000))]
         (os/sh "mkdir" "-p" rtlib-dir)
-        (spit tmp (pr-str (rtlib-snapshot fails)))
+        (spit tmp (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
         (os/rename tmp f)
         ;; a library for older sources is dead weight (~3.5 MB each)
         (doseq [old (os/ls rtlib-dir)

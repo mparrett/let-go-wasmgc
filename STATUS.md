@@ -145,6 +145,7 @@ TOTAL ≈ $1,227
 | P9.1 | done 2026-10-06 (D196) | runner | gensym counter after driver load = 1129; a destructuring defn in src/ moves it to 1130, a `for` to 1133; #() takes none |
 | pin | done 2026-10-07 (D198) | runner | let-go ff1e6dac: gates 8, 1, 7, P9.0, P9.1 (1130), map-order pass; Linux and macOS lg builds byte-identical on basic.lg |
 | P1.9 | done 2026-10-07 (D199) | runner | constants of plain data lowered without analysis; corpus/consts MATCH; warm legmacs -4.6% wall |
+| P9.2 | done 2026-10-07 (D200) | opus | rtlib restore replays the build's gensyms (104); legmacs and checks/fixtures/warm-gensym cold = warm-from-own-cache (differed before) |
 | D182 | done 2026-10-03 | runner | (println os/args) MATCH on the GC lane; regression corpus/scalar/os-args.lg under P1.1; run.mjs argv[0] = lg path |
 | REPL page | done 2026-10-02 | runner | host/repl.html, 285 KB opt / 77 KB brotli, 13 examples, :8262 in lw-play |
 | cost round 3 | estimate 2026-10-02 | runner | ~1.9 M subagent tokens (9 Opus + 1 Sonnet dispatches) + runner; list-price estimate ~$1.5k (round 2 ~$1.26k, round 1 ~$4.5k); session total 558 M in / 1.45 M out across rounds 2-3 |
