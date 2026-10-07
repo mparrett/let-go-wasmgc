@@ -2,7 +2,7 @@
 
 let-go's sequence machinery in the runtime dialect (`seq.lg`, ns `wasm.seq`),
 checked against native lg by `corpus/intrinsics/seq_test.lg` via
-`checks/run-intrinsics-native.sh`. Ground truth: let-go 4e769212. Paths are
+`checks/run-intrinsics-native.sh`. Ground truth: let-go ff1e6dac. Paths are
 under `pkg/vm/` unless they start with `rt/` (= `pkg/rt/`) or `core.lg`
 (= `pkg/rt/core/core.lg`).
 
@@ -60,15 +60,15 @@ form (hash.go:31). `(hash (range 3))` = 3057436279 while `(hash '(0 1 2))` =
   keeps nothing and the next access reads `()`: mirrored (P2.10, D74).
 - `cons`/`rest` never force a lazy tail; `next` does (Cons.Next resolves,
   cons.go:49; ChunkedCons.Next, chunk.go:151). `seqOf` returns a LazySeq
-  unresolved (rt/lang.go:1398); `seq` resolves it (rt/lang.go:2247 via
+  unresolved (rt/lang.go:1407); `seq` resolves it (rt/lang.go:2256 via
   `Sequable`).
 - A thunk returning a non-seqable (e.g. `(lazy-seq 5)`) throws "don't know
   how to create ISeq from let-go.lang.Int" (lazy_seq.go:127).
 - `(range n)` with n > 0 is a `Range` (lazy, O(1) count/nth, chunked); with
   n <= 0 or step 0 it is `EmptyList`, never an eager vector (range.go:188,
-  rt/lang.go:5772). `(range)` is an `InfiniteRange`. `(repeat n x)` with
+  rt/lang.go:5785). `(range)` is an `InfiniteRange`. `(repeat n x)` with
   n <= 0 is `EmptyList`; `(repeat x)` is `Repeat` with i = -1
-  (rt/lang.go:6792).
+  (rt/lang.go:6805).
 
 ## Chunking rules (verified)
 
@@ -77,10 +77,10 @@ form (hash.go:31). `(hash (range 3))` = 3057436279 while `(hash '(0 1 2))` =
   PersistentVectorSeq exposes trie leaves and the tail, windowed at the
   current index (persistent_vector_chunked.go:34-82).
 - Go natives that consume chunks: `map*` single-coll (mapLazy1 maps a whole
-  chunk per thunk and emits a ChunkedCons, rt/lang.go:1480), `reduce`
+  chunk per thunk and emits a ChunkedCons, rt/lang.go:1489), `reduce`
   (rt/native_prims.go:367; Range takes a no-allocation arithmetic path,
-  :438), `some` (:612), `nth` on a seq (nthInSeq, rt/lang.go:1453).
-  `vec` (rt/lang.go:2054) and `count` walk element-wise.
+  :438), `some` (:612), `nth` on a seq (nthInSeq, rt/lang.go:1462).
+  `vec` (rt/lang.go:2063) and `count` walk element-wise.
 - lg-defined core fns that chunk: `filter` (core.lg:523), `take` (whole chunk
   when it fits the quota, element-wise after, :574), `keep` (:1587), `dorun`
   /`doall` (chunk-next, :2748). `drop`, `concat`, `last`, `take-while` do not.
@@ -95,7 +95,7 @@ form (hash.go:31). `(hash (range 3))` = 3057436279 while `(hash '(0 1 2))` =
 |---|---|---|---|---|
 | `seq` | nil | PVecSeq / nil | List of Chars / nil | hook seq |
 | `first` `rest` `next` `second` | nil, `()`, nil, nil | via its seq | via its seq | via hook seq |
-| `count` | 0 | O(1) | runes (lang.go:6105) | hook count |
+| `count` | 0 | O(1) | runes (lang.go:6118) | hook count |
 | `nth` | nil / not-found | Indexed path, OOB throws | byte bound, rune walk; past the last rune nil (string.go:276) | seq walk via hook |
 | `cons` | `(x)` (Cons, more = nil) | Cons onto its seq | Cons onto its seq | Cons onto hook seq |
 | `conj` | List `(x)` | `vconj` | "conj expected Collection" | trap (owner's job) |
@@ -108,7 +108,7 @@ form (hash.go:31). `(hash (range 3))` = 3057436279 while `(hash '(0 1 2))` =
 Quirks reproduced on purpose (D19 spirit): `(count (seq (map inc (range 3))))`
 throws (ChunkedCons is not Counted); `(count (repeat x))` = -1; `(peek (cons
 1 nil))` throws; `(= '(nil) (lazy-seq nil))` is true (the `*List` branch walks
-b unresolved, lang.go:1140); `(= [nil] [()])` true but `(= '(nil) '(()))`
+b unresolved, lang.go:1149); `(= [nil] [()])` true but `(= '(nil) '(()))`
 false; `pop` on a Cons/LazySeq counts it first (walks to the end); nth3 on a
 non-seqable returns not-found while nth2 throws; `(reduce nil :x nil)` = :x.
 

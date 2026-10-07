@@ -1,5 +1,5 @@
 ;; wasm.eval — P7.0: `eval` inside the module, a closure-compiling evaluator
-;; over the reader's data. Ground truth is let-go 4e769212: the special forms
+;; over the reader's data. Ground truth is let-go ff1e6dac: the special forms
 ;; are pkg/compiler/compiler.go's (if do def set! fn* quote var let* loop*
 ;; recur try), the core macros are pkg/rt/core/core.lg's, ported as expanders
 ;; that build the same forms, so the CompileError chains native prints
@@ -143,7 +143,7 @@
 (defn- quoted-sym [x]
   (when (and (seq? x) (= 'quote (first x)) (symbol? (second x))) (second x)))
 
-;; tryDetectInNS (compiler.go:2065): when a do's first member is
+;; tryDetectInNS (compiler.go:2103): when a do's first member is
 ;; (in-ns 'x), the compiler switches to x before compiling the rest, so
 ;; (do (in-ns 'x) (def v 1)) interns x/v. Native does not switch back, even
 ;; when a later member fails to compile.

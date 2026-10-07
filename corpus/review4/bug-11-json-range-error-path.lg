@@ -1,6 +1,8 @@
 ;; review4 bug-11 (P3, error text): encoding/json names the failing value's
 ;; position in an out-of-range number error ("into .0 of type float64" for
 ;; array index 0); the natives.lg read-json twin always says "into Go value".
+;; Since let-go ff1e6da (let-go#995, D198) every out-of-range number here reads
+;; "json: number 1e400 out of range" (no path); the lines below are 4e769212's.
 ;; native lg 4e769212 prints:
 ;; json: cannot unmarshal number 1e400 into .0 of type float64
 ;; json: cannot unmarshal number 1e400 into Go value of type float64

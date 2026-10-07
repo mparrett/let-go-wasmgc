@@ -5,7 +5,7 @@
 ;; :float operands, which the backend lowers to f64.div; the dialect test
 ;; whitelists it here as seq_test does for float-bits).
 ;;
-;; Ground truth is let-go 4e769212 (pkg/rt/lang.go, pkg/rt/math.go,
+;; Ground truth is let-go ff1e6dac (pkg/rt/lang.go, pkg/rt/math.go,
 ;; pkg/vm/numbers.go) and Go 1.27's math package. Floating point follows
 ;; Go's PORTABLE algorithms (math/exp.go, log.go, pow.go, sqrt.go, mod.go,
 ;; frexp.go, ldexp.go, floor.go), each operation rounded separately: that
@@ -268,7 +268,7 @@
                :else (raise-str (s/str (lit (wasm/bytes-of-string "expected numeric value, got ")) (tn x))))))
   ([x y] (raise-arity 2)))
 
-;; float (lang.go:6594): ToFloat, then float32(f); an infinite input or a
+;; float (lang.go:6607): ToFloat, then float32(f); an infinite input or a
 ;; float32 overflow is "<String()> can't be coerced to float".
 (defn- f32-round [x]                                     ; float64(float32(x)), round half to even
   (let [b (bits x) e (bit-and (wasm/i64-shr-u b 52) 0x7FF)]
@@ -382,7 +382,7 @@
 (defn ^{:twin "core/unchecked-subtract"} unchecked-sub* ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (unchecked2 1 a b)) ([a b x] (raise-arity 3)))
 (defn ^{:twin "core/unchecked-multiply"} unchecked-mul* ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (unchecked2 2 a b)) ([a b x] (raise-arity 3)))
 
-;; rand-int (lang.go:6944): Int only; n <= 0 gives 0. Native draws from
+;; rand-int (lang.go:6957): Int only; n <= 0 gives 0. Native draws from
 ;; math/rand/v2 seeded by the OS, so no sequence can match it; this one is
 ;; xorshift64 from a fixed state, uniform by rejection.
 (defn- next-rand []

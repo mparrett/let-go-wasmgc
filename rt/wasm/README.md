@@ -2,7 +2,7 @@
 
 Seventeen namespaces that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
-Ground truth is let-go 4e769212. Each file's header states its dialect; the
+Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
 
 ## Load order and link step

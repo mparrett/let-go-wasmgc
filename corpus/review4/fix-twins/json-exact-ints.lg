@@ -1,0 +1,13 @@
+;; P6.7 (D198, the pin move to let-go ff1e6da): read-json decodes with
+;; UseNumber since let-go#995. Integer literals are exact Ints (BigInt past
+;; int64, a named limit here); decimal and exponent forms go through float64
+;; and a whole one in int64 range is an Int. An out-of-range number reads
+;; "json: number X out of range" with no path, after the whole input passed
+;; the syntax check; input that ends after a value started is "unexpected
+;; EOF", an empty or blank one "unexpected end of JSON input".
+(ns json-exact-ints (:require [json]))
+(doseq [t ["123" "-0" "9007199254740993" "9223372036854775807" "-9223372036854775808"
+           "[1234567890123456789, 12345678901234567]" "1.0e3" "1e19" "[0.5, 2.0, -3e2]"
+           "" "  " "[1," "tru" "\"abc" "-" "1." "[1,]" "01" "{\"a\" 1}"
+           "1e400" "-1e400" "[1e400, 2e400]" "{\"a\":[0, 1e400]}" "1e400 x" "[1e400," "{\"a\":1,\"a\":2}"]]
+  (println (pr-str t) "=>" (try (pr-str (json/read-json t)) (catch Exception e (str "ERR " (ex-message e))))))

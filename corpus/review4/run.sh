@@ -11,7 +11,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 : "${LW_TREE:=/tmp/scratch/ws/dev/lower-wasm}"
 : "${OUT:=$here/results}"; mkdir -p "$OUT"
 . "$(dirname "$0")/../../checks/env.sh"
-LGBIN=$LW_ROOT/lg-bin/lg-4e76921230
+LGBIN=$LW_ROOT/lg-bin/lg-ff1e6dac76
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
 cat >"$w/lg" <<X
 #!/usr/bin/env bash
