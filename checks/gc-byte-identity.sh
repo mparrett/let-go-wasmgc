@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-05 at
-# 138f341, after D185-D187; earlier 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-07 at
+# 6a8401b, the let-go ff1e6dac pin with D198; before that 2026-10-05 at 138f341, after
+# D185-D187; 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).
 # Inputs: src/, rt/, corpus/scalar/, corpus/eval/, legmacs' main.lg, pinned baseline commit.
 # --capture compiles the baseline only; otherwise compare default and explicit GC.
 # Covers the default option set from a fresh rtlib only (no --no-rt, --test,
@@ -10,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
-base=138f3410f853a6d6c855528ce592952ecc029cf0
+base=6a8401b70e86a402336d877122997ea9637078a9
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
