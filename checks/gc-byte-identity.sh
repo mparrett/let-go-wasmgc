@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-07 at
-# 167f95e, the let-go ff1e6dac pin with D198 and the deferred read-json conversion; before
+# d0693f3, D199's directly lowered constants; before that 167f95e, the let-go ff1e6dac pin with D198 and the deferred read-json conversion; before
 # that 6a8401b, the pin alone; before that 2026-10-05 at 138f341, after
 # D185-D187; 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).
 # Inputs: src/, rt/, corpus/scalar/, corpus/eval/, legmacs' main.lg, pinned baseline commit.
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
-base=167f95e60acc1c1e4b75ddfee55b0cb34f4499ba
+base=d0693f347b5338591f7380d3aa5e9ea7ecac09bc
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
