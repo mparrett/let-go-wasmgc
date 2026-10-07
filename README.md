@@ -314,3 +314,8 @@ mirror of that workspace. In practice:
   their last green run on this machine (`checks/attest.sh`, keyed by the
   input table in `checks/affected.sh`). Gate decisions are taken with
   `LW_ATTEST=0`, which reruns everything.
+
+## License
+
+MIT; see [LICENSE](LICENSE), which also lists the material taken from
+let-go, xsofy and legmacs.
