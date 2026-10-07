@@ -603,32 +603,38 @@
         (digit? (nth cs i)) (digits-end cs i)
         :else (bad! (nth cs i) "in numeric literal")))
 
-;; numberToValue (json.go:43) runs after the whole input decoded (UseNumber), so
-;; a syntax error anywhere wins over an out-of-range number; of several, the
-;; first in document order is reported (native walks an object's keys in Go
-;; map order, so two in one object can differ from this).
-(def ^:private json-range-err (atom nil))
-
-(defn- range-err! [text]
-  (when (nil? @json-range-err)
-    (reset! json-range-err (str "json: number " text " out of range")))
-  nil)
+;; decodeJSON (json.go:24) keeps every number as its literal text (UseNumber)
+;; through the whole decode, duplicate keys replacing earlier values; only
+;; then does toValue (json.go:70) convert the numbers that survived. So a
+;; discarded value cannot fail, and a syntax error anywhere wins over a
+;; conversion error. j-number returns the text as a keyword in lw.json.num
+;; (no JSON value is a keyword) and j-convert converts the finished tree.
 
 (defn- num-value
   "numberToValue (json.go:43): integer syntax is exact (an Int in int64 range;
    past it native has a BigInt, which the reader refuses as a named limit);
    decimal and exponent forms go through float64, and floatToValue (json.go:63)
    makes a whole float in [-2^63, 2^63) an Int."
-  [text int-syntax? path]
-  (if int-syntax?
+  [text]
+  (if (not (some #(contains? #{\. \e \E} %) text))
     (try (rd/read-string text)
          (catch Exception e (raise-lit (str "lower-wasm: read-json: integer " text " is past int64, a BigInt natively (named limit)"))))
     ;; the reader refuses a float literal out of float64's range
     (let [f (try (rd/read-string text) (catch Exception e ::range))]
-      (cond (= f ::range) (range-err! text)
+      (cond (= f ::range) (raise-lit (str "json: number " text " out of range"))
             (and (== f (clojure.math/floor f)) (>= f -9.223372036854775808E18) (< f 9.223372036854775808E18)) (long f)
-            (wm/nan? (- f f)) (range-err! text)
+            (wm/nan? (- f f)) (raise-lit (str "json: number " text " out of range"))
             :else f))))
+
+(defn- j-convert
+  "toValue (json.go:70) over the decoded tree: vectors in order, then a map's
+   values (native walks a Go map, so with two failing values in one object
+   the one reported can differ from this)."
+  [v]
+  (cond (and (keyword? v) (= "lw.json.num" (namespace v))) (num-value (name v))
+        (vector? v) (mapv j-convert v)
+        (map? v) (reduce (fn [m e] (assoc m (key e) (j-convert (val e)))) v (seq v))
+        :else v))
 
 (defn- j-number [cs i path]
   (let [n (count cs)
@@ -637,14 +643,13 @@
                 (= 48 (nth cs j)) (inc j)
                 (digit? (nth cs j)) (digits-end cs j)
                 :else (bad! (nth cs j) "in numeric literal"))
-        int-end j
         j (if (and (< j n) (= 46 (nth cs j))) (need-digit cs (inc j)) j)
         j (if (and (< j n) (or (= 101 (nth cs j)) (= 69 (nth cs j))))
             (let [k (inc j)
                   k (if (and (< k n) (or (= 43 (nth cs k)) (= 45 (nth cs k)))) (inc k) k)]
               (need-digit cs k))
             j)]
-    [(num-value (apply str (map char (subvec cs i j))) (= j int-end) path) j]))
+    [(keyword "lw.json.num" (apply str (map char (subvec cs i j)))) j]))
 
 (defn- hex-val [c]
   (cond (digit? c) (- c 48)
@@ -768,12 +773,11 @@
                       false)
                 cs (mapv int (first args))
                 _ (when (>= (skip-ws cs 0) (count cs)) (raise-lit "unexpected end of JSON input"))
-                _ (reset! json-range-err nil)
                 [v j] (j-value cs 0 kw? [])
                 j (skip-ws cs j)]
-            (cond (< j (count cs)) (bad! (nth cs j) "after top-level value")
-                  @json-range-err (raise-lit @json-range-err)
-                  :else v)))))
+            (if (< j (count cs))
+              (bad! (nth cs j) "after top-level value")
+              (j-convert v))))))
 
 ;; --- write-json: fromValue (json_value.go:60), then json.Marshal
 
