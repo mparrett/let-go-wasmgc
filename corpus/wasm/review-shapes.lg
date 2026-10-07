@@ -55,8 +55,12 @@
 ;; review2 bug-13: the type of a Repeat's type
 (show "r2-13-type-of-type" [(str (type (type (repeat 2 1)))) (str (type (type 1)))])
 
-;; review2 bug-16: computed NaN hash bits
-(show "r2-16-nan-hash" [(hash ##NaN) (hash (- ##Inf ##Inf))])
+;; review2 bug-16: computed NaN hash bits. (- ##NaN) flips only the sign bit
+;; (Go's -x, f64.neg), so its bits and hash are the same on every platform.
+;; Not (- ##Inf ##Inf): which NaN the hardware returns is platform-defined
+;; (x86 sets the sign, arm64 does not), so its hash differed by machine and
+;; the .expected could only hold one of them; it is printed (as NaN) only.
+(show "r2-16-nan-hash" [(hash ##NaN) (hash (- ##NaN)) (- ##Inf ##Inf)])
 
 ;; review2 R5 (open, known): map/set seq hashes
 (show "r2-R5-map-seq-hash" [(hash (seq {:a 1 :b 2})) (hash (seq #{1 2}))])
