@@ -50,13 +50,18 @@
   (do
     (vec (for [f files]
            (let [path (str rt-dir "/" f)
-                 text (slurp path)]
-             (load-string text)
-             (let [forms (read-string (str "[" text "\n]"))
+                 text (slurp path)
+                 ;; the ns the file ends in: read its forms there, as native
+                 ;; does. load-string restores *ns* since let-go#982, so
+                 ;; ::kw and syntax-quote would otherwise resolve in lw-rt
+                 ;; (D198). One read, so no extra gensyms (D188).
+                 file-ns (load-string (str text "\n*ns*"))]
+             (let [forms (binding [*ns* file-ns] (read-string (str "[" text "\n]")))
                    ns-sym (last (keep #(when (and (seq? %) (= 'ns (first %))) (second %)) forms))]
                [path ns-sym forms]))))))
 
-;; load-string's ns forms leave the compiler in the last runtime ns
+;; before let-go#982, load-string's ns forms left the compiler in the last
+;; runtime ns; since, it restores *ns*. Either way, continue in lw-rt.
 (in-ns 'lw-rt)
 
 (def intrinsics-ns 'wasm.intrinsics)
