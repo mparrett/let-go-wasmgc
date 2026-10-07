@@ -3658,6 +3658,91 @@
     (keyword? v) (list 'wasm.str/kw-of-bytes (list 'wasm.intrinsics/bytes-of-string (named-text v)))
     :else v))
 
+;; P1b (D199): a constant of plain data -- nil, booleans, strings, keywords,
+;; plain symbols, Ints, Floats, and vectors, maps and sets of them, with no
+;; metadata anywhere, or a regex stand-in whose compiled program is such data
+;; -- is lowered here straight from the value: the runtime
+;; constructor calls const-form would make, in the same order, without
+;; analysing a generated init fn. That analysis cost about 5 ms per constant
+;; plus 1-2 ms per call node (legmacs: 580 constants, ~10 s of a warm build).
+;; Anything else keeps the analysed path. No destructuring, #() or for here:
+;; each takes a gensym when this file loads (D188, P9.1).
+
+(defn- direct-const? [v]
+  (cond (or (vector? v) (set? v)) (every? direct-const? v)
+        (map? v) (every? (fn [e] (and (direct-const? (key e)) (direct-const? (val e)))) v)
+        (symbol? v) (or (nil? (meta v)) (and (:lw/regex (meta v)) (direct-const? (meta v))))
+        :else (or (nil? v) (boolean? v) (string? v) (keyword? v) (int? v) (float? v))))
+
+(defn- direct-call
+  "A call to runtime fn ns/f with WAT args, by its registered sig; nil when
+   that arity is not a plain boxed-in, boxed-out fn."
+  [ns f args]
+  (let [v (lw-rt/ns-var ns f)]
+    (rt-analyze! v)
+    (let [a (get-in @*sigs* [v :arities (count args)])]
+      (when (and a (every? (fn [k] (= :box k)) (:params a)) (= :box (:ret a)))
+        (str "(call $" (:name a) (apply str (map (fn [x] (str " " x)) args)) ")")))))
+
+(defn- direct-need [x] (or x (throw (ex-info "direct constant: no plain sig" {}))))
+
+(defn- direct-expr
+  "WAT building v. A collection builds in its own local; the statements that
+   fill it go onto stmts (an atom) ahead of the expression that reads it."
+  [v stmts nloc]
+  (cond
+    (nil? v) "(ref.null none)"
+    (true? v) "(global.get $true)"
+    (false? v) "(global.get $false)"
+    (string? v) (str "(struct.new $Str " (bytes-wat v) " (i64.const -1))")
+    (keyword? v) (direct-need (direct-call 'wasm.str 'kw-of-bytes [(bytes-wat (named-text v))]))
+    ;; const-form*'s regex stand-in: (str v), as natively `namespace` refuses
+    ;; a meta'd symbol, under its compiled program as metadata
+    (symbol? v) (if (meta v)
+                  (direct-need (direct-call 'wasm.core 'with-meta
+                                            [(direct-need (direct-call 'wasm.str 'sym-of-bytes [(bytes-wat (str v))]))
+                                             (direct-expr (meta v) stmts nloc)]))
+                  (direct-need (direct-call 'wasm.str 'sym-of-bytes [(bytes-wat (named-text v))])))
+    (float? v) (float-wat v)
+    (int? v) (if (and (>= v -1073741824) (< v 1073741824))
+               (str "(ref.i31 (i32.const " v "))")
+               (str "(struct.new $Int (i64.const " v "))"))
+    :else
+    (let [l (str "$c" (swap! nloc inc))
+          get-l (str "(local.get " l ")")
+          put! (fn [x] (swap! stmts conj (str "(local.set " l " " x ")")))]
+      (cond
+        (vector? v) (do (put! (direct-need (direct-call 'wasm.pvec 'empty-vec [])))
+                        (run! (fn [x] (put! (direct-need (direct-call 'wasm.pvec 'vconj [get-l (direct-expr x stmts nloc)])))) v)
+                        (direct-need (direct-call 'wasm.pvec 'varray [get-l])))
+        (map? v) (do (put! (direct-need (direct-call 'wasm.phm 'empty-map [])))
+                     (run! (fn [e]
+                             (let [k (direct-expr (key e) stmts nloc)
+                                   x (direct-expr (val e) stmts nloc)]
+                               (put! (direct-need (direct-call 'wasm.core 'assoc [get-l k x])))))
+                           v)
+                     get-l)
+        :else (do (put! (direct-need (direct-call 'wasm.phs 'empty-set [])))
+                  (run! (fn [x] (put! (direct-need (direct-call 'wasm.phs 'sconj [get-l (direct-expr x stmts nloc)])))) v)
+                  get-l)))))
+
+(defn- direct-const!
+  "Lower constant v's init fn wname directly into :lowered; false when v is
+   not plain data or a constructor's sig is not plain (the analysed path)."
+  [wname v]
+  (if (direct-const? v)
+    (try
+      (let [stmts (atom []) nloc (atom 0)
+            e (direct-expr v stmts nloc)]
+        (swap! *rt* assoc-in [:lowered (str "$" wname)]
+               (str "(func $" wname " (result (ref null eq))\n"
+                    (apply str (map (fn [i] (str "  (local $c" (inc i) " (ref null eq))\n")) (range @nloc)))
+                    (apply str (map (fn [x] (str "  " x "\n")) @stmts))
+                    "  " e ")"))
+        true)
+      (catch e false))
+    false))
+
 (defn const-global!
   "A runtime-built constant (keyword, symbol, vector, map, set, list): one
    global, built once by _rt_init (D63's placeholders made real)."
@@ -3668,7 +3753,8 @@
     (or (get-in @*rt* [:consts k])
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
-          (rt-init-fn! (str "const_" i "__init") 'wasm.core (const-form v))
+          (when-not (and (nil? mk) (direct-const! (str "const_" i "__init") v))
+            (rt-init-fn! (str "const_" i "__init") 'wasm.core (const-form v)))
           (swap! *rt* update :const-order conj g)
           g))))
 
