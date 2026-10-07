@@ -37,6 +37,7 @@ P1.5	src/ checks/census.sh checks/census.lg checks/census-summary.py xsofy legma
 P1.6	src/ checks/census.sh checks/census.lg checks/census-summary.py xsofy legmacs oracle corpus/census/switch/
 P1.7	oracle corpus/review/ checks/run-corpus.sh checks/refuse.sh
 P1.8	oracle checks/env.sh checks/sem.sh checks/macro-error-determinism.sh checks/native-msg-check.lg checks/fixtures/macro-error-bare.lg
+P1.9	oracle corpus/consts/ checks/run-corpus.sh
 P1.GATE	src/ checks/bench-fib.sh checks/bench-fib.mjs checks/bench-fib-probe.lg corpus/scalar/fib.clj
 P2.1	oracle corpus/wasm/ checks/run-corpus.sh
 P2.2	oracle corpus/hash/ checks/hash-parity.sh checks/wasm-hash.sh
