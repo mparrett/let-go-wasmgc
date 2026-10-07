@@ -4009,6 +4009,20 @@
 
 (def wat-id #"\$[A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]+")
 (defn refs-of [t] (set (re-seq wat-id t)))
+;; name -> [text refs], bound per session-module: the shake walks every live
+;; item once per fixpoint round, and an item's text rarely changes between
+;; rounds. Checked by identity of the text, since the helpers generated with
+;; and without runtime paths share names.
+(def ^:dynamic *refs-memo* nil)
+(defn item-refs
+  "refs-of the text t of item nm, read once per build while it is unchanged."
+  [nm t]
+  (if *refs-memo*
+    (let [hit (get @*refs-memo* nm)]
+      (if (and hit (identical? (first hit) t))
+        (second hit)
+        (let [r (refs-of t)] (swap! *refs-memo* assoc nm [t r]) r)))
+    (refs-of t)))
 
 (defn field-wt [tn i f]
   (let [t (if-let [c (get-in funcref-fields [tn i])] (str "(ref null " c ")") (slot-wt (:type f)))]
@@ -4188,7 +4202,7 @@
       (let [nm (peek todo) todo (pop todo)]
         (if (contains? live nm)
           (recur todo live)
-          (recur (into todo (filter items (concat (refs-of (items nm)) (get deps nm)))) (conj live nm)))))))
+          (recur (into todo (filter items (concat (item-refs nm (items nm)) (get deps nm)))) (conj live nm)))))))
 
 (defn rt-global-items
   "name -> decl text and name -> deps for the runtime's globals and constants."
@@ -4207,7 +4221,16 @@
    (D64: module size is a perf input) even though the runtime library is
    loaded."
   [items rt-names program]
-  (boolean (some rt-names (live-set items {} (refs-of program)))))
+  ;; the same walk as live-set, stopped at the first runtime name: only the
+  ;; answer is used, and a program that reaches the runtime usually names it
+  ;; within a few steps, where the full walk visits every live item
+  (loop [todo (vec (filter items (refs-of program))) seen #{}]
+    (if (empty? todo)
+      false
+      (let [nm (peek todo) todo (pop todo)]
+        (cond (contains? rt-names nm) true
+              (contains? seen nm) (recur todo seen)
+              :else (recur (into todo (filter items (item-refs nm (items nm)))) (conj seen nm)))))))
 
 (defn by-name [texts] (into {} (map (fn [t] [(form-name t) t]) texts)))
 
@@ -4287,7 +4310,8 @@
 
 (defn rt-fixpoint!
   "Lower pending runtime fns, then compile what the live helpers and globals
-   ask for (boxed wrappers, install!), until nothing new appears."
+   ask for (boxed wrappers, install!), until nothing new appears. Returns the
+   last round's module-parts: nothing changed after it, so it is the module's."
   [fns]
   (loop [n 0]
     (when (> n 50) (fail "runtime fixpoint did not converge" {}))
@@ -4295,7 +4319,8 @@
       (let [info (first (:pending @*rt*))]
         (swap! *rt* update :pending (comp vec rest))
         (lower-pending! info)))
-    (let [{:keys [items live]} (module-parts fns)
+    (let [parts (module-parts fns)
+          {:keys [items live]} parts
           live-text (apply str (map items live))
           wants (distinct (for [[_ q argc] (re-seq box-ref live-text)
                                 :let [nm (str "$" q "#" argc "__box")]
@@ -4306,8 +4331,9 @@
         (when-not v (fail "box wrapper for an unknown runtime var" {:name nm}))
         (swap! *rt* assoc-in [:lowered nm] (box-wrapper v argc)))
       (when need-install (rt-analyze! #'wasm.core/install!))
-      (when (or (seq wants) need-install (seq (:pending @*rt*)))
-        (recur (inc n))))))
+      (if (or (seq wants) need-install (seq (:pending @*rt*)))
+        (recur (inc n))
+        parts))))
 
 (defn const-init-order
   "Constant globals in an order where each one's init runs after the
@@ -4380,11 +4406,12 @@
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
   [ss fns]
-  (binding [*top-forms-cache* (atom {})]
+  (binding [*top-forms-cache* (atom {}) *refs-memo* (atom {})]
     (with-session* ss
       (fn []
-        (when *rt* (rt-fixpoint! fns))
-        (let [{:keys [fixed items live program]} (module-parts fns)
+        ;; the fixpoint's last round already built the parts (the shake walks
+        ;; the whole program and runtime each time)
+        (let [{:keys [fixed items live program]} (if *rt* (rt-fixpoint! fns) (module-parts fns))
               ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
               ;; fn-value globals must come after the globals they read ($info_*)
               gl (let [gs (ordered "(global")
