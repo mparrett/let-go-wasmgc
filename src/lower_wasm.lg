@@ -1733,7 +1733,12 @@
 ;; a direct call and a value read consult first, as native lg's var does.
 ;; Every other native keeps its static twin call.
 (def ^:dynamic *rooted-natives* #{})
-(defn rooted? [v] (and *rt* (contains? *rooted-natives* v)))
+;; D201: while the runtime library is built, the vars its lowering asks
+;; about, so the library is keyed on just the rooted natives that change it
+(def natives-asked (atom nil))
+(defn rooted? [v]
+  (when @natives-asked (swap! natives-asked conj v))
+  (and *rt* (contains? *rooted-natives* v)))
 ;; native lg's compiler emits these (unqualified, by arity) as opcodes
 ;; (compiler.go tryFastOpcode), so a direct call never reads the var and an
 ;; altered root does not reach it; only the var's other uses do
@@ -4515,25 +4520,51 @@
   (loop [i (or (:gensyms snap) 0)]
     (when (pos? i) (gensym) (recur (dec i)))))
 
+(defn rtlib-variant
+  "D201: the part of the library's file name for the program's rooted
+   natives that the runtime's lowering asks about (asked: their names, saved
+   beside the library when it was built). A runtime fn calling a rooted
+   native lowers through the var's root (core/pmap through future*), so a
+   library built without that root must not be restored for the program.
+   Empty when the program roots none of them, as almost every program."
+  [asked]
+  (let [hit (sort (filter (fn [s] (contains? asked s)) (map (fn [v] (str (var-sym v))) *rooted-natives*)))]
+    (if (seq hit) (str "-" (hex32 (apply str (interpose " " hit)))) "")))
+
+(defn- rtlib-exists? [f] (some? (try (os/stat f) (catch e nil))))
+
 (defn load-rtlib!
   "Start the current session from the cached runtime library, building and
-   saving it first if the runtime or the backend changed."
+   saving it first if the runtime or the backend changed, or if no library
+   was built for the rooted natives the program shares with it (D201)."
   []
   (let [prefix (str "rtlib-" (name *target*) "-")
-        f (str rtlib-dir "/" prefix (rtlib-key) ".edn")]
-    (if (some? (try (os/stat f) (catch e nil)))
+        base (str prefix (rtlib-key))
+        asked-f (str rtlib-dir "/" base ".natives")
+        ;; every build saves its asked set, so none saved means no library
+        ;; for these sources yet, and the build below finds the name
+        asked (if (rtlib-exists? asked-f) (set (read-string (slurp asked-f))) nil)
+        f (str rtlib-dir "/" base (if asked (rtlib-variant asked) "") ".edn")]
+    (if (and asked (rtlib-exists? f))
       (let [snap (read-string (slurp f))]
         (rtlib-restore! snap)
         (replay-gensyms! snap))
-      (let [built (gensyms-taken build-rtlib!)
-            tmp (str f ".tmp" (rand-int 1000000000))]
+      (let [built (try (reset! natives-asked #{})
+                       (assoc (gensyms-taken build-rtlib!) :asked @natives-asked)
+                       (finally (reset! natives-asked nil)))
+            asked (set (map (fn [v] (str (var-sym v))) (:asked built)))
+            f (str rtlib-dir "/" base (rtlib-variant asked) ".edn")
+            tmp (str ".tmp" (rand-int 1000000000))]
         (os/sh "mkdir" "-p" rtlib-dir)
-        (spit tmp (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
-        (os/rename tmp f)
-        ;; a library for older sources is dead weight (~3.5 MB each)
+        (spit (str asked-f tmp) (pr-str (vec (sort asked))))
+        (os/rename (str asked-f tmp) asked-f)
+        (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
+        (os/rename (str f tmp) f)
+        ;; a library for older sources is dead weight (~3.5 MB each); the
+        ;; rooted variants of the current one stay (D201)
         (doseq [old (os/ls rtlib-dir)
-                :when (and (or (and (str/starts-with? old prefix) (str/ends-with? old ".edn"))
+                :when (and (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
+                                    (or (str/ends-with? old ".edn") (str/ends-with? old ".natives")))
                                ;; named before the target joined the key, so no prefix matches it
-                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old))
-                           (not= (str rtlib-dir "/" old) f))]
+                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old)))]
           (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))

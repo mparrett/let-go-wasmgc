@@ -1,0 +1,7 @@
+;; P9.3 (D201): roots future*, which the runtime's pmap calls (through the
+;; future macro), so pmap must lower through the var's root. Native lg
+;; prints 3 futures through the altered root.
+(def spawned (atom 0))
+(alter-var-root #'future* (fn [orig] (fn [thunk] (swap! spawned inc) (orig thunk))))
+(println (doall (pmap inc [1 2 3])))
+(println "futures through the altered root:" @spawned)
