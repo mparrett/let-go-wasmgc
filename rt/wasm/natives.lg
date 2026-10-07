@@ -3,7 +3,7 @@
 ;; introspection over a runtime table, json/read-json and write-json, the
 ;; file-system natives of a module with no file system, let-go.core/lines,
 ;; fn?, identical?, rseq, make-array and ten
-;; clojure.math fns. Ground truth is let-go 4e769212 (file:line on each).
+;; clojure.math fns. Ground truth is let-go ff1e6dac (file:line on each).
 ;;
 ;; DIALECT: unlike the other runtime files this one is plain lg over core
 ;; fns and the runtime namespaces, as src/lw_ext.lg is (D58's markers, but
@@ -66,12 +66,12 @@
 ;; ---------------------------------------------------------------------------
 ;; Small natives
 
-(defn ^{:twin "let-go.core/lines"} lines                 ; lang.go:2811: strings.Split on "\n"
+(defn ^{:twin "let-go.core/lines"} lines                 ; lang.go:2820: strings.Split on "\n"
   ([] (raise-arity 0))
   ([x] (if (string? x) (vec (s/split x "\n")) (raise-lit "lines expected String")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-;; isFn (lang.go:3759): only functions, not other IFns; any other arg count is false
+;; isFn (lang.go:3768): only functions, not other IFns; any other arg count is false
 (defn ^{:twin "core/fn?"} fn?
   ([] false)
   ([x] (= 16 (sq/kind x)))
@@ -107,7 +107,7 @@
            :else (wasm/ref-eq a b))))
   ([a b c & more] (raise-arity (+ 3 (count more)))))
 
-;; CoreComplement (lang.go:5522): a fn of ANY arity, so it is plain lg here
+;; CoreComplement (lang.go:5535): a fn of ANY arity, so it is plain lg here
 ;; (a variadic closure gets the backend's variadic slot; a runtime-dialect
 ;; Fn has slots for 0..4 args only, review4 bug-08). f is any vm.AsFn.
 (defn ^{:twin "core/complement"} complement [& args]
@@ -118,7 +118,7 @@
         (fn complemented-fn [& xs] (not (apply f xs)))
         (raise-lit "complement expected Fn")))))
 
-;; bound-fn* (lang.go:3388): capture the dynamic bindings in effect at
+;; bound-fn* (lang.go:3397): capture the dynamic bindings in effect at
 ;; creation and, around each call, overlay them on the caller's (a var not
 ;; captured keeps the caller's binding); f itself when nothing is bound.
 ;; Each captured var is pushed as binding pushes it, so a set! inside the
@@ -138,7 +138,7 @@
               (try (apply f xs) (finally (c/frame-pop! fr))))))
         (raise-lit "bound-fn* expected Fn")))))
 
-;; CoreRseqf (lang.go:8706): a vector or sorted collection reversed, nil
+;; CoreRseqf (lang.go:8719): a vector or sorted collection reversed, nil
 ;; when empty. lw-ext's regex-compile (re-pattern at run time) reaches it.
 (defn ^{:twin "core/rseq"} rseq [& args]
   (if (not= 1 (count args))
@@ -148,7 +148,7 @@
         (when (seq x) (into () (seq x)))
         (raise-lit (str "rseq not supported on: " (if (nil? x) "nil" (tname x))))))))
 
-;; CoreMakeArrayf (lang.go:9003). Float arrays are wasm.arrays' named limit.
+;; CoreMakeArrayf (lang.go:9016). Float arrays are wasm.arrays' named limit.
 (defn ^{:twin "core/make-array"} make-array [& args]
   (if (not= 2 (count args))
     (raise-lit "make-array expects 2 args (type, size)")
@@ -212,7 +212,7 @@
         (subs t 4 (dec (count t)))))))
 
 (defn- ns-arg
-  "resolveNSArg (lang.go:7628): a Symbol naming an existing namespace or a
+  "resolveNSArg (lang.go:7641): a Symbol naming an existing namespace or a
    namespace; the canonical name, or the native error text with prefix."
   [prefix x]
   (if-let [nm (stand-in-ns x)]
@@ -253,7 +253,7 @@
   ([x] (some? (cell-key x)))
   ([x y & more] false))
 
-;; CoreFindNs (lang.go:7647) resolves the clojure.* aliases. Named limit
+;; CoreFindNs (lang.go:7660) resolves the clojure.* aliases. Named limit
 ;; (lw-ext/find-ns-v's, kept): a symbol this table does not know still names
 ;; a namespace, because the program's own namespaces are not in the table.
 (defn ^{:twin "core/find-ns"} find-ns
@@ -261,12 +261,12 @@
   ([x] (if (= 21 (sq/kind x)) (ns-of (canon (str x))) (raise-lit "find-ns expected Symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn ^{:twin "core/all-ns"} all-ns [& _]                 ; CoreAllNs (lang.go:7683): a list, in no set order natively
+(defn ^{:twin "core/all-ns"} all-ns [& _]                 ; CoreAllNs (lang.go:7696): a list, in no set order natively
   (apply list (map ns-of (concat (builtin-nss) (:extra (table))))))
 
 ;; Not named in-ns: lw_rt load-strings the runtime files and then calls
 ;; (in-ns 'lw-rt) unqualified while *ns* is still the last file's.
-(defn ^{:twin "core/in-ns"} in-ns*                        ; inNs (lang.go:2539)
+(defn ^{:twin "core/in-ns"} in-ns*                        ; inNs (lang.go:2548)
   ([] (raise-arity 0))
   ([x] (if (= 21 (sq/kind x))
          (let [nm (add-ns! (str x))]
@@ -275,7 +275,7 @@
          (raise-lit "in-ns expected Symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn ^{:twin "core/alias"} alias                         ; CoreAliasf (lang.go:6147): NS() creates the target
+(defn ^{:twin "core/alias"} alias                         ; CoreAliasf (lang.go:6160): NS() creates the target
   ([] (raise-arity 0))
   ([a] (raise-arity 1))
   ([a n] (if (and (= 21 (sq/kind a)) (= 21 (sq/kind n)))
@@ -285,7 +285,7 @@
            (raise-lit "alias expected Symbol")))
   ([a n x & more] (raise-arity (+ 3 (count more)))))
 
-(defn ^{:twin "core/intern"} intern [& args]              ; CoreInternf (lang.go:9249)
+(defn ^{:twin "core/intern"} intern [& args]              ; CoreInternf (lang.go:9262)
   (let [n (count args)]
     (if (or (< n 2) (> n 3))
       (raise-lit "intern expects 2 or 3 args")
@@ -314,17 +314,17 @@
                [(symbol k) v])]
     (into cells prog)))
 
-(defn ^{:twin "core/ns-publics"} ns-publics               ; CoreNsPublics (lang.go:7708)
+(defn ^{:twin "core/ns-publics"} ns-publics               ; CoreNsPublics (lang.go:7721)
   ([] (raise-arity 0))
   ([x] (interns-of (ns-arg "ns-publics: " x) true))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn ^{:twin "core/ns-interns"} ns-interns               ; CoreNsInterns (lang.go:7726): privates too
+(defn ^{:twin "core/ns-interns"} ns-interns               ; CoreNsInterns (lang.go:7739): privates too
   ([] (raise-arity 0))
   ([x] (interns-of (ns-arg "ns-interns: " x) false))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn ^{:twin "core/the-ns"} the-ns                       ; CoreTheNs (lang.go:7695)
+(defn ^{:twin "core/the-ns"} the-ns                       ; CoreTheNs (lang.go:7708)
   ([] (raise-arity 0))
   ([x] (ns-of (ns-arg "the-ns: " x)))
   ([x y & more] (raise-arity (+ 2 (count more)))))
@@ -337,7 +337,7 @@
   (or (:var (cell (str nsn "/" nm)))
       (get-in (table) [:program nsn :vars nm])))
 
-(defn ^{:twin "core/find-var"} find-var                   ; CoreFindVar (lang.go:7838)
+(defn ^{:twin "core/find-var"} find-var                   ; CoreFindVar (lang.go:7851)
   ([] (raise-arity 0))
   ([x] (if (= 21 (sq/kind x))
          (let [q (namespace x)]
@@ -356,7 +356,7 @@
          (raise-lit "find-var expected a symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn ^{:twin "core/resolve"} resolve                     ; CoreResolvef (lang.go:7666): the current ns's Lookup
+(defn ^{:twin "core/resolve"} resolve                     ; CoreResolvef (lang.go:7679): the current ns's Lookup
   ([] (raise-arity 0))
   ([x] (if (= 21 (sq/kind x))
          (let [t (table) q (namespace x)]
@@ -376,7 +376,7 @@
 
 (defn- cell-value [cl] (if (seq (:stack cl)) (first (:stack cl)) (:val cl)))
 
-(defn ^{:twin "core/var-get"} var-get [& args]             ; CoreVarGet (lang.go:9164)
+(defn ^{:twin "core/var-get"} var-get [& args]             ; CoreVarGet (lang.go:9177)
   (if (not= 1 (count args))
     (raise-lit "var-get expects 1 arg")
     (let [v (first args) key (cell-key v)]
@@ -385,14 +385,14 @@
             (native-var? v key) (c/var-value v)          ; its altered root, or the stand-in's value (or limit)
             :else (program-var-limit "var-get" v)))))
 
-;; CoreBoundQ (lang.go:9177). Named limit: a declared program var that is
+;; CoreBoundQ (lang.go:9190). Named limit: a declared program var that is
 ;; never defined is bound? here (natively false).
 (defn ^{:twin "core/bound?"} bound? [& args]
   (cond (not= 1 (count args)) (raise-lit "bound? expects 1 arg")
         (nil? (cell-key (first args))) (raise-lit "bound? expects a Var")
         :else true))
 
-(defn ^{:twin "core/alter-var-root"} alter-var-root [& args] ; alterVarRoot (lang.go:4355)
+(defn ^{:twin "core/alter-var-root"} alter-var-root [& args] ; alterVarRoot (lang.go:4364)
   (if (< (count args) 2)
     (raise-lit "alter-var-root expects at least 2 args")
     (let [[v f & more] args key (cell-key v)]
@@ -414,7 +414,7 @@
               (c/set-var-root! v nv))
             :else (program-var-limit "alter-var-root" v)))))
 
-(defn ^{:twin "core/alter-meta!"} alter-meta! [& args]     ; alterMeta (lang.go:3721)
+(defn ^{:twin "core/alter-meta!"} alter-meta! [& args]     ; alterMeta (lang.go:3730)
   (if (< (count args) 2)
     (raise-lit "alter-meta! expects at least 2 args")
     (let [[r f & more] args]
@@ -448,7 +448,7 @@
           (and (cell key) (contains? (cell key) :val)) (do (swap! registry update-in [:cells key :stack] rest) nil)
           :else (program-var-limit "pop-binding!" v))))
 
-;; CoreRequire (lang.go:7575) at run time. The program's namespaces were
+;; CoreRequire (lang.go:7588) at run time. The program's namespaces were
 ;; compiled in from their ns forms; a run-time require is a no-op for a
 ;; namespace this table knows (native's builtins, in-ns'd and aliased ones)
 ;; and native's load failure otherwise, which legmacs' (try (require
@@ -503,7 +503,7 @@
        (resolve (symbol (str nm "/" (name sym))))))))
 
 ;; ---------------------------------------------------------------------------
-;; future* (lang.go:3688) on one thread (P7.1). Natively the thunk runs in a
+;; future* (lang.go:3697) on one thread (P7.1). Natively the thunk runs in a
 ;; goroutine and the promise is returned pending; a module has no second
 ;; thread, so the thunk runs to completion here, at the call, and the
 ;; promise comes back delivered (nil when the thunk throws, as natively).
@@ -525,7 +525,7 @@
 
 (defn- enoent [op path] (str op " " path ": no such file or directory"))
 
-(defn ^{:twin "core/spit"} spit [& args]                  ; CoreSpit (lang.go:6303)
+(defn ^{:twin "core/spit"} spit [& args]                  ; CoreSpit (lang.go:6316)
   (if (not= 2 (count args))
     (raise-arity (count args))
     (let [[path content] args]
@@ -534,7 +534,7 @@
             (raise-lit "spit expected String or byte-array")
             :else (raise-lit (str "spit failed: " (enoent "open" path)))))))
 
-(defn ^{:twin "core/slurp"} slurp [& args]                ; CoreSlurp (lang.go:6286): legmacs reads every file in a try
+(defn ^{:twin "core/slurp"} slurp [& args]                ; CoreSlurp (lang.go:6299): legmacs reads every file in a try
   (cond (not= 1 (count args)) (raise-arity (count args))
         (not (string? (first args))) (raise-lit "slurp expected String")
         :else (raise-lit (str "slurp failed: " (enoent "open" (first args))))))
@@ -576,7 +576,9 @@
         (or (and (>= c 128) (< c 160)) (= c 173) (= c 8232) (= c 8233)) (str "'\\u" (hex4 c) "'")
         :else (str "'" (char c) "'")))
 
-(defn- eof! [] (raise-lit "unexpected end of JSON input"))
+;; decodeJSON (json.go:24): the Decoder's io.ErrUnexpectedEOF once a value has
+;; started; read-json itself reports an empty or blank input (io.EOF)
+(defn- eof! [] (raise-lit "unexpected EOF"))
 (defn- bad! [c ctx] (raise-lit (str "invalid character " (quote-char c) " " ctx)))
 
 (defn- ws? [c] (or (= c 32) (= c 9) (= c 10) (= c 13)))
@@ -601,39 +603,38 @@
         (digit? (nth cs i)) (digits-end cs i)
         :else (bad! (nth cs i) "in numeric literal")))
 
-;; An out-of-range number is Unmarshal's UnmarshalTypeError, which does not
-;; stop the decode: the whole input is still checked, so a later syntax
-;; error wins, and the FIRST range error is reported at the end. Its text
-;; names the value's path (json/v2's JSON Pointer tokens joined by "."; v2
-;; is Go 1.27's default encoding/json): "into Go value" at the top level,
-;; "into .a.1" when the last token is an array index, else "into Go struct
-;; field .a" (v2_decode.go UnmarshalTypeError.Error).
-(def ^:private json-range-err (atom nil))
-
-(defn- range-err! [text path]
-  (when (nil? @json-range-err)
-    (let [field (string/join "." path)
-          last-tok (if (seq path) (peek path) "")
-          into (cond (= field "") "Go value"
-                     (and (seq last-tok) (every? #(digit? (int %)) last-tok)) (str "." field)
-                     :else (str "Go struct field ." field))]
-      (reset! json-range-err (str "json: cannot unmarshal number " text " into " into " of type float64"))))
-  nil)
+;; decodeJSON (json.go:24) keeps every number as its literal text (UseNumber)
+;; through the whole decode, duplicate keys replacing earlier values; only
+;; then does toValue (json.go:70) convert the numbers that survived. So a
+;; discarded value cannot fail, and a syntax error anywhere wins over a
+;; conversion error. j-number returns the text as a keyword in lw.json.num
+;; (no JSON value is a keyword) and j-convert converts the finished tree.
 
 (defn- num-value
-  "toValue (json.go:15) of the float64 Unmarshal gives: an integral value
-   below 2^63 in magnitude is an Int."
-  [text int-syntax? path]
-  (if (and int-syntax? (<= (count text) 15))
-    (rd/read-string text)
+  "numberToValue (json.go:43): integer syntax is exact (an Int in int64 range;
+   past it native has a BigInt, which the reader refuses as a named limit);
+   decimal and exponent forms go through float64, and floatToValue (json.go:63)
+   makes a whole float in [-2^63, 2^63) an Int."
+  [text]
+  (if (not (some #(contains? #{\. \e \E} %) text))
+    (try (rd/read-string text)
+         (catch Exception e (raise-lit (str "lower-wasm: read-json: integer " text " is past int64, a BigInt natively (named limit)"))))
     ;; the reader refuses a float literal out of float64's range
-    (let [f (try (rd/read-string (if int-syntax? (str text ".0") text))
-                 (catch Exception e ::range))]
-      ;; Go's f == float64(int64(f)): integral and in [-2^63, 2^63)
-      (cond (= f ::range) (range-err! text path)
+    (let [f (try (rd/read-string text) (catch Exception e ::range))]
+      (cond (= f ::range) (raise-lit (str "json: number " text " out of range"))
             (and (== f (clojure.math/floor f)) (>= f -9.223372036854775808E18) (< f 9.223372036854775808E18)) (long f)
-            (wm/nan? (- f f)) (range-err! text path)
+            (wm/nan? (- f f)) (raise-lit (str "json: number " text " out of range"))
             :else f))))
+
+(defn- j-convert
+  "toValue (json.go:70) over the decoded tree: vectors in order, then a map's
+   values (native walks a Go map, so with two failing values in one object
+   the one reported can differ from this)."
+  [v]
+  (cond (and (keyword? v) (= "lw.json.num" (namespace v))) (num-value (name v))
+        (vector? v) (mapv j-convert v)
+        (map? v) (reduce (fn [m e] (assoc m (key e) (j-convert (val e)))) v (seq v))
+        :else v))
 
 (defn- j-number [cs i path]
   (let [n (count cs)
@@ -642,14 +643,13 @@
                 (= 48 (nth cs j)) (inc j)
                 (digit? (nth cs j)) (digits-end cs j)
                 :else (bad! (nth cs j) "in numeric literal"))
-        int-end j
         j (if (and (< j n) (= 46 (nth cs j))) (need-digit cs (inc j)) j)
         j (if (and (< j n) (or (= 101 (nth cs j)) (= 69 (nth cs j))))
             (let [k (inc j)
                   k (if (and (< k n) (or (= 43 (nth cs k)) (= 45 (nth cs k)))) (inc k) k)]
               (need-digit cs k))
             j)]
-    [(num-value (apply str (map char (subvec cs i j))) (= j int-end) path) j]))
+    [(keyword "lw.json.num" (apply str (map char (subvec cs i j)))) j]))
 
 (defn- hex-val [c]
   (cond (digit? c) (- c 48)
@@ -760,7 +760,7 @@
               (or (= c 45) (digit? c)) (j-number cs i path)
               :else (bad! c "looking for beginning of value"))))))
 
-(defn ^{:twin "json/read-json"} read-json [& args]       ; json.go:156
+(defn ^{:twin "json/read-json"} read-json [& args]       ; json.go:124
   (let [n (count args)]
     (cond (or (< n 1) (> n 2)) (raise-arity n)
           (not (string? (first args))) (raise-lit "read-json expected String")
@@ -772,14 +772,14 @@
                         (raise-lit "read-json options are not Map"))
                       false)
                 cs (mapv int (first args))
-                _ (reset! json-range-err nil)
+                _ (when (>= (skip-ws cs 0) (count cs)) (raise-lit "unexpected end of JSON input"))
                 [v j] (j-value cs 0 kw? [])
                 j (skip-ws cs j)]
-            (cond (< j (count cs)) (bad! (nth cs j) "after top-level value")
-                  @json-range-err (raise-lit @json-range-err)
-                  :else v)))))
+            (if (< j (count cs))
+              (bad! (nth cs j) "after top-level value")
+              (j-convert v))))))
 
-;; --- write-json: fromValue (json.go:107), then json.Marshal
+;; --- write-json: fromValue (json_value.go:60), then json.Marshal
 
 (defn- enc-string
   "A Go string as json.Marshal writes it (HTML-safe escaping)."
@@ -905,13 +905,13 @@
           (char? v) (enc-string (pr-str v))
           :else (enc-string (str v)))))
 
-(defn ^{:twin "json/write-json"} write-json [& args]     ; json.go:182
+(defn ^{:twin "json/write-json"} write-json [& args]     ; json.go:151
   (if (not= 1 (count args))
     (raise-arity (count args))
     (enc-value (first args))))
 
 ;; ---------------------------------------------------------------------------
-;; format (CoreFormatf, lang.go:6870): Java's %n becomes "\n", each scanned
+;; format (CoreFormatf, lang.go:6883): Java's %n becomes "\n", each scanned
 ;; argument is converted by its verb (an Int under f/e/g/E/G is a float64),
 ;; surplus arguments are dropped, then Go's fmt.Sprintf. Supported: flags
 ;; - + space 0 #, width, precision, verbs s q v d x X o b c U t f e E g G
@@ -1148,7 +1148,7 @@
              (limit (str "format %" verb " of a " (tname x))))))
 
 (defn- newlines
-  "formatNewlines (lang.go:6845): %n is \"\\n\"; %% is kept, so %%n stays."
+  "formatNewlines (lang.go:6858): %n is \"\\n\"; %% is kept, so %%n stays."
   [st]
   (if-not (string/includes? st "%n")
     st

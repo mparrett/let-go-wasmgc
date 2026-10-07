@@ -4,7 +4,7 @@ Strings, chars, keywords, symbols and floats as values, `str`/`pr-str`/
 `print-str`, float formatting and the string natives, in the runtime dialect
 (`str.lg`, ns `wasm.str`). Checked against native lg by
 `corpus/intrinsics/str_test.lg` via `checks/run-intrinsics-native.sh`. Ground
-truth: let-go 4e769212 built with go1.27.1. Paths are under
+truth: let-go ff1e6dac built with go1.27.1. Paths are under
 let-go's `pkg/` unless they start with `go:` (Go's
 `internal/strconv`).
 
@@ -13,7 +13,7 @@ let-go's `pkg/` unless they start with `go:` (Go's
 | box | fields | notes |
 |---|---|---|
 | `Str` | bytes (`wasm/Bytes`, UTF-8), `[:mut :i64]` cached hash, -1 = not yet | hash is FNV-1a over the bytes, cached on first `hash` |
-| `Char` | `:i32` rune | any 0..0x10FFFF, surrogates included (`rt/lang.go:6665`) |
+| `Char` | `:i32` rune | any 0..0x10FFFF, surrogates included (`rt/lang.go:6678`) |
 | `Kw` | ns bytes or null, name bytes, hash | built from the full `ns/name` text, split at the first `/` unless the text is `/` (`vm/symbol.go:79`); hash = `hashUnencodedChars(text) + 0x9e3779b9`; interned |
 | `Sym` | same layout, symbol hash | interned in the same table, distinct from a keyword of the same text |
 | `Float` | `:f64` | |
@@ -36,10 +36,10 @@ use, and the port follows each one:
 
 | op | unit | source |
 |---|---|---|
-| `count` | runes | `CoreCount` special-cases String: `len([]rune(s))` (`rt/lang.go:6105`) |
+| `count` | runes | `CoreCount` special-cases String: `len([]rune(s))` (`rt/lang.go:6118`) |
 | `seq`/`first`/`rest`/`next` | runes | `String.Seq()` builds a `List` of `Char`s (`vm/string.go:259`) |
-| `subs` | runes, mapped to byte offsets by walking | `rt/lang.go:3165` |
-| `index-of`/`last-index-of` | runes | `[]rune` + `runeIndex` (`rt/lang.go:4103`, `:4707`) |
+| `subs` | runes, mapped to byte offsets by walking | `rt/lang.go:3174` |
+| `index-of`/`last-index-of` | runes | `[]rune` + `runeIndex` (`rt/lang.go:4112`, `:4707`) |
 | `nth` | **bound by bytes, found by runes** | `Nth` takes the `vm.Indexed` path (`rt/native_prims.go:155`) and checks `i >= RawCount()`; `ValueAtOr` walks runes and returns `NIL` past the last rune (`vm/string.go:276`) |
 | `compare`, `=`, hash | bytes | `string(a) < string(b)` (`vm/compare.go:69`) |
 
@@ -52,7 +52,7 @@ this runtime are always valid; the decoder is exact anyway).
 
 ## Printing
 
-`str` is `strValue` at the top level (`rt/lang.go:5006`): nil is `""`,
+`str` is `strValue` at the top level (`rt/lang.go:5019`): nil is `""`,
 strings and chars raw, `##Inf`/`##-Inf` as `Infinity`/`-Infinity`, everything
 else `Value.String()`. Nested values always print readably (`(str [\a "b"])`
 is `[\a "b"]`, `(str [##Inf])` is `[+Inf]`). `pr-str` is readable at every

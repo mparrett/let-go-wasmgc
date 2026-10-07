@@ -3,7 +3,7 @@
 ;; natives xsofy and legmacs reach, in the runtime dialect of seq.lg (IR
 ;; special forms, IR-op core fns on :int and :float, macros expanding to
 ;; those, wasm.intrinsics, wasm.seq, wasm.pvec and this file's own fns).
-;; Ground truth is let-go 4e769212 (pkg/vm/string.go, char.go, keyword.go,
+;; Ground truth is let-go ff1e6dac (pkg/vm/string.go, char.go, keyword.go,
 ;; symbol.go, float.go, compare.go; pkg/rt/lang.go, native_prims.go,
 ;; print_method.go) and Go's strconv for floats; STR.md has the citations,
 ;; the index semantics, the escape table and the float algorithm.
@@ -469,7 +469,7 @@
 ;; Printing. write-val is Value.String() for nested values (readably) and
 ;; the print-method path of print-str (not readably: strings and chars raw
 ;; at every depth, print_method.go:30). The top level of str is strValue
-;; (lang.go:5006): nil is "", strings and chars raw, +-Inf as Infinity.
+;; (lang.go:5019): nil is "", strings and chars raw, +-Inf as Infinity.
 
 (defn set-print-hook!
   "Install the printer for foreign values (maps, sets): a closure called as
@@ -571,7 +571,7 @@
                        (buf-bytes! b (str-bytes (sq/invoke2 h x (sq/box-int mode))))))
           :else (wasm/trap "wasm.str: printing this kind is not implemented"))))
 
-(defn- write-str-val [b x]                               ; strValue (lang.go:5006)
+(defn- write-str-val [b x]                               ; strValue (lang.go:5019)
   (let [k (sq/kind x)]
     (cond (= k 0) nil
           (= k 17) (buf-bytes! b (str-bytes x))
@@ -702,7 +702,7 @@
       (buf-bytes! b (str-bytes ns)) (buf-byte! b 47) (buf-bytes! b (str-bytes nm))
       (slice (wasm/get Buf 0 b) 0 (wasm/get Buf 1 b)))))
 
-(defn ^{:twin "core/keyword"} keyword                                            ; CoreKeyword (lang.go:5823)
+(defn ^{:twin "core/keyword"} keyword                                            ; CoreKeyword (lang.go:5836)
   ([x] (let [k (sq/kind x)]
          (cond (= k 0) (wasm/null)
                (= k 20) x
@@ -714,7 +714,7 @@
                  (if (= 17 (sq/kind nm)) false true) (sq/raise-typed (wasm/bytes-of-string "keyword name must be a string, got ") nm)
                  :else (kw-of-bytes (join-ns ns nm)))))
 
-(defn ^{:twin "core/symbol"} symbol                                             ; CoreSymbolf (lang.go:5866)
+(defn ^{:twin "core/symbol"} symbol                                             ; CoreSymbolf (lang.go:5879)
   ([x] (let [k (sq/kind x)]
          (cond (= k 0) (raise-lit (wasm/bytes-of-string "symbol expected String, Symbol, Keyword, or Var"))
                (= k 21) x
@@ -728,7 +728,7 @@
 ;; ---------------------------------------------------------------------------
 ;; char, int
 
-(defn ^{:twin "core/char"} char [x]                                           ; CoreChar (lang.go:6660)
+(defn ^{:twin "core/char"} char [x]                                           ; CoreChar (lang.go:6673)
   (let [k (sq/kind x)]
     (cond (= k 1) (let [n (sq/unbox-int x)]
                     (if (if (< n 0) true (> n 0x10FFFF)) (raise-val (wasm/bytes-of-string "value out of range for char: ") x (wasm/bytes-of-string "")) (mk-char n)))
@@ -739,7 +739,7 @@
                        (raise-val (wasm/bytes-of-string "") x (wasm/bytes-of-string " can't be coerced to char"))))
           :else (raise-val (wasm/bytes-of-string "") x (wasm/bytes-of-string " can't be coerced to char")))))
 
-(defn ^{:twin "core/int"} int [x]                                            ; intf (lang.go:2994)
+(defn ^{:twin "core/int"} int [x]                                            ; intf (lang.go:3003)
   (let [k (sq/kind x)]
     (cond (= k 1) (let [n (sq/unbox-int x)]
                     (if (if (< n -2147483648) true (> n 2147483647)) (raise-val (wasm/bytes-of-string "") x (wasm/bytes-of-string " can't be coerced to int")) x))
@@ -753,7 +753,7 @@
           :else (raise-val (wasm/bytes-of-string "") x (wasm/bytes-of-string " can't be coerced to int")))))
 
 ;; ---------------------------------------------------------------------------
-;; subs (lang.go:3165): rune indices mapped to byte offsets by walking.
+;; subs (lang.go:3174): rune indices mapped to byte offsets by walking.
 
 (defn ^{:twin "core/subs"} subs
   ([s start] (cond (if (= 17 (sq/kind s)) false true) (sq/raise-typed (wasm/bytes-of-string "expected string, got ") s)
@@ -775,7 +775,7 @@
                                                (mk-str (slice bs bo be)))))))))
 
 ;; ---------------------------------------------------------------------------
-;; split (lang.go:2916): strings.SplitN over a literal separator, as a List.
+;; split (lang.go:2925): strings.SplitN over a literal separator, as a List.
 ;; A regex separator is not in the value model.
 
 (defn- count-sep [s sep]                                 ; strings.Count, non-empty sep
@@ -858,7 +858,7 @@
           (= who 0) (raise-lit (wasm/bytes-of-string "index-of expected String or Char as second arg"))
           :else (raise-lit (wasm/bytes-of-string "last-index-of expected String or Char as second arg")))))
 
-(defn- index-of* [s v from]                     ; index-of (lang.go:4103) + runeIndex (:4707)
+(defn- index-of* [s v from]                     ; index-of (lang.go:4112) + runeIndex (:4707)
   (let [hay (runes-of (str-bytes s)) nd (needle-of v 0) len (wasm/alen hay) m (wasm/alen nd)]
     (cond (if (< from 0) true (> from len)) (wasm/null)
           (= m 0) (sq/box-int from)
@@ -873,7 +873,7 @@
                     (if (= 1 (sq/kind from)) false true) (raise-lit (wasm/bytes-of-string "index-of expected Int as third arg"))
                     :else (index-of* s v (sq/unbox-int from)))))
 
-(defn- last-index-of* [s v end]                          ; last-index-of (lang.go:4143) + runeLastIndex (:4727)
+(defn- last-index-of* [s v end]                          ; last-index-of (lang.go:4152) + runeLastIndex (:4727)
   (let [hay (runes-of (str-bytes s)) nd (needle-of v 1) len (wasm/alen hay)
         end (if (> end len) len end) m (wasm/alen nd)]
     ;; strRunes[:end] panics natively; the VM reports the recovered panic as a catchable error
@@ -990,10 +990,10 @@
   (if (wasm/null? x) (raise-lit (wasm/bytes-of-string "upper-case expected non-nil")) (map-ascii (str x) 97 122 -32)))
 
 ;; ---------------------------------------------------------------------------
-;; str-replace (lang.go:6509) with a literal match: strings.ReplaceAll, or
-;; literalReplaceFn (lang.go:1308) when the replacement is a function.
+;; str-replace (lang.go:6522) with a literal match: strings.ReplaceAll, or
+;; literalReplaceFn (lang.go:1317) when the replacement is a function.
 
-(defn ^{:twin "core/str-replace"} str-replace [s m r]       ; CoreStrReplace (lang.go:6509): s, then r (any IFn), then m
+(defn ^{:twin "core/str-replace"} str-replace [s m r]       ; CoreStrReplace (lang.go:6522): s, then r (any IFn), then m
   (cond (if (= 17 (sq/kind s)) false true) (raise-lit (wasm/bytes-of-string "str-replace expected String"))
         (if (sq/callable? r) (if (= 17 (sq/kind m)) false true) false)
         (raise-lit (wasm/bytes-of-string "str-replace expected String or Regex"))
@@ -1032,7 +1032,7 @@
           (buf-done b))))
 
 ;; ---------------------------------------------------------------------------
-;; parse-long (lang.go:2827): strconv.ParseInt(s, 10, 64), nil on any error.
+;; parse-long (lang.go:2836): strconv.ParseInt(s, 10, 64), nil on any error.
 
 (defn ^{:twin "core/parse-long"} parse-long [s]
   (if (= 17 (sq/kind s))

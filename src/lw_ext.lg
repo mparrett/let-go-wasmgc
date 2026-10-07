@@ -69,7 +69,7 @@
         :else 0))
 
 (defn long-v
-  "core/long (CoreLongf, lang.go:6552): Int as is, Float truncated (the
+  "core/long (CoreLongf, lang.go:6565): Int as is, Float truncated (the
    range check is Go's, against float64 MinInt64/MaxInt64), Char its code,
    Boolean 1/0."
   [x]
@@ -89,7 +89,7 @@
         :else (wasm.core/raise (wasm.str/str-bytes (str (if (nil? x) "nil" x) " can't be coerced to long")))))
 
 (defn ints-v
-  "core/ints, core/longs (lang.go:4322): an int-array as is, else a new one."
+  "core/ints, core/longs (lang.go:4331): an int-array as is, else a new one."
   [x]
   (if (= "let-go.lang.Array" (str (type x))) x (int-array x)))
 
@@ -157,7 +157,7 @@
 (defn json-string [s] (str "\"" (apply str (map json-char s)) "\""))
 
 (defn json-key
-  "A map key as fromMapValue (pkg/rt/json.go:58) names it: a String as is,
+  "A map key as fromMapValue (pkg/rt/json_value.go:15) names it: a String as is,
    a Keyword its name with namespace and no colon, anything else String()."
   [k]
   (cond (string? k) k
@@ -165,7 +165,7 @@
         :else (str k)))
 
 (defn json-str
-  "(js/emit name data)'s data as JSON text: fromValue (pkg/rt/json.go:103)
+  "(js/emit name data)'s data as JSON text: fromValue (pkg/rt/json_value.go:60)
    then json.Marshal. Map keys are sorted (Go marshals map[string]any in
    key order). Floats: a whole value (|v| < 1e18) prints without a fraction,
    as Go's 'f'/-1 does; others use the runtime's float text (Go switches to
@@ -823,7 +823,7 @@
                   nil))))
 
 (defn re-pattern-v
-  "core/re-pattern (lang.go:6691): a regex comes back as is; a String is
+  "core/re-pattern (lang.go:6704): a regex comes back as is; a String is
    parsed and compiled at run time (regex-parse, regex-compile, compiled
    into the module) into the stand-in a regex constant is. A pattern
    outside the engine's subset, or a malformed one, raises regex-parse's
@@ -925,7 +925,8 @@
         keep (fn [e] (if (nil? m) e (with-meta e m)))]
     (cond (nil? x) nil
           (map-entry?-v x) []
-          ;; Collection.Empty() is the shared EmptySorted*: no meta (sorted_map.go:397)
+          ;; Collection.Empty() is the shared EmptySorted* for the default comparator,
+          ;; the only one here (sorted-map-by is refused): no meta (sorted_map.go:413)
           (= 38 (wasm.core/ckind x)) (wasm.sorted/empty-smap)
           (= 39 (wasm.core/ckind x)) (wasm.sorted/empty-sset)
           (vector? x) (keep [])
@@ -935,7 +936,7 @@
           :else nil)))
 
 (defn sorted-map-v
-  "core/sorted-map (CoreSortedMap, lang.go:5598): pairs assoc'd in turn into
+  "core/sorted-map (CoreSortedMap, lang.go:5611): pairs assoc'd in turn into
    the empty sorted map; an odd count is an error."
   [& kvs]
   (if (odd? (count kvs))
@@ -944,7 +945,7 @@
       (if s (recur (wasm.sorted/smap-assoc m (first s) (second s)) (nnext s)) m))))
 
 (defn sorted-set-v
-  "core/sorted-set (CoreSortedSet, lang.go:5607): each element conj'd in turn."
+  "core/sorted-set (CoreSortedSet, lang.go:5620): each element conj'd in turn."
   [& xs]
   (loop [r (wasm.sorted/empty-sset) s (seq xs)]
     (if s (recur (wasm.sorted/sset-conj r (first s)) (next s)) r)))

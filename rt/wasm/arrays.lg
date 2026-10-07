@@ -2,7 +2,7 @@
 ;; (int-array, byte-array, aget, aset, alength, aclone, bytes), in the
 ;; runtime dialect of seq.lg (IR special forms, IR-op core fns on :int,
 ;; wasm.intrinsics, and the runtime namespaces it requires). Ground truth is
-;; let-go 4e769212: pkg/vm/typed_array.go (TypedArray, TypedArraySeq) and
+;; let-go ff1e6dac: pkg/vm/typed_array.go (TypedArray, TypedArraySeq) and
 ;; pkg/rt/lang.go (buildArray :5046, CoreAgetf :9036, CoreAsetf :9074,
 ;; CoreAlengthf :9098, CoreAclonef :9111, CoreBytesf :9124).
 ;;
@@ -11,7 +11,7 @@
 ;; object array a wasm.pvec/PVec whose leaves are written in place by
 ;; pv/vset!), mutable and never resized. An object array keeps a PVec so that
 ;; `vec` of it can share the leaves: native's vec returns an ArrayVector over
-;; the same []Value (lang.go:2068), so a later aset shows through the vector
+;; the same []Value (lang.go:2077), so a later aset shows through the vector
 ;; (transient_test's vec-object-array-alias). double-array and conj/empty
 ;; (which make an object-array) are named limits. Loaded before wasm.core, which refines kind 18 to 37 for an Arr
 ;; and routes type/count/seq/print/get/nth here; the messages that name an
@@ -133,15 +133,15 @@
   ([x init] (build 2 x init true))
   ([x init c] (raise-arity 3)))
 
-;; to-array (lang.go:4208): seqOf, so an Int is "don't know how to create
+;; to-array (lang.go:4217): seqOf, so an Int is "don't know how to create
 ;; ISeq from", not a size; nil and () give an empty array.
 (defn ^{:twin "core/to-array"} to-array [x]
   (if (if (int-val? x) true (scalar-kind? (sq/kind x)))
     (raise-got (wasm/bytes-of-string "don't know how to create ISeq from ") x)
     (build-seq 2 x)))
 
-;; vec (lang.go:2054) is wasm.seq/vec except on an object array, whose
-;; storage the vector shares (lang.go:2068).
+;; vec (lang.go:2063) is wasm.seq/vec except on an object array, whose
+;; storage the vector shares (lang.go:2077).
 (defn ^{:twin "core/vec"} vec [x]
   (if (arr? x)
     (if (= 2 (akind x)) (pv/varray (adata x)) (sq/vec x))

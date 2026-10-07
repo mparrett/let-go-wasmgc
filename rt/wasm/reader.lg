@@ -3,7 +3,7 @@
 ;; expanding to those, wasm.intrinsics, and the other runtime namespaces).
 ;; A near-literal port of let-go's data reader (core/read-string =
 ;; newDataReaderWithResolvers + ReadSkipNoValue, pkg/compiler/eval.go:241)
-;; at 4e769212: pkg/compiler/reader.go and errors.go, plus Go's strconv
+;; at ff1e6dac: pkg/compiler/reader.go and errors.go, plus Go's strconv
 ;; (ParseInt, ParseFloat via its exact `decimal` path) and fmt's %x/%o scan
 ;; for the cases the reader hands to them. READER.md has the grammar, the
 ;; token table, every error message with its citation, and the named limits.
@@ -813,7 +813,7 @@
                               (void? st f) (recur acc)
                               :else (recur (pv/vconj acc f)))))))))
 
-(defn- pos-meta [st line col]                            ; the FormSource position meta reads back (lang.go:3456)
+(defn- pos-meta [st line col]                            ; the FormSource position meta reads back (lang.go:3465)
   (m/massoc (m/massoc (m/empty-map) (wasm/get Kws 0 (wasm/get Aux 6 (aux st))) (sq/box-int (inc line)))
             (wasm/get Kws 1 (wasm/get Aux 6 (aux st))) (sq/box-int (inc col))))
 

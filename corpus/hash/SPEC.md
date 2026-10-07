@@ -1,6 +1,6 @@
 # let-go value hashing: port spec
 
-Source: `$LW_ROOT/let-go` at `4e769212`; paths below are under
+Source: `$LW_ROOT/let-go` at `ff1e6dac`; paths below are under
 `pkg/vm/` unless marked. All arithmetic is wrapping `uint32` unless a step
 says `uint64`. `rotl32(x,r) = (x<<r)|(x>>(32-r))`. Test vectors:
 `vectors.tsv` (regenerate with `go run . > vectors.tsv`). These algorithms
@@ -13,7 +13,7 @@ Clojure"; port these, not Clojure's.
 `Hashable` (has `Hash() uint32`, hash.go:15) use that, else `computeHash`
 (hash.go:31): `NIL` → 0, anything else → FNV-1a over the bytes of
 `v.String()`. The lg builtin `hash` is `int64(HashValue(x))`
-(rt/lang.go:8886-8890), so lg sees the uint32 as a **non-negative** int.
+(rt/lang.go:8899-8903), so lg sees the uint32 as a **non-negative** int.
 
 ## Primitives (hash.go)
 
@@ -56,9 +56,9 @@ in memory without decoding.
 | List | `hashOrdered(l)` | list.go:71-78 | yes (`_hash`, list.go:49-50) |
 | Cons / ChunkedCons / LazySeq | `hashOrdered`; an empty LazySeq uses `EmptyList` | cons.go:110, chunk.go:221, lazy_seq.go:232-238 | no |
 | PersistentMap | `h += hash(k) ^ hash(v)` per entry; `mixFinish(h)`; loop stops at `EmptyList` | persistent_map.go:777-798 | yes (:624-625) |
-| SortedMap | same `k^v` sum | sorted_map.go:359-370 | yes |
+| SortedMap | same `k^v` sum | sorted_map.go:371-382 | yes |
 | PersistentSet | `h += hash(e)`; `mixFinish` | persistent_set.go:69-82 | yes (:18-19) |
-| SortedSet | same | sorted_set.go:77 | yes |
+| SortedSet | same | sorted_set.go:83 | yes |
 | MapEntry | `ArrayVector{k,v}.Hash()` | persistent_map.go:107-109 | no |
 | PersistentQueue | empty → 0, else `hashOrdered` | persistent_queue.go:153-158 | no |
 | Record | `mixFinish(Σ hash(fieldName)^hash(v) + extra.Hash())` | record.go:142-151 | no |

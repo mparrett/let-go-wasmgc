@@ -7,12 +7,12 @@
 ;; wasm/host-sleep and wasm/host-nanotime (D6, D27: deterministic virtual
 ;; clock in the reference).
 ;;
-;; Ground truth is let-go 4e769212: pkg/rt/lang.go (println :3670, print
+;; Ground truth is let-go ff1e6dac: pkg/rt/lang.go (println :3670, print
 ;; :3652, pr :3661, prn :3300; text from prThroughToString,
 ;; print_method.go:12: the args' print-str/pr-str forms joined by one
 ;; space), pkg/rt/iort.go (close! :203, write! :260, flush! :282, *out*
 ;; and *err* :356), pkg/rt/system.go:148-155, pkg/rt/async.go (timeout,
-;; <!! = <!), pkg/rt/js.go:66-100.
+;; <!! = <!), pkg/rt/js.go:66-99.
 ;;
 ;; *out*/*err* are values, not natives: `out-handle`/`err-handle` return
 ;; the runtime's two handles (fd 1, fd 2), which the backend binds those
@@ -121,7 +121,7 @@
 (defn ^{:twin "let-go.core/now"} now []
   (wasm/trap "lower-wasm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
 
-;; sleep (lang.go:4563): Int or Float ms (a Float truncates); a non-positive
+;; sleep (lang.go:4572): Int or Float ms (a Float truncates); a non-positive
 ;; duration returns at once, as an expired time.Timer does. Through
 ;; env.sleep, so a JS host yields (JSPI) and the reference advances its
 ;; virtual clock. No cancellation: a module has no goroutine registry.
@@ -161,7 +161,7 @@
 ;; ---------------------------------------------------------------------------
 ;; The browser seam (D100). emit validates its arguments, marshals data to
 ;; JSON exactly as let-go does (prepareEmit, pkg/rt/js.go: fromValue,
-;; pkg/rt/json.go:103, then encoding/json.Marshal) and hands both to the host
+;; pkg/rt/json_value.go:60, then encoding/json.Marshal) and hands both to the host
 ;; through wasm/host-emit; url-param reads the page's query through
 ;; wasm/host-url-param. Their references are native lg off the browser: the
 ;; event goes nowhere and every parameter is absent (nil), so the oracle
@@ -248,7 +248,7 @@
         out))
 
 (defn- json-key-str
-  "A map key as fromMapValue (pkg/rt/json.go:58) names it, as a Str."
+  "A map key as fromMapValue (pkg/rt/json_value.go:15) names it, as a Str."
   [k] (let [kd (sq/kind k)]
         (cond (= kd 17) k
               (= kd 20) (s/mk-str (named-text k))

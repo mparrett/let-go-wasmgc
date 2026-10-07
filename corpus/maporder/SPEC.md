@@ -1,6 +1,6 @@
 # let-go map/set iteration order: port spec
 
-Source: `$LW_ROOT/let-go` at `4e769212`; paths are under `pkg/vm/`
+Source: `$LW_ROOT/let-go` at `ff1e6dac`; paths are under `pkg/vm/`
 unless marked. Hashing is `../hash/SPEC.md`; everything here assumes the
 port's `hashValue` is bit-exact (D19), because past 8 entries order is a
 function of key hashes.
@@ -26,10 +26,10 @@ function of key hashes.
 | `nil` key | allowed (`key == nil` at :866 is Go nil, not lg `nil`) |
 
 Every map constructor goes through these: the reader (`compiler/reader.go:860`,
-`NewArrayMap`), compiled map literals (compiler.go:657-675 emits a call to
+`NewArrayMap`), compiled map literals (compiler.go:675-720 emits a call to
 `array-map` with the read-time map's entries in its `Seq` order), `array-map`
 (`NewArrayMap` :743-771, a transient) and **`hash-map`**
-(rt/lang.go:5580-5585 → `NewPersistentMap` :723-735, repeated `Assoc`).
+(rt/lang.go:5593-5598 → `NewPersistentMap` :723-735, repeated `Assoc`).
 Unlike Clojure, `hash-map` with ≤ 8 entries is insertion-ordered too.
 `into`, `group-by`, `frequencies` use transients (core.lg:1512-1520,
 1725-1732, 1764-1769); `zipmap`, `select-keys` use `assoc` (core.lg:1714,
@@ -166,7 +166,7 @@ not by hash or insertion; `seq` at :495. Not covered here.
    including `createNode`'s `[existing, new]` order and the bug.
 4. **Go map iteration (random per run)** reaches a `PersistentMap` only by
    assoc'ing out of a Go map: `json/read-json` (rt/json.go:39-48),
-   transit JSON objects (rt/transit.go:319-331), bencode dicts
+   transit JSON objects (rt/transit.go:320-332), bencode dicts
    (rt/bencode.go:134-142), boxing a Go map (value.go:254-275) and
    `MapFromGoMap` (map.go:227). With ≤ 8 keys these produce a
    run-to-run-random insertion order in native lg itself

@@ -3,7 +3,7 @@
 `read-string` for data, in the runtime dialect (`reader.lg`, ns
 `wasm.reader`, loaded after `core.lg`). D70: let-go's `edn.lg` wraps a Go
 native, so there is no lg reader to compile; this is a port of the Go one.
-Ground truth is let-go 4e769212 built with go1.27.1. Citations are
+Ground truth is let-go ff1e6dac built with go1.27.1. Citations are
 let-go's `pkg/compiler/reader.go` unless stated.
 
 xsofy calls `core/read-string` (not `edn/read-string`) at `xsofy/seed.lg:27`
@@ -47,7 +47,7 @@ dispatches it:
 |---|---|---|
 | a Unicode digit (Nd) | number token → the number cascade below | `٣` starts a number and is `invalid number: ٣` |
 | `+` `-` then a digit | number | `+` or `-` at end of input is an EOF error, not a symbol |
-| `(` | list, with position meta `{:line L :column C}` | `meta` reads FormSource (`lang.go:3456`) |
+| `(` | list, with position meta `{:line L :column C}` | `meta` reads FormSource (`lang.go:3465`) |
 | `[` | vector (no meta) | |
 | `{` | map: even count, no duplicate keys (`=`), built on a transient as `NewArrayMap` | order: array-map ≤ 8, HAMT past (D29) |
 | `#{` | set, conj in order, duplicate element is an error | |

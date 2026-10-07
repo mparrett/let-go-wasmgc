@@ -246,7 +246,7 @@
                 (doseq [r (:refer opts)] (swap! n/registry assoc-in [:refers cur (str r)] libn)))))))
   nil)
 
-;; bound? (lang.go:9177): a cell is bound once a def gave it a value (def
+;; bound? (lang.go:9190): a cell is bound once a def gave it a value (def
 ;; interns at compile time, so defonce's resolve already sees the cell)
 (defn- bound?* [& args]
   (let [v (first args) t (str v) key (when (string/starts-with? t "#'") (subs t 2))]

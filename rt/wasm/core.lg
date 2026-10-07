@@ -5,7 +5,7 @@
 ;; those, wasm.intrinsics, and the other runtime namespaces). Loaded last: it
 ;; is the one namespace that sees every collection, so the dispatchers that
 ;; must tell a map from a set from a vector live here. Ground truth is
-;; let-go 4e769212 (pkg/rt/lang.go, native_prims.go, builtins/builtins.go,
+;; let-go ff1e6dac (pkg/rt/lang.go, native_prims.go, builtins/builtins.go,
 ;; pkg/vm/numbers.go, transient.go, atom.go, persistent_map.go).
 ;;
 ;; Calling convention as seq.lg (D37): natives take and return refs; ints
@@ -176,7 +176,7 @@
   (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
 
 ;; ---------------------------------------------------------------------------
-;; type (lang.go:2502): nil for nil, else the interned ValueType, which prints
+;; type (lang.go:2511): nil for nil, else the interned ValueType, which prints
 ;; as its name and is = only to itself.
 
 (defn- type-id [x]
@@ -427,7 +427,7 @@
   ([a b c] (sq/bool (if (num-equiv? a b) (num-equiv? a c) false)))
   ([a b c d] (sq/bool (if (num-equiv? a b) (if (num-equiv? a c) (num-equiv? a d) false) false))))
 
-;; not= (lang.go:1955): fewer than 2 args is false; two NaNs are not "not="
+;; not= (lang.go:1964): fewer than 2 args is false; two NaNs are not "not="
 ;; (a quirk: (not= ##NaN ##NaN) is false although (= ##NaN ##NaN) is too).
 (defn ^{:twin "core/not="} not-eq
   ([] (F)) ([a] (F))
@@ -487,7 +487,7 @@
 
 (defn ^{:twin "core/number?"} number? [x] (sq/bool (num-k? (sq/kind x))))
 
-(defn ^{:twin "core/bit-and"} bit-and*                    ; CoreBitAnd (lang.go:8088): exactly 2 Ints
+(defn ^{:twin "core/bit-and"} bit-and*                    ; CoreBitAnd (lang.go:8101): exactly 2 Ints
   ([] (raise (wasm/bytes-of-string "bit-and expects 2 args")))
   ([a] (raise (wasm/bytes-of-string "bit-and expects 2 args")))
   ([a b] (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
@@ -549,7 +549,7 @@
 (defn ^{:twin "core/map?"} map? [x] (let [k (ckind x)] (sq/bool (if (= k 30) true (= k 38)))))
 (defn ^{:twin "core/set?"} set? [x] (let [k (ckind x)] (sq/bool (if (= k 31) true (= k 39)))))
 (defn ^{:twin "core/sorted?"} sorted? [x] (let [k (ckind x)] (sq/bool (if (= k 38) true (= k 39)))))
-(defn ^{:twin "core/seq?"} seq? [x]                       ; isSeq (lang.go:2281): implements vm.Seq
+(defn ^{:twin "core/seq?"} seq? [x]                       ; isSeq (lang.go:2290): implements vm.Seq
   (let [k (sq/kind x)] (sq/bool (if (sq/seq-kind? k) true (= k 23)))))
 (defn vector? [x] (let [k (sq/kind x)] (sq/bool (if (= k 11) true (= k 23)))))
 (defn nil? [x] (sq/bool (wasm/null? x)))
@@ -720,7 +720,7 @@
                        (if (< i n) (recur (+ i 2) (m/massoc r (wasm/aget m/HSlots e i) (wasm/aget m/HSlots e (inc i)))) r)))
           :else (raise (wasm/bytes-of-string "conj expected map entry")))))
 
-;; SortedMap.Conj (sorted_map.go:399): an entry or 2-vector, a map's
+;; SortedMap.Conj (sorted_map.go:420): an entry or 2-vector, a map's
 ;; entries, a seq whose first item is an entry; anything else leaves sm as is.
 (declare seqable-k?)
 (defn- conj-smap-entry [sm e]
@@ -769,7 +769,7 @@
   ([coll i nf] (do (sq/int-arg i)                            ; native converts the index before the TransientVector lookup
                    (if (= 34 (ckind coll)) (vec-get (wasm/get TVec 0 coll) i nf) (sq/nth coll i nf)))))
 
-;; peek/pop (lang.go:6707, :6739). A String and a set are vm.Seqs in Go
+;; peek/pop (lang.go:6720, :6739). A String and a set are vm.Seqs in Go
 ;; (a map is not), so pop gives their rest.
 (defn ^{:twin "core/peek"} peek [x]
   (let [k (ckind x)]
@@ -782,7 +782,7 @@
           (if (= 0 (sq/unbox-int (sq/count x))) (raise (wasm/bytes-of-string "can't pop empty seq")) (sq/rest x))
           :else (sq/pop x))))
 
-;; subvec (lang.go:8432): start/end through vm.ToInt (an Int, or a Float
+;; subvec (lang.go:8445): start/end through vm.ToInt (an Int, or a Float
 ;; truncated), then a fresh vector without meta.
 (defn- to-int? [x] (num-k? (sq/kind x)))
 (defn- to-int [x] (if (= 1 (sq/kind x)) (sq/unbox-int x) (wasm/f64-to-i64 (s/unbox-float x))))
@@ -801,7 +801,7 @@
   ([v start end] (subvec* v start end true)))
 
 ;; ---------------------------------------------------------------------------
-;; Transients (lang.go:7031-7190, transient.go)
+;; Transients (lang.go:7044-7203, transient.go)
 
 (defn- tvec-editable [t]
   (if (= 1 (wasm/get TVec 1 t)) nil (raise (wasm/bytes-of-string "transient used after persistent! call"))))
@@ -864,7 +864,7 @@
 
 (defn ^{:twin "core/assoc!"} assoc!
   ([t] (raise-arity 1))
-  ([t key] (assoc!1 t key (wasm/null)))                  ; a missing val is nil (lang.go:7120)
+  ([t key] (assoc!1 t key (wasm/null)))                  ; a missing val is nil (lang.go:7133)
   ([t key v] (assoc!1 t key v))
   ([t key v key2] (assoc!1 (assoc!1 t key v) key2 (wasm/null)))
   ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2)))
@@ -875,7 +875,7 @@
   ([t key key2] (dissoc! (dissoc! t key) key2)))
 
 ;; ---------------------------------------------------------------------------
-;; Promise and delay (P6.7; lang.go:7994-8030, 8312-8330, vm/promise.go,
+;; Promise and delay (P6.7; lang.go:8007-8043, 8312-8330, vm/promise.go,
 ;; vm/delay.go). A module has one thread, so deref of an undelivered
 ;; promise, which blocks forever natively (nothing else can deliver), is a
 ;; named limit instead of a hang; future, the usual deliverer, is Phase 7.
@@ -924,7 +924,7 @@
   ([x] (sq/bool (= 41 (ckind x))))
   ([x y] (sq/bool false)))
 
-(defn ^{:twin "core/realized?"} realized? [x]             ; CoreIsRealized (lang.go:8030): delay, promise, else seq.lg's lazy seq
+(defn ^{:twin "core/realized?"} realized? [x]             ; CoreIsRealized (lang.go:8043): delay, promise, else seq.lg's lazy seq
   (let [k (ckind x)]
     (cond (= k 40) (sq/bool (= 1 (wasm/get Promise 1 x)))
           (= k 41) (sq/bool (if (= 0 (wasm/get Delay 1 x)) false true))
@@ -1053,7 +1053,7 @@
   ([v f x y z] (vswap-n v f 3 x y z)))
 
 ;; ---------------------------------------------------------------------------
-;; Metadata (CoreWithMeta, lang.go:7898). Vectors, maps and sets carry it in
+;; Metadata (CoreWithMeta, lang.go:7911). Vectors, maps and sets carry it in
 ;; a field (assoc/conj/disj/pop keep it); a list in its head cell (conj keeps
 ;; it, rest does not); a fn by wrapping (vm.NewMetaFn): a new Fn whose code
 ;; refs forward to the inner fn through a MetaEnv env, which no closure the
@@ -1123,7 +1123,7 @@
   ([msg data] (ex-info* msg data (wasm/null)))
   ([msg data cause] (ex-info* msg data cause)))
 
-(defn ex-message [x]                                      ; CoreExMessage (lang.go:7951)
+(defn ex-message [x]                                      ; CoreExMessage (lang.go:7964)
   (let [k (sq/kind x)]
     (cond (= k 0) (wasm/null)
           (= k 26) (s/mk-str (wasm/get sq/Err 2 x))
@@ -1137,7 +1137,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Calls through values
 
-(defn ^{:twin "core/apply*"} apply* [f args]              ; apply (lang.go:2513)
+(defn ^{:twin "core/apply*"} apply* [f args]              ; apply (lang.go:2522)
   (cond (if (callable? f) false true) (raise (wasm/bytes-of-string "apply expected Fn"))
         (wasm/null? args) (invoke-args f 0 nil nil nil nil)
         (= 11 (sq/kind args)) (invoke-vec f args)
@@ -1159,7 +1159,7 @@
 (defn frame-push! [fr] (wasm/null))
 (defn frame-pop! [fr] (wasm/null))
 
-;; gensym (lang.go:5560): prefix (default "G__") + the next id.
+;; gensym (lang.go:5573): prefix (default "G__") + the next id.
 (defn ^{:twin "core/gensym"} gensym
   ([] (gensym (lit (wasm/bytes-of-string "G__"))))
   ([prefix]
@@ -1170,8 +1170,8 @@
      (raise (wasm/bytes-of-string "gensym expected String")))))
 
 ;; ---------------------------------------------------------------------------
-;; sort (lang.go:2850): the collection's seq into an array, sort.SliceStable
-;; (ported below), result a list. With a comparator, fnComparator (lang.go:1623): a boolean
+;; sort (lang.go:2859): the collection's seq into an array, sort.SliceStable
+;; (ported below), result a list. With a comparator, fnComparator (lang.go:1632): a boolean
 ;; answer is "less", asked both ways; a number's sign is the order.
 
 (defn- cmp-result [f a b]
