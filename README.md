@@ -45,6 +45,9 @@ Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-02:
 | xsofy | 115 KB |
 | REPL page module | 77 KB |
 
+Boot times, runtime speed and memory against the other ways of running lg:
+[`docs/PERF.md`](docs/PERF.md).
+
 Browsers: the hosts need WebAssembly JSPI. As of 2026-10-03 that is Chrome and
 Edge 137 or newer on desktop; Safari 27 ships it (iOS included) and Firefox
 plans it for 153, so the gap closes on its own. Binaryen's Asyncify cannot
