@@ -120,7 +120,7 @@ P11.7	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 P9.1	src/ rt/ checks/gensym-load.sh checks/fixtures/gensym-probe.lg checks/env.sh
 P9.2	src/ rt/ checks/rtlib-cold-warm.sh checks/fixtures/warm-gensym/
-P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
+P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/fixtures/warm-gensym/ legmacs checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
 P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh
 P10.2	src/ rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ host/node-host.mjs host/lg-wasm-host.js checks/emit-linked.sh checks/oracle.sh checks/env.sh
 P10.3	src/ rt/ corpus/emit/host/ host/explorer.html host/build-explorer-serve.sh host/lg-wasm-host.js checks/explorer-page-check.mjs checks/sem.sh checks/env.sh
