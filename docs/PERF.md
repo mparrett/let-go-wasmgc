@@ -46,6 +46,11 @@ run includes compiling the module); WasmGC modules under Node 25. hyperfine `-N`
 1 warmup + 5 runs, **user CPU**; peak RSS from one `/usr/bin/time -l` run. All
 lanes print identical output.
 
+Harness: [`bench/runtime-lanes/`](../bench/runtime-lanes/) (`progs/`, `build.sh`, then
+`bench.sh`; set `LGV` to an lg binary, and run `checks/wasm-run-linear.sh` once so the
+wazero runner is cached). Raw output of both runs is in `results/bench-2026-10-05*.txt`;
+the hyperfine JSON files are from the first run only.
+
 This table is the second run, after the linear target's runtime was shaken
 (PR #11); the machine was quieter than in the first run.
 
