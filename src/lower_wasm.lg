@@ -1131,24 +1131,35 @@
     bs))
 
 (defn binding-call-wat [nid v args]
-  (let [bound-global
+  (let [bound-var
+        (fn []
+          (let [k (const-val (first args))]
+            (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))))
+        bound-global
         (fn []
           (let [k (const-val (first args))
-                vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
+                vr (bound-var)
                 g (when vr (bound-var-global vr))]
             (or g (fail (str "lower-wasm: binding of " (namespace k) "/" (name k)
-                             " is not supported (not a var-table var)") {:var vr :fn *fname*}))))]
+                             " is not supported (not a var-table var)") {:var vr :fn *fname*}))))
+        ;; P10.6: (binding [*ns* x] ..) pushes and pops the runtime registry's
+        ;; current namespace (wasm.natives/push-ns!, pop-ns!), which *ns*
+        ;; reads, so the binding is seen by in-ns, resolve and intern
+        ns-binding? (fn [] (and *rt* (= #'*ns* (bound-var)) (lw-rt/ns-var 'wasm.natives 'push-ns!)))
+        ns-call (fn [nm box-exprs] (str "(drop " (rt-call-expr (lw-rt/ns-var 'wasm.natives nm) box-exprs) ")"))]
     (str (condp = v
            #'push-out! (str "(call $rt_push_out " (arg-as (first args) :box) ")")
            #'pop-out! "(call $rt_pop_out)"
            #'push-err! (str "(call $rt_push_err " (arg-as (first args) :box) ")")
            #'pop-err! "(call $rt_pop_err)"
-           #'push-var! (let [g (bound-global) bs (bind-stack-global g)]
-                         (str "(global.set " bs " (struct.new $List (global.get " g ") (global.get " bs ") (i64.const 1) (ref.null none)))"
-                              " (global.set " g " " (arg-as (second args) :box) ")"))
-           #'pop-var! (let [g (bound-global) bs (bind-stack-global g)]
+           #'push-var! (if (ns-binding?)
+                         (ns-call 'push-ns! [(arg-as (second args) :box)])
+                         (let [g (bound-global) bs (bind-stack-global g)]
+                           (str "(global.set " bs " (struct.new $List (global.get " g ") (global.get " bs ") (i64.const 1) (ref.null none)))"
+                                " (global.set " g " " (arg-as (second args) :box) ")")))
+           #'pop-var! (if (ns-binding?) (ns-call 'pop-ns! []) (let [g (bound-global) bs (bind-stack-global g)]
                         (str "(global.set " g " (struct.get $List 0 (ref.cast (ref $List) (global.get " bs "))))"
-                             " (global.set " bs " (struct.get $List 1 (ref.cast (ref $List) (global.get " bs "))))")))
+                             " (global.set " bs " (struct.get $List 1 (ref.cast (ref $List) (global.get " bs "))))"))))
          " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))
 
 (defn set-var-wat
@@ -1790,9 +1801,9 @@
         ;; file loads; here the whole run is the load)
         (and *rt* (= v #'*file*) *program-file*) (str-wat *program-file*)
         ;; P7 (Phase 7 seam): *ns* is the runtime registry's current
-        ;; namespace, so it follows in-ns and evaluated ns forms. Guarded
-        ;; while the runtime lacks current-ns. Named limit: a read inside
-        ;; (binding [*ns* ..]) still sees the registry, not the binding.
+        ;; namespace, so it follows in-ns, evaluated ns forms and (since
+        ;; P10.6, binding-call-wat) a (binding [*ns* ..]). Guarded while the
+        ;; runtime lacks current-ns.
         (and *rt* (= v #'*ns*) (lw-rt/ns-var 'wasm.natives 'current-ns))
         (rt-call-expr (lw-rt/ns-var 'wasm.natives 'current-ns) [])
         ;; P2.14: a native var holding a scalar constant (math/PI, math/E):
@@ -3377,6 +3388,7 @@
           (contains? lw-rt/ext-defns v) v
           (contains? @lw-rt/lib-defns v) v
           ;; P2.14: lg-defined stdlib namespaces, loaded on demand
+          (lw-rt/stdlib-alias v) (lw-rt/stdlib-alias v)
           (lw-rt/stdlib-twin v) (lw-rt/stdlib-twin v)
           (lw-rt/stdlib-defn v) v
           :else nil)))

@@ -1,0 +1,29 @@
+;; P10.6: let-go's IR pipeline carried as a program. Builds and optimizes a
+;; few defn forms with ir.build and ir.passes.pipeline (loaded from let-go's
+;; pkg/rt/core as a library source path) and prints their text dumps; the
+;; check compares native lg's output with the module's.
+(ns ir-pipeline
+  (:require [ir.build] [ir.data :as ir] [ir.dump :as dump] [ir.passes.pipeline :as p]))
+
+(def forms
+  '[(defn sum-to [n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc i)) acc)))
+    (defn adder [k] (fn [x] (+ x k)))
+    (defn pick [m] (let [v (:a m) w (get m :b 0)] (if v (* v w) (- w))))
+    (defn lits [x] [{:k x :m {:n 1}} #{1 2} (str "v=" x) (count [x x])])
+    (defn twice [f x] (f (f x)))])
+
+(defn expand-defn
+  "The defn form with its body macroexpanded, as the pipeline builds it."
+  [form]
+  (apply list 'defn (nth form 1) (nth form 2) (map p/expand-all (drop 3 form))))
+
+(defn -main []
+  (doseq [form forms]
+    (let [f (ir.build/build-fn (expand-defn form))]
+      (println "built")
+      (print (dump/dump f))
+      (p/optimize-fn f)
+      (println "optimized")
+      (print (dump/dump f)))))
+
+(-main)

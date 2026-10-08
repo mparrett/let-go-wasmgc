@@ -1,0 +1,34 @@
+;; P10.6 timing: build and optimize the five forms of main.lg ROUNDS times
+;; and print the wall time in ms (System/nanoTime), native lg vs the module.
+;; Not an oracle row: the number is the ratio checks/ir-pipeline.sh's
+;; DECISIONS entry quotes. Run both sides under one timing lane.
+(ns ir-pipeline-bench
+  (:require [ir.build] [ir.data :as ir] [ir.passes.pipeline :as p]))
+
+(def rounds 200)
+
+(def forms
+  '[(defn sum-to [n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc i)) acc)))
+    (defn adder [k] (fn [x] (+ x k)))
+    (defn pick [m] (let [v (:a m) w (get m :b 0)] (if v (* v w) (- w))))
+    (defn lits [x] [{:k x :m {:n 1}} #{1 2} (str "v=" x) (count [x x])])
+    (defn twice [f x] (f (f x)))])
+
+(defn expand-defn [form]
+  (apply list 'defn (nth form 1) (nth form 2) (map p/expand-all (drop 3 form))))
+
+(defn one-round []
+  (reduce (fn [n form]
+            (let [f (ir.build/build-fn (expand-defn form))]
+              (p/optimize-fn f)
+              (+ n (count (ir/all-insts f)))))
+          0 forms))
+
+(defn -main []
+  (one-round)                                   ; warm: caches, the module's lazy paths
+  (let [t0 (System/nanoTime)
+        insts (loop [i 0 n 0] (if (< i rounds) (recur (inc i) (+ n (one-round))) n))
+        ms (quot (- (System/nanoTime) t0) 1000000)]
+    (println "rounds" rounds "insts" insts "ms" ms)))
+
+(-main)

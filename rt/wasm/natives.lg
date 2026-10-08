@@ -45,7 +45,7 @@
 ;; spit and slurp fail as native does on a path whose directory does not exist, and
 ;; os/stat answers nil (native's not-found).
 (ns wasm.natives
-  (:refer-clojure :exclude [format fn? identical? rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
+  (:refer-clojure :exclude [format fn? identical? instance? record? boolean? decimal? ratio? uuid? ns-aliases rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
                             spit slurp make-array complement bound-fn* ns-resolve future*])
   (:require [clojure.string :as string]
@@ -337,6 +337,14 @@
   (or (:var (cell (str nsn "/" nm)))
       (get-in (table) [:program nsn :vars nm])))
 
+;; A builtin namespace's var as a stand-in (its value is wasm.core/var-value's;
+;; alter-var-root works), for find-var. Named limit: a name the namespace
+;; lacks natively still answers one here (natively nil). "user" holds the
+;; program's vars.
+(defn- builtin-stand-in [nsn nm]
+  (when (and (not= nsn "user") (some #{nsn} (builtin-nss)))
+    (with-meta (symbol (str "#'" nsn "/" nm)) {:ns (ns-of nsn) :name (symbol nm)})))
+
 (defn ^{:twin "core/find-var"} find-var                   ; CoreFindVar (lang.go:7851)
   ([] (raise-arity 0))
   ([x] (if (= 21 (sq/kind x))
@@ -351,8 +359,7 @@
                    ;; is wasm.core/var-value's; alter-var-root works).
                    ;; Named limit: a name the namespace lacks natively
                    ;; still finds one here (natively nil)
-                   (when (and (not= nsn "user") (some #{nsn} (builtin-nss)))   ; "user" holds the program's vars
-                     (with-meta (symbol (str "#'" nsn "/" (name x))) {:ns (ns-of nsn) :name (symbol (name x))}))))))
+                   (builtin-stand-in nsn (name x))))))
          (raise-lit "find-var expected a symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
@@ -368,7 +375,10 @@
                      (lookup r nm))
                    ;; let-go.core is every ns's baseline refer: an intern
                    ;; there (legmacs.vibe's `vibe`) resolves from any ns
-                   (lookup "let-go.core" nm)))
+                   (lookup "let-go.core" nm)
+                   ;; P10.6: core's names-only table entry (driver.lg
+                   ;; core-names-entry, under LW_PROGRAM_TABLE=1)
+                   (lookup "core" nm)))
              (let [nsn (or (get-in t [:aliases (:cur t) q]) (get-in t [:program (:cur t) :aliases q]) (canon q))]
                (lookup nsn (name x)))))
          (raise-lit "resolve expected Symbol")))
@@ -483,6 +493,23 @@
 (defn add-ns* [nm] (add-ns! nm))
 (defn set-cur! [nm] (swap! registry assoc :cur nm) nm)
 
+;; P10.6: (binding [*ns* x] ..) in a program: the backend routes the
+;; binding's push and pop of *ns* here (lower-wasm/binding-call-wat). x is
+;; a namespace stand-in `<ns name>`, or its symbol, as the-ns and in-ns
+;; give; the saved current namespace is restored by the pop.
+(defn- ns-name-of [x]
+  (let [s (str x)]
+    (if (and (string/starts-with? s "<ns ") (string/ends-with? s ">")) (subs s 4 (dec (count s))) s)))
+
+(defn push-ns! [x]
+  (let [nm (add-ns! (canon (ns-name-of x)))]
+    (swap! registry (fn [r] (assoc r :ns-stack (conj (:ns-stack r) (:cur r)) :cur nm)))
+    nil))
+
+(defn pop-ns! []
+  (swap! registry (fn [r] (assoc r :cur (first (:ns-stack r)) :ns-stack (rest (:ns-stack r)))))
+  nil)
+
 (defn current-ns
   "The stand-in `<ns cur>` of the current namespace: what *ns* reads (the
    backend routes reads of *ns* here)."
@@ -539,6 +566,37 @@
         (not (string? (first args))) (raise-lit "slurp expected String")
         :else (raise-lit (str "slurp failed: " (enoent "open" (first args))))))
 
+;; P10.6: instance? over the driver's type tags (src/driver.lg: a library
+;; deftype or defrecord is the Keyword tag :<ns>/<Name>, or a map carrying it
+;; as :lw/type when it has fields, and the type's var holds the tag). A
+;; native class (String, java.util.regex.Pattern) is no value here, so t is
+;; nil for one and the answer is false, as it is for (instance? nil x).
+(defn ^{:twin "core/instance?"} instance? [t x]
+  (if (nil? t)
+    false
+    (or (identical? t x) (and (map? x) (identical? t (get x :lw/type))))))
+
+;; record? is true of a map carrying a type tag (a defrecord's instance; a
+;; deftype with fields is encoded the same way, so it answers true for one
+;; too: named limit).
+(defn ^{:twin "core/record?"} record? [x] (and (map? x) (contains? x :lw/type)))
+
+;; P10.6: natives let-go's IR builder and passes reach when carried as a
+;; program (checks/ir-pipeline.sh). -copy-form-source! carries the reader's
+;; position of one form to another natively; the module keeps no position
+;; table (wasm.ir/form-source-info), so it is the second form. The three
+;; kinds the module lacks (D15: ratios; decimals, UUIDs) answer false.
+(defn ^{:twin "core/-copy-form-source!"} copy-form-source! [from to] to)
+(defn ^{:twin "core/boolean?"} boolean? [x] (or (= true x) (= false x)))
+(defn ^{:twin "core/decimal?"} decimal? [x] false)
+(defn ^{:twin "core/ratio?"} ratio? [x] false)
+(defn ^{:twin "core/uuid?"} uuid? [x] false)
+(defn ^{:twin "core/ns-aliases"} ns-aliases                ; CoreNsAliases (lang.go:7797): {alias-sym ns}
+  [x]
+  (reduce (fn [m kv] (assoc m (symbol (key kv)) (ns-of (val kv))))
+          {} (get (:aliases (table)) (ns-name-of x))))
+
+(defn ^{:twin "System/getenv"} getenv [& _] nil)           ; a module has no environment (P10.6)
 (defn ^{:twin "os/cwd"} cwd [& _] "")                      ; os.go: Getwd, any arg count
 
 (defn ^{:twin "os/ls"} ls [& args]                        ; os.go: ReadDir

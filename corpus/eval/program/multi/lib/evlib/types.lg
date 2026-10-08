@@ -1,0 +1,18 @@
+;; P10.6 review (PR #24): deftype, defrecord and a protocol in a library namespace.
+(ns evlib.types)
+
+(defprotocol Shape
+  (area [this])
+  (label [this n]))
+
+(deftype Unit []
+  Shape
+  (area [this] 1)
+  (label [this n] (str "unit" n)))
+
+(defrecord Rect [w h]
+  Shape
+  (area [this] (* w h))
+  (label [this n] (str "rect" n "/" w)))
+
+(defrecord Point [x y])
