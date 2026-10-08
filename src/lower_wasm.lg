@@ -4457,15 +4457,28 @@
 ;; program's compile (most programs reach most of it through the dispatchers
 ;; and the printer), so the whole runtime is analysed and lowered once, the
 ;; session state that produced it saved under src/.rtlib/ keyed by a hash of
-;; the runtime sources and the backend's, and each compile starts from it.
+;; the runtime sources, the backend's and the lg binary's, and each compile
+;; starts from it.
 ;; Names are content-addressed, so a program's additions merge without
 ;; renumbering; the shake then keeps what the program reaches.
 
 (def rtlib-dir (let [d (os/getenv "LW_RTLIB_DIR")] (if (seq d) d (str lw-rt/src-dir "/.rtlib"))))
 
+;; The running lg's compiler and IR passes shape the cached runtime too, and
+;; two lg builds can share every source the key reads (the IR passes are not
+;; among them), so the key includes a hash of the lg binary itself. Without it
+;; a build under one lg silently reuses another lg's runtime. Falls back to
+;; the binary's path when it cannot be hashed.
+(def lg-binary-id
+  (delay (let [exe (first os/args)
+               r (try (os/sh "sh" "-c" "shasum -a 256 \"$(command -v \"$1\")\"" "sh" exe) (catch e nil))
+               out (str (:out r))]
+           (if (and r (= 0 (:exit r)) (>= (count out) 64)) (subs out 0 64) (str "path:" exe)))))
+
 (defn rtlib-key []
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
                             (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
+                            [(str "|lg=" @lg-binary-id)]
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
                              ;; D193: the emitter's rows of the load order
@@ -4588,7 +4601,8 @@
         (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
         (os/rename (str f tmp) f)
         ;; a library for older sources is dead weight (~3.5 MB each); the
-        ;; rooted variants of the current one stay (D201)
+        ;; rooted variants of the current one stay (D201). Another lg's
+        ;; library goes too, so alternating two lg builds rebuilds on each switch
         (doseq [old (os/ls rtlib-dir)
                 :when (and (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
                                     (or (str/ends-with? old ".edn") (str/ends-with? old ".natives")))
