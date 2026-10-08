@@ -729,7 +729,12 @@
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
   [v]
-  (cond (string? v) (str-wat v)
+  ;; P2.14: (var x) / #'x, see var-const-form. var? first: lg's value
+  ;; predicates see through a var to its root ((string? #'*file*) is true),
+  ;; so a var whose root is a string, char or float would otherwise be
+  ;; lowered as that root (P12.0)
+  (cond (var? v) (when *rt* (str "(global.get " (const-global! v) ")"))
+        (string? v) (str-wat v)
         (keyword? v) (kw-wat v)
         (char? v) (str "(struct.new $Char (i32.const " (int v) "))")
         (float? v) (float-wat v)
@@ -739,8 +744,6 @@
         (and *rt* (regex-standin v)) (str "(global.get " (const-global! (regex-standin v)) ")")
         (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
         (str "(global.get " (const-global! v) ")")
-        ;; P2.14: (var x) / #'x, see var-const-form
-        (and *rt* (var? v)) (str "(global.get " (const-global! v) ")")
         :else nil))
 
 (defn const-wat [nid aux]
@@ -3593,7 +3596,7 @@
     (list 'fn* [] (symbol v))
     (list 'fn* [] (list 'wasm.core/raise
                         (list 'wasm.intrinsics/bytes-of-string
-                              (str "lower-wasm: the value of " (pr-str v) " is not reachable from its stand-in:"
+                              (str "lower-wasm: the value of " v " is not reachable from its stand-in:"
                                    " only a var the program defines has one (named limit)"))))))
 
 (defn var-const-form
@@ -3637,7 +3640,8 @@
    pool key (pr-str shows none of it), or nil when there is none, so a
    meta-free constant keeps its key and global name."
   [v]
-  (when (coll? v)
+  ;; not a var: coll? sees through it to its root (see const-box-wat)
+  (when (and (coll? v) (not (var? v)))
     (let [own (const-user-meta v)
           kids (if (map? v) (mapcat identity v) (seq v))
           sub (map const-meta-key kids)]
@@ -3686,7 +3690,9 @@
 ;; each takes a gensym when this file loads (D188, P9.1).
 
 (defn- direct-const? [v]
-  (cond (or (vector? v) (set? v)) (every? direct-const? v)
+  ;; a var is never plain data, whatever its root (see const-box-wat)
+  (cond (var? v) false
+        (or (vector? v) (set? v)) (every? direct-const? v)
         (map? v) (every? (fn [e] (and (direct-const? (key e)) (direct-const? (val e)))) v)
         (symbol? v) (or (nil? (meta v)) (and (:lw/regex (meta v)) (direct-const? (meta v))))
         :else (or (nil? v) (boolean? v) (string? v) (keyword? v) (int? v) (float? v))))
@@ -3766,7 +3772,10 @@
   [v]
   (let [mk (const-meta-key v)
         ;; P5.9: ^:a [1] and ^:b [1] print alike; the meta keeps them apart
-        k (cond-> [(const-kind v) (pr-str v)] mk (conj (pr-str mk)))]
+        ;; a var keys by str (#'ns/name, the text pr-str gives any var it
+        ;; can print): lg's pr-str sees through a var whose root is a
+        ;; collection and fails on it (seq expected Seqable)
+        k (cond-> [(const-kind v) (if (var? v) (str v) (pr-str v))] mk (conj (pr-str mk)))]
     (or (get-in @*rt* [:consts k])
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
