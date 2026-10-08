@@ -10,7 +10,15 @@ prog=${1:?usage: native-run.sh <prog.lg> [args...]}; shift
 llvm=${LLVM_BIN:-/opt/homebrew/opt/llvm/bin}
 t=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
-if ! "$LG" -source-paths "$here/src" "$here/src/driver.lg" --target llvm ${LW_PROFILE:+--profile "$LW_PROFILE"} "$prog" "$t/m.ll" > "$t/compile.log" 2>&1; then
+# LG_ARGS' -source-paths names program library roots, as for checks/wasm-run.sh;
+# LW_DRIVER_ARGS adds driver flags (checks/run-tests.sh passes --test etc.)
+sp=""; read -r -a lgargs <<<"${LG_ARGS:-}"
+for ((i = 0; i < ${#lgargs[@]}; i++)); do [ "${lgargs[$i]}" = -source-paths ] && sp=${lgargs[$((i + 1))]:-}; done
+drv=("$LG" -source-paths "$here/src${sp:+:$sp}" "$here/src/driver.lg" --target llvm)
+[ -n "$sp" ] && drv+=(-source-paths "$sp")
+[ -n "${LW_PROFILE:-}" ] && drv+=(--profile "$LW_PROFILE")
+read -r -a dargs <<<"${LW_DRIVER_ARGS:-}"; drv+=(${dargs[@]+"${dargs[@]}"})
+if ! "${drv[@]}" "$prog" "$t/m.ll" > "$t/compile.log" 2>&1; then
   cat "$t/compile.log" >&2; exit 1
 fi
 field() { "$LG" -source-paths "$here/src" "$here/checks/profile-field.lg" "${LW_PROFILE:-host}" "$1"; }

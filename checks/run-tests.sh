@@ -48,6 +48,12 @@
 # their own dir.
 # Env: LG, KEEP=1 (keep the scratch dir), SRC_PATHS (override the source
 # paths), LETGO_TEST (default $LW_ROOT/let-go/test), P (default 3).
+# WASM_RUN (unset: the WasmGC lane as above) runs the backend side through
+# that runner instead, passing the driver flags in LW_DRIVER_ARGS and the
+# source paths in LG_ARGS (checks/native-run.sh for --target llvm).
+# NATIVE_RUNNER replaces checks/native-test-runner.lg on the native side,
+# DRIVER_FLAGS adds driver flags on the backend side (checks/jank-suite.sh:
+# its own runner and --read-clj), and RESULTS_TSV keeps --corpus's table.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
@@ -89,8 +95,8 @@ if [ -n "$corpus" ]; then
     | tr '\n' '\0' | xargs -0 -P "${P:-3}" -I{} bash -c 'IFS=$'"'"'\t'"'"' read -r res src <<<"$1"
         exec "$2/checks/sem.sh" timeout -k 5 300 env KEEP= "$2/checks/run-tests.sh" --one "$res" "$src" >/dev/null 2>&1' _ {} "$here"
   # only the core-test corpus owns the committed results table
-  tsv=$t/results.tsv
-  [ -z "$filter" ] && [ "$(basename "$corpus")" = core-tests.txt ] && tsv=$here/corpus/core-tests-results.tsv
+  tsv=${RESULTS_TSV:-$t/results.tsv}
+  [ -z "$filter" ] && [ -z "${RESULTS_TSV:-}" ] && [ "$(basename "$corpus")" = core-tests.txt ] && tsv=$here/corpus/core-tests-results.tsv
   printf 'file\tdeftests\toracle\tbackend_passing_deftests\tnative_tests\tnative_assertions\tnative_failures\tnative_errors\tbackend_tests\tbackend_assertions\tbackend_failures\tbackend_errors\twall_s\texterns\tfailing_deftests\tfirst_failure\tcause\tskipped_deftests\n' >"$tsv"
   match=0 nfiles=0 ok=0 total=0 skipped=0; : >"$t/skipped"
   while IFS=$'\t' read -r f n; do
@@ -213,21 +219,34 @@ for f in "${files[@]}"; do
     continue
   fi
   skips=$(awk -v ns="$ns" '$1==ns{print $2}' "$here/checks/run-tests.skip" | paste -sd, -)
-  "$LG" -source-paths "$here/rt:$sp" "$here/checks/native-test-runner.lg" "$f" ${skips//,/ } \
+  "$LG" -source-paths "$here/rt:$sp" "${NATIVE_RUNNER:-$here/checks/native-test-runner.lg}" "$f" ${skips//,/ } \
     >"$t/$b.native" 2>&1
   start=$(date +%s)
-  if ! "$LG" -source-paths "$here/src:$sp" "$here/src/driver.lg" -source-paths "$sp" "$f" "$t/$b.wat" --test ${skips:+--skip "$skips"} \
+  if [ -n "${WASM_RUN:-}" ]; then
+    # another backend: its runner compiles (driver --test) and runs the file;
+    # a compile failure exits 1 with the driver's error and no summary
+    LG_ARGS="-source-paths $sp" LW_DRIVER_ARGS="--test ${skips:+--skip $skips} ${DRIVER_FLAGS:-}" \
+      "$WASM_RUN" "$f" >"$t/$b.wasm.out" 2>&1
+    secs=$(( $(date +%s) - start ))
+    if ! grep -qE '^Ran [0-9]+ tests' "$t/$b.wasm.out" && grep -qE 'lower-wasm' "$t/$b.wasm.out"; then
+      msg="compile: $(sed -E 's/\x1b\[[0-9;]*m//g' "$t/$b.wasm.out" | grep -v catalog | grep -m1 -E 'lower-wasm' | strip)"
+      echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
+      continue
+    fi
+  elif ! "$LG" -source-paths "$here/src:$sp" "$here/src/driver.lg" -source-paths "$sp" "$f" "$t/$b.wat" --test ${skips:+--skip "$skips"} ${DRIVER_FLAGS:-} \
        >"$t/$b.drv" 2>&1; then
     msg="compile: $(grep -v catalog "$t/$b.drv" | grep -m1 -iE 'error|lower-wasm' | strip)"
     echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
     continue
   fi
-  secs=$(( $(date +%s) - start ))
-  if ! wasm-tools parse "$t/$b.wat" -o "$t/$b.wasm" 2>"$t/$b.asm"; then
-    msg="assemble: $(head -1 "$t/$b.asm" | strip)"
-    echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"; continue
+  if [ -z "${WASM_RUN:-}" ]; then
+    secs=$(( $(date +%s) - start ))
+    if ! wasm-tools parse "$t/$b.wat" -o "$t/$b.wasm" 2>"$t/$b.asm"; then
+      msg="assemble: $(head -1 "$t/$b.asm" | strip)"
+      echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"; continue
+    fi
+    node "$here/src/run.mjs" "$t/$b.wasm" >"$t/$b.wasm.out" 2>&1
   fi
-  node "$here/src/run.mjs" "$t/$b.wasm" >"$t/$b.wasm.out" 2>&1
   norm <"$t/$b.native" >"$t/$b.n"; norm <"$t/$b.wasm.out" >"$t/$b.w"
   werr=$(grep -m1 -E '^(error|lower-wasm)' "$t/$b.wasm.out" | strip)
   if [ ! -s "$t/$b.n" ]; then

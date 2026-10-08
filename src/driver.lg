@@ -463,10 +463,15 @@
 
 (defn ns-file
   "The source file of ns-sym under the source paths, or nil (a native or
-   runtime namespace)."
+   runtime namespace). Searched as let-go's resolver does
+   (pkg/resolver/resolver.go): per source path, the hyphenated path before
+   the underscored one, for .lg, then .cljc, then .clj."
   [ns-sym]
-  (let [rel (str (-> (str ns-sym) (clojure.string/replace "." "/") (clojure.string/replace "-" "_")) ".lg")]
-    (some #(let [p (str % "/" rel)] (when (path-exists? p) p)) @source-paths)))
+  (let [hyphen (clojure.string/replace (str ns-sym) "." "/")
+        under (clojure.string/replace hyphen "-" "_")
+        rels (mapcat (fn [ext] [(str hyphen ext) (str under ext)]) [".lg" ".cljc" ".clj"])]
+    (some (fn [dir] (some (fn [rel] (let [p (str dir "/" rel)] (when (path-exists? p) p))) rels))
+          @source-paths)))
 
 (defn libspec-ns [spec]
   (cond (symbol? spec) spec
@@ -767,6 +772,9 @@
         skip (set (map symbol (when skip-arg (clojure.string/split skip-arg #","))))
         argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
         flags (set (filter #(clojure.string/starts-with? % "--") argv))
+        ;; --read-clj: .cljc reader conditionals take their :clj branch, as
+        ;; let-go's clojure-test-suite harness reads them (D201)
+        _ (when (flags "--read-clj") (set-read-clj! true))
         [in out] (remove flags argv)
         opts {:target target :profile profile :rt (not (or (= target :llvm) (flags "--no-rt"))) :shake (not (flags "--no-shake"))}
         rtlib? (and (:rt opts) (not (flags "--no-rtlib")))

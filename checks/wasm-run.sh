@@ -24,10 +24,12 @@ done
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
 drv=("$LG" -source-paths "$here/src${sp:+:$sp}" "$here/src/driver.lg")
 [ -n "$sp" ] && drv+=(-source-paths "$sp")
+# LW_DRIVER_ARGS: extra driver flags (checks/run-tests.sh passes --test etc.)
+read -r -a dargs <<<"${LW_DRIVER_ARGS:-}"; drv+=(${dargs[@]+"${dargs[@]}"})
 key=""
 if [ -n "${LW_MODULE_CACHE:-}" ]; then
   mkdir -p "$LW_MODULE_CACHE"
-  key=$( { cat "$prog"; echo "$sp"; echo "target=${LW_TARGET:-gc}"; cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg;
+  key=$( { cat "$prog"; echo "$sp"; echo "target=${LW_TARGET:-gc} ${LW_DRIVER_ARGS:-}"; cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg;
            [ -n "$sp" ] && IFS=: read -r -a roots <<<"$sp" && for r in "${roots[@]}"; do find "$r" -name '*.lg' -not -path '*/worktrees/*' -print0 | sort -z | xargs -0 cat; done; } | md5 -q)
 fi
 if [ -n "$key" ] && [ -f "$LW_MODULE_CACHE/$key.wasm" ]; then

@@ -178,3 +178,14 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 - 2026-10-03: existing GC runtime-cache restore variance and the bare os/args printer-reachability issue remain reported in the PR; their GC behavior is preserved. Neither blocked the required final gates.
 - 2026-10-03: GC legmacs boot/size rerun: lower-wasm module alone: 2,265,456 B as emitted, 686,520 B after `wasm-opt -O3` (served), 170,576 B brotli, 206,572 B gzip. Bundle raw/brotli/gzip: 707 KB, 178 KB, 215 KB; median title-or-boot / first frame: 128 ms / 128 ms. Full dated runs: corpus/legmacs/size-boot.md.
 - 2026-10-03: GC xsofy boot/size rerun: Lane 5 module alone: 1,920,368 B as emitted, 430,783 B after `wasm-opt -O3` (served), 115,153 B brotli, 137,162 B gzip. Bundle raw/brotli/gzip: 521 KB, 147 KB, 174 KB; median title-or-boot / first frame: 4060 ms / 5144 ms. Full dated runs: corpus/xsofy/size-boot.md.
+
+## LLVM target, M1 — 2026-10-07
+
+| item | state | by | note |
+|---|---|---|---|
+| P12.1 | done 2026-10-07 | claude | corpus/llvm-scalar 4/4 MATCH on the host profile (D199) |
+| P12.2 | done 2026-10-07 | claude | hardware profiles load and validate; malformed and unimplemented profiles refused by name (D200) |
+| P12.3 | done 2026-10-07 | claude | corpus/llvm (fixnum edges, closures, vars, recur, deep recursion, arity error) MATCH on the host profile and its 31-bit-fixnum variant; 32-bit word module compiles with llc for i686 |
+| P12.20 | done 2026-10-07 | claude | armv7-virt under qemu, LLVM only: fixnum edges, loop-recur, fib(35), ref.lg MATCH (D202) |
+| P12.21 | done 2026-10-07 | claude | bare heap exhaustion is the named `error: out of memory` (D202) |
+| P12.4 jank suite, first measurement | measured 2026-10-07 | claude | checks/jank-suite.sh over 241 core_test/string_test files (242 deftests). WasmGC lane: files MATCH 0/241, deftests 0/242; llvm lane: 0/241, 0/242. Single cause on both: every file requires clojure.core-test.portability, whose let-go shim (test/compat at ff1e6dac) defines a `deftype`, refused by driver.lg (`unsupported top-level form deftype`). Task 10 (defmulti/deftype/defprotocol/defrecord) unblocks it; the measurement is retaken then. Native lg at the pin: 242 files, 6,311 assertions, 0 failures |

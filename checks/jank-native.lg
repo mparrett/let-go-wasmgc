@@ -1,0 +1,20 @@
+;; checks/jank-suite.sh's native side, run by checks/run-tests.sh in place of
+;; native-test-runner.lg: one clojure-test-suite file as let-go's own harness
+;; runs it (test/zz_compat_test.go, TestClojureTestSuite): reader conditionals
+;; take :clj, the portability shim (JANK_PORTABILITY, let-go's
+;; test/compat/clojure/core-test/portability.lg at the pin) is loaded first,
+;; then the file by path, then its namespace's tests, after taking :test off
+;; every deftest named in the skip list.
+;;   lg -source-paths <compat>:<suite> checks/jank-native.lg <file> [skip ...]
+(set-read-clj! true)
+(let [args *command-line-args*
+      target (first args)
+      skips (map symbol (rest args))
+      port (os/getenv "JANK_PORTABILITY")
+      _ (when (seq port) (binding [*file* port] (load-string (slurp port))))
+      forms (read-string (str "[" (slurp target) "\n]"))
+      ns-name (some #(when (and (seq? %) (= 'ns (first %))) (second %)) forms)]
+  (binding [*file* target] (load-string (slurp target)))
+  (doseq [s skips]
+    (when-let [v (get (ns-interns ns-name) s)] (alter-meta! v dissoc :test)))
+  (test/run-tests ns-name))
