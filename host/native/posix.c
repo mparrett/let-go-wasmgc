@@ -27,7 +27,19 @@ void *lg_host_chunk(size_t n) {
   return p;
 }
 
-int main(void) {
+/* os/args: native's [lg-path prog args...]; native-run.sh passes the
+ * program path first, and the lg path is $LG, as src/run.mjs reports it. */
+static int host_argc;
+static char **host_argv;
+int lg_host_argc(void) { return host_argc; }
+const char *lg_host_argv(int i) {
+  if (i == 0) { const char *lg = getenv("LG"); return lg && *lg ? lg : "lg"; }
+  return i < host_argc ? host_argv[i] : "";
+}
+
+int main(int argc, char **argv) {
+  host_argc = argc;
+  host_argv = argv;
   lg_run();
   return 0;
 }

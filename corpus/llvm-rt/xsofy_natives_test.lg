@@ -1,0 +1,498 @@
+;; P3.1: the natives xsofy reaches beyond the shared set (rt/llvm/arrays.lg,
+;; math.lg, xxhash.lg, host.lg, lang.lg, plus core.lg's list?/assoc! markers)
+;; checked against native lg on the same inputs. Expectations are computed
+;; live from native lg, with two stored tables that native also re-checks or
+;; that pin what native cannot show:
+;;   corpus/natives/xxh3-vectors.tsv  200 xxh3/HashSeed rows; every row is
+;;     re-hashed by native here, so a stale table fails (D13's rule).
+;;   corpus/natives/math-vectors.tsv  Go GOARCH=wasm math.Exp/Pow/Sqrt bits,
+;;     what the port reproduces exactly; native arm64 is held to 1 ulp
+;;     (math.lg's header has why).
+;; Errors compare by message (core-test's res/same). Reuses core-test's
+;; boundary glue (->w, <-w, same, res); arrays and channels convert here.
+(ns xsofy-natives-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.core :as c]
+            [llvm.arrays :as a]
+            [llvm.math :as m]
+            [llvm.xxhash :as x]
+            [llvm.host :as h]
+            [llvm.lang :as l]
+            [core-test :as ct]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; ---------------------------------------------------------------------------
+;; Glue: a native typed array and a runtime Arr both become [:byte-array v] /
+;; [:int-array v], so values compare without either side's identity.
+
+(def ^:private native-array-type (type (int-array 0)))
+(defn- native-arr? [v] (= (type v) native-array-type))
+(defn- arr-kind [v] (if (string/starts-with? (str v) "#byte-array") :byte-array :int-array))
+
+(defn- nat [v] (if (native-arr? v) [(arr-kind v) (vec v)] v))
+(defn- <-r [r]
+  (if (a/arr? r)
+    [(if (= 0 (a/akind r)) :byte-array :int-array) (mapv #(sq/unbox-int (a/aget* r %)) (range (a/alen* r)))]
+    (ct/<-w r)))
+
+;; core-test's res/err-msg are private: the same two, here.
+(def ^:private obj-array-type (type (object-array 0)))
+(defn- err-msg [e]
+  (cond (and (= (type e) obj-array-type) (arch/is? sq/Err e)) (arch/string-of-bytes (arch/get sq/Err 2 e))
+        (= (type e) obj-array-type) (str "thrown ref " (pr-str (ct/<-w e)))
+        :else (string/replace (ex-message e) "wasm trap: " "")))
+(defn- res [f] (try [:ok (f)] (catch Throwable e [(if (:arch/trap (ex-data e)) :trap :err) (err-msg e)])))
+
+(defn- W [v]
+  (cond (native-arr? v) (if (= :byte-array (arr-kind v)) (a/byte-array (ct/->w (vec v))) (a/int-array (ct/->w (vec v))))
+        (reduced? v) (sq/reduced (W @v))
+        :else (ct/->w v)))
+
+(defmacro same [native mine]
+  `(let [n# (res (fn [] (nat ~native))) r# (res (fn [] (<-r ~mine)))]
+     (is (= (update n# 1 ct/tag) (update r# 1 ct/tag)) (pr-str '~native))))
+
+(defmacro same-str [native mine]                         ; str and pr-str of both sides
+  `(do (is (= (res (fn [] (str ~native))) (res (fn [] (arch/string-of-bytes (s/str-bytes (s/str ~mine)))))) (str "str " (pr-str '~native)))
+       (is (= (res (fn [] (pr-str ~native))) (res (fn [] (arch/string-of-bytes (s/str-bytes (s/pr-str ~mine)))))) (str "pr-str " (pr-str '~native)))))
+
+;; A runtime answer that is a lower-wasm named limit passes when native's
+;; answer is what it names (a Ratio or BigInt from `/`).
+(defn- limit? [[k v]] (and (#{:err :trap} k) (string/starts-with? v "lower-wasm:")))
+(defmacro same-or-limit [native mine named?]
+  `(let [n# (res (fn [] (nat ~native))) r# (res (fn [] (<-r ~mine)))]
+     (if (limit? r#)
+       (is (and (= :ok (first n#)) (~named? (second n#))) (str "named limit " (pr-str '~native) " native " (pr-str n#)))
+       (is (= (update n# 1 ct/tag) (update r# 1 ct/tag)) (pr-str '~native)))))
+
+(defn- out-of [f] (with-out-str (f)))                    ; host-write fd 1 prints to *out* in the reference
+
+;; ---------------------------------------------------------------------------
+;; Arrays
+
+(deftest arrays-construct-access
+  (c/install!)
+  (doseq [n [0 1 1000]]
+    (let [v (vec (map #(- (* % 37) 500) (range n))) wv (W v)]
+      (same (int-array n) (a/int-array (W n)))
+      (same (byte-array n) (a/byte-array (W n)))
+      (same (int-array v) (a/int-array wv))
+      (same (byte-array v) (a/byte-array wv))
+      (same (int-array n 7) (a/int-array (W n) (W 7)))
+      (same (byte-array n 300) (a/byte-array (W n) (W 300)))
+      (same (int-array (seq v)) (a/int-array (sq/seq wv)))
+      (let [na (int-array v) ra (a/int-array wv)
+            nb (byte-array v) rb (a/byte-array wv)]
+        (same (alength na) (a/alength ra))
+        (same (count nb) (sq/count rb))
+        (doseq [i (distinct [0 1 (quot n 2) (dec n) n (inc n) -1 -1000])]
+          (same (aget na i) (a/aget ra (W i)))
+          (same (aget nb i) (a/aget rb (W i)))
+          (same (get na i) (c/get ra (W i)))
+          (same (get nb i :nf) (c/get rb (W i) (W :nf)))
+          (same (nth na i :nf) (c/nth ra (W i) (W :nf))))
+        (doseq [[i e] [[0 9] [(dec n) -9223372036854775808] [n 1] [-1 1] [0 300] [0 -2] [0 1.5] [0 nil] [0 "x"]]]
+          (same (aset na i e) (a/aset ra (W i) (W e)))
+          (same (aset nb i e) (a/aset rb (W i) (W e)))
+          (when (< n 1000) (same na ra) (same nb rb)))
+        (same na ra)
+        (same nb rb)
+        (same (seq na) (sq/seq ra))
+        (same (vec nb) (sq/vec rb))
+        (same (aclone na) (a/aclone ra))
+        (let [nc (aclone na) rc (a/aclone ra)]
+          (when (pos? n)
+            (aset nc 0 12345) (a/aset rc (W 0) (W 12345))
+            (same [(aget na 0) (aget nc 0)] (c/conj (c/conj (W []) (a/aget ra (W 0))) (a/aget rc (W 0))))))
+        (when (< n 5)
+          (same-str na ra)
+          (same-str nb rb)
+          (same (hash na) (sq/hash ra))
+          (same (hash nb) (sq/hash rb)))))))
+
+(deftest arrays-errors-type-bytes
+  (c/install!)
+  (let [na (int-array 3) ra (a/int-array (W 3))]
+    (same (aget na "x") (a/aget ra (W "x")))
+    (same (aget na 1 2) (a/aget ra (W 1) (W 2)))
+    (same (aget 5 1) (a/aget (W 5) (W 1)))
+    (same (aget [1] 0) (a/aget (W [1]) (W 0)))
+    (same (aset 5 0 1) (a/aset (W 5) (W 0) (W 1)))
+    (same (aset na 1) (a/aset ra (W 1)))
+    (same (alength [1]) (a/alength (W [1])))
+    (same (aclone 5) (a/aclone (W 5)))
+    (same (int-array -1) (a/int-array (W -1)))
+    (same (byte-array -3) (a/byte-array (W -3)))
+    (same (int-array [1 nil]) (a/int-array (W [1 nil])))
+    (same (byte-array "ab") (a/byte-array (W "ab")))
+    (same (int-array 2.0) (a/int-array (W 2.0)))
+    (same (int-array :k) (a/int-array (W :k)))
+    (same (int-array 0 "x") (a/int-array (W 0) (W "x")))
+    (same (int-array 2 "x") (a/int-array (W 2) (W "x")))
+    (same (int-array) (a/int-array))
+    (same (str (type na)) (s/str (c/type-of ra)))
+    (same (= na na) (sq/equals ra ra))
+    (same (= na (aclone na)) (sq/equals ra (a/aclone ra)))
+    (same (list? (seq na)) (c/list? (sq/seq ra)))
+    (same (str (type (seq na))) (s/str (c/type-of (sq/seq ra))))
+    (same (into [] na) (c/conj-seq (W []) ra)))
+  (doseq [st ["" "héllo" "a\u0000b" "日本語"]]
+    (same (bytes st) (a/bytes (W st))))
+  (let [nb (byte-array [1 2]) rb (a/byte-array (W [1 2]))]
+    (same (identical? nb (bytes nb)) (sq/bool (arch/ref-eq rb (a/bytes rb)))))
+  (same (bytes [1]) (a/bytes (W [1])))
+  (same (bytes (int-array 1)) (a/bytes (a/int-array (W 1))))
+  (same (bytes nil) (a/bytes (W nil))))
+
+;; ---------------------------------------------------------------------------
+;; xxh3
+
+(defn- hexd [ch] (string/index-of "0123456789abcdef" (str ch)))
+
+(def ^:private xxh3-rows
+  (->> (string/split-lines (slurp "corpus/natives/xxh3-vectors.tsv"))
+       (remove #(string/starts-with? % "#"))
+       (mapv #(let [[len seed hex expected] (string/split % "\t")]
+                {:len (parse-long len) :seed (parse-long seed) :expected (parse-long expected)
+                 :bytes (if (= hex "-") [] (mapv (fn [i] (+ (* 16 (hexd (nth hex (* 2 i)))) (hexd (nth hex (inc (* 2 i))))))
+                                                 (range (parse-long len))))}))))
+
+(defn- ->bytes [v] (let [b (arch/bytes-new (count v))] (dotimes [i (count v)] (arch/bset! b i (nth v i))) b))
+
+(deftest xxh3-vectors
+  (is (= 200 (count xxh3-rows)))
+  (is (= 113 (count (distinct (map :len xxh3-rows)))))
+  (is (some #(= -9223372036854775808 (:seed %)) xxh3-rows))
+  (doseq [{:keys [len seed expected bytes]} xxh3-rows]
+    (is (= expected (xxh3/HashSeed (byte-array bytes) seed)) (str "STALE table: native disagrees at len " len " seed " seed))
+    (is (= expected (sq/unbox-int (x/hash-seed (arch/new a/Arr 0 (->bytes bytes)) (sq/box-int seed))))
+        (str "xxh3 len " len " seed " seed))))
+
+(deftest xxh3-native-boundary
+  (c/install!)
+  (doseq [st ["" "hello" "héllo wörld, a string past sixteen bytes" "日本語" (apply str (repeat 300 "é"))] seed [0 -1 nil]]
+    (same (xxh3/HashSeed st seed) (x/hash-seed (W st) (W seed))))
+  (same (xxh3/HashSeed nil 0) (x/hash-seed (W nil) (W 0)))
+  (same (xxh3/Hash (bytes "hello")) (x/hash0 (a/bytes (W "hello"))))
+  (doseq [v [[] [1] [1 2 3] (vec (range 300))]]
+    (same (xxh3/HashSeed (byte-array v) 77) (x/hash-seed (a/byte-array (W v)) (W 77))))
+  ;; xsofy's own golden (xsofy/test/hash_test.lg: native-xxh3-preserves-values)
+  (is (= -7685981735718036227 (sq/unbox-int (x/hash-seed (a/bytes (W "hello")) (W 0)))))
+  (is (= 3244421341483603138 (sq/unbox-int (x/hash-seed (a/byte-array (W 0)) (W 0))))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers as values
+
+(def ^:private nums [0 1 -1 6 -7 2 64 65 -9223372036854775808 9223372036854775807
+                     1.5 2.0 0.0 -0.0 -2.5 0.1 1e300 1e-310 ##Inf ##-Inf ##NaN nil "x" :k])
+;; the bit ops reject every non-Int with one message, and unchecked-* hands
+;; non-Int pairs to llvm.core: a few non-Ints suffice for both
+(def ^:private bit-nums [0 1 -1 6 -7 2 63 64 65 -2 -9223372036854775808 9223372036854775807 1.5 nil "x"])
+(defn- ratio-or-big? [v] (let [t (str (type v))] (or (string/includes? t "Ratio") (string/includes? t "BigInt"))))
+
+(deftest numbers-binary
+  (c/install!)
+  (doseq [p nums q nums]
+    (same (rem p q) (m/rem (W p) (W q)))
+    (same-or-limit (/ p q) (m/div (W p) (W q)) ratio-or-big?)
+    (same (math/pow p q) (m/pow (W p) (W q))))
+  ;; unchecked-* past an Int pair is llvm.core's checked arithmetic (core_test)
+  (doseq [p bit-nums q bit-nums]
+    (same (unchecked-add p q) (m/unchecked-add* (W p) (W q)))
+    (same (unchecked-subtract p q) (m/unchecked-sub* (W p) (W q)))
+    (same (unchecked-multiply p q) (m/unchecked-mul* (W p) (W q))))
+  (doseq [p bit-nums q bit-nums]
+    (same (bit-or p q) (m/bit-or* (W p) (W q)))
+    (same (bit-xor p q) (m/bit-xor* (W p) (W q)))
+    (same (bit-shift-left p q) (m/shl (W p) (W q)))
+    (same (bit-shift-right p q) (m/shr (W p) (W q)))
+    (same (unsigned-bit-shift-right p q) (m/ushr (W p) (W q))))
+  (doseq [n [-1 0 1 63 64 65 100 -100]]
+    (same (bit-shift-left 1 n) (m/shl (W 1) (W n)))
+    (same (bit-shift-right -1024 n) (m/shr (W -1024) (W n)))
+    (same (unsigned-bit-shift-right -1024 n) (m/ushr (W -1024) (W n))))
+  (same (/ 6 3 2) (m/div (W 6) (W 3) (W 2)))
+  (same (/ 2.0) (m/div (W 2.0)))
+  (same (apply / [100 5 2]) (m/div-seq (W [100 5 2])))
+  (same (bit-or 1) (m/bit-or* (W 1)))
+  (same (bit-xor 1 2 3) (m/bit-xor* (W 1) (W 2) (W 3)))
+  (same (rem 1) (m/rem (W 1)))
+  (same (unchecked-add 1) (m/unchecked-add* (W 1))))
+
+(deftest numbers-unary
+  (c/install!)
+  (doseq [p (concat nums [16777217 3.4028235677973366e38 3.4028234663852886e38 1e-50 1.401298464324817e-45 7.006492321624085e-46
+                          -0.1 0.30000001192092896 2.5e-39 \a])]
+    (same (float p) (m/float (W p)))
+    (same (float? p) (m/float? (W p)))
+    (same (int? p) (m/int? (W p)))
+    (same (math/abs p) (m/abs (W p)))
+    (same (math/sqrt p) (m/sqrt (W p)))
+    (same (math/exp p) (m/exp (W p)))
+    (same (let-go.types/bigint? p) (m/bigint? (W p))))
+  (same (float) (m/float))
+  (same (float? 1 2) (m/float? (W 1) (W 2)))
+  (same (math/abs) (m/abs))
+  (same (let-go.types/bigint?) (m/bigint?))
+  (testing "rand-int: native's draw is random; only the contract is comparable"
+    (same (rand-int 0) (m/rand-int (W 0)))
+    (same (rand-int -5) (m/rand-int (W -5)))
+    (same (rand-int 1.5) (m/rand-int (W 1.5)))
+    (same (rand-int nil) (m/rand-int (W nil)))
+    (let [draws (map (fn [_] (sq/unbox-int (m/rand-int (W 10)))) (range 2000))]
+      (is (every? #(<= 0 % 9) draws))
+      (is (= 10 (count (distinct draws)))))
+    (is (= 0 (sq/unbox-int (m/rand-int (W 1)))))))
+
+(def ^:private math-rows
+  (->> (string/split-lines (slurp "corpus/natives/math-vectors.tsv"))
+       (remove #(string/starts-with? % "#"))
+       (mapv #(let [[op p q r] (string/split % "\t")] [op (parse-long p) (parse-long q) (parse-long r)]))))
+
+(defn- ulps [p q] (if (= (neg? p) (neg? q)) (abs (- p q)) Long/MAX_VALUE))
+(defn- nan-bits? [b] (and (= 0x7FF (bit-and (unsigned-bit-shift-right b 52) 0x7FF)) (not= 0 (bit-and b 0xFFFFFFFFFFFFF))))
+
+(deftest math-float-algorithms
+  (is (< 1500 (count math-rows)))
+  (let [native-off (atom 0)]
+    (doseq [[op p q r] math-rows]
+      (let [x (m/from-bits p) y (m/from-bits q)
+            mine (sq/float-bits (case op "exp" (m/exp* x) "sqrt" (m/sqrt* x) "pow" (m/pow* x y)))
+            native (sq/float-bits (case op "exp" (math/exp x) "sqrt" (math/sqrt x) "pow" (math/pow x y)))]
+        ;; NaN payloads are invisible to the reference's float-bits (README, P2.10)
+        (if (nan-bits? r)
+          (is (nan-bits? mine) (str op " " x " " y " should be NaN"))
+          (do (is (= r mine) (str "Go/wasm " op " " x " " y))
+              (is (<= (ulps native r) 1) (str "native > 1 ulp: " op " " x " " y))
+              (when (not= native r) (swap! native-off inc))))))
+    ;; measured 2026-10-01 on arm64: 14 rows (2 exp, 12 non-integer pow)
+    (is (< @native-off 40) (str "native arm64 off by 1 ulp in " @native-off " rows"))))
+
+;; The inputs xsofy actually feeds these: world.lg depth-freq (exp of a
+;; gaussian over the creature table) and combat.lg's pow with integral
+;; exponents. Exact against native, not just 1 ulp.
+(deftest math-xsofy-domain
+  (c/install!)
+  (doseq [depth (range 0 41) [peak spread] [[1 1.0] [1 1.2] [2 1.2] [3 1.5] [4 2.0] [5 2.0] [6 2.5] [8 3.0] [10 3.0] [12 4.0] [15 5.0]]]
+    (let [d (- depth peak)
+          arg (- (/ (* (float d) (float d)) (* 2.0 spread spread)))]
+      (same (math/exp arg) (m/exp (W arg)))))
+  (doseq [n (range -60 300)]
+    (same (math/pow 1.28 (float n)) (m/pow (W 1.28) (m/float (W n))))
+    (same (math/pow 0.987 (float n)) (m/pow (W 0.987) (m/float (W n)))))
+  (doseq [dx (range -30 31) dy (range -30 31 7)]
+    (same (math/sqrt (+ (* dx dx) (* dy dy))) (m/sqrt (W (+ (* dx dx) (* dy dy)))))))
+
+;; ---------------------------------------------------------------------------
+;; Host: printing, handles, clocks, timeout channels, the browser seam
+
+(deftest host-printing
+  (c/install!)
+  (doseq [args [[] ["a"] ["a" 1 "b" \c] [[1 "x"] nil] [{:a "s"} #{1}] ["x" "y" "z" 4]]]
+    (is (= (out-of #(apply println args)) (out-of #(h/println-seq (W (apply list args))))) (str "println " (pr-str args)))
+    (is (= (out-of #(apply print args)) (out-of #(h/print-seq (W (apply list args))))) (str "print " (pr-str args)))
+    (is (= (out-of #(apply pr args)) (out-of #(h/pr-seq (W (apply list args))))) (str "pr " (pr-str args)))
+    (is (= (out-of #(apply prn args)) (out-of #(h/prn-seq (W (apply list args))))) (str "prn " (pr-str args))))
+  (is (= (out-of #(println "a" 1)) (out-of #(h/println (W "a") (W 1)))))
+  (is (= (out-of #(prn "a" \b nil [1])) (out-of #(h/prn (W "a") (W \b) (W nil) (W [1])))))
+  (is (= (out-of #(print)) (out-of #(h/print))))
+  (is (= (out-of #(pr 1 2 3)) (out-of #(h/pr (W 1) (W 2) (W 3)))))
+  (doseq [v ["z" "héllo\n" 5 [1 "a"] nil :k (bytes "AB") (byte-array [0xe6 0x97 0xa5])]]
+    (is (= (out-of #(write! *out* v)) (out-of #(h/write! (h/out-handle) (W v)))) (str "write! " (pr-str v)))
+    (same (write! *out* "") (h/write! (h/out-handle) (W ""))))
+  (same (write! 5 "x") (h/write! (W 5) (W "x")))
+  (same (write! *out*) (h/write! (h/out-handle)))
+  ;; native flush! is Sync on the fd: nil on a terminal or file, "bad file
+  ;; descriptor" on a pipe; the runtime's host has nothing to sync
+  (is (nil? (h/flush! (h/out-handle))))
+  (same (flush! 5) (h/flush! (W 5)))
+  (same (close! 5) (h/close! (W 5)))
+  (is (nil? (let [r (atom :unset)] (out-of #(reset! r (h/println (W "x")))) @r))))
+
+(deftest host-closed-handle
+  ;; native: a handle on /dev/null, closed; runtime: a handle of that name
+  (c/install!)
+  (let [nh (open "/dev/null" :write) rh (arch/new h/Handle 1 (arch/bytes-of-string "/dev/null") 0)]
+    (same (close! nh) (h/close! rh))
+    (same (write! nh "x") (h/write! rh (W "x")))
+    (same (flush! nh) (h/flush! rh))
+    (same (close! nh) (h/close! rh))))
+
+(deftest host-clocks-and-timeouts
+  (c/install!)
+  (same (int? (System/nanoTime)) (m/int? (h/nano-time)))
+  (same (int? (System/currentTimeMillis)) (m/int? (h/current-time-millis)))
+  (same (async/<!! (async/timeout 5)) (h/take!! (h/timeout (W 5))))
+  (same (async/<!! (async/timeout 0)) (h/take!! (h/timeout (W 0))))
+  (same (async/<!! (async/timeout -5)) (h/take!! (h/timeout (W -5))))
+  (same (async/timeout "x") (h/timeout (W "x")))
+  (same (async/<!! 5) (h/take!! (W 5)))
+  (testing "the reference's virtual clock moves only by the sleeps (D27)"
+    (let [t0 (sq/unbox-int (h/nano-time))
+          ch (h/timeout (W 30))
+          _ (h/take!! ch)
+          t1 (sq/unbox-int (h/nano-time))
+          _ (h/take!! ch)                                ; fired: no second sleep
+          _ (h/take!! (h/timeout (W -5)))                ; negative: immediate
+          t2 (sq/unbox-int (h/nano-time))]
+      (is (= 30000000 (- t1 t0)))
+      (is (= t1 t2))
+      (is (= (quot t2 1000000) (sq/unbox-int (h/current-time-millis))))
+      (is (nil? (h/close! (h/timeout (W 1)))))))
+  (is (string/starts-with? (second (res #(h/now))) "lower-wasm:")))
+
+(deftest host-js-seam
+  (c/install!)
+  (doseq [[nm d] [[:a 1] ["a" {:x [1 2]}] ['s nil] [5 1] [nil 1]]]
+    (same (js/emit nm d) (h/emit (W nm) (W d))))
+  (same (js/emit :a) (h/emit (W :a)))
+  (same (js/emit) (h/emit))
+  (doseq [v ["mode" "dump-replay" 5 nil]]
+    (same (js/url-param v) (h/url-param (W v))))
+  (same (js/url-param) (h/url-param)))
+
+;; ---------------------------------------------------------------------------
+;; iterate, transformer-seq*, ->AssertionError, and core.lg's list?/assoc!
+
+(defn- rclo
+  "A native fn as a runtime closure (core-test's clo, with reduced and
+   arrays converted too)."
+  [f]
+  (arch/new sq/Fn
+            (arch/funcref sq/Code0 (fn [_] (W (f))))
+            (arch/funcref sq/Code1 (fn [_ p] (W (f (<-r p)))))
+            (arch/funcref sq/Code2 (fn [_ p q] (W (f (<-r p) (<-r q)))))
+            (arch/null) (arch/null) (arch/null) (arch/new sq/FnInfo 0 1 (arch/null)) 0))
+
+(defn- rtake [n s]                                      ; the first n elements, realising no further
+  (loop [i 0 q (sq/seq s) out []]
+    (cond (or (= i n) (arch/null? q)) (W out)
+          (= (inc i) n) (W (conj out (<-r (sq/first q))))
+          :else (recur (inc i) (sq/next q) (conj out (<-r (sq/first q)))))))
+
+(deftest lang-iterate
+  (c/install!)
+  (same (vec (take 5 (iterate inc 0))) (rtake 5 (l/iterate (rclo inc) (W 0))))
+  (same (vec (take 4 (iterate #(* 2 %) 1))) (rtake 4 (l/iterate (rclo #(* 2 %)) (W 1))))
+  (same (vec (take 3 (iterate :a {:a {:a nil}}))) (rtake 3 (l/iterate (W :a) (W {:a {:a nil}}))))
+  (same (first (iterate inc 41)) (sq/first (l/iterate (rclo inc) (W 41))))
+  (same (iterate inc) (l/iterate (rclo inc)))
+  (same (iterate 5 1) (l/iterate (W 5) (W 1)))
+  (let [calls (atom 0)]                                  ; f runs only as cells are realised
+    (rtake 3 (l/iterate (rclo (fn [v] (swap! calls inc) (inc v))) (W 0)))
+    (is (= 2 @calls))))
+
+(deftest lang-transformer-seq
+  (c/install!)
+  (doseq [[label xf coll] [["map" (map inc) [1 2 3]]
+                           ["filter" (filter odd?) (range 10)]
+                           ["take (reduced)" (take 3) (range 100)]
+                           ["partition-all (completion flush)" (partition-all 3) (range 8)]
+                           ["mapcat" (mapcat (fn [v] [v v])) [1 2]]
+                           ["comp" (comp (map inc) (filter even?) (take 2)) (range 20)]
+                           ["empty source" (map inc) []]
+                           ["nil source" (map inc) nil]
+                           ["error in step ends the seq" (map #(quot 10 %)) [5 2 0 1]]]]
+    (testing label
+      (same (vec (sequence xf coll)) (rtake 1000 (l/transformer-seq* (rclo xf) (W coll))))))
+  (same (sequence (map inc) []) (l/transformer-seq* (rclo (map inc)) (W [])))
+  (same (transformer-seq* 5 [1]) (l/transformer-seq* (W 5) (W [1])))
+  (same (transformer-seq* (map inc)) (l/transformer-seq* (rclo (map inc))))
+  (same (transformer-seq* (fn [rf] 5) [1]) (l/transformer-seq* (rclo (fn [rf] 5)) (W [1]))))
+
+(deftest lang-assertion-error
+  (c/install!)
+  (doseq [[nf rf] [[#(->AssertionError "boom") #(l/assertion-error (W "boom"))]
+                   [#(->AssertionError) #(l/assertion-error)]
+                   [#(->AssertionError "m" (ex-info "c" {})) #(l/assertion-error (W "m") (c/ex-info (W "c") (W {})))]]]
+    (is (= (ex-message (nf)) (second (res #(throw (rf)))))))
+  (same (->AssertionError 5) (l/assertion-error (W 5)))
+  (same (->AssertionError nil) (l/assertion-error (W nil)))
+  (same (->AssertionError "a" nil 3) (l/assertion-error (W "a") (W nil) (W 3))))
+
+(deftest core-list?-assoc!
+  (c/install!)
+  (doseq [v ['(1) () [1] nil 1 "s"]]
+    (same (list? v) (c/list? (W v))))
+  (same (list? (seq [1 2])) (c/list? (sq/seq (W [1 2]))))
+  (same (persistent! (assoc! (transient {}) :a 1 :b 2)) (c/persistent! (c/assoc! (c/transient (W {})) (W :a) (W 1) (W :b) (W 2))))
+  (same (persistent! (assoc! (transient {}) :a)) (c/persistent! (c/assoc! (c/transient (W {})) (W :a))))
+  (same (assoc! {} 1 2) (c/assoc! (W {}) (W 1) (W 2))))
+
+;; ---------------------------------------------------------------------------
+;; The dialect claim for each new file (as core_test's): every var a defn
+;; body references after IR macroexpansion is a runtime var, an intrinsic
+;; or declaration, a core fn the IR lowers to an op, or core/throw; math.lg
+;; alone may use `/` (on :float operands: f64.div).
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot throw})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote catch})
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'catch head) (let [[_ e & body] more] (mapcat #(var-refs % (conj bound e)) body))
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(defn- offending [file ns-sym extra-ok]
+  (let [forms (read-string (str "[" (slurp file) "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        in-ns* #(binding [*ns* (find-ns ns-sym)] (%))]
+    [(count defns)
+     (distinct
+      (for [d defns
+            [params & body] (arities d)
+            sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
+            :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                  vname (str v)]
+            :when (not (or (some #(string/starts-with? vname (str "#'llvm." % "/"))
+                                 ["arrays" "math" "xxhash" "host" "lang" "core" "seq" "pvec" "str" "phm" "phs" "sorted"])
+                           (and (string/starts-with? vname "#'llvm.arch/")
+                                (or (:intrinsic (meta v)) (:llvm.arch/kind @v)))
+                           (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))
+                           (extra-ok vname)))]
+        [(second d) sym]))]))
+
+(deftest dialect
+  (doseq [[file ns-sym extra-ok min-defns] [["rt/llvm/arrays.lg" 'llvm.arrays #{} 20]
+                                            ["rt/llvm/math.lg" 'llvm.math #{"#'core//"} 40]
+                                            ["rt/llvm/xxhash.lg" 'llvm.xxhash #{} 15]
+                                            ["rt/llvm/host.lg" 'llvm.host #{} 20]
+                                            ["rt/llvm/lang.lg" 'llvm.lang #{} 10]
+                                            ["rt/llvm/sorted.lg" 'llvm.sorted #{} 20]]]
+    (let [[n bad] (offending file ns-sym extra-ok)]
+      (is (<= min-defns n) (str file " defns"))
+      (is (empty? bad) (str file " non-dialect references: " (pr-str bad)))))
+  (testing "arrays.lg must not require llvm.core (it loads first; the type-name hook covers it)"
+    (is (not (string/includes? (slurp "rt/llvm/arrays.lg") "[llvm.core"))))
+  (testing "sorted.lg must not require llvm.core (it loads first; the compare hook covers it)"
+    (is (not (string/includes? (slurp "rt/llvm/sorted.lg") "[llvm.core")))))

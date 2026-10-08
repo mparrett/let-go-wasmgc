@@ -1,0 +1,339 @@
+;; llvm.host — P3.1: the natives xsofy reaches that talk to the outside:
+;; printing (println print pr prn), IO handles (write! flush! close!), the
+;; clocks (System/nanoTime, System/currentTimeMillis), sleeping through a
+;; timeout channel (async/timeout, async/<!!), the browser seam (js/emit,
+;; js/url-param), and let-go.core/now as a named limit. In the runtime
+;; dialect of seq.lg; everything leaves through arch/host-write,
+;; arch/host-sleep and arch/host-nanotime (D6, D27: deterministic virtual
+;; clock in the reference).
+;;
+;; Ground truth is let-go ff1e6dac: pkg/rt/lang.go (println :3670, print
+;; :3652, pr :3661, prn :3300; text from prThroughToString,
+;; print_method.go:12: the args' print-str/pr-str forms joined by one
+;; space), pkg/rt/iort.go (close! :203, write! :260, flush! :282, *out*
+;; and *err* :356), pkg/rt/system.go:148-155, pkg/rt/async.go (timeout,
+;; <!! = <!), pkg/rt/js.go:66-99.
+;;
+;; *out*/*err* are values, not natives: `out-handle`/`err-handle` return
+;; the runtime's two handles (fd 1, fd 2), which the backend binds those
+;; vars to. Natively *out* is rebindable (with-out-str); here printing
+;; always goes to fd 1, and the reference's host-write prints to the lg
+;; *out*, so with-out-str still captures it in tests. Channels: only the
+;; timeout channel exists (xsofy sleeps with (<!! (timeout ms))); chan, go
+;; and >! are Phase 5.
+(ns llvm.host
+  (:refer-clojure :exclude [println print pr prn write! flush! close! sleep])
+  (:require [llvm.arch :as arch]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.core :as c]
+            [llvm.arrays :as arr]
+            [llvm.pvec :as pv]))
+
+(arch/defstruct Handle [:i64 :ref [:mut :i32]])  ; fd, name bytes (/dev/stdout), closed (1/0)
+(arch/defstruct Chan [:i64 [:mut :i32]])         ; a timeout: deadline (host ns), closed (1/0)
+;; The one runtime global (D39): the two standard handles.
+(arch/defstruct HGlobals [:ref :ref])
+(def globals (arch/new HGlobals (arch/new Handle 1 (arch/bytes-of-string "/dev/stdout") 0)
+                       (arch/new Handle 2 (arch/bytes-of-string "/dev/stderr") 0)))
+
+(defn out-handle "The value of *out*." [] (arch/get HGlobals 0 globals))
+(defn err-handle "The value of *err*." [] (arch/get HGlobals 1 globals))
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- raise-str [st] (c/raise (s/str-bytes st)))
+(defn- tn [x] (s/mk-str (c/type-name x)))
+(defn- raise-arity [n] (raise-str (s/str (lit (arch/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+(defn- handle? [x] (if (arch/null? x) false (arch/is? Handle x)))
+(defn- chan? [x] (if (arch/null? x) false (arch/is? Chan x)))
+
+;; ---------------------------------------------------------------------------
+;; Printing: one host-write of the whole line, as WriteToOut does.
+
+(defn- emit-out [st] (arch/host-write 1 (s/str-bytes st)) (arch/null))
+(defn- nl [] (lit (arch/bytes-of-string "\n")))
+
+(defn print-seq "(apply print xs)" [xs] (emit-out (s/print-str-seq xs)))
+(defn println-seq "(apply println xs)" [xs] (emit-out (s/str (s/print-str-seq xs) (nl))))
+(defn pr-seq "(apply pr xs)" [xs] (emit-out (s/pr-str-seq xs)))
+(defn prn-seq "(apply prn xs)" [xs] (emit-out (s/str (s/pr-str-seq xs) (nl))))
+
+(defn ^{:twin "core/println"} println
+  ([] (println-seq (arch/null))) ([a] (println-seq (sq/list a))) ([a b] (println-seq (sq/list a b)))
+  ([a b x] (println-seq (sq/list a b x))) ([a b x y] (println-seq (sq/cons a (sq/list b x y)))))
+(defn ^{:twin "core/print"} print
+  ([] (print-seq (arch/null))) ([a] (print-seq (sq/list a))) ([a b] (print-seq (sq/list a b)))
+  ([a b x] (print-seq (sq/list a b x))) ([a b x y] (print-seq (sq/cons a (sq/list b x y)))))
+(defn ^{:twin "core/pr"} pr
+  ([] (pr-seq (arch/null))) ([a] (pr-seq (sq/list a))) ([a b] (pr-seq (sq/list a b)))
+  ([a b x] (pr-seq (sq/list a b x))) ([a b x y] (pr-seq (sq/cons a (sq/list b x y)))))
+(defn ^{:twin "core/prn"} prn
+  ([] (prn-seq (arch/null))) ([a] (prn-seq (sq/list a))) ([a b] (prn-seq (sq/list a b)))
+  ([a b x] (prn-seq (sq/list a b x))) ([a b x y] (prn-seq (sq/cons a (sq/list b x y)))))
+
+;; ---------------------------------------------------------------------------
+;; IO handles. A closed standard handle fails like the closed *os.File it
+;; wraps: "<op> /dev/stderr: file already closed".
+
+(defn- check-handle [h]
+  (if (handle? h) h (raise-str (s/str (lit (arch/bytes-of-string "expected IOHandle, got ")) (tn h)))))
+
+(defn- closed-error [op h]
+  (raise-str (s/str (s/str (lit op) (lit (arch/get Handle 1 h))) (lit (arch/bytes-of-string ": file already closed")))))
+
+;; write!: a String verbatim, a byte-array's raw bytes, anything else its
+;; String() form.
+(defn ^{:twin "core/write!"} write!
+  ([] (c/raise (arch/bytes-of-string "write! expects 2 args")))
+  ([h] (c/raise (arch/bytes-of-string "write! expects 2 args")))
+  ([h x]
+   (check-handle h)
+   (if (= 1 (arch/get Handle 2 h))
+     (closed-error (arch/bytes-of-string "write ") h)
+     (let [k (sq/kind x)
+           bs (cond (= k 17) (s/str-bytes x)
+                    (arch/null? (arr/byte-data x)) (s/str-bytes (s/value-string x))
+                    :else (arr/byte-data x))]
+       (arch/host-write (arch/get Handle 0 h) bs)
+       (arch/null))))
+  ([h x y] (c/raise (arch/bytes-of-string "write! expects 2 args"))))
+
+(defn ^{:twin "core/flush!"} flush!
+  ([] (c/raise (arch/bytes-of-string "flush! expects 1 arg")))
+  ([h] (check-handle h)
+       (if (= 1 (arch/get Handle 2 h)) (closed-error (arch/bytes-of-string "sync ") h) (arch/null)))
+  ([h x] (c/raise (arch/bytes-of-string "flush! expects 1 arg"))))
+
+(defn ^{:twin "core/close!"} close!                       ; IO handles and channels
+  ([] (c/raise (arch/bytes-of-string "close! expects 1 arg")))
+  ([h] (cond (chan? h) (do (arch/set! Chan 1 h 1) (arch/null))
+             (= 1 (arch/get Handle 2 (check-handle h))) (closed-error (arch/bytes-of-string "close ") h)
+             :else (do (arch/set! Handle 2 h 1) (arch/null))))
+  ([h x] (c/raise (arch/bytes-of-string "close! expects 1 arg"))))
+
+
+;; ---------------------------------------------------------------------------
+;; Clocks. The host's clock (virtual in the reference, D27): nanoTime is it
+;; directly; currentTimeMillis is it in ms (native: Unix epoch ms, so only
+;; differences are comparable).
+
+(defn ^{:twin "System/nanoTime"} nano-time [] (sq/box-int (arch/host-nanotime)))
+(defn ^{:twin "System/currentTimeMillis"} current-time-millis [] (sq/box-int (quot (arch/host-nanotime) 1000000)))
+(defn ^{:twin "let-go.core/now"} now []
+  (arch/trap "lower-wasm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
+
+;; sleep (lang.go:4572): Int or Float ms (a Float truncates); a non-positive
+;; duration returns at once, as an expired time.Timer does. Through
+;; env.sleep, so a JS host yields (JSPI) and the reference advances its
+;; virtual clock. No cancellation: a module has no goroutine registry.
+(defn ^{:twin "core/sleep"} sleep
+  ([] (c/raise (arch/bytes-of-string "sleep expects 1 arg")))
+  ([ms] (let [k (sq/kind ms)
+              n (cond (= k 1) (sq/unbox-int ms)
+                      (= k 22) (let [f (arch/get sq/Float 0 ms)] (if (if (< f 9.0e15) (> f -9.0e15) false) (arch/f64-to-i64 f) 0))
+                      :else (c/raise (arch/bytes-of-string "sleep expects a number")))]
+          (when (> n 0) (arch/host-sleep n))
+          (arch/null)))
+  ([ms x] (c/raise (arch/bytes-of-string "sleep expects 1 arg"))))
+
+;; ---------------------------------------------------------------------------
+;; Timeout channels. (timeout ms) fixes a deadline now; the first take
+;; sleeps until it (time.After fires once), later takes return at once.
+;; A negative ms fires immediately.
+
+(defn ^{:twin "async/timeout"} timeout
+  ([] (raise-arity 0))
+  ([ms] (if (= 1 (sq/kind ms))
+          (let [n (sq/unbox-int ms)] (arch/new Chan (+ (arch/host-nanotime) (if (< n 0) 0 (* n 1000000))) 0))
+          (c/raise (arch/bytes-of-string "timeout expected Int milliseconds"))))
+  ([ms x] (raise-arity 2)))
+
+(defn ^{:twin "async/<!!"} take!!
+  ([] (raise-arity 0))
+  ([ch] (if (chan? ch)
+          (do (when (= 0 (arch/get Chan 1 ch))
+                (let [wait (- (arch/get Chan 0 ch) (arch/host-nanotime))]
+                  (when (> wait 0) (arch/host-sleep (quot (+ wait 999999) 1000000))))
+                (arch/set! Chan 1 ch 1))
+              (arch/null))
+          (c/raise (arch/bytes-of-string "<! expected Chan"))))
+  ([ch x] (raise-arity 2)))
+
+;; ---------------------------------------------------------------------------
+;; The browser seam (D100). emit validates its arguments, marshals data to
+;; JSON exactly as let-go does (prepareEmit, pkg/rt/js.go: fromValue,
+;; pkg/rt/json_value.go:60, then encoding/json.Marshal) and hands both to the host
+;; through arch/host-emit; url-param reads the page's query through
+;; arch/host-url-param. Their references are native lg off the browser: the
+;; event goes nowhere and every parameter is absent (nil), so the oracle
+;; still holds; a browser host (host/lg-wasm-host.js) fires the CustomEvent
+;; and answers ?seed= and friends.
+
+(defn ^{:intrinsic true
+        :wasm "copy name and JSON Bytes to linear memory at 32; call $env.emit(name_ptr, name_len, json_ptr, json_len)"
+        :type "[:any :any] -> :any"}
+  host-emit
+  "Hand an event name and its JSON text (both Bytes) to the host."
+  [name-bytes json-bytes] nil)
+
+(defn ^{:intrinsic true
+        :wasm "copy name to 32; call $env.url_param(name_ptr, name_len, buf, cap) (getenv's contract); -1 -> ref.null, else Bytes"
+        :type "[:any] -> :any"}
+  host-url-param
+  "The page URL's query parameter (Bytes name) as Bytes, or null when absent."
+  [name-bytes] nil)
+
+;; A growable byte buffer for the JSON text: bytes, length.
+(arch/defstruct JBuf [[:mut :ref] [:mut :i64]])
+(defn- jb-new [] (arch/new JBuf (arch/bytes-new 64) 0))
+(defn- jb-room! [b extra]
+  (let [bs (arch/get JBuf 0 b) len (arch/get JBuf 1 b) need (+ len extra)]
+    (when (> need (arch/alen bs))
+      (let [nb (arch/bytes-new (+ need need))]
+        (arch/array-copy arch/Bytes nb 0 bs 0 len)
+        (arch/set! JBuf 0 b nb)))))
+(defn- jb-byte! [b v]
+  (jb-room! b 1)
+  (arch/bset! (arch/get JBuf 0 b) (arch/get JBuf 1 b) v)
+  (arch/set! JBuf 1 b (inc (arch/get JBuf 1 b))))
+(defn- jb-range! [b src from to]
+  (let [n (- to from)]
+    (jb-room! b n)
+    (arch/array-copy arch/Bytes (arch/get JBuf 0 b) (arch/get JBuf 1 b) src from n)
+    (arch/set! JBuf 1 b (+ (arch/get JBuf 1 b) n))))
+(defn- jb-lit! [b bs] (jb-range! b bs 0 (arch/alen bs)))
+(defn- jb-done [b]
+  (let [n (arch/get JBuf 1 b) out (arch/bytes-new n)]
+    (arch/array-copy arch/Bytes out 0 (arch/get JBuf 0 b) 0 n)
+    out))
+
+(defn- hex-digit [d] (if (< d 10) (+ 48 d) (+ 87 d)))
+
+;; A JSON string as encoding/json writes it (encode.go appendString,
+;; escapeHTML on): " \ and \n \r \t escaped, other bytes < 0x20 and < > & as
+;; \u00XX, U+2028/U+2029 (E2 80 A8/A9) as  / , the rest verbatim.
+;; (Go also replaces invalid UTF-8 with U+FFFD; the runtime's strings are
+;; valid UTF-8 from source text and the host.)
+(defn- json-string! [b bs]
+  (jb-byte! b 34)
+  (let [n (arch/alen bs)]
+    (loop [i 0 run 0]
+      (if (>= i n)
+        (jb-range! b bs run n)
+        (let [c (arch/bget bs i)
+              ls? (if (= c 226) (if (< (+ i 2) n) (if (= 128 (arch/bget bs (inc i)))
+                                                   (let [c3 (arch/bget bs (+ i 2))] (if (= c3 168) true (= c3 169)))
+                                                   false) false) false)]
+          (cond
+            ls? (do (jb-range! b bs run i)
+                    (jb-lit! b (if (= 168 (arch/bget bs (+ i 2))) (arch/bytes-of-string "\\u2028") (arch/bytes-of-string "\\u2029")))
+                    (recur (+ i 3) (+ i 3)))
+            (if (< c 32) true (if (= c 34) true (if (= c 92) true (if (= c 60) true (if (= c 62) true (= c 38))))))
+            (do (jb-range! b bs run i)
+                (cond (= c 34) (jb-lit! b (arch/bytes-of-string "\\\""))
+                      (= c 92) (jb-lit! b (arch/bytes-of-string "\\\\"))
+                      (= c 10) (jb-lit! b (arch/bytes-of-string "\\n"))
+                      (= c 13) (jb-lit! b (arch/bytes-of-string "\\r"))
+                      (= c 9) (jb-lit! b (arch/bytes-of-string "\\t"))
+                      :else (do (jb-lit! b (arch/bytes-of-string "\\u00"))
+                                (jb-byte! b (hex-digit (quot c 16)))
+                                (jb-byte! b (hex-digit (bit-and c 15)))))
+                (recur (inc i) (inc i)))
+            :else (recur (inc i) run))))))
+  (jb-byte! b 34))
+
+(defn- named-text
+  "A keyword's Go string (ns/name, no colon), as fromValue reads it."
+  [x] (let [bs (s/str-bytes (s/value-string x)) n (arch/alen bs) out (arch/bytes-new (- n 1))]
+        (arch/array-copy arch/Bytes out 0 bs 1 (- n 1))
+        out))
+
+(defn- json-key-str
+  "A map key as fromMapValue (pkg/rt/json_value.go:15) names it, as a Str."
+  [k] (let [kd (sq/kind k)]
+        (cond (= kd 17) k
+              (= kd 20) (s/mk-str (named-text k))
+              :else (s/value-string k))))
+
+(declare json!)
+
+(defn- json-seq! [b xs]
+  (jb-byte! b 91)
+  (loop [s (sq/seq xs) first? true]
+    (when-not (arch/null? s)
+      (when-not first? (jb-byte! b 44))
+      (json! b (sq/first s))
+      (recur (sq/next s) false)))
+  (jb-byte! b 93))
+
+;; Go marshals map[string]any with its keys sorted, and a later entry whose
+;; key converts to the same string replaces an earlier one: re-key into a
+;; map by the converted Str, then walk its keys in sorted order.
+(defn- json-map! [b m]
+  (let [km (loop [s (sq/seq m) acc (arch/null)]
+             (if (arch/null? s)
+               acc
+               (let [e (sq/first s)]
+                 (recur (sq/next s) (c/assoc acc (json-key-str (c/key e)) (c/val e))))))]
+    (jb-byte! b 123)
+    (loop [s (sq/seq (c/sort (loop [s (sq/seq km) ks (arch/null)]
+                               (if (arch/null? s) ks (recur (sq/next s) (sq/cons (c/key (sq/first s)) ks))))))
+           first? true]
+      (when-not (arch/null? s)
+        (let [k (sq/first s)]
+          (when-not first? (jb-byte! b 44))
+          (json-string! b (s/str-bytes k))
+          (jb-byte! b 58)
+          (json! b (c/get km k))
+          (recur (sq/next s) false))))
+    (jb-byte! b 125)))
+
+;; fromValue's cases: String, Int, Float (strconv 'f', -1 for |x| < 1e21:
+;; a whole value prints with no fraction; elsewhere the runtime's float text,
+;; which agrees on xsofy's payloads), Boolean, nil, maps (and records),
+;; Keyword (its ns/name text), vectors and anything seqable as arrays, any
+;; other value as its String().
+(defn json! [b x]
+  (let [k (sq/kind x) ck (c/ckind x)]
+    (cond (= k 0) (jb-lit! b (arch/bytes-of-string "null"))
+          (= k 1) (jb-lit! b (s/str-bytes (s/value-string x)))
+          (= k 15) (jb-lit! b (if (= 1 (arch/get sq/Bool 0 x)) (arch/bytes-of-string "true") (arch/bytes-of-string "false")))
+          (= k 17) (json-string! b (s/str-bytes x))
+          (= k 20) (json-string! b (named-text x))
+          (= k 22) (let [f (s/unbox-float x)]
+                     (if (if (< f 1.0e18) (if (> f -1.0e18) (= f (arch/i64-to-f64 (arch/f64-to-i64 f))) false) false)
+                       (jb-lit! b (s/str-bytes (s/value-string (sq/box-int (arch/f64-to-i64 f)))))
+                       (jb-lit! b (s/str-bytes (s/value-string x)))))
+          (= ck 30) (json-map! b x)
+          (if (= k 11) true (if (sq/seq-kind? k) true (if (= ck 31) true (= k 23)))) (json-seq! b x)
+          :else (json-string! b (s/str-bytes (s/value-string x))))))
+
+(defn json-bytes "data as the JSON text js/emit hands the host." [x]
+  (let [b (jb-new)] (json! b x) (jb-done b)))
+
+(defn ^{:twin "js/emit"} emit
+  ([] (c/raise (arch/bytes-of-string "js/emit expects 2 args (event-name data), got 0")))
+  ([a] (c/raise (arch/bytes-of-string "js/emit expects 2 args (event-name data), got 1")))
+  ([nm data] (let [k (sq/kind nm)]
+               (cond (= k 20) (host-emit (named-text nm) (json-bytes data))
+                     (= k 21) (host-emit (s/str-bytes (s/value-string nm)) (json-bytes data))
+                     (= k 17) (host-emit (s/str-bytes nm) (json-bytes data))
+                     :else (raise-str (s/str (lit (arch/bytes-of-string "js/emit event-name must be keyword, symbol, or string; got ")) (tn nm))))
+               (arch/null)))
+  ([a b x] (c/raise (arch/bytes-of-string "js/emit expects 2 args (event-name data), got 3"))))
+
+;; nil unless called with exactly one String (js.go: len(vs) != 1 or a
+;; non-String name reads as absent).
+(defn ^{:twin "js/url-param"} url-param
+  ([] (arch/null))
+  ([nm] (if (= 17 (sq/kind nm))
+          (let [bs (host-url-param (s/str-bytes nm))] (if (arch/null? bs) (arch/null) (s/mk-str bs)))
+          (arch/null)))
+  ([nm x] (arch/null)))
+
+;; os/args: native's [lg-path prog args...] as an ArrayVector of Strings,
+;; read from the host once at startup.
+(def args
+  (let [n (arch/host-argc)]
+    (loop [i 0 v (pv/empty-vec)]
+      (if (< i n) (recur (inc i) (pv/vconj v (s/mk-str (arch/host-arg i)))) (pv/varray v)))))

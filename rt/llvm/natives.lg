@@ -1,0 +1,1425 @@
+;; llvm.natives — P6.0 / P5.8: natives legmacs reaches (and review3 bug-07
+;; found unbound) that need no new value kind: format, namespace and var
+;; introspection over a runtime table, json/read-json and write-json, the
+;; file-system natives of a module with no file system, let-go.core/lines,
+;; fn?, identical?, rseq, make-array and ten
+;; clojure.math fns. Ground truth is let-go ff1e6dac (file:line on each).
+;;
+;; DIALECT: unlike the other runtime files this one is plain lg over core
+;; fns and the runtime namespaces, as src/lw_ext.lg is (D58's markers, but
+;; compiled the way lw_ext's fills are). format, JSON, the ns table and the
+;; trig ports would be several times longer in seq.lg's dialect for no
+;; gain: none of it sits on a hot path. Errors raise the backend's exception
+;; value (D68) with native's exact text.
+;;
+;; The ns and var table. The backend has no Namespace or Var kind (D122): a
+;; namespace is the Symbol `<ns name>` (lw-ext/find-ns-v's stand-in) and a
+;; program var is the meta'd Symbol `#'ns/name` the backend builds for
+;; (var x). This file keeps one table (the runtime global `registry`):
+;;   - :nss, the namespaces that exist: native's at start (`builtin-nss`,
+;;     what (all-ns) lists in a fresh lg 4e769212 program) plus every one an
+;;     in-ns or alias creates;
+;;   - :cells, one per var made by intern (a plain Symbol `#'ns/name`): its
+;;     root, meta and dynamic-binding stack, so intern, var-get,
+;;     alter-var-root, alter-meta!, push-binding!/pop-binding!, ns-publics,
+;;     resolve and find-var agree with each other.
+;; find-ns here names any namespace (lw-ext/find-ns-v's limit, kept: the
+;; program's own namespaces are not in the table) but resolves the clojure.*
+;; aliases as native does; it takes effect when the src patch drops the
+;; find-ns-v route. ns-name stays lw-ext's fill.
+;; Named limits (raised as `lower-wasm: ...`, never a native-looking error):
+;; the VALUE of a program var is not reachable from its stand-in, so var-get,
+;; alter-var-root and push-binding! on one fail by name (with-redefs, which
+;; is core.lg's with-redefs-fn over var-get/alter-var-root, inherits this);
+;; atoms carry no metadata here, so alter-meta! on an atom fails by name.
+;; Silent differences: (meta v) after alter-meta! still reads the stand-in's
+;; own meta (llvm.core owns meta); the program's own vars and namespaces
+;; and a builtin namespace's publics are not in the table (ns-publics of
+;; 'string is {} here, 21 vars natively; resolve and find-var of them are
+;; nil; all-ns lists no program namespace), except that a program reaching
+;; eval installs llvm.eval's program table, whose vars resolve, find-var
+;; and ns-resolve see (P7); an intern into a program
+;; namespace does not re-root the program's own def of that name.
+;;
+;; No file system (browser ABI): os/cwd is "" (an empty cwd), os/ls and
+;; spit and slurp fail as native does on a path whose directory does not exist, and
+;; os/stat answers nil (native's not-found).
+(ns llvm.natives
+  (:refer-clojure :exclude [format fn? identical? rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
+                            find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
+                            spit slurp make-array complement bound-fn* ns-resolve future*])
+  (:require [clojure.string :as string]
+            [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.core :as c]
+            [llvm.arrays :as arr]
+            [llvm.math :as wm]
+            [llvm.reader :as rd]))
+
+(defn- raise-lit [msg] (c/raise (s/str-bytes msg)))
+(defn- raise-arity [n] (raise-lit (str "wrong number of arguments " n)))
+(defn- tname [x] (s/mk-str (c/type-name x)))           ; type-name is Bytes
+(defn- limit [msg] (raise-lit (str "lower-wasm: " msg " (named limit)")))
+
+;; ---------------------------------------------------------------------------
+;; Small natives
+
+(defn ^{:twin "let-go.core/lines"} lines                 ; lang.go:2820: strings.Split on "\n"
+  ([] (raise-arity 0))
+  ([x] (if (string? x) (vec (s/split x "\n")) (raise-lit "lines expected String")))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+;; isFn (lang.go:3768): only functions, not other IFns; any other arg count is false
+(defn ^{:twin "core/fn?"} fn?
+  ([] false)
+  ([x] (= 16 (sq/kind x)))
+  ([x y & more] false))
+
+(defn- empty-literal?
+  "Native's empty collections are shared values (EmptyPersistentMap/Set, the
+   empty list, a nil-backed ArrayVector), so two of them are identical?;
+   here each literal allocates. Named limit: an emptied map (dissoc of its
+   last key) is identical? to {} here and not natively."
+  [a]
+  (let [k (c/ckind a)]
+    (cond (= k 2) true
+          (= k 11) (if (= 0 (pv/vpkind a)) (= 0 (pv/vcount a)) false)
+          (= k 30) (if (nil? (meta a)) (= 0 (count a)) false)
+          (= k 31) (if (nil? (meta a)) (= 0 (count a)) false)
+          :else false)))
+
+;; identicalValue (lang.go:140): Go == on comparable values (Int, Float,
+;; String, Char, Keyword, Symbol, Boolean by value; Float as ==, so NaN is
+;; not identical to itself and 0.0 is to -0.0), pointer identity otherwise
+(defn ^{:twin "core/identical?"} identical?
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a b]
+   (let [ka (c/ckind a) kb (c/ckind b)]
+     (cond (not= ka kb) false
+           (= ka 0) true
+           (= ka 1) (= a b)
+           (= ka 22) (== a b)
+           (or (= ka 15) (= ka 17) (= ka 19) (= ka 20) (= ka 21)) (= a b)
+           (empty-literal? a) (empty-literal? b)
+           :else (arch/ref-eq a b))))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+;; CoreComplement (lang.go:5535): a fn of ANY arity, so it is plain lg here
+;; (a variadic closure gets the backend's variadic slot; a runtime-dialect
+;; Fn has slots for 0..4 args only, review4 bug-08). f is any vm.AsFn.
+(defn ^{:twin "core/complement"} complement [& args]
+  (if (not= 1 (count args))
+    (raise-arity (count args))
+    (let [f (first args)]
+      (if (c/callable? f)
+        (fn complemented-fn [& xs] (not (apply f xs)))
+        (raise-lit "complement expected Fn")))))
+
+;; bound-fn* (lang.go:3397): capture the dynamic bindings in effect at
+;; creation and, around each call, overlay them on the caller's (a var not
+;; captured keeps the caller's binding); f itself when nothing is bound.
+;; Each captured var is pushed as binding pushes it, so a set! inside the
+;; call or a throw out of it leaves the caller's values as they were.
+;; Named limit: *out*/*err* bindings are not captured (their fd stacks
+;; are not var-table vars).
+(defn ^{:twin "core/bound-fn*"} bound-fn* [& args]
+  (if (not= 1 (count args))
+    (raise-lit "bound-fn* expects 1 arg")
+    (let [f (first args)]
+      (if (c/callable? f)
+        (let [fr (c/binding-frame)]
+          (if (nil? fr)
+            f
+            (fn [& xs]
+              (c/frame-push! fr)
+              (try (apply f xs) (finally (c/frame-pop! fr))))))
+        (raise-lit "bound-fn* expected Fn")))))
+
+;; CoreRseqf (lang.go:8719): a vector or sorted collection reversed, nil
+;; when empty. lw-ext's regex-compile (re-pattern at run time) reaches it.
+(defn ^{:twin "core/rseq"} rseq [& args]
+  (if (not= 1 (count args))
+    (raise-lit "wrong number of arguments")
+    (let [x (first args) k (c/ckind x)]
+      (if (or (vector? x) (= k 38) (= k 39))
+        (when (seq x) (into () (seq x)))
+        (raise-lit (str "rseq not supported on: " (if (nil? x) "nil" (tname x))))))))
+
+;; CoreMakeArrayf (lang.go:9016). Float arrays are llvm.arrays' named limit.
+(defn ^{:twin "core/make-array"} make-array [& args]
+  (if (not= 2 (count args))
+    (raise-lit "make-array expects 2 args (type, size)")
+    (let [t (first args) n (second args)]
+      (cond (not (int? n)) (raise-lit "make-array size must be Int")
+            (< n 0) (raise-lit (str "negative array size: " n))
+            (keyword? t)
+            (let [k (subs (str t) 1)]
+              (cond (= k "byte") (arr/byte-array n)
+                    (or (= k "int") (= k "long")) (arr/int-array n)
+                    (or (= k "double") (= k "float")) (limit "make-array of :double/:float (no float arrays)")
+                    (= k "object") (arr/object-array n)
+                    :else (raise-lit (str "unknown array type: " t))))
+            :else (arr/object-array n)))))
+
+;; ---------------------------------------------------------------------------
+;; The ns and var table (see the header)
+
+;; a fn, not a def: a quoted-symbol vector as a runtime global came out
+;; empty in the module
+(defn- builtin-nss []
+  ["Array" "Boolean" "Byte" "Character" "ChronoField" "Date" "DateTimeFormatter" "Double" "Float"
+   "Instant" "Integer" "LazilyPersistentVector" "Locale" "Long" "Math" "Murmur3" "PersistentArrayMap"
+   "System" "Thread" "TimeUnit" "URLEncoder" "UUID" "Util" "ZoneId" "async" "babashka.pods" "bencode"
+   "clojure.lang.LazilyPersistentVector" "clojure.lang.MapEntry" "clojure.lang.Murmur3"
+   "clojure.lang.PersistentArrayMap" "clojure.lang.PersistentQueue" "clojure.lang.RT"
+   "clojure.lang.Util" "clojure.math" "clojure.repl" "core" "disasm" "edn" "glplat" "gogen" "graph"
+   "hash" "http" "io" "ir" "java.lang.Math" "java.net.URLEncoder" "java.util.Locale" "java.util.UUID"
+   "java.util.concurrent.TimeUnit" "js" "json" "let-go.core" "let-go.semver" "let-go.types" "math"
+   "murmur3" "net" "os" "pods" "pprint" "profile" "resolver" "rt" "set" "storage" "string" "surface"
+   "syscall" "term" "test" "test.tap" "transit" "unix" "user" "walk" "xxh3"])
+
+;; nsAliases (lang.go:339): the clojure.* names of let-go's own namespaces
+;; a fn: a map literal as a runtime global came out empty in the module
+(defn- nsaliases []
+  {"clojure.core" "core" "clojure.test" "test" "clojure.string" "string" "clojure.set" "set"
+   "clojure.walk" "walk" "clojure.edn" "edn" "clojure.zip" "zip" "clojure.data" "data"
+   "clojure.test.tap" "test.tap"})
+
+(def registry (atom nil))
+
+(defn- table []
+  (or @registry
+      (reset! registry {:nss (set (builtin-nss)) :extra [] :cur "user" :cells {} :ns-meta {}})))
+
+(defn- canon [nm] (or (get (nsaliases) nm) nm))
+(defn- ns-of [nm] (symbol (str "<ns " nm ">")))
+(defn- ns-exists? [nm] (contains? (:nss (table)) nm))
+
+(defn- add-ns! [nm]
+  (when-not (ns-exists? nm)
+    (swap! registry (fn [t] (-> t (update :nss conj nm) (update :extra conj nm)))))
+  nm)
+
+(defn- stand-in-ns
+  "The name a namespace stand-in `<ns x>` names, or nil."
+  [x]
+  (when (= 21 (sq/kind x))
+    (let [t (str x)]
+      (when (and (string/starts-with? t "<ns ") (string/ends-with? t ">"))
+        (subs t 4 (dec (count t)))))))
+
+(defn- ns-arg
+  "resolveNSArg (lang.go:7641): a Symbol naming an existing namespace or a
+   namespace; the canonical name, or the native error text with prefix."
+  [prefix x]
+  (if-let [nm (stand-in-ns x)]
+    nm
+    (if (= 21 (sq/kind x))
+      (let [nm (canon (str x))]
+        (if (ns-exists? nm) nm (raise-lit (str prefix "no namespace: " x " found"))))
+      (raise-lit (str prefix "expected Symbol or Namespace, got " (tname x))))))
+
+(defn- cell-key [x]
+  "\"ns/name\" for a var stand-in: the backend's meta'd Symbol #'ns/name
+   (kind 36), or a plain Symbol intern made (it has a cell); else nil."
+  (let [k (c/ckind x)]
+    (when (or (= k 21) (= k 36))
+      (let [t (str x)]
+        (when (string/starts-with? t "#'")
+          (let [key (subs t 2)]
+            (when (or (= k 36) (contains? (:cells (table)) key)) key)))))))
+
+(defn- cell [key] (get (:cells (table)) key))
+
+(defn- native-var?
+  "A stand-in of a var of a builtin namespace (a Go native's or an lg core
+   fn's; \"user\" holds the program's own) that intern did not make:
+   alter-var-root keeps its root in llvm.core's var roots (Globals field 2), which var-get,
+   deref and calls through the var read."
+  [v key]
+  (and (= 36 (c/ckind v))
+       (let [i (string/index-of key "/") nsn (when (and i (pos? i)) (subs key 0 i))]   ; a native's stand-in has no :ns meta
+         (and nsn (not= nsn "user") (some #{nsn} (builtin-nss))))
+       (not (contains? (cell key) :val))))
+
+(defn- program-var-limit [what v]
+  (limit (str what " of " v ": a program var's value is not reachable from its stand-in")))
+
+(defn ^{:twin "core/var?"} var?
+  ([] false)
+  ([x] (some? (cell-key x)))
+  ([x y & more] false))
+
+;; CoreFindNs (lang.go:7660) resolves the clojure.* aliases. Named limit
+;; (lw-ext/find-ns-v's, kept): a symbol this table does not know still names
+;; a namespace, because the program's own namespaces are not in the table.
+(defn ^{:twin "core/find-ns"} find-ns
+  ([] (raise-arity 0))
+  ([x] (if (= 21 (sq/kind x)) (ns-of (canon (str x))) (raise-lit "find-ns expected Symbol")))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "core/all-ns"} all-ns [& _]                 ; CoreAllNs (lang.go:7696): a list, in no set order natively
+  (apply list (map ns-of (concat (builtin-nss) (:extra (table))))))
+
+;; Not named in-ns: lw_rt load-strings the runtime files and then calls
+;; (in-ns 'lw-rt) unqualified while *ns* is still the last file's.
+(defn ^{:twin "core/in-ns"} in-ns*                        ; inNs (lang.go:2548)
+  ([] (raise-arity 0))
+  ([x] (if (= 21 (sq/kind x))
+         (let [nm (add-ns! (str x))]
+           (swap! registry assoc :cur nm)
+           (ns-of nm))
+         (raise-lit "in-ns expected Symbol")))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "core/alias"} alias                         ; CoreAliasf (lang.go:6160): NS() creates the target
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a n] (if (and (= 21 (sq/kind a)) (= 21 (sq/kind n)))
+           (do (add-ns! (canon (str n)))
+               (swap! registry assoc-in [:aliases (:cur (table)) (str a)] (canon (str n)))
+               nil)
+           (raise-lit "alias expected Symbol")))
+  ([a n x & more] (raise-arity (+ 3 (count more)))))
+
+(defn ^{:twin "core/intern"} intern [& args]              ; CoreInternf (lang.go:9262)
+  (let [n (count args)]
+    (if (or (< n 2) (> n 3))
+      (raise-lit "intern expects 2 or 3 args")
+      (let [nsx (first args) sym (second args)
+            nm (cond (stand-in-ns nsx) (stand-in-ns nsx)
+                     (= 21 (sq/kind nsx)) (let [nm (canon (str nsx))]
+                                            (if (ns-exists? nm) nm (raise-lit "namespace not found")))
+                     :else (raise-lit "intern expects a namespace or symbol"))]
+        (when-not (= 21 (sq/kind sym)) (raise-lit "intern expects a symbol name"))
+        (let [key (str nm "/" sym) v (symbol (str "#'" key)) old (cell key)]
+          (cond (nil? old) (swap! registry assoc-in [:cells key] {:var v :ns nm :name sym :val (when (= n 3) (nth args 2)) :meta nil :stack ()})
+                (= n 3) (swap! registry assoc-in [:cells key :val] (nth args 2)))
+          (:var (cell key)))))))
+
+(defn- interns-of
+  "The vars of namespace nm: its cells, then the program table's vars no
+   cell shadows. With publics?, the :private ones are left out (PublicVars,
+   review5 bug-20): a cell's def meta, a table stand-in's own meta (which
+   carries no :private today, so program privates stay listed: D161)."
+  [nm publics?]
+  (let [pub? (fn [m] (not (and publics? (:private m))))
+        cells (into {} (for [[_ cl] (:cells (table)) :when (and (= nm (:ns cl)) (pub? (:meta cl)))]
+                         [(:name cl) (:var cl)]))
+        prog (for [[k v] (get-in (table) [:program nm :vars])
+                   :when (and (not (cell (str nm "/" k))) (pub? (meta v)))]
+               [(symbol k) v])]
+    (into cells prog)))
+
+(defn ^{:twin "core/ns-publics"} ns-publics               ; CoreNsPublics (lang.go:7721)
+  ([] (raise-arity 0))
+  ([x] (interns-of (ns-arg "ns-publics: " x) true))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "core/ns-interns"} ns-interns               ; CoreNsInterns (lang.go:7739): privates too
+  ([] (raise-arity 0))
+  ([x] (interns-of (ns-arg "ns-interns: " x) false))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "core/the-ns"} the-ns                       ; CoreTheNs (lang.go:7708)
+  ([] (raise-arity 0))
+  ([x] (ns-of (ns-arg "the-ns: " x)))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn- lookup
+  "The var named nm in namespace nsn (canonical): one intern (or a def in
+   evaluated code) made, else the program's own var from llvm.eval's
+   program table (P7: resolve/find-var of a program defn)."
+  [nsn nm]
+  (or (:var (cell (str nsn "/" nm)))
+      (get-in (table) [:program nsn :vars nm])))
+
+(defn ^{:twin "core/find-var"} find-var                   ; CoreFindVar (lang.go:7851)
+  ([] (raise-arity 0))
+  ([x] (if (= 21 (sq/kind x))
+         (let [q (namespace x)]
+           (if (nil? q)
+             (raise-lit (str "find-var expects a fully-qualified symbol: " x))
+             (let [nsn (canon q)]
+               ;; not gated on ns-exists?: a library program namespace is
+               ;; in the program table but not in :nss (review5 bug-23)
+               (or (lookup nsn (name x))
+                   ;; a builtin namespace's var: a stand-in (its value
+                   ;; is llvm.core/var-value's; alter-var-root works).
+                   ;; Named limit: a name the namespace lacks natively
+                   ;; still finds one here (natively nil)
+                   (when (and (not= nsn "user") (some #{nsn} (builtin-nss)))   ; "user" holds the program's vars
+                     (with-meta (symbol (str "#'" nsn "/" (name x))) {:ns (ns-of nsn) :name (symbol (name x))}))))))
+         (raise-lit "find-var expected a symbol")))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "core/resolve"} resolve                     ; CoreResolvef (lang.go:7679): the current ns's Lookup
+  ([] (raise-arity 0))
+  ([x] (if (= 21 (sq/kind x))
+         (let [t (table) q (namespace x)]
+           (if (nil? q)
+             (let [cur (:cur t) nm (name x)]
+               (or (lookup cur nm)
+                   ;; a referred var: (resolve 'vibe) in legmacs.main
+                   (when-let [r (or (get-in t [:refers cur nm]) (get-in t [:program cur :refers nm]))]
+                     (lookup r nm))
+                   ;; let-go.core is every ns's baseline refer: an intern
+                   ;; there (legmacs.vibe's `vibe`) resolves from any ns
+                   (lookup "let-go.core" nm)))
+             (let [nsn (or (get-in t [:aliases (:cur t) q]) (get-in t [:program (:cur t) :aliases q]) (canon q))]
+               (lookup nsn (name x)))))
+         (raise-lit "resolve expected Symbol")))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn- cell-value [cl] (if (seq (:stack cl)) (first (:stack cl)) (:val cl)))
+
+(defn ^{:twin "core/var-get"} var-get [& args]             ; CoreVarGet (lang.go:9177)
+  (if (not= 1 (count args))
+    (raise-lit "var-get expects 1 arg")
+    (let [v (first args) key (cell-key v)]
+      (cond (nil? key) (raise-lit "var-get expects a Var")
+            (contains? (cell key) :val) (cell-value (cell key))
+            (native-var? v key) (c/var-value v)          ; its altered root, or the stand-in's value (or limit)
+            :else (program-var-limit "var-get" v)))))
+
+;; CoreBoundQ (lang.go:9190). Named limit: a declared program var that is
+;; never defined is bound? here (natively false).
+(defn ^{:twin "core/bound?"} bound? [& args]
+  (cond (not= 1 (count args)) (raise-lit "bound? expects 1 arg")
+        (nil? (cell-key (first args))) (raise-lit "bound? expects a Var")
+        :else true))
+
+(defn ^{:twin "core/alter-var-root"} alter-var-root [& args] ; alterVarRoot (lang.go:4364)
+  (if (< (count args) 2)
+    (raise-lit "alter-var-root expects at least 2 args")
+    (let [[v f & more] args key (cell-key v)]
+      (cond (nil? key) (raise-lit "alter-var-root expects a Var")
+            (not (c/callable? f)) (raise-lit "alter-var-root expects a function")
+            (and (cell key) (contains? (cell key) :val))
+            (let [nv (apply f (:val (cell key)) more)]
+              (swap! registry assoc-in [:cells key :val] nv)
+              nv)
+            ;; a native's var (legmacs wraps #'future* and #'go*): the old
+            ;; root is the stand-in's value when the module has one, else a
+            ;; fn raising that named limit when called, so (constantly w)
+            ;; and wrappers that never call the original still work
+            (native-var? v key)
+            (let [old (if (c/var-root-set? v)
+                        (c/var-value v)
+                        (try (c/var-value v) (catch Exception e (fn [& _] (throw e)))))
+                  nv (apply f old more)]
+              (c/set-var-root! v nv))
+            :else (program-var-limit "alter-var-root" v)))))
+
+(defn ^{:twin "core/alter-meta!"} alter-meta! [& args]     ; alterMeta (lang.go:3730)
+  (if (< (count args) 2)
+    (raise-lit "alter-meta! expects at least 2 args")
+    (let [[r f & more] args]
+      (if-not (c/callable? f)
+        (raise-lit "alter-meta! expected Fn")
+        (let [key (cell-key r) nsn (stand-in-ns r)]
+          (cond key
+                (let [old (if (cell key) (:meta (cell key)) (meta r))
+                      nm (apply f old more)]
+                  (if (cell key)
+                    (swap! registry assoc-in [:cells key :meta] nm)
+                    ;; a program var: a cell for its meta only (no :val, so
+                    ;; var-get still names the limit)
+                    (swap! registry assoc-in [:cells key] {:var r :meta nm :stack ()}))
+                  nm)
+                nsn (let [nm (apply f (get (:ns-meta (table)) nsn) more)]
+                      (swap! registry assoc-in [:ns-meta nsn] nm)
+                      nm)
+                (= 24 (sq/kind r)) (limit "alter-meta! on an Atom (atoms carry no metadata)")
+                :else (raise-lit "alter-meta! expected Atom or Var")))))))
+
+(defn ^{:twin "core/push-binding!"} push-binding! [v val]  ; PushBinding (native_prims.go:556)
+  (let [key (cell-key v)]
+    (cond (nil? key) (raise-lit "push-binding expected Var")
+          (and (cell key) (contains? (cell key) :val)) (do (swap! registry update-in [:cells key :stack] conj val) nil)
+          :else (program-var-limit "push-binding!" v))))
+
+(defn ^{:twin "core/pop-binding!"} pop-binding! [v]        ; PopBinding (native_prims.go:569)
+  (let [key (cell-key v)]
+    (cond (nil? key) (raise-lit "pop-binding expected Var")
+          (and (cell key) (contains? (cell key) :val)) (do (swap! registry update-in [:cells key :stack] rest) nil)
+          :else (program-var-limit "pop-binding!" v))))
+
+;; CoreRequire (lang.go:7588) at run time. The program's namespaces were
+;; compiled in from their ns forms; a run-time require is a no-op for a
+;; namespace this table knows (native's builtins, in-ns'd and aliased ones)
+;; and native's load failure otherwise, which legmacs' (try (require
+;; 'legmacs-init) (catch e nil)) expects for a missing user config. Named
+;; limit: a run-time require of one of the program's own namespaces fails
+;; (they are not in the table).
+(defn- require-one [spec]
+  (let [sym (if (vector? spec) (first spec) spec)]
+    (cond (not (symbol? sym)) (raise-lit (str "require expected Symbol or Vector, got " (tname spec)))
+          (ns-exists? (canon (str sym))) nil
+          :else (raise-lit (str "unable to load namespace " sym)))))
+
+;; Not named require: a later runtime file's ns form must not resolve to it
+;; (in-ns* has the same reason).
+(defn ^{:twin "core/require"} require* [& specs]
+  (doseq [x specs]
+    (if (or (symbol? x) (vector? x))
+      (require-one x)
+      (raise-lit (str "require expected Symbol or Vector, got " (tname x)))))
+  nil)
+
+;; ---------------------------------------------------------------------------
+;; P7.0: what llvm.eval (rt/wasm/eval.lg) reads and writes here. These use
+;; core predicates only (no llvm.seq kinds), so the evaluator also runs over
+;; this table under native lg (corpus/intrinsics/eval_test.lg). The table
+;; gains :refers {ns {"sym" "lib"}} (a run-time require's :refer) and
+;; :program (the backend's program table, llvm.eval/install-program-table!).
+
+(defn table* [] (table))
+(defn canon* [nm] (canon nm))
+(defn ns-exists*? [nm] (ns-exists? nm))
+(defn add-ns* [nm] (add-ns! nm))
+(defn set-cur! [nm] (swap! registry assoc :cur nm) nm)
+
+(defn current-ns
+  "The stand-in `<ns cur>` of the current namespace: what *ns* reads (the
+   backend routes reads of *ns* here)."
+  [] (ns-of (:cur (table))))
+
+;; core.lg's ns-resolve (core.lg:1654) is (resolve (symbol (str ns "/" (name
+;; sym)))): sym's own namespace is dropped and the ns name goes through the
+;; CURRENT namespace's aliases, as any qualified resolve does (review5
+;; bug-15: (ns-resolve 'user 'r5.f/k) is user/k, nil). So a var only when
+;; the namespace holds it; nil for a core name, as (ns-resolve *ns* 'map).
+(defn ^{:twin "core/ns-resolve"} ns-resolve
+  ([nsx sym] (ns-resolve nsx nil sym))
+  ([nsx env sym]
+   (when-not (and env (contains? env sym))
+     (let [nm (cond (stand-in-ns nsx) (stand-in-ns nsx)
+                    (symbol? nsx) (str nsx)
+                    :else (raise-lit "ns-resolve expected a namespace or symbol"))]
+       (resolve (symbol (str nm "/" (name sym))))))))
+
+;; ---------------------------------------------------------------------------
+;; future* (lang.go:3697) on one thread (P7.1). Natively the thunk runs in a
+;; goroutine and the promise is returned pending; a module has no second
+;; thread, so the thunk runs to completion here, at the call, and the
+;; promise comes back delivered (nil when the thunk throws, as natively).
+;; Named limit (silent): a future is never pending, realized? is true at
+;; once and the caller waits for the body (legmacs' spawn-task jobs settle
+;; on the next drain; C-x C-e of (future (sleep n)) blocks n ms). go/go*
+;; and channels stay unsupported.
+
+(defn ^{:twin "core/future*"} future* [& args]
+  (cond (not= 1 (count args)) (raise-lit "future* expects 1 arg (thunk fn)")
+        (not (c/callable? (first args))) (raise-lit "future* expected Fn")
+        :else (let [p (promise)
+                    v (try ((first args)) (catch Exception e nil))]
+                (deliver p v)
+                p)))
+
+;; ---------------------------------------------------------------------------
+;; The file system of a module without one
+
+(defn- enoent [op path] (str op " " path ": no such file or directory"))
+
+(defn ^{:twin "core/spit"} spit [& args]                  ; CoreSpit (lang.go:6316)
+  (if (not= 2 (count args))
+    (raise-arity (count args))
+    (let [[path content] args]
+      (cond (not (string? path)) (raise-lit "spit expected String")
+            (not (or (string? content) (and (= 37 (c/ckind content)) (= 0 (arr/akind content)))))
+            (raise-lit "spit expected String or byte-array")
+            :else (raise-lit (str "spit failed: " (enoent "open" path)))))))
+
+(defn ^{:twin "core/slurp"} slurp [& args]                ; CoreSlurp (lang.go:6299): legmacs reads every file in a try
+  (cond (not= 1 (count args)) (raise-arity (count args))
+        (not (string? (first args))) (raise-lit "slurp expected String")
+        :else (raise-lit (str "slurp failed: " (enoent "open" (first args))))))
+
+(defn ^{:twin "os/cwd"} cwd [& _] "")                      ; os.go: Getwd, any arg count
+
+(defn ^{:twin "os/ls"} ls [& args]                        ; os.go: ReadDir
+  (cond (not= 1 (count args)) (raise-lit "os/ls expects 1 arg")
+        (not (string? (first args))) (raise-lit "os/ls expected String path")
+        :else (raise-lit (enoent "open" (first args)))))
+
+(defn ^{:twin "os/stat"} stat [& args]                    ; os.go: Stat, not-exist is nil
+  (cond (not= 1 (count args)) (raise-lit "os/stat expects 1 arg")
+        (not (string? (first args))) (raise-lit "os/stat expected String path")
+        :else nil))
+
+;; os/exit (os.go:246): the host ABI has no exit import, so a module cannot
+;; end with a chosen status; it stops with a named trap (uncatchable, as an
+;; exit is). legmacs calls it only when stdout is not a terminal.
+(defn ^{:twin "os/exit"} exit [& args]
+  (let [n (if (seq args) (first args) 0)]
+    (if (int? n)
+      (arch/trap "lower-wasm: os/exit: the host ABI has no exit import (named limit)")
+      (raise-lit "os/exit expected Int"))))
+
+;; ---------------------------------------------------------------------------
+;; JSON (json.go): encoding/json at Go 1.27, whose messages these are
+
+(defn- hex4 [n] (let [h "0123456789abcdef"] (str (nth h (bit-and (bit-shift-right n 12) 15)) (nth h (bit-and (bit-shift-right n 8) 15))
+                                                 (nth h (bit-and (bit-shift-right n 4) 15)) (nth h (bit-and n 15)))))
+
+(defn- quote-char
+  "A code point as the decoder's messages quote it (strconv.QuoteRune)."
+  [c]
+  (cond (= c 39) "'\\''"
+        (= c 7) "'\\a'" (= c 8) "'\\b'" (= c 12) "'\\f'" (= c 10) "'\\n'"
+        (= c 13) "'\\r'" (= c 9) "'\\t'" (= c 11) "'\\v'"
+        (or (< c 32) (= c 127)) (str "'\\x" (subs (hex4 c) 2) "'")
+        (or (and (>= c 128) (< c 160)) (= c 173) (= c 8232) (= c 8233)) (str "'\\u" (hex4 c) "'")
+        :else (str "'" (char c) "'")))
+
+;; decodeJSON (json.go:24): the Decoder's io.ErrUnexpectedEOF once a value has
+;; started; read-json itself reports an empty or blank input (io.EOF)
+(defn- eof! [] (raise-lit "unexpected EOF"))
+(defn- bad! [c ctx] (raise-lit (str "invalid character " (quote-char c) " " ctx)))
+
+(defn- ws? [c] (or (= c 32) (= c 9) (= c 10) (= c 13)))
+(defn- skip-ws [cs i] (let [n (count cs)] (loop [i i] (if (and (< i n) (ws? (nth cs i))) (recur (inc i)) i))))
+(defn- digit? [c] (and (>= c 48) (<= c 57)))
+
+(defn- j-lit [cs i word v]
+  (let [n (count cs) w (count word)]
+    (loop [k 1]
+      (if (= k w)
+        [v (+ i k)]
+        (if (>= (+ i k) n)
+          (eof!)
+          (let [c (nth cs (+ i k)) e (int (nth word k))]
+            (if (= c e) (recur (inc k)) (bad! c (str "in literal " word " (expecting " (quote-char e) ")")))))))))
+
+(defn- digits-end [cs i]
+  (let [n (count cs)] (loop [i i] (if (and (< i n) (digit? (nth cs i))) (recur (inc i)) i))))
+
+(defn- need-digit [cs i]
+  (cond (>= i (count cs)) (eof!)
+        (digit? (nth cs i)) (digits-end cs i)
+        :else (bad! (nth cs i) "in numeric literal")))
+
+;; decodeJSON (json.go:24) keeps every number as its literal text (UseNumber)
+;; through the whole decode, duplicate keys replacing earlier values; only
+;; then does toValue (json.go:70) convert the numbers that survived. So a
+;; discarded value cannot fail, and a syntax error anywhere wins over a
+;; conversion error. j-number returns the text as a keyword in lw.json.num
+;; (no JSON value is a keyword) and j-convert converts the finished tree.
+
+(defn- num-value
+  "numberToValue (json.go:43): integer syntax is exact (an Int in int64 range;
+   past it native has a BigInt, which the reader refuses as a named limit);
+   decimal and exponent forms go through float64, and floatToValue (json.go:63)
+   makes a whole float in [-2^63, 2^63) an Int."
+  [text]
+  (if (not (some #(contains? #{\. \e \E} %) text))
+    (try (rd/read-string text)
+         (catch Exception e (raise-lit (str "lower-wasm: read-json: integer " text " is past int64, a BigInt natively (named limit)"))))
+    ;; the reader refuses a float literal out of float64's range
+    (let [f (try (rd/read-string text) (catch Exception e ::range))]
+      (cond (= f ::range) (raise-lit (str "json: number " text " out of range"))
+            (and (== f (clojure.math/floor f)) (>= f -9.223372036854775808E18) (< f 9.223372036854775808E18)) (long f)
+            (wm/nan? (- f f)) (raise-lit (str "json: number " text " out of range"))
+            :else f))))
+
+(defn- j-convert
+  "toValue (json.go:70) over the decoded tree: vectors in order, then a map's
+   values (native walks a Go map, so with two failing values in one object
+   the one reported can differ from this)."
+  [v]
+  (cond (and (keyword? v) (= "lw.json.num" (namespace v))) (num-value (name v))
+        (vector? v) (mapv j-convert v)
+        (map? v) (reduce (fn [m e] (assoc m (key e) (j-convert (val e)))) v (seq v))
+        :else v))
+
+(defn- j-number [cs i path]
+  (let [n (count cs)
+        j (if (= 45 (nth cs i)) (inc i) i)
+        j (cond (>= j n) (eof!)
+                (= 48 (nth cs j)) (inc j)
+                (digit? (nth cs j)) (digits-end cs j)
+                :else (bad! (nth cs j) "in numeric literal"))
+        j (if (and (< j n) (= 46 (nth cs j))) (need-digit cs (inc j)) j)
+        j (if (and (< j n) (or (= 101 (nth cs j)) (= 69 (nth cs j))))
+            (let [k (inc j)
+                  k (if (and (< k n) (or (= 43 (nth cs k)) (= 45 (nth cs k)))) (inc k) k)]
+              (need-digit cs k))
+            j)]
+    [(keyword "lw.json.num" (apply str (map char (subvec cs i j)))) j]))
+
+(defn- hex-val [c]
+  (cond (digit? c) (- c 48)
+        (and (>= c 97) (<= c 102)) (- c 87)
+        (and (>= c 65) (<= c 70)) (- c 55)
+        :else -1))
+
+(defn- u4
+  "The \\uXXXX code unit at i (just past the u), or raises."
+  [cs i]
+  (let [n (count cs)]
+    (loop [k 0 v 0]
+      (if (= k 4)
+        v
+        (if (>= (+ i k) n)
+          (eof!)
+          (let [h (hex-val (nth cs (+ i k)))]
+            (if (< h 0)
+              (raise-lit (str "invalid escape sequence `\\u" (apply str (map char (subvec cs i (min n (+ i 4))))) "` in string"))
+              (recur (inc k) (+ (* v 16) h)))))))))
+
+(defn- j-string
+  "[String next-index] for the string whose opening quote is at i - 1."
+  [cs i]
+  (let [n (count cs)]
+    (loop [i i out []]
+      (if (>= i n)
+        (eof!)
+        (let [c (nth cs i)]
+          (cond (= c 34) [(apply str (map char out)) (inc i)]
+                (< c 32) (bad! c "in string")
+                (= c 92)
+                (if (>= (inc i) n)
+                  (eof!)
+                  (let [e (nth cs (inc i))]
+                    (cond (= e 34) (recur (+ i 2) (conj out 34))
+                          (= e 92) (recur (+ i 2) (conj out 92))
+                          (= e 47) (recur (+ i 2) (conj out 47))
+                          (= e 98) (recur (+ i 2) (conj out 8))
+                          (= e 102) (recur (+ i 2) (conj out 12))
+                          (= e 110) (recur (+ i 2) (conj out 10))
+                          (= e 114) (recur (+ i 2) (conj out 13))
+                          (= e 116) (recur (+ i 2) (conj out 9))
+                          (= e 117)
+                          (let [u (u4 cs (+ i 2))]
+                            (cond (and (>= u 55296) (<= u 56319))
+                                  ;; a high surrogate pairs with a following \u low one, else U+FFFD
+                                  (if (and (< (+ i 7) n) (= 92 (nth cs (+ i 6))) (= 117 (nth cs (+ i 7))))
+                                    (let [lo (u4 cs (+ i 8))]
+                                      (if (and (>= lo 56320) (<= lo 57343))
+                                        (recur (+ i 12) (conj out (+ 65536 (* (- u 55296) 1024) (- lo 56320))))
+                                        (recur (+ i 6) (conj out 65533))))
+                                    (recur (+ i 6) (conj out 65533)))
+                                  (and (>= u 56320) (<= u 57343)) (recur (+ i 6) (conj out 65533))
+                                  :else (recur (+ i 6) (conj out u))))
+                          :else (raise-lit (str "invalid escape sequence `\\" (char e) "` in string")))))
+                :else (recur (inc i) (conj out c))))))))
+
+(declare j-value)
+
+(defn- j-array [cs i kw? path]
+  (let [n (count cs) i (skip-ws cs i)]
+    (cond (>= i n) (eof!)
+          (= 93 (nth cs i)) [[] (inc i)]
+          :else
+          (loop [i i out []]
+            (let [[v j] (j-value cs i kw? (conj path (str (count out))))
+                  j (skip-ws cs j)
+                  out (conj out v)]
+              (cond (>= j n) (eof!)
+                    (= 44 (nth cs j)) (recur (inc j) out)
+                    (= 93 (nth cs j)) [out (inc j)]
+                    :else (bad! (nth cs j) "after array element")))))))
+
+(defn- j-key [cs i]
+  (cond (>= i (count cs)) (eof!)
+        (= 34 (nth cs i)) (j-string cs (inc i))
+        :else (bad! (nth cs i) "looking for beginning of object key string")))
+
+(defn- j-object [cs i kw? path]
+  (let [n (count cs) i (skip-ws cs i)]
+    (cond (>= i n) (eof!)
+          (= 125 (nth cs i)) [{} (inc i)]
+          :else
+          (loop [i i m {}]
+            (let [[k j] (j-key cs i)
+                  j (skip-ws cs j)
+                  _ (cond (>= j n) (eof!) (not= 58 (nth cs j)) (bad! (nth cs j) "after object key"))
+                  [v j] (j-value cs (inc j) kw? (conj path k))
+                  j (skip-ws cs j)
+                  m (assoc m (if kw? (keyword k) k) v)]
+              (cond (>= j n) (eof!)
+                    (= 44 (nth cs j)) (recur (skip-ws cs (inc j)) m)
+                    (= 125 (nth cs j)) [m (inc j)]
+                    :else (bad! (nth cs j) "after object key:value pair")))))))
+
+(defn- j-value [cs i kw? path]
+  (let [i (skip-ws cs i)]
+    (if (>= i (count cs))
+      (eof!)
+      (let [c (nth cs i)]
+        (cond (= c 123) (j-object cs (inc i) kw? path)
+              (= c 91) (j-array cs (inc i) kw? path)
+              (= c 34) (j-string cs (inc i))
+              (= c 116) (j-lit cs i "true" true)
+              (= c 102) (j-lit cs i "false" false)
+              (= c 110) (j-lit cs i "null" nil)
+              (or (= c 45) (digit? c)) (j-number cs i path)
+              :else (bad! c "looking for beginning of value"))))))
+
+(defn ^{:twin "json/read-json"} read-json [& args]       ; json.go:124
+  (let [n (count args)]
+    (cond (or (< n 1) (> n 2)) (raise-arity n)
+          (not (string? (first args))) (raise-lit "read-json expected String")
+          :else
+          (let [o (second args)
+                kw? (if (= n 2)
+                      (if (or (map? o) (vector? o) (set? o) (= 38 (c/ckind o)) (= 39 (c/ckind o)))
+                        (boolean (get o :keywords?))
+                        (raise-lit "read-json options are not Map"))
+                      false)
+                cs (mapv int (first args))
+                _ (when (>= (skip-ws cs 0) (count cs)) (raise-lit "unexpected end of JSON input"))
+                [v j] (j-value cs 0 kw? [])
+                j (skip-ws cs j)]
+            (if (< j (count cs))
+              (bad! (nth cs j) "after top-level value")
+              (j-convert v))))))
+
+;; --- write-json: fromValue (json_value.go:60), then json.Marshal
+
+(defn- enc-string
+  "A Go string as json.Marshal writes it (HTML-safe escaping)."
+  [st]
+  (str "\""
+       (apply str (map (fn [ch]
+                         (let [c (int ch)]
+                           (cond (= c 34) "\\\"" (= c 92) "\\\\"
+                                 (= c 10) "\\n" (= c 13) "\\r" (= c 9) "\\t" (= c 8) "\\b" (= c 12) "\\f"
+                                 (or (< c 32) (= c 60) (= c 62) (= c 38) (= c 8232) (= c 8233)) (str "\\u" (hex4 c))
+                                 :else (str ch))))
+                       st))
+       "\""))
+
+(defn- small-int "A decimal exponent such as +07 or -10." [t]
+  (let [neg (= \- (first t)) ds (if (or neg (= \+ (first t))) (rest t) t)
+        v (reduce (fn [acc ch] (+ (* acc 10) (- (int ch) 48))) 0 ds)]
+    (if neg (- v) v)))
+
+(defn- float-digits
+  "[digits exp] of non-integral f's shortest decimal (Float.String() is
+   %g with shortest digits, so its digits are them): f = 0.d1d2.. * 10^exp."
+  [f]
+  (let [t (str (wm/abs f))
+        ei (string/index-of t "e")
+        mant (if ei (subs t 0 ei) t)
+        e10 (if ei (small-int (subs t (inc ei))) 0)
+        di (string/index-of mant ".")
+        ip (if di (subs mant 0 di) mant)
+        fp (if di (subs mant (inc di)) "")
+        all (str ip fp)
+        lead (count (take-while #(= % \0) all))
+        ds (string/replace (subs all lead) #"0+$" "")]
+    [ds (+ e10 (- (count ip) lead))]))
+
+(defn- round-digits
+  "The exact decimal digits ds rounded half-up to p significant digits:
+   [digits exp-shift] (a carry out of the top digit shifts the exponent)."
+  [ds p]
+  (if (<= (count ds) p)
+    [ds 0]
+    (let [keep (mapv #(- (int %) 48) (subs ds 0 p))
+          up? (>= (- (int (nth ds p)) 48) 5)]
+      (if-not up?
+        [(apply str keep) 0]
+        (loop [i (dec p) v keep]
+          (cond (< i 0) [(apply str 1 v) 1]
+                (= 9 (nth v i)) (recur (dec i) (assoc v i 0))
+                :else [(apply str (assoc v i (inc (nth v i)))) 0]))))))
+
+(defn- integral-digits
+  "[digits exp] of integral f's SHORTEST decimal (Float.String() prints an
+   integral value's exact digits, which past 2^53 are longer): the fewest
+   leading digits, rounded, that read back as f."
+  [f]
+  (let [t (str (wm/abs f))
+        all (subs t 0 (string/index-of t "."))
+        e (count all)]
+    (if (<= (wm/abs f) 9007199254740992.0)
+      [(string/replace all #"0+$" "") e]
+      (loop [p 1]
+        (let [[ds sh] (round-digits all p)
+              ds (string/replace ds #"0+$" "")
+              e (+ e sh)]
+          (if (or (>= p 17) (== (wm/abs f) (try (rd/read-string (str "0." ds "e" e)) (catch Exception _ 0.0))))
+            [ds e]
+            (recur (inc p))))))))
+
+(defn- enc-float
+  "floatEncoder (encode.go): 'f' unless 0 < |f| < 1e-6 or |f| >= 1e21, then
+   'e' with a one-digit negative exponent (e-07 written e-7)."
+  [f]
+  (cond (wm/nan? f) (raise-lit "json: unsupported value: NaN")
+        (> f 1.7976931348623157e308) (raise-lit "json: unsupported value: +Inf")
+        (< f -1.7976931348623157e308) (raise-lit "json: unsupported value: -Inf")
+        (== f 0.0) (if (neg? (sq/float-bits f)) "-0" "0")
+        :else
+        (let [a (wm/abs f)
+              [ds e] (if (== a (clojure.math/floor a)) (integral-digits f) (float-digits f))
+              sign (if (neg? f) "-" "")
+              nd (count ds)]
+          (if (or (< a 1e-6) (>= a 1e21))
+            (let [x (dec e)]
+              (str sign (subs ds 0 1) (when (> nd 1) (str "." (subs ds 1)))
+                   "e" (if (neg? x) "-" "+") (if (and (>= x 0) (< x 10)) (str "0" x) (wm/abs x))))
+            (cond (<= e 0) (str sign "0." (apply str (repeat (- e) "0")) ds)
+                  (>= e nd) (str sign ds (apply str (repeat (- e nd) "0")))
+                  :else (str sign (subs ds 0 e) "." (subs ds e)))))))
+
+(defn- key-string
+  "fromMapValue's key: a String as is, a Keyword's name with its ns, else
+   the key's String()."
+  [k]
+  (cond (string? k) k
+        (keyword? k) (subs (str k) 1)
+        (nil? k) "nil"
+        (char? k) (pr-str k)
+        :else (str k)))
+
+(declare enc-value)
+
+(defn- enc-seq [xs] (str "[" (string/join "," (map enc-value xs)) "]"))
+
+(defn- enc-map [m]
+  ;; a Go map[string]any: a later duplicate key wins; Marshal sorts by key
+  (let [g (reduce (fn [acc e] (assoc acc (key-string (key e)) (val e))) {} (seq m))]
+    (str "{" (string/join "," (map (fn [k] (str (enc-string k) ":" (enc-value (get g k)))) (sort (keys g)))) "}")))
+
+(defn- enc-value [v]
+  (let [k (c/ckind v)]
+    (cond (nil? v) "null"
+          (string? v) (enc-string v)
+          (= k 1) (str v)
+          (= k 22) (enc-float v)
+          (= k 15) (if v "true" "false")
+          (= k 30) (enc-map v)
+          (keyword? v) (enc-string (subs (str v) 1))
+          (vector? v) (enc-seq v)
+          ;; fromSeqValue walks First/Next from a non-nil seq: an empty lazy
+          ;; seq or set has one (nil) First natively, so it writes [null]
+          (and (or (= k 5) (= k 31) (= k 39)) (nil? (seq v))) "[null]"
+          (or (seq? v) (= k 23) (= k 31) (= k 37) (= k 38) (= k 39)) (enc-seq (seq v))
+          (char? v) (enc-string (pr-str v))
+          :else (enc-string (str v)))))
+
+(defn ^{:twin "json/write-json"} write-json [& args]     ; json.go:151
+  (if (not= 1 (count args))
+    (raise-arity (count args))
+    (enc-value (first args))))
+
+;; ---------------------------------------------------------------------------
+;; format (CoreFormatf, lang.go:6883): Java's %n becomes "\n", each scanned
+;; argument is converted by its verb (an Int under f/e/g/E/G is a float64),
+;; surplus arguments are dropped, then Go's fmt.Sprintf. Supported: flags
+;; - + space 0 #, width, precision, verbs s q v d x X o b c U t f e E g G
+;; and %%, with fmt's own diagnostics (%!d(string=a), %!s(MISSING),
+;; %!(NOVERB)). Floats are formatted from their exact binary value, as
+;; strconv does. Named limits: * and [n] argument indexes, %x of a float,
+;; and verbs other than s v q x X on a value fmt sees as a Go Stringer
+;; (collections, atoms, fns), whose diagnostic names a Go type.
+
+(defn- big-times
+  "Little-endian base-1e9 limbs times a small k (< 2^31)."
+  [limbs k]
+  (loop [i 0 carry 0 out []]
+    (if (< i (count limbs))
+      (let [x (+ (* (nth limbs i) k) carry)]
+        (recur (inc i) (quot x 1000000000) (conj out (rem x 1000000000))))
+      (if (> carry 0) (recur i (quot carry 1000000000) (conj out (rem carry 1000000000))) out))))
+
+(defn- limbs-str [limbs]
+  (let [top (peek limbs)]
+    (apply str (str top)
+           (map (fn [x] (let [t (str x)] (str (apply str (repeat (- 9 (count t)) "0")) t)))
+                (reverse (pop limbs))))))
+
+(defn- trim-digits
+  "[digits dp] with leading and trailing zeros dropped (\"\" for zero)."
+  [ds dp]
+  (let [lead (count (take-while #(= % \0) ds))
+        ds (subs ds lead)
+        ds (string/replace ds #"0+$" "")]
+    (if (= ds "") ["" 0] [ds (- dp lead)])))
+
+(defn- exact-decimal
+  "[digits dp] of finite |f| exactly: |f| = 0.d1d2.. * 10^dp."
+  [f]
+  (let [bits (sq/float-bits f)
+        e (bit-and (unsigned-bit-shift-right bits 52) 2047)
+        frac (bit-and bits 4503599627370495)
+        m (if (= e 0) frac (bit-or frac 4503599627370496))
+        ex (if (= e 0) -1074 (- e 1075))]
+    (cond (= m 0) ["" 0]
+          (>= ex 0) (let [t (str (wm/abs f))] (trim-digits (subs t 0 (string/index-of t ".")) (string/index-of t ".")))
+          :else
+          ;; m * 2^ex = m * 5^-ex / 10^-ex
+          (let [k (- ex)
+                ;; the loop counter is r, not k: a loop binding that shadows a
+                ;; let local of the same name left k at 0 after the loop in
+                ;; the module (backend finding)
+                limbs (loop [l [(rem m 1000000000) (quot m 1000000000)] r k]
+                        (cond (>= r 13) (recur (big-times l 1220703125) (- r 13))
+                              (> r 0) (recur (big-times l 5) (dec r))
+                              :else l))
+                limbs (loop [l limbs] (if (and (> (count l) 1) (= 0 (peek l))) (recur (pop l)) l))
+                ds (limbs-str limbs)]
+            (trim-digits ds (- (count ds) k))))))
+
+(defn- round-dec
+  "[digits dp] rounded to nd digits, half to even on the exact digits
+   (strconv's decimal.Round)."
+  [[ds dp] nd]
+  (cond (>= nd (count ds)) [ds dp]
+        (< nd 0) ["" 0]
+        :else
+        (let [d (- (int (nth ds nd)) 48)
+              rest-zero? (every? #(= % \0) (subs ds (inc nd)))
+              up? (cond (> d 5) true
+                        (< d 5) false
+                        (not rest-zero?) true
+                        :else (and (> nd 0) (odd? (- (int (nth ds (dec nd))) 48))))]
+          (if-not up?
+            (trim-digits (subs ds 0 nd) dp)
+            (loop [i (dec nd) v (mapv #(- (int %) 48) (subs ds 0 nd))]
+              (cond (< i 0) ["1" (inc dp)]
+                    (= 9 (nth v i)) (recur (dec i) (pop v))
+                    :else (trim-digits (apply str (conj (pop v) (inc (nth v i)))) dp)))))))
+
+(defn- shortest-decimal
+  "[digits dp] of finite |f|'s shortest round-trip decimal."
+  [f]
+  (cond (== f 0.0) ["" 0]
+        (== (wm/abs f) (clojure.math/floor (wm/abs f))) (integral-digits f)
+        :else (float-digits f)))
+
+(defn- fmt-e [[ds dp] prec upper?]
+  (let [nd (count ds)
+        mant (str (if (= nd 0) "0" (subs ds 0 1))
+                  (when (> prec 0)
+                    (str "." (subs ds (min nd 1) (min nd (inc prec))) (apply str (repeat (- prec (max 0 (dec (min nd (inc prec))))) "0")))))
+        x (if (= nd 0) 0 (dec dp))
+        ax (wm/abs x)]
+    (str mant (if upper? "E" "e") (if (neg? x) "-" "+") (if (< ax 10) (str "0" ax) ax))))
+
+(defn- fmt-f [[ds dp] prec]
+  (let [nd (count ds)]
+    (str (if (> dp 0) (str (subs ds 0 (min nd dp)) (apply str (repeat (- dp (min nd dp)) "0"))) "0")
+         (when (> prec 0)
+           (str "." (apply str (for [i (range 1 (inc prec))]
+                                 (let [j (+ dp i -1)] (if (and (>= j 0) (< j nd)) (nth ds j) "0")))))))))
+
+(defn- float-body
+  "strconv.FormatFloat(|f|, verb, prec) for finite f, no sign."
+  [f verb prec]
+  (let [upper? (or (= verb \E) (= verb \G))]
+    (cond (= verb \f) (fmt-f (round-dec (exact-decimal f) (+ (second (exact-decimal f)) (if (neg? prec) 6 prec))) (if (neg? prec) 6 prec))
+          (or (= verb \e) (= verb \E)) (let [p (if (neg? prec) 6 prec)] (fmt-e (round-dec (exact-decimal f) (inc p)) p upper?))
+          :else
+          (let [shortest? (neg? prec)
+                p (if shortest? prec (if (= prec 0) 1 prec))
+                [ds dp :as d] (if shortest? (shortest-decimal f) (round-dec (exact-decimal f) p))
+                nd (count ds)
+                p (if shortest? nd p)
+                eprec (cond shortest? 6 (and (> p nd) (>= nd dp)) nd :else p)
+                x (dec dp)]
+            (if (or (< x -4) (>= x eprec))
+              (fmt-e d (dec (min p nd)) upper?)
+              (fmt-f d (max (- (if (> p dp) nd p) dp) 0)))))))
+
+(defn- pad [st {:keys [minus wid]} zero?]
+  (let [n (count st)]
+    (if (or (nil? wid) (>= n wid))
+      st
+      (let [fill (apply str (repeat (- wid n) (if zero? "0" " ")))]
+        (if minus (str st fill) (str fill st))))))
+
+(defn- sign-of [neg? {:keys [plus space]}] (cond neg? "-" plus "+" space " " :else ""))
+
+(defn- fmt-float [f verb fl]
+  (cond (wm/nan? f) (pad (cond (:plus fl) "+NaN" (:space fl) " NaN" :else "NaN") fl false)
+        (> (wm/abs f) 1.7976931348623157e308) (pad (str (if (neg? f) "-" (if (:space fl) " " "+")) "Inf") fl false)
+        :else
+        (let [body (float-body (wm/abs f) verb (or (:prec fl) -1))
+              sg (sign-of (neg? (sq/float-bits f)) fl)]
+          (if (and (:zero fl) (:wid fl) (not (:minus fl)))
+            (str sg (pad body (assoc fl :wid (- (:wid fl) (count sg))) true))
+            (pad (str sg body) fl false)))))
+
+(defn- int-digits [n base upper?]
+  (let [hs (if upper? "0123456789ABCDEF" "0123456789abcdef")]
+    (if (= n 0)
+      "0"
+      ;; magnitude digits of a possibly negative n without overflowing at MinInt64
+      (loop [q n out ()]
+        (if (= q 0) (apply str out) (recur (quot q base) (conj out (nth hs (wm/abs (rem q base))))))))))
+
+(defn- fmt-int [n verb fl]
+  (let [base (cond (#{\x \X} verb) 16 (= verb \o) 8 (= verb \b) 2 :else 10)
+        ds (int-digits n base (= verb \X))
+        prec (:prec fl)
+        ds (cond (and prec (= prec 0) (= n 0)) ""
+                 prec (str (apply str (repeat (- prec (count ds)) "0")) ds)
+                 (and (:zero fl) (:wid fl) (not (:minus fl)))
+                 ;; fmtInteger: the width less a sign; a # prefix is not counted
+                 (let [w (- (:wid fl) (if (or (neg? n) (:plus fl) (:space fl)) 1 0))]
+                   (str (apply str (repeat (- w (count ds)) "0")) ds))
+                 :else ds)
+        ds (if (:sharp fl)
+             (cond (= base 16) (str (if (= verb \X) "0X" "0x") ds)
+                   (and (= base 8) (not= \0 (first ds))) (str "0" ds)
+                   (= base 2) (str "0b" ds)
+                   :else ds)
+             ds)]
+    (pad (str (sign-of (neg? n) fl) ds) fl false)))
+
+(defn- go-quote
+  "strconv.Quote of a string (printable runes kept)."
+  [st]
+  (str "\""
+       (apply str (map (fn [ch]
+                         (let [c (int ch)]
+                           (cond (= c 34) "\\\"" (= c 92) "\\\\" (= c 7) "\\a" (= c 8) "\\b" (= c 12) "\\f"
+                                 (= c 10) "\\n" (= c 13) "\\r" (= c 9) "\\t" (= c 11) "\\v"
+                                 (or (< c 32) (= c 127)) (str "\\x" (subs (hex4 c) 2))
+                                 (or (and (>= c 128) (< c 160)) (= c 173) (= c 8232) (= c 8233)) (str "\\u" (hex4 c))
+                                 :else (str ch))))
+                       st))
+       "\""))
+
+(defn- fmt-str [st verb fl]
+  (let [st (if (:prec fl) (apply str (take (:prec fl) st)) st)]
+    (cond (#{\s \v} verb) (pad st fl false)
+          (= verb \q) (pad (go-quote st) fl false)
+          :else
+          ;; %x / %X: two hex digits per UTF-8 byte
+          (let [bs (map #(bit-and % 255) (vec (.getBytes st)))
+                hx (map #(let [t (hex4 %)] (subs (if (= verb \X) (string/upper-case t) t) 2)) bs)]
+            (pad (str (when (:sharp fl) (if (= verb \X) "0X" "0x")) (apply str hx)) fl false)))))
+
+(defn- go-type-of
+  "How fmt sees a converted argument: [kind payload]."
+  [a verb]
+  (let [k (c/ckind a)]
+    (cond (nil? a) [:nil nil]
+          (= k 1) (if (#{\f \e \g \E \G} verb) [:float (double a)] [:int a])
+          (= k 22) [:float a]
+          (string? a) [:string a]
+          (= k 15) [:bool a]
+          (char? a) [:char (int a)]
+          (or (keyword? a) (symbol? a)) [:string (if (keyword? a) (subs (str a) 1) (str a))]
+          :else [:other a])))
+
+
+(declare fmt-arg)
+;; fmt's badVerb: the operand is printed with %v under the directive's own
+;; width, flags and precision (printArg(arg, 'v') keeps p.fmt), so
+;; (format "%-6b" true) is "%!b(bool=true  )"; a nil operand is a bare <nil>.
+(defn- bad-verb [verb kind x fl]
+  (str "%!" verb "("
+       (if (= kind :nil)
+         "<nil>"
+         (str (cond (= kind :int) "int" (= kind :float) "float64" (= kind :string) "string"
+                    (= kind :bool) "bool" :else "int32")
+              "=" (fmt-arg [kind x] \v fl)))
+       ")"))
+
+(defn- fmt-arg [[kind x] verb fl]
+  (cond
+    (= kind :nil) (if (= verb \v) (pad "<nil>" fl false) (bad-verb verb kind x fl))
+    (= kind :int) (cond (#{\d \v \x \X \o \b} verb) (fmt-int x verb fl)
+               (= verb \c) (pad (str (char x)) fl false)
+               (= verb \q) (pad (str "'" (subs (go-quote (str (char x))) 1 (dec (count (go-quote (str (char x)))))) "'") fl false)
+               (= verb \U) (pad (str "U+" (let [t (string/upper-case (int-digits x 16 true))] (str (apply str (repeat (- 4 (count t)) "0")) t))) fl false)
+               :else (bad-verb verb kind x fl))
+    (= kind :char) (if (#{\d \v \x \X \o \b \c \q \U} verb) (fmt-arg [:int x] verb fl) (bad-verb verb kind x fl))
+    (= kind :float) (cond (#{\f \e \E \g \G} verb) (fmt-float x verb fl)
+                 (= verb \v) (fmt-float x \g fl)
+                 (#{\x \X} verb) (limit "format %x of a float")
+                 :else (bad-verb verb kind x fl))
+    (= kind :string) (if (#{\s \v \q \x \X} verb) (fmt-str x verb fl) (bad-verb verb kind x fl))
+    (= kind :bool) (if (#{\t \v} verb) (pad (str x) fl false) (bad-verb verb kind x fl))
+    ;; a list Unboxes to a Go slice: fmt prints it [e1 e2], each element
+    ;; through its String() (a vector is its own Stringer)
+    (= kind :other) (if (#{\s \v \q \x \X} verb)
+             (fmt-str (if (and (seq? x) (not (vector? x))) (str "[" (string/join " " (map pr-str x)) "]") (str x)) verb fl)
+             (limit (str "format %" verb " of a " (tname x))))))
+
+(defn- newlines
+  "formatNewlines (lang.go:6858): %n is \"\\n\"; %% is kept, so %%n stays."
+  [st]
+  (if-not (string/includes? st "%n")
+    st
+    (loop [i 0 out ""]
+      (if (>= i (count st))
+        out
+        (let [ch (nth st i) nx (when (< (inc i) (count st)) (nth st (inc i)))]
+          (cond (and (= ch \%) (= nx \%)) (recur (+ i 2) (str out "%%"))
+                (and (= ch \%) (= nx \n)) (recur (+ i 2) (str out "\n"))
+                :else (recur (inc i) (str out ch))))))))
+
+(defn- flag-char? [ch] (contains? #{\- \+ \space \0 \#} ch))
+(defn- digit-char? [ch] (and (char? ch) (<= 48 (int ch) 57)))
+
+(defn- scan-verbs
+  "The verbs CoreFormatf's scan pairs with the first n arguments."
+  [fs n]
+  (let [len (count fs)]
+    (loop [fi 0 out []]
+      (cond (or (>= fi len) (>= (count out) n)) out
+            (not= \% (nth fs fi)) (recur (inc fi) out)
+            :else
+            (let [fi (inc fi)]
+              (cond (>= fi len) out
+                    (= \% (nth fs fi)) (recur (inc fi) out)
+                    :else
+                    (let [fi (loop [fi fi] (if (and (< fi len) (let [ch (nth fs fi)] (or (flag-char? ch) (digit-char? ch) (= ch \.)))) (recur (inc fi)) fi))]
+                      (if (>= fi len) out (recur (inc fi) (conj out (nth fs fi)))))))))))
+
+(defn ^{:twin "core/format"} format [& vs]
+  (cond (empty? vs) (raise-arity 0)
+        (not (string? (first vs))) (raise-lit "format expected String")
+        :else
+        (let [fs (newlines (first vs))
+              raw (vec (rest vs))
+              verbs (scan-verbs fs (count raw))
+              args (vec (map-indexed (fn [i v] (go-type-of (nth raw i) v)) verbs))
+              len (count fs)]
+          (loop [i 0 ai 0 out ""]
+            (if (>= i len)
+              out
+              (let [ch (nth fs i)]
+                (if (not= ch \%)
+                  (recur (inc i) ai (str out ch))
+                  (let [[j fl] (loop [j (inc i) fl {}]
+                                 (if (and (< j len) (flag-char? (nth fs j)))
+                                   (let [f (nth fs j)]
+                                     (recur (inc j) (cond (= f \-) (assoc fl :minus true :zero false)
+                                                          (= f \+) (assoc fl :plus true)
+                                                          (= f \space) (assoc fl :space true)
+                                                          (= f \0) (assoc fl :zero (not (:minus fl)))
+                                                          :else (assoc fl :sharp true))))
+                                   [j fl]))
+                        [j fl] (loop [j j w nil] (if (and (< j len) (digit-char? (nth fs j))) (recur (inc j) (+ (* 10 (or w 0)) (- (int (nth fs j)) 48))) [j (if w (assoc fl :wid w) fl)]))
+                        [j fl] (if (and (< j len) (= \. (nth fs j)))
+                                 (loop [j (inc j) p 0] (if (and (< j len) (digit-char? (nth fs j))) (recur (inc j) (+ (* 10 p) (- (int (nth fs j)) 48))) [j (assoc fl :prec p)]))
+                                 [j fl])]
+                    (cond (>= j len) (str out "%!(NOVERB)")
+                          (#{\* \[} (nth fs j)) (limit "format * and [n] argument indexes")
+                          (= \% (nth fs j)) (recur (inc j) ai (str out "%"))
+                          (>= ai (count args)) (recur (inc j) ai (str out "%!" (nth fs j) "(MISSING)"))
+                          :else (recur (inc j) (inc ai) (str out (fmt-arg (nth args ai) (nth fs j) fl))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; clojure.math (math.go): Go's portable algorithms, each operation rounded
+;; separately, as lg computes them on js/wasm (D86). Native arm64 fuses
+;; x*y+z in some of them, so it can differ from these in the last place.
+
+(defn- to-double [x]                                     ; toDouble (math.go:16)
+  (cond (int? x) (double x)
+        (float? x) x
+        :else (raise-lit (str "expected numeric value, got " (tname x)))))
+
+(defn- to-long [x]                                       ; toLong (math.go:24)
+  (cond (int? x) x
+        (float? x) (long x)
+        :else (raise-lit (str "expected numeric value, got " (tname x)))))
+
+;; Not top-level defs: a runtime global initialised to an unboxed float
+;; fails validation (_rt_init's global.set wants eqref; the P6.1 backend
+;; blocker (b) shape), so the constants are fns.
+(defn- pi [] 3.141592653589793)
+(defn- nan-f [] (- (* 1.7976931348623157e308 2.0) (* 1.7976931348623157e308 2.0)))
+(defn- inf-f? [x] (> (wm/abs x) 1.7976931348623157e308))
+
+(defn ^{:twin "clojure.math/signum"} signum               ; math.go:304
+  ([] (raise-arity 0))
+  ([x] (let [a (to-double x)] (cond (wm/nan? a) (nan-f) (> a 0.0) 1.0 (< a 0.0) -1.0 :else a)))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "clojure.math/to-degrees"} to-degrees       ; math.go:427: a * 180.0 / math.Pi
+  ([] (raise-arity 0))
+  ([x] (/ (* (to-double x) 180.0) (pi)))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "clojure.math/floor-mod"} floor-mod         ; math.go:280
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a b] (let [x (to-long a) y (to-long b)]
+           (if (= y 0)
+             (raise-lit "divide by zero")
+             (let [r (rem x y)] (if (and (not= r 0) (not= (> r 0) (> y 0))) (+ r y) r)))))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+;; math.RoundToEven (floor.go:89), on the bits
+(defn- round-to-even [x]
+  (let [bits (sq/float-bits x)
+        e (bit-and (unsigned-bit-shift-right bits 52) 2047)
+        frac-mask 4503599627370495]                        ; 1<<52 - 1
+    (cond (>= e 1023)
+          (let [e (- e 1023)]
+            (if (>= e 52)
+              x                                           ; integral, Inf or NaN
+              (let [b (+ bits (unsigned-bit-shift-right (+ 2251799813685247 (bit-and (unsigned-bit-shift-right bits (- 52 e)) 1)) e))]
+                (wm/from-bits (bit-and-not b (unsigned-bit-shift-right frac-mask e))))))
+          (and (= e 1022) (not= 0 (bit-and bits frac-mask)))  ; 0.5 < |x| < 1: +-1
+          (wm/from-bits (bit-or (bit-and bits -9223372036854775808) 4607182418800017408))
+          :else (wm/from-bits (bit-and bits -9223372036854775808)))))  ; |x| <= 0.5: +-0
+
+(defn ^{:twin "clojure.math/rint"} rint                   ; math.go:124
+  ([] (raise-arity 0))
+  ([x] (round-to-even (to-double x)))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+;; math.log10 (log10.go): log2(x) * (Ln2/Ln10); log2 via Frexp
+(defn- log2 [x]
+  (let [frac (wm/frexp-frac x) e (wm/frexp-exp x)]
+    (if (== frac 0.5)
+      (double (dec e))
+      (+ (* (wm/log* frac) 1.4426950408889634) (double e)))))  ; the constant 1/Ln2
+
+(defn ^{:twin "clojure.math/log10"} log10
+  ([] (raise-arity 0))
+  ([x] (* (log2 (to-double x)) 0.30102999566398120))     ; the constant Ln2/Ln10
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+;; math.hypot (hypot.go), the portable one
+(defn- hypot* [p q]
+  (let [p (wm/abs p) q (wm/abs q)]
+    (cond (or (inf-f? p) (inf-f? q)) (* 1.7976931348623157e308 2.0)
+          (or (wm/nan? p) (wm/nan? q)) (nan-f)
+          :else
+          (let [[p q] (if (< p q) [q p] [p q])]
+            (if (== p 0.0)
+              0.0
+              (let [q (/ q p)] (* p (wm/sqrt* (+ 1.0 (* q q))))))))))
+
+(defn ^{:twin "clojure.math/hypot"} hypot
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a b] (let [x (to-double a) y (to-double b)] (hypot* x y)))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+;; math.Cbrt (cbrt.go)
+(defn- cbrt* [x]
+  (let [B1 715094163 B2 696219795 C 5.42857142857142815906e-01 D -7.05306122448979611050e-01
+        E 1.41428571428571436819e+00 F 1.60714285714285720630e+00 G 3.57142857142857150787e-01
+        SmallestNormal 2.22507385850720138309e-308]
+    (if (or (== x 0.0) (wm/nan? x) (inf-f? x))
+      x
+      (let [sign (< x 0.0)
+            x (wm/abs x)
+            ;; rough cbrt to 5 bits
+            t (if (< x SmallestNormal)
+                (let [t (* 18014398509481984.0 x)]          ; 2^54 * x
+                  (wm/from-bits (+ (quot (sq/float-bits t) 3) (bit-shift-left B2 32))))
+                (wm/from-bits (+ (quot (sq/float-bits x) 3) (bit-shift-left B1 32))))
+            ;; new cbrt to 23 bits
+            r (/ (* t t) x)
+            s (+ C (* r t))
+            t (* t (+ G (/ F (+ s E (/ D s)))))
+            ;; chop to 22 bits, make larger than cbrt(x)
+            t (wm/from-bits (+ (bit-and (sq/float-bits t) (bit-shift-left -1 30)) (bit-shift-left 1 30)))
+            ;; one step newton iteration to 53 bits with error less than 0.667ulps
+            s (* t t)
+            r (/ x s)
+            w (+ t t)
+            r (/ (- r t) (+ w r))
+            t (+ t (* t r))]
+        (if sign (- t) t)))))
+
+(defn ^{:twin "clojure.math/cbrt"} cbrt
+  ([] (raise-arity 0))
+  ([x] (cbrt* (to-double x)))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+;; math.sin / math.cos (sin.go), Cody-Waite reduction; |x| >= 2^29 needs
+;; trigReduce's Payne-Hanek table (a named limit here)
+(def ^:private sin-c [1.58962301576546568060e-10 -2.50507477628578072866e-8 2.75573136213857245213e-6
+                      -1.98412698295895385996e-4 8.33333333332211858878e-3 -1.66666666666666307295e-1])
+(def ^:private cos-c [-1.13585365213876817300e-11 2.08757008419747316778e-9 -2.75573141792967388112e-7
+                      2.48015872888517045348e-5 -1.38888888888730564116e-3 4.16666666666665929218e-2])
+
+(defn- poly [cs zz]
+  (+ (* (+ (* (+ (* (+ (* (+ (* (nth cs 0) zz) (nth cs 1)) zz) (nth cs 2)) zz) (nth cs 3)) zz) (nth cs 4)) zz) (nth cs 5)))
+
+(defn- sin-poly [z zz] (+ z (* (* z zz) (poly sin-c zz))))                  ; z + z*zz*(...)
+(defn- cos-poly [zz] (+ (- 1.0 (* 0.5 zz)) (* (* zz zz) (poly cos-c zz)))) ; 1 - 0.5*zz + zz*zz*(...)
+
+(defn- trig [x cos?]
+  (let [PI4A 7.85398125648498535156e-1 PI4B 3.77489470793079817668e-8 PI4C 2.69515142907905952645e-15]
+    (cond (or (wm/nan? x) (inf-f? x)) (if (and (not cos?) (wm/nan? x)) x (nan-f))
+          (and (not cos?) (== x 0.0)) x
+          :else
+          (let [sign (and (not cos?) (< x 0.0))
+                x (wm/abs x)
+                _ (when (>= x 536870912.0) (limit "clojure.math/sin and cos of |x| >= 2^29 (Payne-Hanek reduction)"))
+                j (long (* x 1.2732395447351628))           ; the constant 4/Pi
+                y (double j)
+                odd? (= 1 (bit-and j 1))
+                j (bit-and (if odd? (inc j) j) 7)
+                y (if odd? (+ y 1.0) y)
+                z (- (- (- x (* y PI4A)) (* y PI4B)) (* y PI4C))
+                sign (if (> j 3) (not sign) sign)
+                j (if (> j 3) (- j 4) j)
+                sign (if (and cos? (> j 1)) (not sign) sign)
+                zz (* z z)
+                mid? (or (= j 1) (= j 2))
+                r (if (= mid? cos?) (sin-poly z zz) (cos-poly zz))]
+            (if sign (- r) r)))))
+
+(defn ^{:twin "clojure.math/sin"} sin
+  ([] (raise-arity 0))
+  ([x] (trig (to-double x) false))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+(defn ^{:twin "clojure.math/cos"} cos
+  ([] (raise-arity 0))
+  ([x] (trig (to-double x) true))
+  ([x y & more] (raise-arity (+ 2 (count more)))))
+
+;; math.atan2 / atan (atan.go, atan2.go)
+(defn- xatan [x]
+  (let [P0 -8.750608600031904122785e-01 P1 -1.615753718733365076637e+01 P2 -7.500855792314704667340e+01
+        P3 -1.228866684490136173410e+02 P4 -6.485021904942025371773e+01
+        Q0 2.485846490142306297962e+01 Q1 1.650270098316988542046e+02 Q2 4.328810604912902668951e+02
+        Q3 4.853903996359136964868e+02 Q4 1.945506571482613964425e+02
+        z (* x x)
+        z (/ (* z (+ (* (+ (* (+ (* (+ (* P0 z) P1) z) P2) z) P3) z) P4))
+             (+ (* (+ (* (+ (* (+ (* (+ z Q0) z) Q1) z) Q2) z) Q3) z) Q4))]
+    (+ (* x z) x)))
+
+(defn- satan [x]
+  (let [Morebits 6.123233995736765886130e-17 Tan3pio8 2.41421356237309504880]
+    (cond (<= x 0.66) (xatan x)
+          (> x Tan3pio8) (+ (- (/ (pi) 2.0) (xatan (/ 1.0 x))) Morebits)
+          :else (+ (+ (/ (pi) 4.0) (xatan (/ (- x 1.0) (+ x 1.0)))) (* 0.5 Morebits)))))
+
+(defn- atan* [x] (if (== x 0.0) x (if (> x 0.0) (satan x) (- (satan (- x))))))
+
+(defn- copysign [f sign]
+  (wm/from-bits (bit-or (bit-and-not (sq/float-bits f) -9223372036854775808)
+                        (bit-and (sq/float-bits sign) -9223372036854775808))))
+(defn- signbit? [x] (neg? (sq/float-bits x)))
+
+(defn- atan2* [y x]
+  (cond (or (wm/nan? y) (wm/nan? x)) (nan-f)
+        (== y 0.0) (if (and (>= x 0.0) (not (signbit? x))) (copysign 0.0 y) (copysign (pi) y))
+        (== x 0.0) (copysign (/ (pi) 2.0) y)
+        (inf-f? x) (if (> x 0.0)
+                     (if (inf-f? y) (copysign (/ (pi) 4.0) y) (copysign 0.0 y))
+                     (if (inf-f? y) (copysign 2.356194490192345 y) (copysign (pi) y)))   ; the constant 3*Pi/4
+        (inf-f? y) (copysign (/ (pi) 2.0) y)
+        :else
+        (let [q (atan* (/ y x))]
+          (if (< x 0.0)
+            (if (<= q 0.0) (+ q (pi)) (- q (pi)))
+            q))))
+
+(defn ^{:twin "clojure.math/atan2"} atan2
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a b] (let [y (to-double a) x (to-double b)] (atan2* y x)))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))

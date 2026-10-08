@@ -1,0 +1,1412 @@
+;; llvm.core — P2.7 runtime half: the generic collection dispatchers, the
+;; numeric natives as values, state (atom, volatile), metadata, exceptions,
+;; and the remaining shared natives, in the runtime dialect of seq.lg (IR
+;; special forms, IR-op core fns on :int and :float, macros expanding to
+;; those, llvm.arch, and the other runtime namespaces). Loaded last: it
+;; is the one namespace that sees every collection, so the dispatchers that
+;; must tell a map from a set from a vector live here. Ground truth is
+;; let-go ff1e6dac (pkg/rt/lang.go, native_prims.go, builtins/builtins.go,
+;; pkg/vm/numbers.go, transient.go, atom.go, persistent_map.go).
+;;
+;; Calling convention as seq.lg (D37): natives take and return refs; ints
+;; arrive boxed, booleans leave as sq/Bool refs. Variadic natives get fixed
+;; arities 0-4 (D52's ceiling) plus a `-seq` form taking the argument list.
+;;
+;; Errors let-go raises as catchable Go errors are raised here as the
+;; backend's exception value: `(throw (arch/new sq/Err 1 msg cmsg nil nil))`,
+;; kind 1, msg the uncaught `error: ` text and cmsg what ex-message returns
+;; once caught. A native called as a value reports its error unprefixed
+;; either way ((def f +) (f Long/MAX 1) => "integer overflow"), so msg = cmsg;
+;; the IR-op path's "ExecutionError: " prefix belongs to the backend (D16).
+;; `throw` is the one core fn referenced: the backend lowers #'throw to the
+;; wasm `throw $lgex` instruction (D25, D31). Internal invariants stay
+;; arch/trap. Named limits (Phase 3+ work) are arch/trap with a
+;; "lower-wasm: " message.
+(ns llvm.core
+  (:refer-clojure :exclude [assoc dissoc get contains? conj nth peek pop transient persistent! conj! assoc! dissoc!
+                            key val subvec max min mod number? map? set? seq? sorted? vector?
+                            list? fn? nil? string? keyword? symbol? coll? sequential? atom deref reset! swap!
+                            compare-and-set! volatile! vreset! vswap! with-meta meta gensym apply*
+                            promise deliver delay* force delay? realized?
+                            ex-info ex-data ex-message ex-cause sort read-string slurp open compare])
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.phm :as m]
+            [llvm.phs :as hs]
+            [llvm.arrays :as arr]
+            [llvm.sorted :as so]))
+
+;; ---------------------------------------------------------------------------
+;; Values this namespace adds. They are foreign to seq.lg (kind 18) and reach
+;; its count/equiv/hash through the generic hook slot (2) installed below.
+(arch/defstruct TVec [[:mut :ref] [:mut :i32]])   ; TransientVector: the vector so far, editable (1/0)
+(arch/defstruct TSet [:ref])                      ; TransientSet: wraps phm's HTransient (transient.go:451)
+(arch/defstruct TypeVal [:ref :i64])              ; a let-go ValueType: name bytes, id (interned)
+(arch/defstruct MetaEnv [:ref :ref])              ; a with-meta'd fn's env: inner fn, meta (vm.NewMetaFn)
+;; A keyword or symbol with meta: let-go's is a distinct value that is still
+;; keyword?/symbol? and prints as the name, but is = only to itself and
+;; hashes apart from the plain one ((= 'x (with-meta 'x nil)) is false).
+(arch/defstruct MetaNamed [:ref :ref])            ; the interned Kw/Sym, meta
+;; P6.7: the two blocking refs of a single-threaded module (vm/promise.go,
+;; vm/delay.go). Promise: value, delivered (0/1). Delay: the thunk until
+;; forced then its value, state (0 pending, 1 value, 2 threw, 3 running), the error.
+(arch/defstruct Promise [[:mut :ref] [:mut :i32]])
+(arch/defstruct Delay [[:mut :ref] [:mut :i32] [:mut :ref]])
+;; The one runtime global (D39): the gensym counter, the interned types and
+;; (P6.7) the roots alter-var-root gave vars the module does not hold (a
+;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
+;; stand-in's "#'ns/name" text to the root, which var-value reads first.
+(arch/defstruct Globals [[:mut :i64] :ref [:mut :ref]])
+(def globals (arch/new Globals 0 (arch/array-new pv/Node 42 (arch/null)) (arch/null)))
+
+;; Kinds as this namespace sees them: llvm.seq/kind, with its foreign kind 18
+;; refined into the collections seq.lg cannot name.
+;;  30 map  31 set  32 TransientMap  33 TransientSet  34 TransientVector  35 Type
+;;  36 keyword/symbol with meta  37 a typed array (llvm.arrays)
+;;  38 SortedMap  39 SortedSet (llvm.sorted)  40 Promise  41 Delay
+(defn ckind [x]
+  (let [k (sq/kind x)]
+    (if (= k 18)
+      (cond (arch/is? m/HMap x) 30
+            (arch/is? hs/HSet x) 31
+            (arch/is? m/HTransient x) 32
+            (arch/is? TSet x) 33
+            (arch/is? TVec x) 34
+            (arch/is? TypeVal x) 35
+            (arch/is? MetaNamed x) 36
+            (arch/is? arr/Arr x) 37
+            (arch/is? so/SMap x) 38
+            (arch/is? so/SSet x) 39
+            (arch/is? Promise x) 40
+            (arch/is? Delay x) 41
+            :else 18)
+      k)))
+
+;; P5.9: lower-wasm's two Symbol stand-ins (its const-form) are MetaNamed
+;; Symbols told apart by their text, which is what they print as: `#"..."` a
+;; Regex, `#'ns/name` a Var. 0 = any other value.
+(defn standin [x]                                         ; 1 Regex, 2 Var
+  (if (= 36 (ckind x))
+    (let [y (arch/get MetaNamed 0 x)]
+      (if (= 21 (sq/kind y))
+        (let [ns (arch/get sq/Sym 0 y) b (if (arch/null? ns) (arch/get sq/Sym 1 y) ns)]
+          (cond (< (arch/alen b) 2) 0
+                (if (= 35 (arch/bget b 0)) false true) 0
+                (= 34 (arch/bget b 1)) 1
+                (= 39 (arch/bget b 1)) 2
+                :else 0))
+        0))
+    0))
+
+;; A var stand-in's meta holds, under :lw/var, a 0-arg fn that reads the
+;; var's current value (lower-wasm's var-const-form; for a var the program
+;; does not define it raises that named limit). meta hides the key.
+(defn- lw-var-kw [] (s/kw-of-bytes (arch/bytes-of-string "lw/var")))
+(declare raise)
+(defn- var-key [v]                                        ; the stand-in's text, "#'ns/name", as a String
+  (let [y (arch/get MetaNamed 0 v) ns (arch/get sq/Sym 0 y)]
+    (s/mk-str (if (arch/null? ns) (arch/get sq/Sym 1 y)
+                  (sq/bytes-cat (sq/bytes-cat ns (arch/bytes-of-string "/")) (arch/get sq/Sym 1 y))))))
+(defn var-root-set?
+  "Has alter-var-root given the var stand-in v a root in the module?"
+  [v]
+  (let [rs (arch/get Globals 2 globals)]
+    (if (arch/null? rs) false (m/mcontains? rs (var-key v)))))
+(defn set-var-root! [v x]
+  (let [rs (arch/get Globals 2 globals)]
+    (arch/set! Globals 2 globals (m/massoc (if (arch/null? rs) (m/empty-map) rs) (var-key v) x))
+    x))
+(defn var-value [v]
+  (if (var-root-set? v)
+    (m/mget (arch/get Globals 2 globals) (var-key v) (arch/null))
+    (let [f (m/mget (arch/get MetaNamed 1 v) (lw-var-kw) (arch/null))]
+      (if (arch/null? f)                                  ; a stand-in find-var made: no reader fn
+        (raise (sq/bytes-cat (sq/bytes-cat (arch/bytes-of-string "lower-wasm: the value of ") (s/str-bytes (var-key v)))
+                             (arch/bytes-of-string " is not reachable from its stand-in (named limit)")))
+        (sq/invoke0 f)))))
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- int-key? [k] (= 1 (sq/kind k)))
+(defn- index-in? [key n]
+  (if (int-key? key) (let [i (sq/unbox-int key)] (if (>= i 0) (< i n) false)) false))
+(defn- T [] (sq/bool true))
+(defn- F [] (sq/bool false))
+
+;; ---------------------------------------------------------------------------
+;; Raising (see the header). raise-str takes a Str, raise a Bytes literal.
+
+(defn raise [msg] (throw (arch/new sq/Err 1 msg msg (arch/null) (arch/null))))
+(defn- raise-str [st] (raise (s/str-bytes st)))
+
+;; Value.Type().Name() (nil prints "nil"). A vector reports the Go type
+;; llvm.pvec records (D73); so does a vector's seq (PersistentVectorSeq is
+;; Sequence, ArrayVectorSeq PersistentList). The Repeat type's own Type() is
+;; the Repeat type (a let-go quirk, mirrored: (type (type (repeat 1 1)))).
+(defn- repeat-type? [x] (if (= 35 (ckind x)) (= 9 (arch/get TypeVal 1 x)) false))
+(defn type-name [x]
+  (let [rx (= 1 (standin x))
+        x (if (= 36 (ckind x)) (arch/get MetaNamed 0 x) x)
+        k (ckind x)]
+    (cond rx (arch/bytes-of-string "let-go.lang.Regex")
+          (< k 30) (sq/kind-type-name x)                ; seq.lg's own kinds (and "let-go.lang.Unknown" for 18)
+          (= k 30) (arch/bytes-of-string "let-go.lang.Map")
+          (= k 31) (arch/bytes-of-string "let-go.lang.Set")
+          (= k 32) (arch/bytes-of-string "let-go.lang.TransientMap")
+          (= k 33) (arch/bytes-of-string "let-go.lang.TransientSet")
+          (= k 34) (arch/bytes-of-string "let-go.lang.TransientVector")
+          (= k 35) (if (repeat-type? x) (arch/bytes-of-string "let-go.lang.Repeat") (arch/bytes-of-string "let-go.lang.Type"))
+          (= k 37) (arch/bytes-of-string "let-go.lang.Array")
+          (= k 38) (arch/bytes-of-string "let-go.lang.PersistentTreeMap")
+          (= k 39) (arch/bytes-of-string "let-go.lang.PersistentTreeSet")
+          (= k 40) (arch/bytes-of-string "let-go.lang.Promise")
+          (= k 41) (arch/bytes-of-string "let-go.lang.Delay")
+          :else (arch/bytes-of-string "let-go.lang.Unknown"))))
+
+(defn- tn [x] (s/mk-str (type-name x)))
+
+(defn- raise-not-supported [prefix x]                    ; "<prefix> <type name>"
+  (raise-str (s/str prefix (tn x))))
+
+(defn- raise-two [prefix a b]                            ; "<prefix> <type a> and <type b>"
+  (raise-str (s/str (s/str prefix (tn a)) (lit (arch/bytes-of-string " and ")) (tn b))))
+
+(defn- raise-arity [n]                                    ; "wrong number of arguments N"
+  (raise-str (s/str (lit (arch/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+
+;; ---------------------------------------------------------------------------
+;; type (lang.go:2511): nil for nil, else the interned ValueType, which prints
+;; as its name and is = only to itself.
+
+(defn- type-id [x]
+  (let [rx (= 1 (standin x))
+        x (if (= 36 (ckind x)) (arch/get MetaNamed 0 x) x)
+        k (ckind x)]
+    (cond rx 36                                          ; Regex (a MetaNamed is typed as its Symbol, so 36 is free)
+          (= k 11) (if (= 0 (pv/vpkind x)) 23 39)       ; ArrayVector shares MapEntry's id
+          (= k 10) (if (= 0 (pv/vpkind (arch/get sq/PVecSeq 0 x))) 2 10) ; Sequence: id 10
+          (= k 35) (if (repeat-type? x) 9 35)
+          (= k 26) (if (= 0 (arch/get sq/Err 0 x)) 26 38)
+          (= k 8) 7
+          (= k 27) 2                                     ; MapSeq/SetSeq: ListType
+          ;; ArrayChunk and ChunkBuffer are ListType natively ((type (chunk-first (range 5))))
+          (if (>= k 2) (<= k 13) false) (if (= k 7) 7 (if (= k 9) 9 (if (= k 11) 11 2)))
+          :else k)))
+
+(defn ^{:twin "core/type"} type-of [x]
+  (cond
+    (arch/null? x) (arch/null)
+    (= 2 (standin x)) (type-of (var-value x))             ; native: a Var's type is its value's
+    :else
+    (let [tab (arch/get Globals 1 globals) id (type-id x) t (arch/aget pv/Node tab id)]
+      (if (arch/null? t)
+        (let [nt (arch/new TypeVal (type-name x) id)] (arch/aset! pv/Node tab id nt) nt)
+        t))))
+
+;; ---------------------------------------------------------------------------
+;; Calling values. A Fn goes through its code slot for the arity (D52); the
+;; other let-go IFns (keyword, symbol, map, set, vector) look themselves up.
+
+(defn invoke3 [f a b c] (arch/call-ref sq/Code3 (arch/get sq/Fn 4 f) f a b c))
+(defn invoke4 [f a b c d] (arch/call-ref sq/Code4 (arch/get sq/Fn 5 f) f a b c d))
+
+(defn- code-slot [n] (cond (= n 0) 0 (= n 1) 1 (= n 2) 2 (= n 3) 4 :else 5))
+(defn- fn-code [f n]
+  (let [i (code-slot n)]
+    (cond (= i 0) (arch/get sq/Fn 0 f) (= i 1) (arch/get sq/Fn 1 f) (= i 2) (arch/get sq/Fn 2 f)
+          (= i 4) (arch/get sq/Fn 4 f) :else (arch/get sq/Fn 5 f))))
+
+(defn- raise-fn-arity [f n]                               ; D56's messages, address fixed at 0x0
+  (let [info (arch/get sq/Fn 6 f)
+        nm (if (arch/null? info) (arch/null) (arch/get sq/FnInfo 2 info))
+        head (if (arch/null? nm) (lit (arch/bytes-of-string "<fn 0x0>"))
+                 (s/str (lit (arch/bytes-of-string "<fn ")) (lit nm) (lit (arch/bytes-of-string " 0x0>"))))]
+    (if (if (arch/null? info) false (= 1 (arch/get sq/FnInfo 0 info)))
+      (raise-str (s/str head (lit (arch/bytes-of-string " doesn't have a ")) (s/str (sq/box-int n) (lit (arch/bytes-of-string "-arity variant")))))
+      (raise-str (s/str (s/str (lit (arch/bytes-of-string "function ")) head (lit (arch/bytes-of-string " expected ")))
+                        (s/str (sq/box-int (if (arch/null? info) 0 (arch/get sq/FnInfo 1 info))) (lit (arch/bytes-of-string " args, got ")))
+                        (sq/box-int n))))))
+
+(declare get-nf)
+
+(defn callable? [x]                                       ; vm.AsFn
+  (let [k (ckind x)]
+    (cond (= k 16) true (= k 20) true (= k 21) true (= k 11) true (= k 30) true (= k 31) true
+          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true
+          (= k 36) (= 2 (standin x))                      ; a Var (P5.9)
+          :else false)))          ; transients are IFns (transient.go)
+
+(declare invoke-args)
+
+(defn- invoke-ifn [f n a b]                               ; Keyword/Symbol/Map/Set/ArrayVector .Invoke
+  (let [k (ckind f)]
+    (cond (= 2 (standin f)) (invoke-args (var-value f) n a b (arch/null) (arch/null)) ; a Var calls its value (P5.9)
+          (if (= k 11) true (= k 31))                     ; a vector or set takes exactly one argument
+          (cond (if (= n 1) false true)
+                (if (if (= k 11) (= 1 (pv/vpkind f)) false)         ; PersistentVector.Invoke's own text
+                  (raise-str (s/str (lit (arch/bytes-of-string "wrong number of arguments: ")) (sq/box-int n)
+                                    (lit (arch/bytes-of-string ", expected: 1"))))
+                  (raise-arity n))
+                (= k 31) (hs/sget f a (arch/null))
+                (if (int-key? a) false true) (raise (arch/bytes-of-string "vector key must be Int"))
+                (index-in? a (pv/vcount f)) (pv/vnth f (sq/unbox-int a))
+                :else (raise-str (s/str (lit (arch/bytes-of-string "index out of bounds: ")) a)))
+          (= k 34) (cond (if (= n 1) false true) (raise (arch/bytes-of-string "transient vector invoke expects 1 arg"))
+                         (if (= 1 (sq/kind a)) false true) (raise (arch/bytes-of-string "transient vector key must be Int"))
+                         (index-in? a (pv/vcount (arch/get TVec 0 f))) (pv/vnth (arch/get TVec 0 f) (sq/unbox-int a))
+                         :else (raise-str (s/str (lit (arch/bytes-of-string "index out of bounds: ")) a)))
+          (= k 33) (if (= n 1) (get-nf f a (arch/null)) (raise (arch/bytes-of-string "transient set invoke expects 1 arg")))
+          (= k 39) (if (= n 1) (so/sset-get f a (arch/null)) (raise-arity n))
+          (if (= k 38) (if (= n 1) false (if (= n 2) false true)) false)
+          (raise-str (s/str (lit (arch/bytes-of-string "wrong number of arguments ")) (sq/box-int n)
+                            (lit (arch/bytes-of-string " to sorted-map lookup"))))
+          (= k 32) (if (if (= n 1) true (= n 2)) (get-nf f a (if (= n 2) b (arch/null)))
+                       (raise (arch/bytes-of-string "transient map invoke expects 1 or 2 args")))
+          (if (= n 1) false (if (= n 2) false true)) (raise-arity n)
+          (if (= k 20) true (= k 21)) (get-nf a f (if (= n 2) b (arch/null)))
+          :else (get-nf f a (if (= n 2) b (arch/null))))))
+
+(defn- ifn-pred [self x] (sq/bool (callable? x)))              ; seq.lg's ifn hook (slot 5)
+(defn- ifn-call [self f n a b] (invoke-ifn f (sq/unbox-int n) a b))
+
+(defn invoke-args
+  "Call f with the n (<= 4) arguments a..d."
+  [f n a b c d]
+  (if (= 16 (sq/kind f))
+    (if (> n 4)
+      (arch/trap "lower-wasm: a call with more than 4 arguments (D52: variadic ABI is Phase 3)")
+      (let [code (fn-code f n)]
+        (cond (arch/null? code) (raise-fn-arity f n)
+              (= n 0) (sq/invoke0 f)
+              (= n 1) (sq/invoke1 f a)
+              (= n 2) (sq/invoke2 f a b)
+              (= n 3) (invoke3 f a b c)
+              :else (invoke4 f a b c d))))
+    (if (= 2 (standin f)) (invoke-args (var-value f) n a b c d) (invoke-ifn f n a b))))
+
+(defn- vec-arg [v i] (if (< i (pv/vcount v)) (pv/vnth v i) (arch/null)))
+
+(defn invoke-vec "Call f with the elements of pvec v as its arguments." [f v]
+  (invoke-args f (pv/vcount v) (vec-arg v 0) (vec-arg v 1) (vec-arg v 2) (vec-arg v 3)))
+
+;; ---------------------------------------------------------------------------
+;; Numbers (pkg/vm/numbers.go). Int and Float only (ratios and bigints are
+;; out, D15). Ints are checked exactly as checkedAddInt & co. compute it, on
+;; wrapping wasm arithmetic, so neither the reference nor the backend ever
+;; hits the IR op's own overflow trap.
+
+(defn- num-k? [k] (if (= k 1) true (= k 22)))
+(defn- f64-of [x k] (if (= k 1) (arch/i64-to-f64 (sq/unbox-int x)) (s/unbox-float x)))
+(defn- overflow [] (raise (arch/bytes-of-string "integer overflow")))
+(defn- nan? [f] (if (< f 0.0) false (if (>= f 0.0) false true)))
+(defn- nan-value? [x] (if (= 22 (sq/kind x)) (nan? (s/unbox-float x)) false))
+
+(defn- add2 [a b]                                         ; NumAdd
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b) r (arch/i64-add x y)]
+            (if (< (bit-and (bit-xor x r) (bit-xor y r)) 0) (overflow) (sq/box-int r)))
+          (if (num-k? ka) (num-k? kb) false) (s/box-float (+ (f64-of a ka) (f64-of b kb)))
+          :else (raise-two (lit (arch/bytes-of-string "cannot add ")) a b))))
+
+(defn- sub2 [a b]                                         ; NumSub
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b) r (arch/i64-sub x y)]
+            (if (< (bit-and (bit-xor x y) (bit-xor x r)) 0) (overflow) (sq/box-int r)))
+          (if (num-k? ka) (num-k? kb) false) (s/box-float (- (f64-of a ka) (f64-of b kb)))
+          :else (raise-two (lit (arch/bytes-of-string "cannot subtract ")) a b))))
+
+(defn- mul-ok? [a b]                                      ; checkedMulInt's guards
+  (cond (if (if (>= a -2147483648) (<= a 2147483647) false) (if (>= b -2147483648) (<= b 2147483647) false) false) true
+        (if (= a 0) true (= b 0)) true
+        (if (if (= a -9223372036854775808) (= b -1) false) true (if (= b -9223372036854775808) (= a -1) false)) false
+        (> a 0) (cond (if (> b 0) (> a (quot 9223372036854775807 b)) false) false
+                      (if (< b 0) (< b (quot -9223372036854775808 a)) false) false
+                      :else true)
+        :else (cond (if (> b 0) (< a (quot -9223372036854775808 b)) false) false
+                    (if (< b 0) (< a (quot 9223372036854775807 b)) false) false
+                    :else true)))
+
+(defn- mul2 [a b]                                         ; NumMul
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+            (if (mul-ok? x y) (sq/box-int (arch/i64-mul x y)) (overflow)))
+          (if (num-k? ka) (num-k? kb) false) (s/box-float (* (f64-of a ka) (f64-of b kb)))
+          :else (raise-two (lit (arch/bytes-of-string "cannot multiply ")) a b))))
+
+(defn- neg1 [a]                                           ; NumNeg: wraps, (- MinInt64) = MinInt64 (D16)
+  (let [k (sq/kind a)]
+    (cond (= k 1) (sq/box-int (arch/i64-sub 0 (sq/unbox-int a)))
+          (= k 22) (s/box-float (arch/f64-neg (s/unbox-float a))) ; Go's -x: the NaN sign flips too
+          :else (raise-not-supported (lit (arch/bytes-of-string "cannot negate ")) a))))
+
+(defn- fold [op acc xs]                                   ; op over the rest of an argument seq
+  (loop [acc acc s xs]
+    (if (arch/null? s) acc
+        (recur (cond (= op 0) (add2 acc (sq/first s)) (= op 1) (sub2 acc (sq/first s)) :else (mul2 acc (sq/first s)))
+               (sq/next s)))))
+
+(defn ^{:twin "core/+"} add
+  ([] (sq/box-int 0)) ([a] a) ([a b] (add2 a b)) ([a b c] (add2 (add2 a b) c)) ([a b c d] (add2 (add2 (add2 a b) c) d)))
+(defn add-seq [xs] (let [s (sq/seq xs)] (if (arch/null? s) (sq/box-int 0) (fold 0 (sq/first s) (sq/next s)))))
+
+(defn ^{:twin "core/-"} sub
+  ([] (raise-arity 0)) ([a] (neg1 a)) ([a b] (sub2 a b)) ([a b c] (sub2 (sub2 a b) c)) ([a b c d] (sub2 (sub2 (sub2 a b) c) d)))
+(defn sub-seq [xs]
+  (let [s (sq/seq xs)]
+    (cond (arch/null? s) (raise-arity 0)
+          (arch/null? (sq/next s)) (neg1 (sq/first s))
+          :else (fold 1 (sq/first s) (sq/next s)))))
+
+(defn ^{:twin "core/*"} mul
+  ([] (sq/box-int 1)) ([a] a) ([a b] (mul2 a b)) ([a b c] (mul2 (mul2 a b) c)) ([a b c d] (mul2 (mul2 (mul2 a b) c) d)))
+(defn mul-seq [xs] (let [s (sq/seq xs)] (if (arch/null? s) (sq/box-int 1) (fold 2 (sq/first s) (sq/next s)))))
+
+;; inc/dec are lg fns over the IR op, so their overflow carries the op's
+;; "ExecutionError: " prefix once caught (unlike + as a value).
+(defn- op-overflow [] (throw (arch/new sq/Err 1 (arch/bytes-of-string "integer overflow")
+                                       (arch/bytes-of-string "ExecutionError: integer overflow") (arch/null) (arch/null))))
+(defn inc* [x]
+  (if (= 1 (sq/kind x))
+    (let [n (sq/unbox-int x)] (if (= n 9223372036854775807) (op-overflow) (sq/box-int (+ n 1))))
+    (add2 x (sq/box-int 1))))
+(defn dec* [x]
+  (if (= 1 (sq/kind x))
+    (let [n (sq/unbox-int x)] (if (= n -9223372036854775808) (op-overflow) (sq/box-int (- n 1))))
+    (sub2 x (sq/box-int 1))))
+
+;; Comparison: NumLt & co. on Int/Float; op 0 <, 1 <=, 2 >, 3 >=.
+(defn- cmp2 [op a b]
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+            (cond (= op 0) (< x y) (= op 1) (<= x y) (= op 2) (> x y) :else (>= x y)))
+          (if (num-k? ka) (num-k? kb) false)
+          (let [x (f64-of a ka) y (f64-of b kb)]
+            (cond (= op 0) (< x y) (= op 1) (<= x y) (= op 2) (> x y) :else (>= x y)))
+          :else (raise-two (lit (arch/bytes-of-string "cannot compare ")) a b))))
+
+(defn- chain [op xs]                                      ; lt/gt/... over a seq: stop at the first false
+  (loop [a (sq/first xs) s (sq/next xs)]
+    (cond (arch/null? s) true
+          (cmp2 op a (sq/first s)) (recur (sq/first s) (sq/next s))
+          :else false)))
+
+(defn- cmp-n [op a b c d n]                               ; the fixed arities, as chain
+  (cond (= n 0) (raise-arity 0)
+        (= n 1) (T)
+        (if (cmp2 op a b) (if (= n 2) true (if (cmp2 op b c) (if (= n 3) true (cmp2 op c d)) false)) false) (T)
+        :else (F)))
+
+(defn ^{:twin "core/<"} lt
+  ([] (cmp-n 0 nil nil nil nil 0)) ([a] (cmp-n 0 a nil nil nil 1)) ([a b] (cmp-n 0 a b nil nil 2))
+  ([a b c] (cmp-n 0 a b c nil 3)) ([a b c d] (cmp-n 0 a b c d 4)))
+(defn ^{:twin "core/<="} le
+  ([] (cmp-n 1 nil nil nil nil 0)) ([a] (cmp-n 1 a nil nil nil 1)) ([a b] (cmp-n 1 a b nil nil 2))
+  ([a b c] (cmp-n 1 a b c nil 3)) ([a b c d] (cmp-n 1 a b c d 4)))
+(defn ^{:twin "core/>"} gt
+  ([] (cmp-n 2 nil nil nil nil 0)) ([a] (cmp-n 2 a nil nil nil 1)) ([a b] (cmp-n 2 a b nil nil 2))
+  ([a b c] (cmp-n 2 a b c nil 3)) ([a b c d] (cmp-n 2 a b c d 4)))
+(defn ^{:twin "core/>="} ge
+  ([] (cmp-n 3 nil nil nil nil 0)) ([a] (cmp-n 3 a nil nil nil 1)) ([a b] (cmp-n 3 a b nil nil 2))
+  ([a b c] (cmp-n 3 a b c nil 3)) ([a b c d] (cmp-n 3 a b c d 4)))
+(defn cmp-seq "(apply < xs) and friends; op 0 <, 1 <=, 2 >, 3 >=." [op xs]
+  (let [s (sq/seq xs)] (if (arch/null? s) (raise-arity 0) (sq/bool (chain op s)))))
+
+(defn- num-equiv? [a b]                                   ; NumEquivalent: never throws
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 1) (= kb 1) false) (= (sq/unbox-int a) (sq/unbox-int b))
+          (if (num-k? ka) (num-k? kb) false) (let [x (f64-of a ka) y (f64-of b kb)] (if (< x y) false (if (> x y) false (>= x y))))
+          :else false)))
+
+(defn ^{:twin "core/=="} num-eq
+  ([] (T)) ([a] (T)) ([a b] (sq/bool (num-equiv? a b)))
+  ([a b c] (sq/bool (if (num-equiv? a b) (num-equiv? a c) false)))
+  ([a b c d] (sq/bool (if (num-equiv? a b) (if (num-equiv? a c) (num-equiv? a d) false) false))))
+
+;; not= (lang.go:1964): fewer than 2 args is false; two NaNs are not "not="
+;; (a quirk: (not= ##NaN ##NaN) is false although (= ##NaN ##NaN) is too).
+(defn ^{:twin "core/not="} not-eq
+  ([] (F)) ([a] (F))
+  ([a b] (sq/bool (if (if (nan-value? a) (nan-value? b) false) false (if (sq/equiv? a b) false true))))
+  ([a b c] (sq/bool (if (if (sq/equiv? a b) (sq/equiv? a c) false) false true)))
+  ([a b c d] (sq/bool (if (if (sq/equiv? a b) (if (sq/equiv? a c) (sq/equiv? a d) false) false) false true))))
+
+(defn- pick [lt? m x]                                     ; one step of CoreMax/CoreMin
+  (cond (nan-value? m) m
+        (nan-value? x) x
+        (cmp2 (if lt? 0 2) x m) x
+        :else m))
+
+(defn ^{:twin "core/max"} max
+  ([] (raise-arity 0)) ([a] a) ([a b] (pick false a b)) ([a b c] (pick false (pick false a b) c))
+  ([a b c d] (pick false (pick false (pick false a b) c) d)))
+(defn ^{:twin "core/min"} min
+  ([] (raise-arity 0)) ([a] a) ([a b] (pick true a b)) ([a b c] (pick true (pick true a b) c))
+  ([a b c d] (pick true (pick true (pick true a b) c) d)))
+(defn max-seq [lt? xs]
+  (let [s (sq/seq xs)]
+    (if (arch/null? s)
+      (raise-arity 0)
+      (loop [mm (sq/first s) s (sq/next s)]
+        (if (arch/null? s) mm (recur (pick lt? mm (sq/first s)) (sq/next s)))))))
+
+;; quot/mod on Ints (NumQuot, NumMod). A Float operand needs f64 division
+;; and truncation, which the intrinsic set lacks: a named limit, after the
+;; divide-by-zero check native makes first.
+(defn- float-zero? [x] (if (= 22 (sq/kind x)) (let [f (s/unbox-float x)] (if (< f 0.0) false (if (> f 0.0) false (>= f 0.0)))) false))
+
+(defn- div-args [nm a b]                                  ; checks shared by quot and mod
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (num-k? ka) (num-k? kb) false) nil
+          :else (raise-two (s/str (lit (arch/bytes-of-string "cannot ")) nm (lit (arch/bytes-of-string " "))) a b))))
+
+(defn ^{:twin "core/quot"} quot* [a b]
+  (div-args (lit (arch/bytes-of-string "quot")) a b)
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= kb 1) (= 0 (sq/unbox-int b)) false) (raise (arch/bytes-of-string "divide by zero"))
+          (float-zero? b) (raise (arch/bytes-of-string "divide by zero"))
+          (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+            (sq/box-int (if (= y -1) (arch/i64-sub 0 x) (quot x y))))
+          :else (arch/trap "lower-wasm: quot on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
+
+(defn ^{:twin "core/mod"} mod [a b]
+  (div-args (lit (arch/bytes-of-string "mod")) a b)
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= kb 1) (= 0 (sq/unbox-int b)) false) (raise (arch/bytes-of-string "divide by zero"))
+          (float-zero? b) (raise (arch/bytes-of-string "divide by zero"))
+          (if (= ka 1) (= kb 1) false)
+          (let [x (sq/unbox-int a) y (sq/unbox-int b)
+                r (if (= y -1) 0 (arch/i64-sub x (arch/i64-mul y (quot x y))))]
+            (sq/box-int (if (if (= r 0) false (if (> r 0) (< y 0) (> y 0))) (arch/i64-add r y) r)))
+          :else (arch/trap "lower-wasm: mod on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
+
+(defn ^{:twin "core/number?"} number? [x] (sq/bool (num-k? (sq/kind x))))
+
+(defn ^{:twin "core/bit-and"} bit-and*                    ; CoreBitAnd (lang.go:8101): exactly 2 Ints
+  ([] (raise (arch/bytes-of-string "bit-and expects 2 args")))
+  ([a] (raise (arch/bytes-of-string "bit-and expects 2 args")))
+  ([a b] (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+           (sq/box-int (bit-and (sq/unbox-int a) (sq/unbox-int b)))
+           (raise (arch/bytes-of-string "bit-and expected Int"))))
+  ([a b c] (raise (arch/bytes-of-string "bit-and expects 2 args"))))
+
+;; compare (vm.DefaultCompare, compare.go:44): llvm.str's compare* for the
+;; same-kind scalar pairs, vectors and map entries lexicographically, and
+;; let-go's message for anything else (str.lg cannot raise).
+(defn- vec-like? [k] (if (= k 11) true (= k 23)))
+(defn- as-vec [x] (if (= 23 (sq/kind x)) (sq/entry-vec x) x))
+
+(defn compare* [a b]
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 0) true (= kb 0)) (s/compare* a b)
+          (num-k? ka) (if (num-k? kb) (s/compare* a b) (raise-two (lit (arch/bytes-of-string "cannot compare ")) a b))
+          (if (= ka kb) (if (= ka 17) true (if (= ka 20) true (if (= ka 21) true (if (= ka 15) true (= ka 19))))) false) (s/compare* a b)
+          (if (vec-like? ka) (vec-like? kb) false)
+          (let [va (as-vec a) vb (as-vec b) na (pv/vcount va) nb (pv/vcount vb)]
+            (loop [i 0]
+              (cond (if (< i na) (< i nb) false)
+                    (let [c (compare* (pv/vnth va i) (pv/vnth vb i))] (if (= c 0) (recur (inc i)) c))
+                    (if (>= i na) (>= i nb) false) 0
+                    (>= i na) -1
+                    :else 1)))
+          :else (raise-two (lit (arch/bytes-of-string "cannot compare ")) a b))))
+
+(defn ^{:twin "core/compare"} compare [a b] (sq/box-int (compare* a b)))
+
+;; The sorted collections' comparator (rbNode.insert/find/delete): compare*
+;; where it succeeds, else the keys' hashes as unsigned ints. compare? is
+;; compare* with the raising cases answered by MinInt64 instead (a runtime
+;; def is a ref global, so the sentinel is written out where it is used).
+(defn- compare? [a b]
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 0) true (= kb 0)) (s/compare* a b)
+          (num-k? ka) (if (num-k? kb) (s/compare* a b) -9223372036854775808)
+          (if (= ka kb) (if (= ka 17) true (if (= ka 20) true (if (= ka 21) true (if (= ka 15) true (= ka 19))))) false) (s/compare* a b)
+          (if (vec-like? ka) (vec-like? kb) false)
+          (let [va (as-vec a) vb (as-vec b) na (pv/vcount va) nb (pv/vcount vb)]
+            (loop [i 0]
+              (cond (if (< i na) (< i nb) false)
+                    (let [c (compare? (pv/vnth va i) (pv/vnth vb i))] (if (= c 0) (recur (inc i)) c))
+                    (if (>= i na) (>= i nb) false) 0
+                    (>= i na) -1
+                    :else 1)))
+          :else -9223372036854775808)))
+(defn- sorted-compare [self a b]
+  (let [c (compare? a b)]
+    (sq/box-int (if (= c -9223372036854775808)
+                  (let [h1 (sq/unbox-int (sq/hash a)) h2 (sq/unbox-int (sq/hash b))] (cond (< h1 h2) -1 (> h1 h2) 1 :else 0))
+                  c))))
+
+;; ---------------------------------------------------------------------------
+;; Predicates and logic
+
+(defn ^{:twin "core/not"} lnot [x] (sq/bool (if (sq/truthy? x) false true)))
+(defn ^{:twin "core/map?"} map? [x] (let [k (ckind x)] (sq/bool (if (= k 30) true (= k 38)))))
+(defn ^{:twin "core/set?"} set? [x] (let [k (ckind x)] (sq/bool (if (= k 31) true (= k 39)))))
+(defn ^{:twin "core/sorted?"} sorted? [x] (let [k (ckind x)] (sq/bool (if (= k 38) true (= k 39)))))
+(defn ^{:twin "core/seq?"} seq? [x]                       ; isSeq (lang.go:2290): implements vm.Seq
+  (let [k (sq/kind x)] (sq/bool (if (sq/seq-kind? k) true (= k 23)))))
+(defn vector? [x] (let [k (sq/kind x)] (sq/bool (if (= k 11) true (= k 23)))))
+(defn nil? [x] (sq/bool (arch/null? x)))
+(defn string? [x] (sq/bool (= 17 (sq/kind x))))
+(defn- named-k [x] (if (= 36 (ckind x)) (sq/kind (arch/get MetaNamed 0 x)) (sq/kind x)))
+(defn keyword? [x] (sq/bool (= 20 (named-k x))))
+(defn symbol? [x] (sq/bool (if (= 21 (named-k x)) (= 0 (standin x)) false))) ; P5.9: not a Regex/Var stand-in
+(defn fn? [x] (sq/bool (= 16 (sq/kind x))))
+(defn ^{:twin "core/list?"} list? [x] (let [k (sq/kind x)] (sq/bool (if (= k 2) true (= k 3)))))
+(defn coll? [x]
+  (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true
+                                    (= k 38) true (= k 39) true :else false))))
+(defn sequential? [x]
+  (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true :else false))))
+
+
+;; ---------------------------------------------------------------------------
+;; Lookup: get, contains?, key/val
+
+
+(defn- string-get [st key nf]                             ; String.ValueAtOr (string.go:279)
+  (if (int-key? key)
+    (let [i (sq/unbox-int key) bs (s/str-bytes st) n (arch/alen bs)]
+      (if (if (< i 0) true (>= i n))
+        nf
+        (loop [b 0 r 0]
+          (cond (>= b n) nf
+                (= r i) (s/mk-char (unsigned-bit-shift-right (sq/decode-at bs b n) 3))
+                :else (recur (+ b (bit-and (sq/decode-at bs b n) 7)) (inc r))))))
+    nf))
+
+(defn- vec-get [v key nf]
+  (if (int-key? key)
+    (let [i (sq/unbox-int key)] (if (if (< i 0) true (>= i (pv/vcount v))) nf (pv/vnth v i)))
+    nf))
+
+(defn- list-get [l key nf]                                ; List.ValueAtOr (list.go:164)
+  (if (if (int-key? key) (>= (sq/unbox-int key) 0) false)
+    (loop [li l i (sq/unbox-int key)]
+      (cond (= i 0) (arch/get sq/List 0 li)               ; EmptyList's first is nil, not nf: a quirk
+            (arch/null? (arch/get sq/List 1 li)) nf
+            :else (recur (arch/get sq/List 1 li) (dec i))))
+    nf))
+
+(defn- lazy-get [l key nf]                                ; LazySeq.ValueAtOr (lazy_seq.go:248)
+  (if (int-key? key)
+    (let [i (sq/unbox-int key)]
+      (loop [s (sq/seq l) j 0]
+        (cond (arch/null? s) nf
+              (= j i) (sq/first s)
+              :else (recur (sq/next s) (inc j)))))
+    nf))
+
+(defn- range-get [r key nf]                               ; Range.ValueAtOr (range.go:140)
+  (if (index-in? key (sq/unbox-int (sq/count r)))
+    (sq/box-int (arch/i64-add (arch/get sq/Range 0 r) (arch/i64-mul (sq/unbox-int key) (arch/get sq/Range 2 r))))
+    nf))
+
+(defn- pvseq-get [ps key nf]                              ; PersistentVectorSeq.ValueAtOr
+  (if (if (int-key? key) (>= (sq/unbox-int key) 0) false)
+    (let [v (arch/get sq/PVecSeq 0 ps) i (+ (arch/get sq/PVecSeq 1 ps) (sq/unbox-int key))]
+      (if (>= i (pv/vcount v)) nf (pv/vnth v i)))
+    nf))
+
+(defn get-nf
+  "Get with a not-found value (Get3, native_prims.go:279): nf when coll is not
+   a lookup. Lists, lazy seqs, ranges and vector seqs are lookups by index in
+   let-go; a Cons, a Repeat or a chunked seq is not."
+  [coll key nf]
+  (let [k (ckind coll)]
+    (cond (= k 30) (m/mget coll key nf)
+          (if (= k 2) true (= k 3)) (list-get coll key nf)
+          (= k 5) (lazy-get coll key nf)
+          (= k 7) (range-get coll key nf)
+          (= k 10) (pvseq-get coll key nf)
+          (= k 12) (sq/nth coll key nf)
+          (= k 11) (vec-get coll key nf)
+          (= k 31) (hs/sget coll key nf)
+          (= k 17) (string-get coll key nf)
+          (= k 23) (if (int-key? key)
+                     (let [i (sq/unbox-int key)]
+                       (cond (= i 0) (arch/get sq/MapEntry 0 coll) (= i 1) (arch/get sq/MapEntry 1 coll) :else nf))
+                     nf)
+          (= k 32) (m/tget coll key nf)
+          (= k 33) (if (= 0 (hs/tscount (arch/get TSet 0 coll))) nf
+                       (let [t (arch/get TSet 0 coll)] (if (arch/ref-eq (m/tget t key t) t) nf key)))
+          (= k 34) (vec-get (arch/get TVec 0 coll) key nf)
+          (= k 37) (arr/aget-nf coll key nf)
+          (= k 38) (so/smap-get coll key nf)
+          (= k 39) (so/sset-get coll key nf)
+          :else nf)))
+
+(defn ^{:twin "core/get"} get
+  ([coll key] (get-nf coll key (arch/null)))
+  ([coll key nf] (get-nf coll key nf)))
+
+(defn ^{:twin "core/contains?"} contains? [coll key]       ; builtins.Contains
+  (let [k (ckind coll)]
+    (cond (= k 0) (F)
+          (= k 30) (sq/bool (m/mcontains? coll key))
+          (= k 31) (sq/bool (hs/scontains? coll key))
+          (= k 38) (sq/bool (so/smap-contains? coll key))
+          (= k 39) (sq/bool (so/sset-contains? coll key))
+          (= k 11) (sq/bool (index-in? key (pv/vcount coll)))
+          (= k 23) (sq/bool (index-in? key 2))
+          (= k 32) (let [t coll] (sq/bool (if (arch/ref-eq (m/tget t key t) t) false true)))
+          (= k 33) (let [t (arch/get TSet 0 coll)] (sq/bool (if (arch/ref-eq (m/tget t key t) t) false true)))
+          (= k 34) (sq/bool (index-in? key (pv/vcount (arch/get TVec 0 coll))))
+          (= k 17) (if (int-key? key)
+                     (sq/bool (index-in? key (sq/unbox-int (sq/count coll))))
+                     (raise-not-supported (lit (arch/bytes-of-string "contains? on a string requires an integer key, got ")) key))
+          :else (raise-not-supported (lit (arch/bytes-of-string "contains? not supported on ")) coll))))
+
+(defn ^{:twin "core/key"} key [e]
+  (if (= 23 (sq/kind e)) (arch/get sq/MapEntry 0 e) (raise (arch/bytes-of-string "key expects map entry"))))
+(defn ^{:twin "core/val"} val [e]
+  (if (= 23 (sq/kind e)) (arch/get sq/MapEntry 1 e) (raise (arch/bytes-of-string "val expects map entry"))))
+(defn ^{:twin "clojure.lang.MapEntry/create"} map-entry [k v] (arch/new sq/MapEntry k v))
+
+;; ---------------------------------------------------------------------------
+;; assoc / dissoc / conj
+
+(defn- assoc1 [coll k v]                                  ; Associative.Assoc; NIL result = "assoc failed"
+  (let [c (ckind coll)]
+    (cond (= c 0) (m/massoc (m/empty-map) k v)            ; nil assocs into {}
+          (= c 30) (m/massoc coll k v)
+          (= c 38) (so/smap-assoc coll k v)
+          (= c 11) (if (index-in? k (inc (pv/vcount coll)))
+                     (pv/vassoc coll (sq/unbox-int k) v)
+                     (raise-str (s/str (lit (arch/bytes-of-string "assoc failed for key ")) (s/value-string k))))
+          :else (raise (arch/bytes-of-string "assoc expected Associative")))))
+
+(defn- assoc-kvs [coll kvs]                               ; kvs: a seq of k v ..., even length
+  (loop [c coll s (sq/seq kvs)]
+    (if (arch/null? s) c (recur (assoc1 c (sq/first s) (sq/second s)) (sq/next (sq/next s))))))
+
+(defn ^{:twin "core/assoc"} assoc
+  ([coll] (raise-arity 1))
+  ([coll k] (raise-arity 2))
+  ([coll k v] (assoc1 coll k v))
+  ([coll k v k2] (raise-arity 4))
+  ([coll k v k2 v2] (assoc1 (assoc1 coll k v) k2 v2)))
+(defn assoc-seq "(apply assoc coll kvs)" [coll kvs]
+  (let [n (sq/unbox-int (sq/count kvs))]
+    (if (if (= n 0) true (= 1 (bit-and n 1))) (raise-arity (inc n)) (assoc-kvs coll kvs))))
+
+(defn- dissoc1 [coll k]
+  (let [c (ckind coll)]
+    (cond (= c 0) (arch/null)
+          (= c 30) (m/mdissoc coll k)
+          (= c 38) (so/smap-dissoc coll k)
+          (= c 11) (raise-str (s/str (lit (arch/bytes-of-string "dissoc failed for key ")) (s/value-string k)))
+          :else (raise (arch/bytes-of-string "dissoc expected Associative")))))
+
+(defn ^{:twin "core/dissoc"} dissoc
+  ([] (raise (arch/bytes-of-string "wrong number of arguments 0")))
+  ([coll] coll)
+  ([coll k] (dissoc1 coll k))
+  ([coll k k2] (dissoc1 (dissoc1 coll k) k2))
+  ([coll k k2 k3] (dissoc1 (dissoc1 (dissoc1 coll k) k2) k3)))
+
+(defn- conj-map [mm x]                                    ; PersistentMap.Conj behind canConjMapEntry
+  (let [k (ckind x)]
+    (cond (= k 23) (m/massoc mm (arch/get sq/MapEntry 0 x) (arch/get sq/MapEntry 1 x))
+          (if (= k 11) (= 2 (pv/vcount x)) false) (m/massoc mm (pv/vnth x 0) (pv/vnth x 1))
+          (= k 30) (let [e (m/entries x) n (arch/alen e)]
+                     (loop [i 0 r mm]
+                       (if (< i n) (recur (+ i 2) (m/massoc r (arch/aget m/HSlots e i) (arch/aget m/HSlots e (inc i)))) r)))
+          :else (raise (arch/bytes-of-string "conj expected map entry")))))
+
+;; SortedMap.Conj (sorted_map.go:420): an entry or 2-vector, a map's
+;; entries, a seq whose first item is an entry; anything else leaves sm as is.
+(declare seqable-k?)
+(defn- conj-smap-entry [sm e]
+  (let [k (ckind e)]
+    (cond (= k 23) (so/smap-assoc sm (arch/get sq/MapEntry 0 e) (arch/get sq/MapEntry 1 e))
+          (if (= k 11) (= 2 (pv/vcount e)) false) (so/smap-assoc sm (pv/vnth e 0) (pv/vnth e 1))
+          :else sm)))
+(defn- conj-smap [sm x]
+  (let [k (ckind x)]
+    (cond (if (= k 30) true (= k 38))
+          (loop [s (sq/seq x) r sm] (if (arch/null? s) r (recur (sq/next s) (conj-smap-entry r (sq/first s)))))
+          (if (= k 23) true (= k 11)) (conj-smap-entry sm x)
+          (seqable-k? k) (let [s (sq/seq x)] (if (arch/null? s) sm (conj-smap-entry sm (sq/first s))))
+          :else sm)))
+
+(defn- conj1 [coll x]                                     ; one step of Conj (native_prims.go:293)
+  (let [k (ckind coll)]
+    (cond (= k 30) (conj-map coll x)
+          (= k 31) (hs/sconj coll x)
+          (= k 38) (conj-smap coll x)
+          (= k 39) (so/sset-conj coll x)
+          (if (= k 0) true (if (if (>= k 2) (<= k 11) false) true (if (= k 23) true (= k 27)))) (sq/conj coll x)
+          :else (raise (arch/bytes-of-string "conj expected Collection")))))
+
+(defn ^{:twin "core/conj"} conj
+  ([] (pv/empty-vec))
+  ([coll] coll)
+  ([coll x] (conj1 coll x))
+  ([coll x y] (conj1 (conj1 coll x) y))
+  ([coll x y z] (conj1 (conj1 (conj1 coll x) y) z)))
+(defn conj-seq "(apply conj coll xs)" [coll xs]
+  (loop [c coll s (sq/seq xs)] (if (arch/null? s) c (recur (conj1 c (sq/first s)) (sq/next s)))))
+
+(defn- seqable-k? [k]                                     ; a TransientMap seqs natively (transient.go:231)
+  (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true (= k 32) true (= k 37) true
+        (= k 38) true (= k 39) true :else false))
+
+(defn ^{:twin "core/nth"} nth                             ; Nth/Nth3 plus TransientVector (Indexed, not seqable)
+  ([coll i] (let [k (ckind coll) n (sq/int-arg i)]
+              (cond (= k 34)
+                    (let [v (arch/get TVec 0 coll)]
+                      (if (if (< n 0) true (>= n (pv/vcount v))) (raise (arch/bytes-of-string "nth index out of bounds")) (pv/vnth v n)))
+                    (seqable-k? k) (sq/nth coll i)
+                    (< n 0) (raise (arch/bytes-of-string "nth index out of bounds"))   ; checked before seqOf (native_prims.go:173)
+                    :else (raise-not-supported (lit (arch/bytes-of-string "don't know how to create ISeq from ")) coll))))
+  ([coll i nf] (do (sq/int-arg i)                            ; native converts the index before the TransientVector lookup
+                   (if (= 34 (ckind coll)) (vec-get (arch/get TVec 0 coll) i nf) (sq/nth coll i nf)))))
+
+;; peek/pop (lang.go:6720, :6739). A String and a set are vm.Seqs in Go
+;; (a map is not), so pop gives their rest.
+(defn ^{:twin "core/peek"} peek [x]
+  (let [k (ckind x)]
+    (cond (if (= k 0) true (if (= k 11) true (if (= k 2) true (= k 3)))) (sq/peek x)
+          :else (raise-not-supported (lit (arch/bytes-of-string "peek not supported on ")) x))))
+
+(defn ^{:twin "core/pop"} pop [x]
+  (let [k (ckind x)]
+    (cond (if (= k 17) true (= k 31))
+          (if (= 0 (sq/unbox-int (sq/count x))) (raise (arch/bytes-of-string "can't pop empty seq")) (sq/rest x))
+          :else (sq/pop x))))
+
+;; subvec (lang.go:8445): start/end through vm.ToInt (an Int, or a Float
+;; truncated), then a fresh vector without meta.
+(defn- to-int? [x] (num-k? (sq/kind x)))
+(defn- to-int [x] (if (= 1 (sq/kind x)) (sq/unbox-int x) (arch/f64-to-i64 (s/unbox-float x))))
+
+(defn- subvec* [v start end has-end]
+  (cond (if (to-int? start) false true) (raise (arch/bytes-of-string "subvec expected Int start"))
+        (if (= 11 (sq/kind v)) false true) (raise (arch/bytes-of-string "subvec expected vector"))
+        (if has-end (if (to-int? end) false true) false) (raise (arch/bytes-of-string "subvec expected Int end"))
+        :else (let [s0 (to-int start) n (pv/vcount v) e (if has-end (to-int end) n)]
+                (if (if (< s0 0) true (if (> e n) true (> s0 e)))
+                  (raise (arch/bytes-of-string "subvec: index out of bounds"))
+                  (loop [i s0 out (pv/empty-vec)] (if (< i e) (recur (inc i) (pv/vconj out (pv/vnth v i))) (pv/varray out)))))))
+
+(defn ^{:twin "core/subvec"} subvec
+  ([v start] (subvec* v start (arch/null) false))
+  ([v start end] (subvec* v start end true)))
+
+;; ---------------------------------------------------------------------------
+;; Transients (lang.go:7044-7203, transient.go)
+
+(defn- tvec-editable [t]
+  (if (= 1 (arch/get TVec 1 t)) nil (raise (arch/bytes-of-string "transient used after persistent! call"))))
+
+(defn ^{:twin "core/transient"} transient [x]
+  (let [k (ckind x)]
+    (cond (= k 30) (m/transient-map x)
+          (= k 31) (arch/new TSet (hs/transient-set x))
+          (= k 11) (arch/new TVec x 1)
+          :else (raise-not-supported (lit (arch/bytes-of-string "transient not supported on ")) x))))
+
+(defn ^{:twin "core/persistent!"} persistent! [t]
+  (let [k (ckind t)]
+    (cond (= k 32) (m/tpersistent! t)
+          (= k 33) (hs/tpersistent-set! (arch/get TSet 0 t))
+          ;; TransientVector.Persistent (transient.go:364): an ArrayVector up to 32, else a
+          ;; PersistentVector, never with meta
+          (= k 34) (do (tvec-editable t)
+                       (arch/set! TVec 1 t 0)
+                       (let [v (arch/get TVec 0 t)] (pv/vretag v (if (> (pv/vcount v) 32) 1 0) (arch/null))))
+          :else (raise-not-supported (lit (arch/bytes-of-string "persistent! not supported on ")) t))))
+
+(defn- tmap-conj! [t x]                                   ; TransientMap.Conj (transient.go:143)
+  (let [k (ckind x)]
+    (cond (= k 0) t
+          (= k 30) (let [e (m/entries x) n (arch/alen e)]
+                     (loop [i 0] (when (< i n) (m/tassoc! t (arch/aget m/HSlots e i) (arch/aget m/HSlots e (inc i))) (recur (+ i 2))))
+                     t)
+          (= k 23) (m/tassoc! t (arch/get sq/MapEntry 0 x) (arch/get sq/MapEntry 1 x))
+          (if (= k 11) (= 2 (pv/vcount x)) false) (m/tassoc! t (pv/vnth x 0) (pv/vnth x 1))
+          :else (raise (arch/bytes-of-string "conj! on transient map expects [key val] pair")))))
+
+(defn- conj!1 [t x]
+  (let [k (ckind t)]
+    (cond (= k 32) (tmap-conj! t x)
+          (= k 33) (do (hs/tconj! (arch/get TSet 0 t) x) t)
+          (= k 34) (do (tvec-editable t) (arch/set! TVec 0 t (pv/vconj (arch/get TVec 0 t) x)) t)
+          :else (raise-not-supported (lit (arch/bytes-of-string "conj! not supported on ")) t))))
+
+(defn ^{:twin "core/conj!"} conj!
+  ([] (arch/new TVec (pv/empty-vec) 1))
+  ([t] t)
+  ([t x] (conj!1 t x))
+  ([t x y] (conj!1 (conj!1 t x) y)))
+
+(defn- tvec-assoc! [t key v]                              ; TransientVector.Assoc (transient.go:331)
+  (tvec-editable t)
+  (if (int-key? key)
+    (let [i (sq/unbox-int key) pv (arch/get TVec 0 t)]
+      (if (if (< i 0) true (> i (pv/vcount pv)))
+        (raise-str (s/str (lit (arch/bytes-of-string "index out of bounds: ")) key))
+        (do (arch/set! TVec 0 t (pv/vassoc pv i v)) t)))
+    (raise (arch/bytes-of-string "transient vector assoc! expects Int key"))))
+
+(defn- assoc!1 [t key v]
+  (let [k (ckind t)]
+    (cond (= k 32) (m/tassoc! t key v)
+          (= k 34) (tvec-assoc! t key v)
+          :else (raise-not-supported (lit (arch/bytes-of-string "assoc! not supported on ")) t))))
+
+(defn ^{:twin "core/assoc!"} assoc!
+  ([t] (raise-arity 1))
+  ([t key] (assoc!1 t key (arch/null)))                  ; a missing val is nil (lang.go:7133)
+  ([t key v] (assoc!1 t key v))
+  ([t key v key2] (assoc!1 (assoc!1 t key v) key2 (arch/null)))
+  ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2)))
+
+(defn ^{:twin "core/dissoc!"} dissoc!
+  ([t] (raise-arity 1))
+  ([t key] (if (= 32 (ckind t)) (m/tdissoc! t key) (raise (arch/bytes-of-string "dissoc! expected TransientMap"))))
+  ([t key key2] (dissoc! (dissoc! t key) key2)))
+
+;; ---------------------------------------------------------------------------
+;; Promise and delay (P6.7; lang.go:8007-8043, 8312-8330, vm/promise.go,
+;; vm/delay.go). A module has one thread, so deref of an undelivered
+;; promise, which blocks forever natively (nothing else can deliver), is a
+;; named limit instead of a hang; future, the usual deliverer, is Phase 7.
+
+(defn ^{:twin "core/promise"} promise [] (arch/new Promise (arch/null) 0))   ; any arg count natively; the module has 0
+
+(defn ^{:twin "core/deliver"} deliver
+  ([] (raise (arch/bytes-of-string "deliver expects 2 args")))
+  ([p] (raise (arch/bytes-of-string "deliver expects 2 args")))
+  ([p v] (cond (if (= 40 (ckind p)) false true) (raise (arch/bytes-of-string "deliver expected Promise"))
+               (= 1 (arch/get Promise 1 p)) (arch/null)                 ; a second deliver is a no-op returning nil
+               :else (do (arch/set! Promise 0 p v) (arch/set! Promise 1 p 1) v)))
+  ([p v x] (raise (arch/bytes-of-string "deliver expects 2 args"))))
+
+(defn- promise-value [p]
+  (if (= 1 (arch/get Promise 1 p))
+    (arch/get Promise 0 p)
+    (arch/trap "lower-wasm: deref of an undelivered promise would block forever (one thread; future is Phase 7)")))
+
+(defn ^{:twin "core/delay*"} delay*
+  ([] (raise (arch/bytes-of-string "delay* expects 1 arg (thunk fn)")))
+  ([f] (if (callable? f) (arch/new Delay f 0 (arch/null)) (raise (arch/bytes-of-string "delay* expected Fn"))))   ; vm.Fn: keywords too
+  ([f x] (raise (arch/bytes-of-string "delay* expects 1 arg (thunk fn)"))))
+
+(defn- delay-fail [d e] (arch/set! Delay 2 d e) (arch/set! Delay 1 d 2) (arch/set! Delay 0 d (arch/null)) (throw e))
+
+(defn- force-delay [d]                                    ; Delay.Force: realized before the thunk runs; a throw is cached
+  (let [st (arch/get Delay 1 d)]
+    (cond (= st 1) (arch/get Delay 0 d)
+          (= st 2) (throw (arch/get Delay 2 d))
+          (= st 3) (arch/trap "lower-wasm: a delay forced from its own thunk (native deadlocks on its mutex)")
+          :else (let [f (arch/get Delay 0 d)]
+                  (arch/set! Delay 1 d 3)                 ; running: realized? is already true natively
+                  (let [v (try (invoke-args f 0 (arch/null) (arch/null) (arch/null) (arch/null)) (catch Throwable e (delay-fail d e)))]
+                    (arch/set! Delay 0 d v)
+                    (arch/set! Delay 1 d 1)
+                    v)))))
+
+(defn ^{:twin "core/force"} force
+  ([] (raise (arch/bytes-of-string "force expects 1 arg")))
+  ([x] (if (= 41 (ckind x)) (force-delay x) x))
+  ([x y] (raise (arch/bytes-of-string "force expects 1 arg"))))
+
+(defn ^{:twin "core/delay?"} delay?
+  ([] (sq/bool false))
+  ([x] (sq/bool (= 41 (ckind x))))
+  ([x y] (sq/bool false)))
+
+(defn ^{:twin "core/realized?"} realized? [x]             ; CoreIsRealized (lang.go:8043): delay, promise, else seq.lg's lazy seq
+  (let [k (ckind x)]
+    (cond (= k 40) (sq/bool (= 1 (arch/get Promise 1 x)))
+          (= k 41) (sq/bool (if (= 0 (arch/get Delay 1 x)) false true))
+          :else (sq/realized? x))))
+
+;; ---------------------------------------------------------------------------
+;; State: atom (validators, watches and :meta are named limits) and volatile
+
+(defn ^{:twin "core/atom"} atom
+  ([x] (arch/new sq/Atom x 0))
+  ([x k] (raise (arch/bytes-of-string "atom options must be key/value pairs")))
+  ([x k v] (arch/trap "lower-wasm: atom options (:meta, :validator) are not supported yet (P2.7 named limit)"))
+  ([x k v k2] (raise (arch/bytes-of-string "atom options must be key/value pairs")))
+  ([x k v k2 v2] (arch/trap "lower-wasm: atom options (:meta, :validator) are not supported yet (P2.7 named limit)")))
+
+(defn ^{:twin "core/deref"} deref
+  ([r] (let [k (sq/kind r)]
+         (cond (= k 24) (arch/get sq/Atom 0 r)
+               (= k 25) (arch/get sq/Volatile 0 r)
+               (= k 14) (arch/get sq/Reduced 0 r)            ; Reduced is an IDeref natively: @(reduced 2) = 2
+               (= 2 (standin r)) (var-value r)              ; P5.9
+               (= 40 (ckind r)) (promise-value r)
+               (= 41 (ckind r)) (force-delay r)
+               :else (raise (arch/bytes-of-string "deref expected Reference")))))
+  ;; Deref3 (native_prims.go:241): with no other thread nothing can deliver
+  ;; while this one waits, so an undelivered promise sleeps ms and times out
+  ([r ms v] (cond (if (= 40 (ckind r)) false true)
+                  (raise (arch/bytes-of-string "deref with timeout expects a blocking ref (promise or future)"))
+                  (= 1 (arch/get Promise 1 r)) (arch/get Promise 0 r)
+                  :else (let [n (sq/int-arg ms)] (when (> n 0) (arch/host-sleep n)) v))))
+
+(defn- atom-of [a who]
+  (if (= 24 (sq/kind a)) a (raise who)))
+
+(defn ^{:twin "core/reset!"} reset! [a v]
+  (arch/set! sq/Atom 0 (atom-of a (arch/bytes-of-string "reset expected Atom")) v)
+  v)
+
+(defn- swap-n [a f n x y z]
+  (let [at (atom-of a (arch/bytes-of-string "swap expected Atom"))]
+    (if (callable? f) nil (raise (arch/bytes-of-string "swap expected Fn")))
+    (let [nv (invoke-args f (inc n) (arch/get sq/Atom 0 at) x y z)]
+      (arch/set! sq/Atom 0 at nv)
+      nv)))
+
+(defn- conj-1 [v a] (pv/vconj v a))
+(defn- conj-2 [v a b] (pv/vconj (pv/vconj v a) b))
+(defn- conj-3 [v a b c] (pv/vconj (pv/vconj (pv/vconj v a) b) c))
+(defn- conj-4 [v a b c d] (pv/vconj (pv/vconj (pv/vconj (pv/vconj v a) b) c) d))
+
+(defn- swap-v [a f xs]                                    ; xs: a pvec of the extra args
+  (let [at (atom-of a (arch/bytes-of-string "swap expected Atom"))]
+    (if (callable? f) nil (raise (arch/bytes-of-string "swap expected Fn")))
+    (let [args (loop [v (pv/vconj (pv/empty-vec) (arch/get sq/Atom 0 at)) i 0]
+                 (if (< i (pv/vcount xs)) (recur (pv/vconj v (pv/vnth xs i)) (+ i 1)) v))
+          nv (invoke-vec f args)]
+      (arch/set! sq/Atom 0 at nv)
+      nv)))
+
+;; Natively variadic. A runtime-dialect fn has no rest arity, so 4..18 extra
+;; args are fixed arities up to D150's cap of 20 params, applied through
+;; invoke-vec ($rt_apply_vec, any count); 19+ extra args raise the backend's
+;; "doesn't have a N-arity variant" (review5 bug-21).
+(defn ^{:twin "core/swap!"} swap!
+  ([a] (raise-arity 1))
+  ([a f] (swap-n a f 0 nil nil nil))
+  ([a f x] (swap-n a f 1 x nil nil))
+  ([a f x y] (swap-n a f 2 x y nil))
+  ([a f x y z] (swap-n a f 3 x y z))
+  ([a f x1 x2 x3 x4] (swap-v a f (conj-4 (pv/empty-vec) x1 x2 x3 x4)))
+  ([a f x1 x2 x3 x4 x5] (swap-v a f (conj-1 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5)))
+  ([a f x1 x2 x3 x4 x5 x6] (swap-v a f (conj-2 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6)))
+  ([a f x1 x2 x3 x4 x5 x6 x7] (swap-v a f (conj-3 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8] (swap-v a f (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9] (swap-v a f (conj-1 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10] (swap-v a f (conj-2 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11] (swap-v a f (conj-3 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12] (swap-v a f (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13] (swap-v a f (conj-1 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14] (swap-v a f (conj-2 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15] (swap-v a f (conj-3 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16] (swap-v a f (conj-4 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15 x16)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17] (swap-v a f (conj-1 (conj-4 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15 x16) x17)))
+  ([a f x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 x15 x16 x17 x18] (swap-v a f (conj-2 (conj-4 (conj-4 (conj-4 (conj-4 (pv/empty-vec) x1 x2 x3 x4) x5 x6 x7 x8) x9 x10 x11 x12) x13 x14 x15 x16) x17 x18))))
+
+(defn- go-identical? [a b]                                ; Go's != on interface values (atom.go:198)
+  (let [ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka kb) false true) false
+          ;; two slices: Go panics, and the VM reports the recovered panic
+          (= ka 11) (cond (if (= (pv/vpkind a) (pv/vpkind b)) false true) false  ; two Go types: unequal, no panic
+                          (= 1 (pv/vpkind a)) (raise (arch/bytes-of-string "runtime error: comparing uncomparable type vm.PersistentVector"))
+                          :else (raise (arch/bytes-of-string "runtime error: comparing uncomparable type vm.ArrayVector")))
+          (= ka 0) true
+          (= ka 1) (= (sq/unbox-int a) (sq/unbox-int b))
+          (= ka 15) (= (arch/get sq/Bool 0 a) (arch/get sq/Bool 0 b))
+          (if (= ka 17) true (if (= ka 19) true (if (= ka 20) true (= ka 21)))) (sq/equiv? a b)
+          (= ka 22) (let [x (s/unbox-float a) y (s/unbox-float b)] (if (< x y) false (if (> x y) false (>= x y))))
+          :else (arch/ref-eq a b))))
+
+(defn compare-and-set! [a old nv]
+  (let [at (atom-of a (arch/bytes-of-string "compare-and-set! expected Atom"))]
+    (if (go-identical? (arch/get sq/Atom 0 at) old)
+      (do (arch/set! sq/Atom 0 at nv) (T))
+      (F))))
+
+(defn ^{:twin "core/volatile!"} volatile! [x] (arch/new sq/Volatile x 0))
+
+(defn- volatile-of [v who] (if (= 25 (sq/kind v)) v (raise who)))
+
+(defn ^{:twin "core/vreset!"} vreset! [v x]
+  (arch/set! sq/Volatile 0 (volatile-of v (arch/bytes-of-string "vreset! expected Volatile")) x)
+  x)
+
+(defn- vswap-n [v f n x y z]
+  (let [vo (volatile-of v (arch/bytes-of-string "vswap! expected Volatile"))]
+    (if (callable? f) nil (raise (arch/bytes-of-string "vswap! expected Fn")))
+    (let [nv (invoke-args f (inc n) (arch/get sq/Volatile 0 vo) x y z)]
+      (arch/set! sq/Volatile 0 vo nv)
+      nv)))
+
+(defn ^{:twin "core/vswap!"} vswap!
+  ([v] (raise (arch/bytes-of-string "vswap! expects at least 2 args")))
+  ([v f] (vswap-n v f 0 nil nil nil))
+  ([v f x] (vswap-n v f 1 x nil nil))
+  ([v f x y] (vswap-n v f 2 x y nil))
+  ([v f x y z] (vswap-n v f 3 x y z)))
+
+;; ---------------------------------------------------------------------------
+;; Metadata (CoreWithMeta, lang.go:7911). Vectors, maps and sets carry it in
+;; a field (assoc/conj/disj/pop keep it); a list in its head cell (conj keeps
+;; it, rest does not); a fn by wrapping (vm.NewMetaFn): a new Fn whose code
+;; refs forward to the inner fn through a MetaEnv env, which no closure the
+;; backend builds can have, so `meta` recognises it. Everything else is
+;; returned unchanged, as native does for a MapEntry, a seq or a scalar.
+
+(defn- meta-inner [self] (arch/get MetaEnv 0 (arch/get sq/Fn 3 self)))
+;; Every arity forwards through invoke-args, which the backend replaces with
+;; its own dispatch ($rt_invoke_args), so the inner fn's variadic arity and its
+;; arity errors are reached; copying only the inner fn's non-null fixed slots
+;; lost a variadic arity (calls fell to the wrapper's arity error).
+(defn- mfn0 [self] (invoke-args (meta-inner self) 0 nil nil nil nil))
+(defn- mfn1 [self a] (invoke-args (meta-inner self) 1 a nil nil nil))
+(defn- mfn2 [self a b] (invoke-args (meta-inner self) 2 a b nil nil))
+(defn- mfn3 [self a b c] (invoke-args (meta-inner self) 3 a b c nil))
+(defn- mfn4 [self a b c d] (invoke-args (meta-inner self) 4 a b c d))
+
+(defn- meta-fn? [f] (arch/is? MetaEnv (arch/get sq/Fn 3 f)))
+
+(defn- fn-with-meta [f mt]
+  ;; wrap the innermost fn: (with-meta (with-meta f a) b) replaces a
+  (let [g (if (meta-fn? f) (meta-inner f) f)]
+    (arch/new sq/Fn (arch/funcref sq/Code0 mfn0) (arch/funcref sq/Code1 mfn1) (arch/funcref sq/Code2 mfn2)
+              (arch/new MetaEnv g mt) (arch/funcref sq/Code3 mfn3) (arch/funcref sq/Code4 mfn4)
+              (arch/get sq/Fn 6 g) 0)))
+
+(defn ^{:twin "core/with-meta"} with-meta [x mt]
+  (let [k (ckind x)]
+    (cond (= k 0) (arch/null)
+          (= k 11) (pv/vwith-meta x mt)
+          (= k 30) (m/mwith-meta x mt)
+          (= k 31) (hs/swith-meta x mt)
+          (= k 38) (so/smap-with-meta x mt)
+          (= k 39) (so/sset-with-meta x mt)
+          (if (= k 2) true (= k 3)) (sq/list-with-meta x mt)
+          (= k 16) (fn-with-meta x mt)
+          (if (= k 20) true (= k 21)) (arch/new MetaNamed x mt)
+          (= k 36) (arch/new MetaNamed (arch/get MetaNamed 0 x) mt)
+          (= k 24) (arch/trap "lower-wasm: with-meta on an atom (the backend's $Atom has no meta slot; P2.7 named limit)")
+          (if (>= k 32) (<= k 34) false) (arch/trap "lower-wasm: with-meta on a transient (P2.7 named limit)")
+          :else x)))
+
+(defn ^{:twin "core/meta"} meta [x]
+  (let [k (ckind x)]
+    (cond (= k 11) (pv/vmeta x)
+          (= k 30) (m/mmeta x)
+          (= k 31) (hs/smeta x)
+          (= k 38) (so/smeta x)
+          (= k 39) (so/ssmeta x)
+          (if (= k 2) true (= k 3)) (arch/get sq/List 3 x)
+          (= k 16) (if (meta-fn? x) (arch/get MetaEnv 1 (arch/get sq/Fn 3 x)) (arch/null))
+          (= k 36) (if (= 2 (standin x)) (m/mdissoc (arch/get MetaNamed 1 x) (lw-var-kw)) (arch/get MetaNamed 1 x))
+          :else (arch/null))))
+
+;; ---------------------------------------------------------------------------
+;; Exceptions: the value is the backend's $Err (seq.lg's Err, see there).
+
+(defn- ex-info* [msg data cause]
+  (cond (if (= 17 (sq/kind msg)) false true) (raise (arch/bytes-of-string "ex-info expected String message"))
+        (if (= 30 (ckind data)) false true) (raise (arch/bytes-of-string "ex-info expected Map data"))
+        :else (let [bs (s/str-bytes msg)
+                    c (if (= 26 (sq/kind cause)) (if (= 0 (arch/get sq/Err 0 cause)) cause (arch/null)) (arch/null))]
+                (arch/new sq/Err 0 bs bs data c))))
+
+(defn ^{:twin "core/ex-info"} ex-info
+  ([msg] (raise-arity 1))
+  ([msg data] (ex-info* msg data (arch/null)))
+  ([msg data cause] (ex-info* msg data cause)))
+
+;; The value a catch clause binds: a raw runtime error (kind 1) is caught as
+;; kind 2, with its caught message as both messages and an empty data map, as
+;; the WasmGC lane's $rt_reify does. Called by --target llvm's try lowering.
+(defn reify-caught [v]
+  (if (arch/is? sq/Err v)
+    (if (= 1 (arch/get sq/Err 0 v))
+      (arch/new sq/Err 2 (arch/get sq/Err 2 v) (arch/get sq/Err 2 v) (m/empty-map) (arch/get sq/Err 4 v))
+      v)
+    v))
+
+(defn ex-message [x]                                      ; CoreExMessage (lang.go:7964)
+  (let [k (sq/kind x)]
+    (cond (= k 0) (arch/null)
+          (= k 26) (s/mk-str (arch/get sq/Err 2 x))
+          :else (s/str x))))                              ; any other thrown value: its str (spec Appendix A)
+
+(defn ex-data [x] (if (= 26 (sq/kind x)) (arch/get sq/Err 3 x) (arch/null)))
+(defn ex-cause [x] (if (= 26 (sq/kind x)) (arch/get sq/Err 4 x) (arch/null)))
+
+(defn ^{:twin "core/throw"} throw-value [x] (throw x))
+
+;; ---------------------------------------------------------------------------
+;; Calls through values
+
+(defn ^{:twin "core/apply*"} apply* [f args]              ; apply (lang.go:2522)
+  (cond (if (callable? f) false true) (raise (arch/bytes-of-string "apply expected Fn"))
+        (arch/null? args) (invoke-args f 0 nil nil nil nil)
+        (= 11 (sq/kind args)) (invoke-vec f args)
+        ;; seqOf failing is "apply expected Seq"; core.lg's apply seqs its spread
+        ;; argument first, which is where "seq expected Seqable" comes from
+        :else (let [k (ckind args)]
+                (if (cond (sq/seq-kind? k) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 32) true (= k 38) true (= k 39) true :else false)
+                  (invoke-vec f (sq/vec args))
+                  (raise (arch/bytes-of-string "apply expected Seq"))))))
+
+;; Binding frames for bound-fn* (llvm.natives, P6.7). binding is the
+;; backend's: each bound var saves on its own $bs_ stack (D149), so only the
+;; backend can enumerate them. It lowers these three as $rt_bframe (every
+;; var whose stack is non-empty with its current value; nil when none),
+;; $rt_bframe_push (re-establish a frame: push each var as binding does)
+;; and $rt_bframe_pop (undo it). Under the reference intrinsics no binding
+;; frame exists, so the bodies are the no-frame case.
+(defn binding-frame [] (arch/null))
+(defn frame-push! [fr] (arch/null))
+(defn frame-pop! [fr] (arch/null))
+
+;; gensym (lang.go:5573): prefix (default "G__") + the next id.
+(defn ^{:twin "core/gensym"} gensym
+  ([] (gensym (lit (arch/bytes-of-string "G__"))))
+  ([prefix]
+   (if (= 17 (sq/kind prefix))
+     (let [n (inc (arch/get Globals 0 globals))]
+       (arch/set! Globals 0 globals n)
+       (s/sym-of-bytes (s/str-bytes (s/str prefix (sq/box-int n)))))
+     (raise (arch/bytes-of-string "gensym expected String")))))
+
+;; ---------------------------------------------------------------------------
+;; sort (lang.go:2859): the collection's seq into an array, sort.SliceStable
+;; (ported below), result a list. With a comparator, fnComparator (lang.go:1632): a boolean
+;; answer is "less", asked both ways; a number's sign is the order.
+
+(defn- cmp-result [f a b]
+  (let [r (invoke-args f 2 a b nil nil) k (sq/kind r)]
+    (cond (= k 15) (if (sq/truthy? r) -1
+                       (let [r2 (invoke-args f 2 b a nil nil)]
+                         (if (if (= 15 (sq/kind r2)) (sq/truthy? r2) false) 1 0)))
+          (= k 1) (let [n (sq/unbox-int r)] (cond (< n 0) -1 (> n 0) 1 :else 0))
+          (= k 22) (let [n (arch/f64-to-i64 (s/unbox-float r))] (cond (< n 0) -1 (> n 0) 1 :else 0))
+          :else (raise-not-supported (lit (arch/bytes-of-string "comparator returned non-numeric value ")) r))))
+
+(defn- less? [f a b] (< (if (arch/null? f) (compare* a b) (cmp-result f a b)) 0))
+
+;; sort.SliceStable's own algorithm (Go's sort/zsortfunc.go stable_func:
+;; insertion sort in blocks of 20, then SymMerge), so the comparator sees the
+;; same pairs in the same order as native: the first incomparable pair names
+;; the same two types, and a comparator with side effects runs identically.
+(defn- lt-at? [f a i j] (less? f (arch/aget pv/Node a i) (arch/aget pv/Node a j)))
+(defn- swap-at! [a i j]
+  (let [t (arch/aget pv/Node a i)]
+    (arch/aset! pv/Node a i (arch/aget pv/Node a j))
+    (arch/aset! pv/Node a j t)))
+(defn- mid-of [x y] (unsigned-bit-shift-right (+ x y) 1))
+
+(defn- insertion-sort! [f a lo hi]
+  (loop [i (inc lo)]
+    (when (< i hi)
+      (loop [j i]
+        (when (if (> j lo) (lt-at? f a j (dec j)) false)
+          (swap-at! a j (dec j))
+          (recur (dec j))))
+      (recur (inc i)))))
+
+(defn- swap-range! [a x y n]
+  (loop [i 0] (when (< i n) (swap-at! a (+ x i) (+ y i)) (recur (inc i)))))
+
+(defn- rotate! [a lo m hi]
+  (loop [i (- m lo) j (- hi m)]
+    (cond (= i j) (swap-range! a (- m i) m i)
+          (> i j) (do (swap-range! a (- m i) m j) (recur (- i j) j))
+          :else (do (swap-range! a (- m i) (- (+ m j) i) i) (recur i (- j i))))))
+
+(defn- sym-merge! [f a lo m hi]
+  (cond
+    (= (- m lo) 1)
+    (let [i (loop [i m j hi]
+              (if (< i j) (let [h (mid-of i j)] (if (lt-at? f a h lo) (recur (inc h) j) (recur i h))) i))]
+      (loop [k lo] (when (< k (dec i)) (swap-at! a k (inc k)) (recur (inc k)))))
+    (= (- hi m) 1)
+    (let [i (loop [i lo j m]
+              (if (< i j) (let [h (mid-of i j)] (if (lt-at? f a m h) (recur i h) (recur (inc h) j))) i))]
+      (loop [k m] (when (> k i) (swap-at! a k (dec k)) (recur (dec k)))))
+    :else
+    (let [mid (mid-of lo hi) n (+ mid m) p (dec n)
+          start (loop [s (if (> m mid) (- n hi) lo) r (if (> m mid) mid m)]
+                  (if (< s r) (let [c (mid-of s r)] (if (lt-at? f a (- p c) c) (recur s c) (recur (inc c) r))) s))
+          end (- n start)]
+      (when (if (< start m) (< m end) false) (rotate! a start m end))
+      (when (if (< lo start) (< start mid) false) (sym-merge! f a lo start mid))
+      (when (if (< mid end) (< end hi) false) (sym-merge! f a mid end hi)))))
+
+(defn- stable-sort! [f a n]
+  (let [lo (loop [lo 0] (if (<= (+ lo 20) n) (do (insertion-sort! f a lo (+ lo 20)) (recur (+ lo 20))) lo))]
+    (insertion-sort! f a lo n))
+  (loop [bs 20]
+    (when (< bs n)
+      (let [lo (loop [lo 0]
+                 (if (<= (+ lo (* 2 bs)) n)
+                   (do (sym-merge! f a lo (+ lo bs) (+ lo (* 2 bs))) (recur (+ lo (* 2 bs))))
+                   lo))]
+        (when (< (+ lo bs) n) (sym-merge! f a lo (+ lo bs) n)))
+      (recur (* 2 bs)))))
+
+(defn- sortable? [x]                                      ; a vm.Collection (nil included: (sort nil) is ())
+  (let [k (ckind x)]                                      ; Repeat, InfiniteRange, ChunkedCons are not one (bug-14)
+    (cond (= k 0) true (= k 6) false (= k 8) false (= k 9) false (if (>= k 2) (<= k 11) false) true
+          (= k 27) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 38) true (= k 39) true :else false)))
+
+(defn- sort* [f coll]
+  (cond
+    ;; native sort's Sequable assertion panics on a PersistentVectorSeq; the VM
+    ;; reports the recovered panic as a catchable error
+    (if (= 10 (ckind coll)) (= 1 (pv/vpkind (arch/get sq/PVecSeq 0 coll))) false)
+    (raise (arch/bytes-of-string "interface conversion: *vm.PersistentVectorSeq is not vm.Sequable: missing method Seq"))
+    (sortable? coll)
+    (let [v (sq/vec coll) n (pv/vcount v) a (arch/array-new pv/Node n (arch/null))]
+      (loop [i 0] (when (< i n) (arch/aset! pv/Node a i (pv/vnth v i)) (recur (inc i))))
+      (stable-sort! f a n)
+      (loop [i (dec n) l (sq/list)] (if (< i 0) l (recur (dec i) (sq/conj l (arch/aget pv/Node a i))))))
+    :else (raise (arch/bytes-of-string "sort expected a Collection"))))
+
+(defn ^{:twin "core/sort"} sort
+  ([coll] (sort* (arch/null) coll))
+  ([f coll] (if (callable? f) (sort* f coll) (raise (arch/bytes-of-string "sort expected a comparator function")))))
+
+;; ---------------------------------------------------------------------------
+;; Host and reader. os/getenv is the host import; open is host I/O (slurp
+;; is llvm.natives' no-file-system twin, D138)
+;; (Phase 3/4) and read-string is edn.lg compiled through the backend (plan
+;; D8, rt/wasm/README.md): named limits until then.
+
+;; os/getenv is os.Getenv boxed by reflection (os.go:29): unset reads as ""
+;; and a non-string argument converts to the empty name.
+(defn ^{:twin "os/getenv"} getenv [nm]
+  (if (= 17 (sq/kind nm))
+    (let [v (arch/host-getenv (s/str-bytes nm))] (if (arch/null? v) (lit (arch/bytes-of-string "")) (s/mk-str v)))
+    (lit (arch/bytes-of-string ""))))
+
+(defn ^{:twin "core/open"} open [x] (arch/trap "lower-wasm: open is host I/O (Phase 3/4)"))
+(defn ^{:twin "core/read-string"} read-string [x] (arch/trap "lower-wasm: read-string is edn.lg through the backend (plan D8)"))
+
+;; ---------------------------------------------------------------------------
+;; Printing the values seq.lg and llvm.str hand over (kind 18 and the P2.7
+;; boxes), and the generic hook slot for this namespace's foreign values.
+
+;; mode as llvm.str's write-val: 0 Value.String(), 1 pr-str, 2 print-str.
+(defn- elem-str [x mode] (cond (= mode 0) (s/value-string x) (= mode 1) (s/pr-str x) :else (s/print-str x)))
+
+(defn- print-map [mm mode]                                ; String(): {k v k v}; print-method: {k v, k v}
+  (let [e (m/entries mm) n (arch/alen e)]
+    (loop [i 0 acc (lit (arch/bytes-of-string "{"))]
+      (if (< i n)
+        (recur (+ i 2) (s/str (if (> i 0) (s/str acc (if (= mode 0) (lit (arch/bytes-of-string " ")) (lit (arch/bytes-of-string ", ")))) acc)
+                              (elem-str (arch/aget m/HSlots e i) mode)
+                              (s/str (lit (arch/bytes-of-string " ")) (elem-str (arch/aget m/HSlots e (inc i)) mode))))
+        (s/str acc (lit (arch/bytes-of-string "}")))))))
+
+(defn- print-set [st mode]                                ; #{e e}
+  (let [ks (hs/sseq st) n (arch/alen ks)]
+    (loop [i 0 acc (lit (arch/bytes-of-string "#{"))]
+      (if (< i n)
+        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (arch/bytes-of-string " "))) acc) (elem-str (arch/aget m/HSlots ks i) mode)))
+        (s/str acc (lit (arch/bytes-of-string "}")))))))
+
+;; A fn prints as native's Fn/MultiArityFn String(): `<fn NAME 0x..>`,
+;; `<fn 0x..>`, `<mfn NAME 0x..>`, `<mfn  0x..>` (empty name kept). The
+;; address is fixed at 0x0, as in D56's arity messages.
+(defn- fn-desc [f]
+  (let [info (arch/get sq/Fn 6 f)
+        nm (if (arch/null? info) (arch/null) (arch/get sq/FnInfo 2 info))
+        multi (if (arch/null? info) false (= 1 (arch/get sq/FnInfo 0 info)))]
+    (s/str (lit (if multi (arch/bytes-of-string "<mfn ") (arch/bytes-of-string "<fn ")))
+           (if (arch/null? nm) (lit (if multi (arch/bytes-of-string " ") (arch/bytes-of-string "")))
+               (s/str (lit nm) (lit (arch/bytes-of-string " "))))
+           (lit (arch/bytes-of-string "0x0>")))))
+
+(defn- print-foreign [self x mb]
+  (let [k (ckind x) mode (sq/unbox-int mb)]
+    (cond (= k 30) (print-map x mode)
+          (= k 31) (print-set x mode)
+          (= k 36) (elem-str (arch/get MetaNamed 0 x) mode)
+          (= k 16) (fn-desc x)
+          (= k 24) (s/str (lit (arch/bytes-of-string "<let-go.lang.Atom ")) (s/value-string (arch/get sq/Atom 0 x)) (lit (arch/bytes-of-string ">")))
+          ;; native prints the heap address; 0x0 as D56's messages do
+          (= k 25) (s/str (lit (arch/bytes-of-string "#<Volatile@0x0: ")) (s/value-string (arch/get sq/Volatile 0 x)) (lit (arch/bytes-of-string ">")))
+          (= k 26) (if (= 0 (arch/get sq/Err 0 x))
+                     (s/str (s/str (lit (arch/bytes-of-string "#error {:message ")) (s/pr-str (lit (arch/get sq/Err 1 x))))
+                            (lit (arch/bytes-of-string ", :data ")) (s/str (s/pr-str (arch/get sq/Err 3 x)) (lit (arch/bytes-of-string "}"))))
+                     (lit (arch/get sq/Err 1 x)))
+          (= k 32) (s/str (lit (arch/bytes-of-string "<transient-map count=")) (sq/box-int (m/tcount x)) (lit (arch/bytes-of-string ">")))
+          (= k 33) (s/str (lit (arch/bytes-of-string "<transient-set count="))
+                          (sq/box-int (hs/tscount (arch/get TSet 0 x))) (lit (arch/bytes-of-string ">")))
+          (= k 34) (s/str (lit (arch/bytes-of-string "<transient-vector count="))
+                          (sq/box-int (pv/vcount (arch/get TVec 0 x))) (lit (arch/bytes-of-string ">")))
+          (= k 35) (lit (arch/get TypeVal 0 x))
+          (= k 37) (arr/print-arr x)
+          (= k 38) (so/smap-print x)
+          (= k 39) (so/sset-print x)
+          (= k 40) (s/str (lit (arch/bytes-of-string "#<Promise@0x0: "))
+                          (if (= 1 (arch/get Promise 1 x)) (s/value-string (arch/get Promise 0 x)) (lit (arch/bytes-of-string ":pending")))
+                          (lit (arch/bytes-of-string ">")))
+          (= k 41) (s/str (lit (arch/bytes-of-string "#<Delay@0x0: "))
+                          (if (= 0 (arch/get Delay 1 x)) (lit (arch/bytes-of-string ":pending"))
+                              (s/value-string (if (= 1 (arch/get Delay 1 x)) (arch/get Delay 0 x) (arch/null))))
+                          (lit (arch/bytes-of-string ">")))
+          :else (arch/trap "llvm.core: printing this value is not implemented"))))
+
+(defn- pr-hook [self x] (s/value-string x))
+
+(defn- foreign-count [self x]
+  (let [k (ckind x)]
+    (cond (= k 32) (sq/box-int (m/tcount x))
+          (= k 33) (sq/box-int (hs/tscount (arch/get TSet 0 x)))
+          (= k 34) (sq/box-int (pv/vcount (arch/get TVec 0 x)))
+          (= k 37) (arr/acount x)
+          (= k 38) (sq/box-int (so/smap-count x))
+          (= k 39) (sq/box-int (so/sset-count x))
+          :else (raise (arch/bytes-of-string "count expected Counted")))))
+(defn- foreign-seq [self x]
+  (cond (= 32 (ckind x)) (m/tentry-seq x)
+    (= 37 (ckind x)) (arr/aseq x)
+    (= 38 (ckind x)) (so/smap-seq x)
+    (= 39 (ckind x)) (so/sset-seq x)
+    :else
+    (raise-str (s/str (lit (arch/bytes-of-string "don't know how to create ISeq from ")) (tn x)))))
+(defn- foreign-seqable [self x]                          ; maps, sets and transient maps are vm.Sequable
+  (let [k (ckind x)] (sq/bool (if (= k 18) true (if (>= k 37) (<= k 39) (if (>= k 30) (<= k 32) false))))))
+(defn- foreign-equiv [self a b]                          ; identity: the transients and types; sorted colls as maps/sets
+  (sq/bool (cond (= 38 (ckind a)) (so/smap-equiv? a b) (= 38 (ckind b)) (so/smap-equiv? b a)
+                 (= 39 (ckind a)) (so/sset-equiv? a b) (= 39 (ckind b)) (so/sset-equiv? b a)
+                 :else (arch/ref-eq a b))))
+;; None of these is Hashable natively: FNV-1a of String() (hash.go:31), so a
+;; meta'd keyword hashes as ":a" text, apart from the bare keyword, a type as
+;; its name and a transient as "<transient-map count=N>".
+(defn- foreign-hash [self x]                             ; the sorted colls are Hashable, as a hash-map/set
+  (let [k (ckind x)]
+    (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x)) :else (sq/hash (s/value-string x)))))
+(defn- tn-hook [self x] (tn x))                          ; llvm.arrays names argument types through this
+
+(defn install!
+  "The link step for the whole runtime: maps and sets (slots 0 and 1), this
+   namespace's foreign values (slot 2), the printer llvm.str uses for them,
+   and the printer seq.lg hashes Range/Repeat/PVecSeq elements with."
+  []
+  (hs/install-hooks!)
+  (sq/set-kind-hooks! 2 (arch/null)
+                      (sq/mk-fn1 (arch/funcref sq/Code1 foreign-seq))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 foreign-count))
+                      (sq/mk-fn2 (arch/funcref sq/Code2 foreign-equiv))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 foreign-hash)))
+  (sq/set-seqable-hook! (sq/mk-fn1 (arch/funcref sq/Code1 foreign-seqable)))
+  (sq/set-ifn-hook! (arch/new sq/Fn (arch/null) (arch/funcref sq/Code1 ifn-pred) (arch/null) (arch/null)
+                              (arch/null) (arch/funcref sq/Code4 ifn-call) (arch/null) 0))
+  (s/set-print-hook! (sq/mk-fn2 (arch/funcref sq/Code2 print-foreign)))
+  (arr/set-type-name-hook! (sq/mk-fn1 (arch/funcref sq/Code1 tn-hook)))
+  (so/set-compare-hook! (sq/mk-fn2 (arch/funcref sq/Code2 sorted-compare)))
+  (sq/set-type-name-hook! (sq/mk-fn1 (arch/funcref sq/Code1 tn-hook)))
+  (sq/set-print-hook! (sq/mk-fn1 (arch/funcref sq/Code1 pr-hook))))

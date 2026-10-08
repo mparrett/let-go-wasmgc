@@ -1,0 +1,278 @@
+;; One deftest per intrinsic group of llvm.arch (rt/llvm/arch.lg).
+;; Every intrinsic var appears here at least once; `intrinsic-coverage`
+;; checks that mechanically against the namespace's ^:intrinsic vars.
+(ns intrinsics-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]))
+
+(def max64 9223372036854775807)
+(def min64 -9223372036854775808)
+
+(arch/defstruct Pair [:i64 [:mut :ref]])
+(arch/defstruct Pair2 [:i64 [:mut :ref]])   ; same shape as Pair, distinct type
+(arch/defstruct Num [:f64 :i32 [:mut :funcref]])
+(arch/defarray Refs :ref)
+(arch/defarray Longs :i64)
+(arch/deffunc Fn1 [:ref] :ref)
+(arch/deffunc Fn2 [:ref :ref] :ref)
+
+(defn- trap? [f] (try (f) false (catch Exception e (boolean (:arch/trap (ex-data e))))))
+
+(deftest declarations
+  (testing "declaration forms validate their field types"
+    (is (thrown-with-msg? Exception #"bad field type" (arch/struct-decl 'X [:i16])))
+    (is (thrown-with-msg? Exception #"bad field" (arch/struct-decl 'X [[:const :ref]])))
+    (is (thrown-with-msg? Exception #"bad element type" (arch/array-decl 'X :string)))
+    (is (thrown-with-msg? Exception #"bad type" (arch/func-decl 'X [:ref] :void))))
+  (testing "mutability is per field"
+    (is (= [false true] (mapv :mut (:fields Pair))))))
+
+(deftest structs
+  (let [p (arch/new Pair 7 nil)]
+    (is (= 7 (arch/get Pair 0 p)))
+    (is (nil? (arch/get Pair 1 p)))
+    (arch/set! Pair 1 p (arch/fix 3))
+    (is (= 3 (arch/fix-get (arch/get Pair 1 p))))
+    (testing "immutable field, field index range, arity"
+      (is (thrown-with-msg? Exception #"immutable" (arch/set! Pair 0 p 8)))
+      (is (thrown-with-msg? Exception #"out of range 0..1" (arch/get Pair 2 p)))
+      (is (thrown-with-msg? Exception #"out of range" (arch/get Pair -1 p)))
+      (is (thrown-with-msg? Exception #"2 fields, got 1" (arch/new Pair 1))))
+    (testing "get on the wrong struct kind or null traps, naming both"
+      (is (thrown-with-msg? Exception #"expected struct Pair2, got struct Pair" (arch/get Pair2 0 p)))
+      (is (thrown-with-msg? Exception #"expected struct Pair, got null" (arch/get Pair 0 nil))))
+    (testing "stores are type-checked: no raw lg values in :ref, no floats in :i64"
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/new Pair 1 :kw)))
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/set! Pair 1 p 5)))
+      (is (thrown-with-msg? Exception #"expected i64" (arch/new Pair 1.5 nil))))
+    (testing ":f64 and :i32 fields"
+      (let [n (arch/new Num 1.5 -2147483648 nil)]
+        (is (= 1.5 (arch/get Num 0 n)))
+        (is (= -2147483648 (arch/get Num 1 n))))
+      (is (thrown-with-msg? Exception #"i32 slot" (arch/new Num 1.5 2147483648 nil)))
+      (is (thrown-with-msg? Exception #"f64 slot" (arch/new Num 1 0 nil))))))
+
+(deftest casts
+  (let [p (arch/new Pair 1 nil) q (arch/new Pair2 1 nil) a (arch/array-new Refs 2 nil)]
+    (is (true? (arch/is? Pair p)))
+    (is (false? (arch/is? Pair q)) "same field list, different declared type")
+    (is (false? (arch/is? Pair nil)))
+    (is (false? (arch/is? Pair (arch/fix 1))))
+    (is (true? (arch/is? Refs a)))
+    (is (false? (arch/is? Longs a)))
+    (is (identical? p (arch/as Pair p)))
+    (is (thrown-with-msg? Exception #"cast failure, expected struct Pair, got struct Pair2" (arch/as Pair q)))
+    (is (thrown-with-msg? Exception #"expected array Longs, got array Refs" (arch/as Longs a)))
+    (is (thrown-with-msg? Exception #"got null" (arch/as Pair nil)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref, got non-wasm value" (arch/is? Pair "s")))
+    (is (trap? #(arch/as Pair q)))))
+
+(deftest arrays
+  (let [a (arch/array-new Longs 5 0)]
+    (is (= 5 (arch/alen a)))
+    (dotimes [i 5] (arch/aset! Longs a i (* 10 i)))
+    (is (= [0 10 20 30 40] (mapv #(arch/aget Longs a %) (range 5))))
+    (testing "bounds"
+      (is (thrown-with-msg? Exception #"index 5 out of bounds for length 5" (arch/aget Longs a 5)))
+      (is (thrown-with-msg? Exception #"index -1 out of bounds" (arch/aset! Longs a -1 0)))
+      (is (thrown-with-msg? Exception #"index 4294967296 out of bounds" (arch/aget Longs a 4294967296)))
+      (is (thrown-with-msg? Exception #"bad length -1" (arch/array-new Longs -1 0)))
+      (is (= 0 (arch/alen (arch/array-new Refs 0 nil)))))
+    (testing "element types"
+      (is (thrown-with-msg? Exception #"expected i64" (arch/aset! Longs a 0 nil)))
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/array-new Refs 1 0))))
+    (testing "alen on a non-array traps"
+      (is (thrown-with-msg? Exception #"expected an array, got struct Pair" (arch/alen (arch/new Pair 1 nil))))
+      (is (thrown-with-msg? Exception #"got null" (arch/alen nil))))
+    (testing "array-copy: disjoint, overlapping both ways (memmove), bounds"
+      (let [b (arch/array-new Longs 5 -1)]
+        (arch/array-copy Longs b 1 a 2 3)
+        (is (= [-1 20 30 40 -1] (mapv #(arch/aget Longs b %) (range 5)))))
+      (let [c (arch/array-new Longs 5 0)]
+        (dotimes [i 5] (arch/aset! Longs c i i))
+        (arch/array-copy Longs c 1 c 0 4)
+        (is (= [0 0 1 2 3] (mapv #(arch/aget Longs c %) (range 5))))
+        (arch/array-copy Longs c 0 c 1 4)
+        (is (= [0 1 2 3 3] (mapv #(arch/aget Longs c %) (range 5)))))
+      (is (thrown-with-msg? Exception #"range out of bounds" (arch/array-copy Longs a 3 a 0 3)))
+      (is (thrown-with-msg? Exception #"expected array Longs" (arch/array-copy Longs a 0 (arch/array-new Refs 5 nil) 0 1)))
+      (arch/array-copy Longs a 5 a 0 0)
+      (is (= 40 (arch/aget Longs a 4)) "zero-length copy at the end is legal"))))
+
+(deftest references
+  (let [p (arch/new Pair 1 nil) p2 (arch/new Pair 1 nil)]
+    (is (true? (arch/ref-eq p p)))
+    (is (false? (arch/ref-eq p p2)) "identity, not structure")
+    (is (true? (arch/ref-eq (arch/fix 9) (arch/fix 9))) "i31 compares by value")
+    (is (false? (arch/ref-eq (arch/fix 9) (arch/fix 8))))
+    (is (true? (arch/ref-eq (arch/null) nil)))
+    (is (false? (arch/ref-eq p nil)))
+    (is (true? (arch/null? (arch/null))))
+    (is (false? (arch/null? p)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/ref-eq 1 1)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/null? false)))))
+
+(deftest fix-bounds
+  ;; the fixnum range is the target's (spec decision 8, D200): gc and linear
+  ;; keep D41's i31 range, which the reference implementation reproduces
+  (is (= -1073741824 (arch/fix-min)))
+  (is (= 1073741823 (arch/fix-max)))
+  (is (= (arch/fix-min) (arch/fix-get (arch/fix (arch/fix-min)))))
+  (is (= (arch/fix-max) (arch/fix-get (arch/fix (arch/fix-max))))))
+
+(deftest fix-box
+  (is (= -1073741824 (arch/fix-get (arch/fix -1073741824))) "-2^30 fits")
+  (is (= 1073741823 (arch/fix-get (arch/fix 1073741823))) "2^30-1 fits")
+  (is (= -1 (arch/fix-get (arch/fix -1))) "i31.get_s sign-extends")
+  (is (= 0 (arch/fix-get (arch/fix 0))))
+  (is (thrown-with-msg? Exception #"outside" (arch/fix 1073741824)) "2^30 does not fit")
+  (is (thrown-with-msg? Exception #"outside" (arch/fix -1073741825)) "-2^30-1 does not fit")
+  (is (trap? #(arch/fix max64)))
+  (is (true? (arch/fix? (arch/fix 5))))
+  (is (false? (arch/fix? nil)))
+  (is (false? (arch/fix? (arch/new Pair 1 nil))))
+  (is (thrown-with-msg? Exception #"expected a fixnum, got struct Pair" (arch/fix-get (arch/new Pair 1 nil))))
+  (is (thrown-with-msg? Exception #"expected a fixnum, got null" (arch/fix-get nil))))
+
+(deftest i64-arith
+  (testing "add/sub/mul wrap"
+    (is (= min64 (arch/i64-add max64 1)))
+    (is (= max64 (arch/i64-sub min64 1)))
+    (is (= -2 (arch/i64-mul max64 2)))
+    (is (= min64 (arch/i64-mul min64 -1)))
+    (is (= 5 (arch/i64-add 2 3))))
+  (testing "shift counts are taken mod 64 (lg's own shifts are not)"
+    (is (= 1 (arch/i64-shl 1 64)))
+    (is (= 2 (arch/i64-shl 1 65)))
+    (is (= min64 (arch/i64-shl 1 63)))
+    (is (= 1 (arch/i64-shl 1 -64)))
+    (is (= -8 (arch/i64-shr-s -8 64)))
+    (is (= -4 (arch/i64-shr-s -8 1)))
+    (is (= -1 (arch/i64-shr-s min64 63)))
+    (is (= 9223372036854775804 (arch/i64-shr-u -8 1)))
+    (is (= 1 (arch/i64-shr-u min64 63)))
+    (is (= -8 (arch/i64-shr-u -8 128))))
+  (testing "unsigned compare"
+    (is (true? (arch/i64-lt-u 1 -1)))
+    (is (false? (arch/i64-lt-u -1 1)))
+    (is (true? (arch/i64-lt-u max64 min64)))
+    (is (false? (arch/i64-lt-u 3 3))))
+  (testing "clz/ctz/popcnt"
+    (is (= [64 63 0 1] (mapv arch/i64-clz [0 1 -1 max64])))
+    (is (= [64 0 0 63 3] (mapv arch/i64-ctz [0 1 -1 min64 8])))
+    (is (= [0 1 64 63 32] (mapv arch/i64-popcnt [0 1 -1 max64 0xffffffff]))))
+  (testing "32-bit views"
+    (is (= -1 (arch/i32-wrap 0xffffffff)))
+    (is (= -2147483648 (arch/i32-wrap 0x80000000)))
+    (is (= 0 (arch/i32-wrap 0x100000000)))
+    (is (= -1 (arch/i32-wrap max64)) "low 32 bits of MaxInt64 are all ones")
+    (is (= 2147483647 (arch/i32-wrap 0x123456787fffffff)))
+    (is (= 0xffffffff (arch/i64-extend-i32-u -1)))
+    (is (= 0 (arch/i64-extend-i32-u min64))))
+  (testing "float conversions"
+    (is (= 9007199254740992.0 (arch/i64-to-f64 9007199254740993)) "round to nearest even")
+    (is (= -9.223372036854775808e18 (arch/i64-to-f64 min64)))
+    (is (= 3 (arch/f64-to-i64 3.9)))
+    (is (= -3 (arch/f64-to-i64 -3.9)))
+    (is (= min64 (arch/f64-to-i64 -9.223372036854775808e18)))
+    (is (= 9223372036854774784 (arch/f64-to-i64 9.2233720368547748e18)) "largest f64 below 2^63")
+    (is (trap? #(arch/f64-to-i64 ##NaN)))
+    (is (trap? #(arch/f64-to-i64 9.223372036854775808e18)))
+    (is (trap? #(arch/f64-to-i64 ##-Inf))))
+  (testing "f64-neg flips the sign bit only, NaN included (native hash sees the bits)"
+    (is (= -1.5 (arch/f64-neg 1.5)))
+    (is (= 2.25 (arch/f64-neg -2.25)))
+    (is (= "-0.0" (pr-str (arch/f64-neg 0.0))))
+    (is (= "0.0" (pr-str (arch/f64-neg -0.0))))
+    (is (= ##-Inf (arch/f64-neg ##Inf)))
+    (is (= (hash (- ##NaN)) (hash (arch/f64-neg ##NaN))))
+    (is (not= (hash ##NaN) (hash (arch/f64-neg ##NaN))) "the NaN's sign bit flips")
+    (is (= (hash ##NaN) (hash (arch/f64-neg (arch/f64-neg ##NaN)))))
+    (is (= (hash (- 4.9e-324)) (hash (arch/f64-neg 4.9e-324))))
+    (is (thrown-with-msg? Exception #"expected f64" (arch/f64-neg 1))))
+  (testing "operands must be ints"
+    (is (thrown-with-msg? Exception #"expected i64" (arch/i64-add 1.0 1)))
+    (is (thrown-with-msg? Exception #"expected f64" (arch/f64-to-i64 1)))))
+
+(deftest bytes-group
+  (let [b (arch/bytes-new 3)]
+    (is (= [0 0 0] (mapv #(arch/bget b %) (range 3))))
+    (arch/bset! b 0 255)
+    (arch/bset! b 1 256)
+    (arch/bset! b 2 -1)
+    (is (= [255 0 255] (mapv #(arch/bget b %) (range 3))) "low 8 bits stored, read back unsigned")
+    (is (= 3 (arch/alen b)))
+    (is (thrown-with-msg? Exception #"out of bounds" (arch/bget b 3))))
+  (testing "multi-byte UTF-8"
+    (doseq [[s n] [["" 0] ["a" 1] ["é" 2] ["€" 3] ["😀" 4] ["hé€😀" 10]]]
+      (let [b (arch/bytes-of-string s)]
+        (is (= n (arch/alen b)) s)
+        (is (= s (arch/string-of-bytes b)) s)))
+    (is (= [0xF0 0x9F 0x98 0x80] (let [b (arch/bytes-of-string "😀")] (mapv #(arch/bget b %) (range 4))))))
+  (testing "strict decode"
+    (let [mk (fn [xs] (let [b (arch/bytes-new (count xs))] (dotimes [i (count xs)] (arch/bset! b i (nth xs i))) b))]
+      (is (trap? #(arch/string-of-bytes (mk [0xC0 0x80]))) "overlong NUL")
+      (is (trap? #(arch/string-of-bytes (mk [0xED 0xA0 0x80]))) "surrogate")
+      (is (trap? #(arch/string-of-bytes (mk [0x80]))) "lone continuation")
+      (is (trap? #(arch/string-of-bytes (mk [0xE2 0x82]))) "truncated")))
+  (is (thrown-with-msg? Exception #"expected array Bytes" (arch/bget (arch/array-new Longs 1 0) 0))))
+
+(deftest host
+  (is (= "hé\n" (with-out-str (arch/host-write 1 (arch/bytes-of-string "hé\n")))))
+  (is (= 4 (let [n (atom nil)] (with-out-str (reset! n (arch/host-write 1 (arch/bytes-of-string "hé\n")))) @n))
+      "returns the byte count, not the char count")
+  (is (trap? #(arch/host-write 3 (arch/bytes-new 0))))
+  (testing "virtual clock: deterministic, advanced only by sleep"
+    (reset! arch/host-clock 0)
+    (is (= 0 (arch/host-nanotime)))
+    (arch/host-sleep 5)
+    (is (= 5000000 (arch/host-nanotime)))
+    (is (= 5000000 (arch/host-nanotime)))
+    (is (trap? #(arch/host-sleep -1))))
+  (testing "getenv reads *host-env*, not the process"
+    (is (nil? (arch/host-getenv (arch/bytes-of-string "HOME"))))
+    (binding [arch/*host-env* {"SEED" "42"}]
+      (is (= "42" (arch/string-of-bytes (arch/host-getenv (arch/bytes-of-string "SEED")))))))
+  (testing "argc and arg read *host-args*: the lg path, the program, its args"
+    (is (= 1 (arch/host-argc)))
+    (is (= "lg" (arch/string-of-bytes (arch/host-arg 0))))
+    (binding [arch/*host-args* ["lg" "p.lg" "x"]]
+      (is (= 3 (arch/host-argc)))
+      (is (= "x" (arch/string-of-bytes (arch/host-arg 2)))))
+    (is (thrown? Exception (arch/host-arg "0")))))
+
+(deftest traps
+  (is (thrown-with-msg? Exception #"wasm trap: boom" (arch/trap "boom")))
+  (is (trap? #(arch/trap "x"))))
+
+(defn- first-of [a] a)
+(defn- second-of [a b] b)
+
+(deftest funcrefs
+  (let [f1 (arch/funcref Fn1 first-of)
+        f2 (arch/funcref Fn2 second-of)
+        x (arch/fix 1) y (arch/fix 2)]
+    (is (arch/ref-eq x (arch/call-ref Fn1 f1 x)))
+    (is (arch/ref-eq y (arch/call-ref Fn2 f2 x y)))
+    (testing "a funcref lives in a :funcref field, not a :ref one"
+      (let [n (arch/new Num 0.0 0 f2)]
+        (is (arch/ref-eq y (arch/call-ref Fn2 (arch/get Num 2 n) x y))))
+      (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/new Pair 0 f1))))
+    (is (thrown-with-msg? Exception #"expected funcref of Fn2, got func Fn1" (arch/call-ref Fn2 f1 x y)))
+    (is (thrown-with-msg? Exception #"null funcref" (arch/call-ref Fn1 nil x)))
+    (is (thrown-with-msg? Exception #"1 params, got 2" (arch/call-ref Fn1 f1 x y)))
+    (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/call-ref Fn1 f1 5)))
+    (is (false? (arch/null? f1)) "null? accepts funcrefs")))
+
+(def ^:private this-file-source
+  (delay (slurp "corpus/llvm-rt/intrinsics_test.lg")))
+
+(deftest intrinsic-coverage
+  (let [vs (filter #(:intrinsic (meta %)) (vals (ns-publics 'llvm.arch)))
+        used (set (map #(subs % 5) (re-seq #"arch/[a-z0-9!?-]+" @this-file-source)))]
+    (is (pos? (count vs)))
+    (doseq [v vs]
+      (let [m (meta v) nm (name (:name m))]
+        (is (string? (:wasm m)) (str nm " names its wasm instruction"))
+        (is (string? (:type m)) (str nm " states its type"))
+        (is (contains? used nm) (str nm " is exercised by this file"))))))

@@ -1,0 +1,951 @@
+;; lw-ext: lg defns the backend compiles where rt/wasm has no form for a
+;; native's variadic use (P2.12). Plain lg over core fns, built like the lg
+;; core fns (lw_rt's core-defns); lower-wasm's seq-variant-table routes the
+;; native to them past its fixed arities.
+(ns lw-ext)
+
+(defn map-n
+  "map* over two or more colls (lang.go mapf's multi-collection path,
+   mapLazyN): lazy, ends with the shortest coll; an empty coll gives the
+   empty lazy seq. Each step realises one element of every coll (native
+   bulk-applies over chunked inputs; only side effects could tell)."
+  [f colls]
+  (lazy-seq
+    (let [ss (map seq colls)]
+      (when (every? some? ss)
+        (cons (apply f (map first ss)) (map-n f (map rest ss)))))))
+
+(defn list-n
+  "core/list past rt/'s fixed arities: the args already arrive as the
+   PersistentList native builds (the variadic rest seq); none is ()."
+  [xs]
+  (if (nil? xs) () xs))
+
+;; vector, hash-map and hash-set as VALUES (direct calls build literals
+;; inline, lower-wasm's coll-ctors): native's variadic natives, as variadic
+;; fns over the runtime's own constructors
+(defn vector-v [& xs] (vec xs))
+(defn hash-map-v [& kvs]
+  (cond (nil? kvs) {}
+        ;; P5.7: native's own message (CoreHashMap), not assoc's arity error
+        (odd? (count kvs)) (llvm.core/raise (llvm.str/str-bytes (str "hash-map requires an even number of arguments, got " (count kvs))))
+        :else (apply assoc {} kvs)))
+(defn array-map-v
+  "core/array-map: hash-map's fill (D29: let-go's array-map is its
+   insertion-ordered hash-map), with array-map's name in the odd-count error."
+  [& kvs]
+  (if (odd? (count kvs))
+    (llvm.core/raise (llvm.str/str-bytes (str "array-map requires an even number of arguments, got " (count kvs))))
+    (apply hash-map-v kvs)))
+(defn hash-set-v [& xs] (into #{} xs))
+;; P7.9 (review5 bug-06): native's uncaught report puts a `calling <f>`
+;; layer over a CompileError that escapes a call made from top-level code
+;; (eval itself, or a program fn that evals); the driver wraps those calls
+;; and this rethrows. Any other error passes unchanged.
+(defn calling-throw [nm e]
+  (let [m (ex-message e)]
+    (throw (if (and (string? m) (>= (count m) 13) (= "CompileError:" (subs m 0 13)))
+             (ex-info (str "calling " nm) {} e)
+             e))))
+;; P7: core/concat*, what the reader expands syntax-quote to ((apply concat*
+;; [[(quote a)] [x] ys])): a program macro compiled for the program table
+;; runs it. Native's always returns a PersistentList, () when empty.
+(defn concat*-v [& xs] (if (nil? xs) () (apply list (apply concat xs))))
+
+;; P3.2: natives xsofy's world dump reaches that rt/ has no twin for (lw_rt's
+;; ext-twins routes the native's var here).
+
+(defn- f64-to-i64-sat
+  "Truncates toward zero, saturating as wasm's i64.trunc_sat_f64_s: NaN is
+   0, past either end of Long's range is MaxLong / MinLong. Written as
+   guards over the trapping f64-to-i64, not that instruction, because the
+   checks' wasm-opt runs (world-parity, size-boot) do not enable
+   nontrapping-float-to-int and reject a module using it."
+  [f]
+  (cond (>= f 9.223372036854775807e18) 9223372036854775807
+        (< f -9.223372036854775808e18) -9223372036854775808
+        ;; NaN fails every comparison
+        (if (< f 0.0) true (>= f 0.0)) (llvm.arch/f64-to-i64 f)
+        :else 0))
+
+(defn long-v
+  "core/long (CoreLongf, lang.go:6565): Int as is, Float truncated (the
+   range check is Go's, against float64 MinInt64/MaxInt64), Char its code,
+   Boolean 1/0."
+  [x]
+  (cond (int? x) x
+        (float? x) (let [f (llvm.str/unbox-float x)]
+                     ;; NaN passes Go's range check and int64(NaN) is 0 on
+                     ;; arm64 (platform-defined; amd64 gives MinInt64): the
+                     ;; saturating truncation gives 0 where f64-to-i64 trapped
+                     (if (if (< f -9.223372036854775808e18) true (> f 9.223372036854775807e18))
+                       ;; the Float's String() (+Inf, not str's Infinity)
+                       (llvm.core/raise (llvm.str/str-bytes (str (pr-str x) " can't be coerced to long")))
+                       (f64-to-i64-sat f)))
+        (char? x) (int x)
+        (true? x) 1
+        (false? x) 0
+        ;; P7.9 (review5 bug-09): native names nil as "nil" (str gives "")
+        :else (llvm.core/raise (llvm.str/str-bytes (str (if (nil? x) "nil" x) " can't be coerced to long")))))
+
+(defn ints-v
+  "core/ints, core/longs (lang.go:4331): an int-array as is, else a new one."
+  [x]
+  (if (= "let-go.lang.Array" (str (type x))) x (int-array x)))
+
+(defn re-find-lit
+  "re-find's fast path for a metacharacter-free regex (its stand-in carries
+   the text it matches as :lw/lit): a match is the text itself."
+  [lit s]
+  (if (clojure.string/includes? s lit) lit nil))
+
+(defn now-v
+  "let-go.core/now: natively a Go time.Time, which only interop (.Sub) can
+   read. The runtime's twin traps; xsofy evaluates (now) at load
+   (ui/clock-epoch) without using it on the world path, so this stands in
+   the host's monotonic ns as an Int (interop on it stays unsupported)."
+  [] (llvm.arch/host-nanotime))
+
+(defn term-size-v
+  "term/size: nil when the host reports no terminal (term.size = -1, -1:
+   native lg off a TTY, which checks/wasm-run.sh mirrors), else the runtime's
+   [cols rows] (term_wasm.go's defaults for a zero dimension)."
+  [] (if (= -1 (llvm.term/term-size)) nil (llvm.term/size)))
+
+;; ---------------------------------------------------------------------------
+;; P4.1-backend: the browser seam (D100) and the two natives xsofy's real
+;; entry reaches beyond the world dump.
+;;
+;; host-emit and host-url-param are BACKEND intrinsics (emitted as
+;; env.emit / env.url_param, host/ABI.md) declared here until rt/wasm/host.lg
+;; carries them (the requested rt patch moves both, and json-str, into
+;; llvm.host and makes its emit/url-param twins call them; lw_rt then stops
+;; routing js/emit and js/url-param here). The bodies are the deterministic
+;; references (D27): native lg off the browser emits nothing and has no URL.
+
+(defn ^{:intrinsic true
+        :wasm "copy name and JSON Bytes to linear memory at 32; call $env.emit(name_ptr, name_len, json_ptr, json_len)"
+        :type "[:any :any] -> :any"}
+  host-emit
+  "Hand an event name and its JSON text to the host (let-go's _lgEmit)."
+  [name-bytes json-bytes] nil)
+
+(defn ^{:intrinsic true
+        :wasm "copy name to 32; call $env.url_param(name_ptr, name_len, buf, cap) (getenv's contract); -1 -> ref.null, else Bytes"
+        :type "[:any] -> :any"}
+  host-url-param
+  "The page URL's query parameter as Bytes, or null when absent."
+  [name-bytes] nil)
+
+(defn- json-char
+  "One char of a JSON string as Go's encoding/json writes it (encode.go
+   appendString with escapeHTML): \\\" \\\\ \\n \\r \\t, other controls and
+   < > & as \\u00XX, U+2028/U+2029 escaped, everything else verbatim."
+  [c]
+  (let [n (int c)]
+    (cond (= n 34) "\\\""
+          (= n 92) "\\\\"
+          (= n 10) "\\n"
+          (= n 13) "\\r"
+          (= n 9) "\\t"
+          (or (< n 32) (= n 60) (= n 62) (= n 38))
+          (str "\\u00" (nth "0123456789abcdef" (quot n 16)) (nth "0123456789abcdef" (rem n 16)))
+          (= n 8232) "\\u2028"
+          (= n 8233) "\\u2029"
+          :else (str c))))
+
+(defn json-string [s] (str "\"" (apply str (map json-char s)) "\""))
+
+(defn json-key
+  "A map key as fromMapValue (pkg/rt/json_value.go:15) names it: a String as is,
+   a Keyword its name with namespace and no colon, anything else String()."
+  [k]
+  (cond (string? k) k
+        (keyword? k) (subs (str k) 1)
+        :else (str k)))
+
+(defn json-str
+  "(js/emit name data)'s data as JSON text: fromValue (pkg/rt/json_value.go:60)
+   then json.Marshal. Map keys are sorted (Go marshals map[string]any in
+   key order). Floats: a whole value (|v| < 1e18) prints without a fraction,
+   as Go's 'f'/-1 does; others use the runtime's float text (Go switches to
+   exponent form outside [1e-6, 1e21); xsofy's payloads carry no floats)."
+  [v]
+  (cond (nil? v) "null"
+        (true? v) "true"
+        (false? v) "false"
+        (string? v) (json-string v)
+        (int? v) (str v)
+        (float? v) (if (and (< v 1e18) (> v -1e18) (= 0.0 (- v (long v)))) (str (long v)) (str v))
+        (keyword? v) (json-string (subs (str v) 1))
+        (map? v) (let [es (sort-by first (map (fn [[k x]] [(json-key k) x]) v))]
+                   (str "{" (apply str (interpose "," (map (fn [[k x]] (str (json-string k) ":" (json-str x))) es))) "}"))
+        (or (vector? v) (seq? v) (set? v)) (str "[" (apply str (interpose "," (map json-str v))) "]")
+        :else (json-string (str v))))
+
+(defn emit-v
+  "js/emit (pkg/rt/js.go prepareEmit): validate, marshal, hand to the host."
+  ([] (llvm.core/raise (llvm.str/str-bytes "js/emit expects 2 args (event-name data), got 0")))
+  ([a] (llvm.core/raise (llvm.str/str-bytes "js/emit expects 2 args (event-name data), got 1")))
+  ([nm data]
+   (let [n (cond (keyword? nm) (subs (str nm) 1)
+                 (symbol? nm) (str nm)
+                 (string? nm) nm
+                 :else (llvm.core/raise (llvm.str/str-bytes (str "js/emit event-name must be keyword, symbol, or string; got " (type nm)))))]
+     (host-emit (llvm.str/str-bytes n) (llvm.str/str-bytes (json-str data)))
+     nil))
+  ([a b x] (llvm.core/raise (llvm.str/str-bytes "js/emit expects 2 args (event-name data), got 3"))))
+
+(defn url-param-v
+  "js/url-param: the page's query parameter, nil when absent, off-browser,
+   or called with anything but one String."
+  ([] nil)
+  ([nm] (if (string? nm)
+          (let [b (host-url-param (llvm.str/str-bytes nm))]
+            (if (llvm.arch/null? b) nil (llvm.str/mk-str b)))
+          nil))
+  ([nm x] nil))
+
+(defn os-name-v
+  "os/os-name: runtime.GOOS of the build. This backend's target is the one
+   let-go's wasm bundle runs on (GOOS=js), and xsofy keys its web-only paths
+   (replay-dump via js/emit) on \"js\"."
+  [] "js")
+
+(declare get-bytes get-bytes-enc)
+
+;; kept out of dot-v so typeinfer does not type dot-v's params :int from the
+;; subtraction (a String receiver would then hit the unbox error)
+(defn- ns-between [a b] (- a b))
+
+(defn dot-v
+  "core/. (host interop). Two shapes: xsofy's ui/millis (.Sub (now)
+   clock-epoch), where now-v stands a monotonic ns Int in for a time.Time
+   (Sub of two Ints is their difference in ns, time.Duration), and
+   String.getBytes (P2.14). Anything else is a named limit."
+  ([obj m] (if (and (= m 'getBytes) (string? obj))
+             (get-bytes obj)
+             (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported")))))
+  ([obj m a] (cond (and (= m 'Sub) (int? obj) (int? a)) (ns-between obj a)
+                   (and (= m 'getBytes) (string? obj)) (get-bytes-enc obj a)
+                   :else (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported")))))
+  ([obj m a b] (if (and (= m 'getBytes) (string? obj))
+                 (llvm.core/raise (llvm.str/str-bytes "string.getBytes expected 0 or 1 argument, got 2"))
+                 (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported"))))))
+
+(defn char-v
+  "core/char? (P4.1: reached through long-v once json-str calls long)."
+  [x] (= 19 (llvm.seq/kind x)))
+
+(defn dissoc-n
+  "core/dissoc past rt/'s fixed arities (P4.1: xsofy's game loop dissocs
+   four screen keys at once): each key in turn, as native's variadic loop."
+  [coll ks]
+  (loop [m coll ks ks] (if (seq ks) (recur (dissoc m (first ks)) (rest ks)) m)))
+
+;; ---------------------------------------------------------------------------
+;; P2.14: natives let-go's core tests reach that rt/ has no twin for. Each
+;; reproduces the native's result and its catchable error text (probed on
+;; lg 4e769212); lw_rt's ext-twins routes the native var here.
+
+(defn- raise-lit [msg] (llvm.core/raise (llvm.str/str-bytes msg)))
+
+(defn disj-v
+  "core/disj (lang.go): nil stays nil, a set drops each key in turn."
+  ([s] s)
+  ([s x] (cond (nil? s) nil
+               (= 39 (llvm.core/ckind s)) (llvm.sorted/sset-disj s x)
+               (set? s) (llvm.phs/sdisj s x)
+               :else (raise-lit "disj expected Set")))
+  ([s x & xs] (loop [r (disj-v s x) xs xs] (if xs (recur (disj-v r (first xs)) (next xs)) r))))
+
+(defn disj!-v
+  "core/disj! on a transient set (llvm.core's TSet wraps phm's transient)."
+  ([t] t)
+  ([t x] (if (= 33 (llvm.core/ckind t))
+           (do (llvm.phs/tdisj! (llvm.arch/get llvm.core/TSet 0 t) x) t)
+           (raise-lit "disj! expected TransientSet")))
+  ([t x & xs] (loop [r (disj!-v t x) xs xs] (if xs (recur (disj!-v r (first xs)) (next xs)) r))))
+
+(defn dissoc!-v
+  "core/dissoc! past llvm.core's fixed arities (P5.7): each key in turn."
+  ([t key] (llvm.core/dissoc! t key))
+  ([t key & ks] (loop [r (llvm.core/dissoc! t key) ks ks] (if ks (recur (llvm.core/dissoc! r (first ks)) (next ks)) r))))
+
+(defn map-entry?-v "core/map-entry?: a MapEntry (not a 2-vector)." [x] (= 23 (llvm.core/ckind x)))
+
+(defn lazy-seq?-v "core/lazy-seq?: an unrealised-or-realised LazySeq." [x] (= 5 (llvm.seq/kind x)))
+
+(defn shutdown-agents-v "core/shutdown-agents: no agents exist here." [] nil)
+
+(defn str-replace-first-v
+  "core/str-replace-first (clojure.string/replace-first) with a literal
+   String match: the first occurrence replaced by r, or by (r match) when r
+   is a fn (a regex match goes through str-replace-first-rx-v)."
+  [s m r]
+  (let [i (clojure.string/index-of s m)]
+    (if (nil? i)
+      s
+      (str (subs s 0 i) (if (llvm.seq/callable? r) (r m) r) (subs s (+ i (count m)))))))
+
+;; Namespaces as values. The backend has no Namespace kind: a namespace is
+;; stood in by the Symbol `<ns name>` (it prints as native's #<Namespace>
+;; does, `<ns name>`, and compares by name, which is identity for interned
+;; namespaces). find-ns is rt/wasm/natives.lg's twin (P6.0). A var's :ns
+;; meta (lower-wasm's var constants) uses the same stand-in.
+
+(defn ns-name-v [n]
+  (let [t (when (symbol? n) (str n))]
+    (if (and t (clojure.string/starts-with? t "<ns ") (clojure.string/ends-with? t ">"))
+      (symbol (subs t 4 (dec (count t))))
+      (raise-lit "ns-name expected Namespace"))))
+
+;; clojure.math / math: the natives rt/wasm/math.lg has no twin for. Go's
+;; math.Round (half away from zero) to an Int, Floor/Ceil to a Float.
+(defn- to-f [x] (if (int? x) (llvm.arch/i64-to-f64 x) (llvm.str/unbox-float x)))
+
+(defn round-v
+  "math.Round to an Int; NaN gives 0 and an out-of-range value MaxLong /
+   MinLong, as native (P5.7, review3 bug-03: trunc_f64_s trapped)."
+  [x]
+  (if (int? x)
+    x
+    (let [f (to-f x) t (llvm.math/trunc f) d (- f t)]
+      (f64-to-i64-sat (cond (>= d 0.5) (+ t 1.0) (<= d -0.5) (- t 1.0) :else t)))))
+
+(defn floor-v [x] (let [f (to-f x) t (llvm.math/trunc f)] (if (< f t) (- t 1.0) t)))
+(defn ceil-v [x] (let [f (to-f x) t (llvm.math/trunc f)] (if (> f t) (+ t 1.0) t)))
+
+(defn floor-div-v
+  "Math.floorDiv on Ints: quot rounded toward negative infinity."
+  [a b]
+  (let [q (quot a b)]
+    (if (and (not= 0 (rem a b)) (not= (neg? a) (neg? b))) (dec q) q)))
+
+(defn parse-int-v
+  "Integer/parseInt (host_jvm_statics.go): strconv.ParseInt(s, 10, 32), so
+   an optional sign then ASCII digits only. As Go's ParseUint does, the
+   unsigned accumulator overflowing 2^32-1 is a range error at once, even
+   before a later bad byte; the signed 32-bit bound is checked at the end."
+  [s]
+  (if-not (string? s)
+    (raise-lit "parseInt expects a string")
+    (let [bs (llvm.str/str-bytes s) n (llvm.arch/alen bs)
+          b0 (when (pos? n) (llvm.arch/bget bs 0))
+          neg? (= b0 45)
+          start (if (or neg? (= b0 43)) 1 0)
+          err (fn [why] (raise-lit (str "strconv.ParseInt: parsing " (pr-str s) ": " why)))]
+      (if (= start n)
+        (err "invalid syntax")
+        (loop [i start acc 0]
+          (if (= i n)
+            (if (if neg? (> acc 2147483648) (> acc 2147483647))
+              (err "value out of range")
+              (if neg? (- acc) acc))
+            (let [b (llvm.arch/bget bs i)]
+              (if (and (>= b 48) (<= b 57))
+                (let [acc (+ (* acc 10) (- b 48))]
+                  (if (> acc 4294967295) (err "value out of range") (recur (inc i) acc)))
+                (err "invalid syntax")))))))))
+
+(defn get-bytes
+  "(.getBytes s): a fresh byte-array of s's UTF-8 bytes (let-go strings are
+   UTF-8, so every supported encoding is the identity)."
+  [s]
+  (let [bs (llvm.str/str-bytes s) n (llvm.arch/alen bs) out (llvm.arch/bytes-new n)]
+    (loop [i 0] (when (< i n) (llvm.arch/bset! out i (llvm.arch/bget bs i)) (recur (inc i))))
+    (llvm.arch/new llvm.arrays/Arr 0 out)))
+
+(defn get-bytes-enc
+  "(.getBytes s enc): pkg/rt's string method accepts only UTF-8, any case,
+   with or without the dash."
+  [s enc]
+  (cond (not (string? enc)) (raise-lit (str "string.getBytes encoding must be string, got " (type enc)))
+        (contains? #{"UTF-8" "UTF8"} (clojure.string/upper-case enc)) (get-bytes s)
+        :else (raise-lit (str "string.getBytes: only UTF-8 supported, got " (pr-str enc)))))
+
+;; with-out-str (core/with-out-str*): output written to fd 1 while f runs is
+;; collected instead (D115's *out* fd stack, with a buffer as the target).
+;; Named limit, as for (binding [*out* ..]): the backend's own println
+;; (env.print_*) knows no fds, so only the runtime's printers (pr, prn,
+;; print, a println that is not lowered inline) are captured.
+(defn ^{:intrinsic true
+        :wasm "push fd -2 on the *out* stack and an empty buffer on the capture stack"
+        :type "[] -> :any"}
+  capture-begin [] nil)
+
+(defn ^{:intrinsic true
+        :wasm "pop the capture and *out* stacks; the captured Bytes"
+        :type "[] -> :any"}
+  capture-end [] nil)
+
+(defn with-out-str-v [f]
+  (capture-begin)
+  (let [r (try (f) (catch Throwable e (capture-end) (throw e)))]
+    (llvm.str/mk-str (capture-end))))
+
+;; ---------------------------------------------------------------------------
+;; P2.14: regular expressions. let-go's Regex is Go's regexp (RE2 syntax,
+;; leftmost-first matching). The backend has no Regex kind, so a regex
+;; CONSTANT whose pattern uses only the subset below is compiled at build
+;; time (regex-parse runs natively in the driver) and stood in by an
+;; interned Symbol named as the regex prints, carrying the parsed pattern in
+;; its metadata (:lw/regex: the program regex-compile builds from the parsed
+;; pattern, as Go's syntax.Compile does). P5.6 (review3 bug-04): the matcher
+;; is Go's bit-state backtracker (regexp/backtrack.go): each (pc, pos) is
+;; explored at most once per search, so a search is linear in the input
+;; (the old continuation backtracker was exponential on (a*)*b), and since
+;; the program is Go's, its leftmost-first results and captures are Go's.
+;; Supported: literals and escapes, `.`, classes [..] [^..] with ranges and
+;; POSIX [:name:] / [:^name:], \d \w \s \D \W \S, groups (..) (?:..),
+;; alternation, * + ? {n} {n,} {n,m} and their lazy forms, ^ $ \A \z \b \B.
+;; Named limits (the constant stays a Phase-2 constant): flags (?i), named
+;; groups, \p classes, \x escapes, lookahead.
+;; re-pattern of a run-time String compiles it with the same two fns at
+;; run time (re-pattern-v, P5.8).
+;;
+(defn regex-source
+  "The pattern text of a native Regex value, or nil (not a Regex). Its str
+   is `#` and the pattern Go-quoted (%q), which reads back as an lg string.
+   Runs natively, at build time."
+  [v]
+  (when (= "let-go.lang.Regex" (str (type v)))
+    (let [t (str v)]
+      (try (let [src (read-string (subs t 1))] (when (string? src) src)) (catch e nil)))))
+
+;; AST: [:lit c] [:any] [:cls k] [:set neg? items] (items [:r lo hi] or
+;; [:cls k]) [:grp n node] [:cat nodes] [:alt nodes] [:rep node min max
+;; greedy?] (max -1 = unbounded) [:bol] [:eol] [:wb] [:nwb]; chars are code
+;; points.
+
+;; P5.6 (review3 bug-02): Go's POSIX classes (regexp/syntax perl_groups.go
+;; posixGroup), ASCII only, as [lo hi] code point ranges.
+(def posix-ranges
+  {"alnum" [[48 57] [65 90] [97 122]] "alpha" [[65 90] [97 122]] "ascii" [[0 127]]
+   "blank" [[9 9] [32 32]] "cntrl" [[0 31] [127 127]] "digit" [[48 57]]
+   "graph" [[33 126]] "lower" [[97 122]] "print" [[32 126]]
+   "punct" [[33 47] [58 64] [91 96] [123 126]] "space" [[9 13] [32 32]]
+   "upper" [[65 90]] "word" [[48 57] [65 90] [95 95] [97 122]] "xdigit" [[48 57] [65 70] [97 102]]})
+
+(defn- ranges-complement
+  "The code points 0..0x10FFFF outside sorted, disjoint ranges rs."
+  [rs]
+  (let [[out lo] (reduce (fn [[out lo] [a b]] [(if (< lo a) (conj out [lo (dec a)]) out) (inc b)]) [[] 0] rs)]
+    (if (<= lo 0x10FFFF) (conj out [lo 0x10FFFF]) out)))
+
+(defn regex-parse
+  "{:ast .. :groups n} for pattern src, or throws (unsupported syntax).
+   Runs natively, at build time."
+  [src]
+  (let [cs (vec src) n (count cs) pos (atom 0) ngroups (atom 0)
+        fail (fn [m] (throw (ex-info (str "lower-wasm: regex " m " (named limit)") {:src src})))
+        peekc (fn [] (when (< @pos n) (nth cs @pos)))
+        nextc (fn [] (let [c (nth cs @pos)] (swap! pos inc) c))
+        esc-class {\d :d \w :w \s :s \D :D \W :W \S :S}
+        esc-char {\n 10 \t 9 \r 13 \f 12 \v 11}
+        punct? (fn [c] (contains? (set ".[]{}()*+?^$|\\/-#&~,:;=<>!@%'\"`") c))]
+    (letfn [(parse-esc [in-class?]
+              (when (>= @pos n) (fail "trailing backslash"))
+              (let [c (nextc)]
+                (cond (esc-class c) [:cls (esc-class c)]
+                      (esc-char c) [:lit (esc-char c)]
+                      (punct? c) [:lit (int c)]
+                      (and (not in-class?) (= c \b)) [:wb]
+                      (and (not in-class?) (= c \B)) [:nwb]
+                      (and (not in-class?) (= c \A)) [:bol]
+                      (and (not in-class?) (= c \z)) [:eol]
+                      :else (fail (str "escape \\" c)))))
+            (posix-class []
+              ;; Go's parseNamedClass: at `[:`, a class named up to the next
+              ;; `:]` (none: the `[` is a literal); an unknown name is an
+              ;; error natively, so a program using one never builds
+              (when (and (= \[ (peekc)) (< (+ @pos 2) n) (= \: (nth cs (inc @pos))))
+                (when-let [e (loop [j (+ @pos 2)]
+                               (cond (>= (inc j) n) nil
+                                     (and (= \: (nth cs j)) (= \] (nth cs (inc j)))) j
+                                     :else (recur (inc j))))]
+                  (let [nm (apply str (subvec cs (+ @pos 2) e))
+                        neg (clojure.string/starts-with? nm "^")
+                        rs (posix-ranges (if neg (subs nm 1) nm))]
+                    (when (nil? rs) (fail (str "POSIX class [:" nm ":]")))
+                    (reset! pos (+ e 2))
+                    (if neg (ranges-complement rs) rs)))))
+            (parse-class []
+              (let [neg (when (= \^ (peekc)) (nextc) true)]
+                (loop [items [] first? true]
+                  (when (>= @pos n) (fail "unterminated ["))
+                  (let [c (peekc) px (posix-class)]
+                    (cond
+                      px (recur (into items (map (fn [[lo hi]] [:r lo hi]) px)) false)
+                      (and (= c \]) (not first?))
+                      (do (nextc) [:set (boolean neg) items])
+                      :else
+                      (let [lo (if (= c \\) (do (nextc) (parse-esc true)) [:lit (int (nextc))])]
+                        (if (and (= :lit (first lo)) (= \- (peekc)) (< (inc @pos) n) (not= \] (nth cs (inc @pos))))
+                          (do (nextc)
+                              (let [c2 (peekc)
+                                    hi (if (= c2 \\) (do (nextc) (parse-esc true)) [:lit (int (nextc))])]
+                                (when-not (= :lit (first hi)) (fail "class range end"))
+                                (recur (conj items [:r (second lo) (second hi)]) false)))
+                          (recur (conj items (if (= :lit (first lo)) [:r (second lo) (second lo)] lo)) false))))))))
+            (parse-int []
+              (loop [v nil]
+                (let [c (peekc)]
+                  (if (and c (<= 48 (int c) 57)) (do (nextc) (recur (+ (* 10 (or v 0)) (- (int c) 48)))) v))))
+            (parse-quant [a]
+              (let [c (peekc)
+                    rng (cond (= c \*) (do (nextc) [0 -1])
+                              (= c \+) (do (nextc) [1 -1])
+                              (= c \?) (do (nextc) [0 1])
+                              (= c \{) (let [save @pos]
+                                         (nextc)
+                                         (let [lo (parse-int)
+                                               hi (if (= \, (peekc)) (do (nextc) (or (parse-int) -1)) lo)]
+                                           (if (and lo (= \} (peekc)))
+                                             (do (nextc) [lo hi])
+                                             (do (reset! pos save) nil))))
+                              :else nil)]
+                (if rng
+                  (let [lazy (when (= \? (peekc)) (nextc) true)]
+                    (when (contains? #{\* \+ \?} (peekc)) (fail "nested repetition"))
+                    (when (contains? #{:bol :eol :wb :nwb} (first a)) (fail "repeated assertion"))
+                    [:rep a (first rng) (second rng) (not lazy)])
+                  a)))
+            (parse-atom []
+              (let [c (nextc)]
+                (cond (= c \() (if (= \? (peekc))
+                                 (do (nextc)
+                                     (if (= \: (peekc))
+                                       (do (nextc) (let [r (parse-alt)] (when-not (= \) (peekc)) (fail "missing )")) (nextc) r))
+                                       (fail "group flags or name")))
+                                 (let [g (swap! ngroups inc) r (parse-alt)]
+                                   (when-not (= \) (peekc)) (fail "missing )"))
+                                   (nextc)
+                                   [:grp g r]))
+                      (= c \[) (parse-class)
+                      (= c \.) [:any]
+                      (= c \^) [:bol]
+                      (= c \$) [:eol]
+                      (= c \\) (parse-esc false)
+                      (contains? #{\* \+ \?} c) (fail "missing repetition argument")
+                      :else [:lit (int c)])))
+            (parse-cat []
+              (loop [items []]
+                (let [c (peekc)]
+                  (if (or (nil? c) (= c \|) (= c \)))
+                    (if (= 1 (count items)) (first items) [:cat items])
+                    (recur (conj items (parse-quant (parse-atom))))))))
+            (parse-alt []
+              (loop [alts [(parse-cat)]]
+                (if (= \| (peekc))
+                  (do (nextc) (recur (conj alts (parse-cat))))
+                  (if (= 1 (count alts)) (first alts) [:alt alts]))))]
+      (let [ast (parse-alt)]
+        (when (< @pos n) (fail "unbalanced )"))
+        {:ast ast :groups @ngroups}))))
+
+(defn- rx-nullable?
+  "frag.nullable in Go's compiler: node can match the empty string."
+  [node]
+  (let [t (nth node 0)]
+    (cond (contains? #{:lit :any :cls :set} t) false
+          (contains? #{:grp :plus} t) (rx-nullable? (nth node (if (= t :grp) 2 1)))
+          (= t :cat) (every? rx-nullable? (nth node 1))
+          (= t :alt) (boolean (some rx-nullable? (nth node 1)))
+          :else true)))
+
+(defn- rx-empty? [node] (or (= [:nop] node) (= [:cat []] node)))
+
+(defn- rx-simplify1
+  "Go's simplify1: op over an empty sub is the sub, and x** is x*."
+  [op sub greedy]
+  (if (or (rx-empty? sub) (and (= op (nth sub 0)) (= greedy (nth sub 2))))
+    sub
+    [op sub greedy]))
+
+(defn- rx-simplify-rep
+  "Go's Simplify of x{min,max} (regexp/syntax/simplify.go) into :star :plus
+   :quest :cat :nop nodes; the sub is simplified first, as there."
+  [sub mn mx greedy]
+  (cond (and (= mn 0) (= mx 0)) [:nop]
+        (= mx -1) (cond (= mn 0) (rx-simplify1 :star sub greedy)
+                        (= mn 1) (rx-simplify1 :plus sub greedy)
+                        :else [:cat (conj (vec (repeat (dec mn) sub)) (rx-simplify1 :plus sub greedy))])
+        (and (= mn 1) (= mx 1)) sub
+        :else (let [prefix (vec (repeat mn sub))
+                    suffix (when (> mx mn)
+                             (reduce (fn [sfx _] (rx-simplify1 :quest [:cat [sub sfx]] greedy))
+                                     (rx-simplify1 :quest sub greedy) (range (inc mn) mx)))]
+                (cond (nil? suffix) (if (empty? prefix) [:fail] [:cat prefix])
+                      (empty? prefix) suffix
+                      :else [:cat (conj prefix suffix)]))))
+
+(defn regex-compile
+  "Go's syntax.Compile of parsed ast into a program: {:prog [ins..] :start
+   pc}. Instructions: [:m out leaf] (one char matching the AST leaf), [:alt
+   out arg] (try out, then arg), [:cap out slot], [:empty out assertion],
+   [:nop out], [:match], [:fail]. Compiled back to front (each node knows
+   its continuation pc); a loop's :alt is placed first and patched. x* of a
+   nullable x is (x+)? as in Go (golang.org/issue/46123), which is what
+   gives RE2's captures on empty iterations. Runs natively, at build time."
+  [ast]
+  (let [prog (atom [[:match]])
+        emit! (fn [ins] (let [pc (count @prog)] (swap! prog conj ins) pc))
+        alt-ins (fn [greedy body next] (if greedy [:alt body next] [:alt next body]))]
+    (letfn [(simp [node]
+              (let [t (nth node 0)]
+                (cond (= t :grp) [:grp (nth node 1) (simp (nth node 2))]
+                      (= t :cat) (if (empty? (nth node 1)) [:nop] [:cat (mapv simp (nth node 1))])
+                      (= t :alt) [:alt (mapv simp (nth node 1))]
+                      (= t :rep) (rx-simplify-rep (simp (nth node 1)) (nth node 2) (nth node 3) (nth node 4))
+                      :else node)))
+            (cmp [node next]
+              (let [t (nth node 0)]
+                (cond
+                  (contains? #{:lit :any :cls :set} t) (emit! [:m next node])
+                  (contains? #{:bol :eol :wb :nwb} t) (emit! [:empty next t])
+                  (= t :nop) (emit! [:nop next])
+                  (= t :fail) (emit! [:fail])
+                  (= t :grp) (let [g (nth node 1) close (emit! [:cap next (inc (* 2 g))])]
+                               (emit! [:cap (cmp (nth node 2) close) (* 2 g)]))
+                  (= t :cat) (reduce (fn [nx item] (cmp item nx)) next (rseq (nth node 1)))
+                  (= t :alt) (let [es (mapv #(cmp % next) (nth node 1))]
+                               (reduce (fn [acc e] (emit! [:alt acc e])) (first es) (rest es)))
+                  (= t :quest) (emit! (alt-ins (nth node 2) (cmp (nth node 1) next) next))
+                  (and (= t :star) (rx-nullable? (nth node 1)))
+                  (cmp [:quest [:plus (nth node 1) (nth node 2)] (nth node 2)] next)
+                  :else ;; :star (entry: the loop) or :plus (entry: the body)
+                  (let [l (emit! [:fail]) body (cmp (nth node 1) l)]
+                    (swap! prog assoc l (alt-ins (nth node 2) body next))
+                    (if (= t :star) l body)))))]
+      (let [start (cmp (simp ast) 0)]
+        {:prog @prog :start start}))))
+
+(defn- rx-cls? [k c]
+  (cond (= k :d) (if (>= c 48) (<= c 57) false)
+        (= k :w) (or (rx-cls? :d c) (if (>= c 65) (<= c 90) false) (if (>= c 97) (<= c 122) false) (= c 95))
+        (= k :s) (or (= c 32) (= c 9) (= c 10) (= c 12) (= c 13))
+        (= k :D) (not (rx-cls? :d c))
+        (= k :W) (not (rx-cls? :w c))
+        :else (not (rx-cls? :s c))))
+
+(defn- rx-set? [items c]
+  (loop [i 0]
+    (if (< i (count items))
+      (let [it (nth items i)]
+        (if (if (= :r (nth it 0)) (if (>= c (nth it 1)) (<= c (nth it 2)) false) (rx-cls? (nth it 1) c))
+          true
+          (recur (inc i))))
+      false)))
+
+(defn- rx-wb? [cs i]
+  (let [n (count cs)
+        a (if (> i 0) (rx-cls? :w (nth cs (dec i))) false)
+        b (if (< i n) (rx-cls? :w (nth cs i)) false)]
+    (not= a b)))
+
+(defn- rx-leaf? [leaf c]
+  (let [t (nth leaf 0)]
+    (cond (= t :lit) (= c (nth leaf 1))
+          (= t :any) (not= c 10)
+          (= t :cls) (rx-cls? (nth leaf 1) c)
+          :else (not= (nth leaf 1) (rx-set? (nth leaf 2) c)))))
+
+(defn- rx-empty-ok? [k cs i]
+  (cond (= k :bol) (= i 0)
+        (= k :eol) (= i (count cs))
+        (= k :wb) (rx-wb? cs i)
+        :else (not (rx-wb? cs i))))
+
+(defn- rx-try
+  "tryBacktrack: the first match starting at pos st, as the capture slot
+   vector (slot 1 = end), or nil. vis holds one byte per (pc, pos); a cell
+   equal to gen was explored earlier in this search and failed (a success
+   ends the search), so it is not explored again. Pending alternatives sit
+   on the stack with the captures they started from."
+  [rx cs st vis gen]
+  (let [prog (:prog rx) n (count cs) w (inc n)
+        caps0 (assoc (vec (repeat (* 2 (inc (:ngroups rx))) -1)) 0 st)]
+    (loop [stack () pc (:start rx) pos st caps caps0 ok true]
+      (if (not ok)
+        (if (empty? stack)
+          nil
+          (let [j (first stack)] (recur (rest stack) (nth j 0) (nth j 1) (nth j 2) true)))
+        (let [idx (+ (* pc w) pos)]
+          (if (= gen (llvm.arch/bget vis idx))
+            (recur stack pc pos caps false)
+            (let [ins (nth prog pc) op (nth ins 0)]
+              (llvm.arch/bset! vis idx gen)
+              (cond
+                (= op :m) (if (if (< pos n) (rx-leaf? (nth ins 2) (nth cs pos)) false)
+                            (recur stack (nth ins 1) (inc pos) caps true)
+                            (recur stack pc pos caps false))
+                (= op :alt) (recur (cons [(nth ins 2) pos caps] stack) (nth ins 1) pos caps true)
+                (= op :cap) (recur stack (nth ins 1) pos (assoc caps (nth ins 2) pos) true)
+                (= op :empty) (if (rx-empty-ok? (nth ins 2) cs pos)
+                                (recur stack (nth ins 1) pos caps true)
+                                (recur stack pc pos caps false))
+                (= op :nop) (recur stack (nth ins 1) pos caps true)
+                (= op :match) (assoc caps 1 pos)
+                :else (recur stack pc pos caps false)))))))))
+
+(defn- rx-search
+  "The leftmost match at or after rune index from: [start end caps] (caps:
+   group -> [start end] for the groups that took part) or nil. One visited
+   generation covers every start position, as Go's unanchored backtrack
+   does, so the search stays linear. vis/gen as rx-try; rx-all reuses one
+   vis across searches by bumping gen."
+  ([rx cs from] (rx-search rx cs from (llvm.arch/bytes-new (* (count (:prog rx)) (inc (count cs)))) 1))
+  ([rx cs from vis gen]
+   (let [n (count cs)]
+     (loop [s from]
+       (if (<= s n)
+         (let [r (rx-try rx cs s vis gen)]
+           (if (nil? r)
+             (recur (inc s))
+             [s (nth r 1)
+              (loop [g 1 m {}]
+                (if (< (* 2 g) (count r))
+                  (recur (inc g) (if (>= (nth r (* 2 g)) 0) (assoc m g [(nth r (* 2 g)) (nth r (inc (* 2 g)))]) m))
+                  m))]))
+         nil)))))
+
+(defn- rx-all
+  "Go's allMatches: successive matches, an empty match abutting the previous
+   one skipped; at most limit (all when negative)."
+  [rx cs limit]
+  (let [n (count cs) size (* (count (:prog rx)) (inc n))]
+    (loop [pos 0 prev -1 out [] vis (llvm.arch/bytes-new size) gen 1]
+      (if (if (> pos n) true (if (>= limit 0) (>= (count out) limit) false))
+        out
+        (let [m (rx-search rx cs pos vis gen)
+              ;; a byte holds 255 generations; then a fresh (zeroed) array
+              vis2 (if (= gen 255) (llvm.arch/bytes-new size) vis)
+              gen2 (if (= gen 255) 1 (inc gen))]
+          (if (nil? m)
+            out
+            (let [st (nth m 0) en (nth m 1) empty-here (= en pos)]
+              (recur (if empty-here (inc pos) en) en
+                     (if (if empty-here (= st prev) false) out (conj out m))
+                     vis2 gen2))))))))
+
+(defn rx? "A regex stand-in (see above)." [x]
+  ;; P5.9: symbol? is false for a stand-in now (llvm.core/standin)
+  (= 1 (llvm.core/standin x)))
+
+(defn- rx-ast
+  "The compiled pattern: {:prog :start :ngroups} (regex-compile + groups)."
+  [re] (:lw/regex (meta re)))
+(defn- rx-ngroups [re] (:lw/groups (meta re)))
+(defn- rx-chars [s] (mapv int s))
+
+(defn- rx-group-strs
+  "A match's groups as Strings (nil when a group did not take part)."
+  [s ng m]
+  (let [caps (nth m 2)]
+    (vec (cons (subs s (nth m 0) (nth m 1))
+               (map (fn [g] (let [p (get caps g)] (if (nil? p) nil (subs s (nth p 0) (nth p 1)))))
+                    (range 1 (inc ng)))))))
+
+(defn- rx-value
+  "regexSubmatchValue: the match String without groups, else the vector."
+  [s ng m]
+  (if (= ng 0) (subs s (nth m 0) (nth m 1)) (rx-group-strs s ng m)))
+
+(defn- rx-expand
+  "Go's Regexp.Expand of template t for match m, after let-go's
+   validateReplacement (a reference to a group the pattern lacks raises)."
+  [re s t m]
+  (let [ng (rx-ngroups re) gs (rx-group-strs s ng m) cs (vec t) n (count cs)
+        name-char? (fn [c] (let [x (int c)] (or (= x 95) (if (>= x 97) (<= x 122) false) (if (>= x 65) (<= x 90) false) (if (>= x 48) (<= x 57) false))))]
+    (loop [i 0 out ""]
+      (if (>= i n)
+        out
+        (let [c (nth cs i)]
+          (if (not= c \$)
+            (recur (inc i) (str out c))
+            (if (if (< (inc i) n) (= \$ (nth cs (inc i))) false)
+              (recur (+ i 2) (str out "$"))
+              (let [braced (if (< (inc i) n) (= \{ (nth cs (inc i))) false)
+                    st (if braced (+ i 2) (inc i))
+                    en (loop [j st] (if (if (< j n) (name-char? (nth cs j)) false) (recur (inc j)) j))
+                    nm (apply str (subvec cs st en))
+                    ok (if braced (if (< en n) (= \} (nth cs en)) false) true)
+                    nxt (if braced (inc en) en)]
+                (cond (if (not ok) true (= nm "")) (recur (inc i) (str out "$"))
+                      (every? (fn [ch] (name-char? ch)) nm)
+                      (let [idx (parse-long nm)]
+                        (cond (nil? idx) (raise-lit (str "no group named " (pr-str nm) " in regex " (str re)))
+                              (> idx ng) (raise-lit (str "no group " idx " in regex " (str re)))
+                              :else (recur nxt (str out (or (nth gs idx) "")))))
+                      :else (recur nxt out))))))))))
+
+(defn- rx-replace
+  "str-replace / str-replace-first with a regex match: Go's ReplaceAllString
+   (or the first match only) with $-expansion, or the fn called with each
+   match (strReplaceCallback: the String, or the groups vector)."
+  [s re r first?]
+  (let [cs (rx-chars s) ng (rx-ngroups re)
+        tmpl (string? r)
+        ;; the template is validated before matching (validateReplacement)
+        _ (when tmpl (rx-expand re "" r [0 0 {}]))
+        ms (rx-all (rx-ast re) cs (if first? 1 -1))]
+    (loop [ms ms last 0 out ""]
+      (if (empty? ms)
+        (str out (subs s last))
+        (let [m (first ms)
+              rep (if tmpl
+                    (rx-expand re s r m)
+                    (let [x (r (if (= ng 0) (subs s (nth m 0) (nth m 1)) (rx-group-strs s ng m)))]
+                      (if (string? x) x (raise-lit "str-replace replacement function must return a String"))))]
+          (recur (rest ms) (nth m 1) (str out (subs s last (nth m 0)) rep)))))))
+
+(defn re-find-v
+  "core/re-find: the first match (String, or [whole groups..]) or nil. A
+   metacharacter-free regex takes re-find-lit's fast path."
+  [re s]
+  (cond (not (rx? re)) (raise-lit "re-find expected Regex")
+        (not (string? s)) (raise-lit "re-find expected String")
+        (some? (:lw/lit (meta re))) (re-find-lit (:lw/lit (meta re)) s)
+        :else (let [m (rx-search (rx-ast re) (rx-chars s) 0)]
+                (if (nil? m) nil (rx-value s (rx-ngroups re) m)))))
+
+(defn re-matches-v
+  "core/re-matches: the leftmost match, only when it spans all of s
+   (CoreReMatches: find, then compare the span, not an anchored match)."
+  [re s]
+  (cond (not (rx? re)) (raise-lit "re-matches expected Regex")
+        (not (string? s)) (raise-lit "re-matches expected String")
+        (some? (:lw/lit (meta re))) (if (= (:lw/lit (meta re)) s) s nil)
+        :else (let [cs (rx-chars s) m (rx-search (rx-ast re) cs 0)]
+                (if (if (nil? m) false (if (= 0 (nth m 0)) (= (count cs) (nth m 1)) false))
+                  (rx-value s (rx-ngroups re) m)
+                  nil))))
+
+(defn re-pattern-v
+  "core/re-pattern (lang.go:6704): a regex comes back as is; a String is
+   parsed and compiled at run time (regex-parse, regex-compile, compiled
+   into the module) into the stand-in a regex constant is. A pattern
+   outside the engine's subset, or a malformed one, raises regex-parse's
+   catchable named limit (native's text for a malformed one is Go's `error
+   parsing regexp: ...`)."
+  [s]
+  (cond (rx? s) s
+        (string? s) (let [p (regex-parse s)]
+                      ;; the meta lower-wasm's regex-standin gives a constant
+                      ;; (less :lw/lit, which is only a fast path)
+                      (with-meta (symbol (str "#" (pr-str s)))
+                        {:lw/regex (assoc (regex-compile (:ast p)) :ngroups (:groups p)) :lw/groups (:groups p) :lw/src s}))
+        :else (raise-lit "regex expected String")))
+
+(defn re-seq-v
+  "core/re-seq: every match as a list, or nil."
+  [re s]
+  (cond (not (rx? re)) (raise-lit "re-seq expected Regex")
+        (not (string? s)) (raise-lit "re-seq expected String")
+        :else (let [ng (rx-ngroups re) ms (rx-all (rx-ast re) (rx-chars s) -1)]
+                (if (empty? ms) nil (apply list (map (fn [m] (rx-value s ng m)) ms))))))
+
+(defn split-v
+  "core/split: a regex separator splits as Go's Regexp.Split (string.lg's
+   clojure.string/split adds the limit-0 rule on top); anything else is the
+   runtime's split."
+  ([s] (llvm.str/split s))
+  ([s sep] (if (rx? sep) (split-v s sep -1) (llvm.str/split s sep)))
+  ([s sep n]
+   (if (rx? sep)
+     (cond (not (string? s)) (raise-lit "split expected String")
+           (not (int? n)) (raise-lit "split expected Int limit")
+           (= n 0) ()
+           (if (= s "") (not= "" (:lw/src (meta sep))) false) (list "")
+           :else (let [cs (rx-chars s) ms (rx-all (rx-ast sep) cs n)]
+                   (loop [ms ms beg 0 end 0 out []]
+                     (if (if (empty? ms) true (if (> n 0) (= (count out) (dec n)) false))
+                       (apply list (if (not= end (count cs)) (conj out (subs s beg)) out))
+                       (let [m (first ms)]
+                         (recur (rest ms) (nth m 1) (nth m 0)
+                                (if (not= 0 (nth m 1)) (conj out (subs s beg (nth m 0))) out)))))))
+     (llvm.str/split s sep n))))
+
+(defn str-replace-v
+  "core/str-replace: a regex match through rx-replace, else the runtime's."
+  [s m r]
+  (if (rx? m)
+    (if (string? s) (rx-replace s m r false) (raise-lit "str-replace expected String"))
+    (llvm.str/str-replace s m r)))
+
+(defn str-replace-first-rx-v
+  "core/str-replace-first: a regex match through rx-replace, else the
+   literal fill."
+  [s m r]
+  (if (rx? m)
+    (if (string? s) (rx-replace s m r true) (raise-lit "str-replace-first expected String"))
+    (str-replace-first-v s m r)))
+
+(defn read-all-string-v
+  "core/read-all-string: every form of s, in order, through the runtime's
+   data reader (llvm.reader/read-string*). Whitespace, commas and ;
+   comments between forms are skipped here (native also returns a VOID
+   marker for a #_ discard or a trailing comment, which callers filter out;
+   none is produced here). The reader's named limits apply (reader macros
+   that need *ns*)."
+  [s]
+  (if (string? s)
+    (let [n (count s)]
+      (loop [i 0 out []]
+        (let [j (loop [j i]
+                  (if (< j n)
+                    (let [c (nth s j)]
+                      (cond (or (= c \space) (= c \,) (= c \newline) (= c \tab) (= c \return) (= c \formfeed)) (recur (inc j))
+                            (= c \;) (recur (loop [k j] (if (if (< k n) (not= (nth s k) \newline) false) (recur (inc k)) k)))
+                            :else j))
+                    j))]
+          (if (>= j n)
+            out
+            (let [r (llvm.reader/read-string* s j)]
+              (recur (nth r 1) (conj out (nth r 0))))))))
+    (raise-lit "read-all-string expected String")))
+
+(defn double-v
+  "core/double: an Int as its Float, a Float as is; anything else raises
+   native's `<pr form> can't be coerced to double`."
+  [x]
+  (cond (float? x) x
+        (int? x) (llvm.str/box-float (llvm.arch/i64-to-f64 x))
+        :else (raise-lit (str (pr-str x) " can't be coerced to double"))))
+
+(defn log-v "math/log: Go's math.Log (llvm.math's portable port)." [x]
+  (llvm.str/box-float (llvm.math/log* (to-f x))))
+
+(defn empty-v
+  "core/empty: the empty collection of x's kind with x's meta (a vector,
+   map, set, list or any seq), nil for anything else; a MapEntry gives []."
+  [x]
+  (let [m (meta x)
+        keep (fn [e] (if (nil? m) e (with-meta e m)))]
+    (cond (nil? x) nil
+          (map-entry?-v x) []
+          ;; Collection.Empty() is the shared EmptySorted* for the default comparator,
+          ;; the only one here (sorted-map-by is refused): no meta (sorted_map.go:413)
+          (= 38 (llvm.core/ckind x)) (llvm.sorted/empty-smap)
+          (= 39 (llvm.core/ckind x)) (llvm.sorted/empty-sset)
+          (vector? x) (keep [])
+          (map? x) (keep {})
+          (set? x) (keep #{})
+          (seq? x) (keep ())
+          :else nil)))
+
+(defn sorted-map-v
+  "core/sorted-map (CoreSortedMap, lang.go:5611): pairs assoc'd in turn into
+   the empty sorted map; an odd count is an error."
+  [& kvs]
+  (if (odd? (count kvs))
+    (raise-lit (str "sorted-map requires even number of arguments, got " (count kvs)))
+    (loop [m (llvm.sorted/empty-smap) s (seq kvs)]
+      (if s (recur (llvm.sorted/smap-assoc m (first s) (second s)) (nnext s)) m))))
+
+(defn sorted-set-v
+  "core/sorted-set (CoreSortedSet, lang.go:5620): each element conj'd in turn."
+  [& xs]
+  (loop [r (llvm.sorted/empty-sset) s (seq xs)]
+    (if s (recur (llvm.sorted/sset-conj r (first s)) (next s)) r)))

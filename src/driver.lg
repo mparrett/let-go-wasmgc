@@ -727,10 +727,10 @@
    ;; the evaluator and the table separately)
    ;; P7.6: LW_NO_EVAL=1 (lw-rt/no-eval?) leaves the evaluator out, and so
    ;; the table and its hidden __lw_* defns
-   (when (and @eval-reached (lw-rt/ns-var 'wasm.eval 'install-program-table!)
+   (when (and @eval-reached (lw-rt/ns-var (lw-rt/rt-ns 'eval) 'install-program-table!)
               (not lw-rt/no-eval?)
               (not= "1" (os/getenv "LW_NO_PROGRAM_TABLE")))
-     [(list 'wasm.eval/install-program-table!
+     [(list (lw-rt/rt-sym 'eval 'install-program-table!)
             (into {} (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
 
 (defn target-args
@@ -776,8 +776,10 @@
         ;; let-go's clojure-test-suite harness reads them (D201)
         _ (when (flags "--read-clj") (set-read-clj! true))
         [in out] (remove flags argv)
-        opts {:target target :profile profile :rt (not (or (= target :llvm) (flags "--no-rt"))) :shake (not (flags "--no-shake"))}
-        rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
+        opts {:target target :profile profile :rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
+        ;; --target llvm compiles the runtime it reaches on demand: the cached
+        ;; runtime library holds lowered WAT (D201)
+        rtlib? (and (:rt opts) (not= target :llvm) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))
         forms (mapcat splice-do (read-program in))

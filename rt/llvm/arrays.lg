@@ -1,0 +1,253 @@
+;; llvm.arrays — P3.1: let-go's mutable typed arrays as the runtime sees them
+;; (int-array, byte-array, aget, aset, alength, aclone, bytes), in the
+;; runtime dialect of seq.lg (IR special forms, IR-op core fns on :int,
+;; llvm.arch, and the runtime namespaces it requires). Ground truth is
+;; let-go ff1e6dac: pkg/vm/typed_array.go (TypedArray, TypedArraySeq) and
+;; pkg/rt/lang.go (buildArray :5046, CoreAgetf :9036, CoreAsetf :9074,
+;; CoreAlengthf :9098, CoreAclonef :9111, CoreBytesf :9124).
+;;
+;; An array is `Arr`: element kind (0 byte, 1 int, 2 object: ArrayByte/
+;; ArrayInt/ArrayObject) and the backing store (arch/Bytes, I64s, or for an
+;; object array a llvm.pvec/PVec whose leaves are written in place by
+;; pv/vset!), mutable and never resized. An object array keeps a PVec so that
+;; `vec` of it can share the leaves: native's vec returns an ArrayVector over
+;; the same []Value (lang.go:2077), so a later aset shows through the vector
+;; (transient_test's vec-object-array-alias). double-array and conj/empty
+;; (which make an object-array) are named limits. Loaded before llvm.core, which refines kind 18 to 37 for an Arr
+;; and routes type/count/seq/print/get/nth here; the messages that name an
+;; argument's type ("aget expects array, got let-go.lang.Int") need
+;; llvm.core's type-name, which this namespace reaches through the hook
+;; llvm.core/install! sets (it cannot require llvm.core: llvm.core requires
+;; it).
+;;
+;; Calling convention as seq.lg (D37); errors raise the backend's exception
+;; value as llvm.core does (D68), msg = cmsg (natives called as values).
+(ns llvm.arrays
+  (:refer-clojure :exclude [aget aset alength aclone bytes int-array byte-array to-array object-array vec])
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]))
+
+(arch/defarray I64s :i64)
+(arch/defstruct Arr [:i32 :ref])                 ; element kind 0 byte / 1 int, backing array
+;; The one runtime global (D39): the Fn (f x) -> Str giving a value's type
+;; name, set by llvm.core/install!.
+(arch/defstruct AGlobals [[:mut :ref]])
+(def globals (arch/new AGlobals (arch/null)))
+
+(defn set-type-name-hook! [f] (arch/set! AGlobals 0 globals f))
+
+(defn arr? [x] (if (arch/null? x) false (arch/is? Arr x)))
+(defn akind [a] (arch/get Arr 0 a))
+(defn adata [a] (arch/get Arr 1 a))
+(defn alen* [a] (if (= 2 (akind a)) (pv/vcount (adata a)) (arch/alen (adata a))))
+(defn aget* "Element i of Arr a, boxed (TypedArray.Get)." [a i]
+  (cond (= 0 (akind a)) (sq/box-int (arch/bget (adata a) i))
+        (= 1 (akind a)) (sq/box-int (arch/aget I64s (adata a) i))
+        :else (pv/vnth (adata a) i)))
+
+(defn- lit [bs] (s/mk-str bs))
+(defn- raise [bs] (throw (arch/new sq/Err 1 bs bs (arch/null) (arch/null))))
+(defn- raise-str [st] (raise (s/str-bytes st)))
+(defn- tn [x] (sq/invoke1 (arch/get AGlobals 0 globals) x))
+(defn- raise-arity [n] (raise-str (s/str (lit (arch/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
+(defn- raise-got [prefix x] (raise-str (s/str (lit prefix) (tn x))))
+(defn- int-val? [x] (= 1 (sq/kind x)))
+
+;; ---------------------------------------------------------------------------
+;; Construction (buildArray)
+
+(defn- nil-vec [n]                                     ; NewObjectArray: n nils
+  (loop [i 0 v (pv/empty-vec)] (if (< i n) (recur (inc i) (pv/vconj v (arch/null))) (pv/varray v))))
+(defn- new-arr [k n]
+  (arch/new Arr k (cond (= k 0) (arch/bytes-new n) (= k 1) (arch/array-new I64s n 0) :else (nil-vec n))))
+
+;; TypedArray.Set: a byte element keeps the low 8 bits (byte(n)); an object
+;; element is stored as is.
+(defn- set-elem! [a i v]
+  (if (= 2 (akind a))
+    (pv/vset! (adata a) i v)
+  (if (int-val? v)
+    (if (= 0 (akind a))
+      (arch/bset! (adata a) i (sq/unbox-int v))
+      (arch/aset! I64s (adata a) i (sq/unbox-int v)))
+    (raise-got (if (= 0 (akind a)) (arch/bytes-of-string "byte-array expects Int, got ")
+                   (arch/bytes-of-string "int-array expects Int, got "))
+               v))))
+
+(defn- build-sized [k n init fill?]
+  (if (< n 0)
+    (raise-str (s/str (lit (arch/bytes-of-string "negative array size: ")) (sq/box-int n)))
+    (let [a (new-arr k n)]
+      (when fill? (loop [i 0] (when (< i n) (set-elem! a i init) (recur (inc i)))))
+      a)))
+
+(defn- fresh-vec [coll]                                  ; coll's elements in a vector no one else holds
+  (loop [q (sq/seq coll) acc (pv/empty-vec)] (if (arch/null? q) (pv/varray acc) (recur (sq/next q) (pv/vconj acc (sq/first q))))))
+
+(defn- build-seq [k coll]                                ; the whole seq first, then the element checks, as Go does
+  (if (= k 2)
+    (arch/new Arr 2 (fresh-vec coll))                    ; never coll's own leaves: aset must not reach the source
+  (let [v (if (= 11 (sq/kind coll))
+            coll
+            (loop [q (sq/seq coll) acc (pv/empty-vec)] (if (arch/null? q) acc (recur (sq/next q) (pv/vconj acc (sq/first q))))))
+        n (pv/vcount v)
+        a (new-arr k n)]
+    (loop [i 0]
+      (if (< i n)
+        (let [x (pv/vnth v i)]
+          (if (int-val? x)
+            (if (= k 0) (arch/bset! (adata a) i (sq/unbox-int x)) (arch/aset! I64s (adata a) i (sq/unbox-int x)))
+            (raise-got (if (= k 0) (arch/bytes-of-string "byte-array element must be Int, got ")
+                           (arch/bytes-of-string "int-array element must be Int, got "))
+                       x))
+          (recur (inc i)))
+        a)))))
+
+;; seqOf's message for the scalars (Bool, Fn, Char, Keyword, Symbol, Float,
+;; Reduced, Atom, Volatile, Err): seq.lg's own seq traps on them.
+(defn- scalar-kind? [k]
+  (cond (= k 15) true (= k 16) true (= k 14) true (if (>= k 19) (<= k 22) false) true (if (>= k 24) (<= k 26) false) true :else false))
+
+(defn- build [k x init fill?]
+  (cond (int-val? x) (build-sized k (sq/unbox-int x) init fill?)
+        (scalar-kind? (sq/kind x)) (raise-got (arch/bytes-of-string "don't know how to create ISeq from ") x)
+        :else (build-seq k x)))
+
+(defn ^{:twin "core/int-array"} int-array
+  ([] (raise-arity 0))
+  ([x] (build 1 x (arch/null) false))
+  ([x init] (build 1 x init true))
+  ([x init c] (raise-arity 3)))
+
+(defn ^{:twin "core/byte-array"} byte-array
+  ([] (raise-arity 0))
+  ([x] (build 0 x (arch/null) false))
+  ([x init] (build 0 x init true))
+  ([x init c] (raise-arity 3)))
+
+(defn ^{:twin "core/object-array"} object-array          ; CoreObjectArrayf = buildArray(ArrayObject)
+  ([] (raise-arity 0))
+  ([x] (build 2 x (arch/null) false))
+  ([x init] (build 2 x init true))
+  ([x init c] (raise-arity 3)))
+
+;; to-array (lang.go:4217): seqOf, so an Int is "don't know how to create
+;; ISeq from", not a size; nil and () give an empty array.
+(defn ^{:twin "core/to-array"} to-array [x]
+  (if (if (int-val? x) true (scalar-kind? (sq/kind x)))
+    (raise-got (arch/bytes-of-string "don't know how to create ISeq from ") x)
+    (build-seq 2 x)))
+
+;; vec (lang.go:2063) is llvm.seq/vec except on an object array, whose
+;; storage the vector shares (lang.go:2077).
+(defn ^{:twin "core/vec"} vec [x]
+  (if (arr? x)
+    (if (= 2 (akind x)) (pv/varray (adata x)) (sq/vec x))
+    (sq/vec x)))
+
+;; ---------------------------------------------------------------------------
+;; Access
+
+(defn- checked-index [a idx]                             ; the index checks aget and aset share
+  (if (int-val? idx)
+    (let [i (sq/unbox-int idx) n (alen* a)]
+      (if (if (< i 0) true (>= i n))
+        (raise-str (s/str (s/str (lit (arch/bytes-of-string "array index ")) idx)
+                          (lit (arch/bytes-of-string " out of bounds for length ")) (sq/box-int n)))
+        i))
+    -1))
+
+(defn- aget1 [a idx]
+  (if (arr? a)
+    (let [i (checked-index a idx)]
+      (if (< i 0) (raise (arch/bytes-of-string "aget index must be Int")) (aget* a i)))
+    (raise-got (arch/bytes-of-string "aget expects array, got ") a)))
+
+;; Extra indices walk nested arrays; an int/byte array's elements are Ints,
+;; so a further index always fails on the element, before its own check.
+(defn- nested [v] (raise-got (arch/bytes-of-string "aget nested: expected array, got ") v))
+
+(defn ^{:twin "core/aget"} aget
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a i] (aget1 a i))
+  ([a i j] (nested (aget1 a i)))
+  ([a i j k] (nested (aget1 a i))))
+
+(defn ^{:twin "core/aset"} aset
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([a i] (raise-arity 2))
+  ([a idx v]
+   (if (arr? a)
+     (let [i (checked-index a idx)]
+       (if (< i 0) (raise (arch/bytes-of-string "aset index must be Int")) (do (set-elem! a i v) v)))
+     (raise-got (arch/bytes-of-string "aset expects array, got ") a)))
+  ([a i v w] (raise-arity 4)))
+
+(defn ^{:twin "core/alength"} alength
+  ([] (raise-arity 0))
+  ([a] (if (arr? a) (sq/box-int (alen* a)) (raise-got (arch/bytes-of-string "alength expects array, got ") a)))
+  ([a b] (raise-arity 2)))
+
+(defn ^{:twin "core/aclone"} aclone                       ; TypedArray.Clone: a shallow copy, same kind
+  ([] (raise-arity 0))
+  ([a] (if (arr? a)
+         (let [n (alen* a) k (akind a)]
+           (if (= k 2)
+             (arch/new Arr 2 (fresh-vec (adata a)))
+             (let [b (new-arr k n)]
+               (if (= 0 k)
+                 (arch/array-copy arch/Bytes (adata b) 0 (adata a) 0 n)
+                 (arch/array-copy I64s (adata b) 0 (adata a) 0 n))
+               b)))
+         (raise-got (arch/bytes-of-string "aclone expects array, got ") a)))
+  ([a b] (raise-arity 2)))
+
+;; bytes: a String's UTF-8 bytes copied into a new byte-array; a byte-array
+;; is returned itself (identical?).
+(defn ^{:twin "core/bytes"} bytes
+  ([] (raise-arity 0))
+  ([x] (cond (= 17 (sq/kind x))
+             (let [src (s/str-bytes x) n (arch/alen src) b (arch/bytes-new n)]
+               (arch/array-copy arch/Bytes b 0 src 0 n)
+               (arch/new Arr 0 b))
+             (if (arr? x) (= 0 (akind x)) false) x
+             :else (raise-got (arch/bytes-of-string "bytes expects String or byte-array, got ") x)))
+  ([x y] (raise-arity 2)))
+
+(defn byte-data
+  "The raw bytes of a byte-array (arch/Bytes, shared, not copied), or null
+   for anything else: write! and xxh3 read a byte-array this way."
+  [x] (if (arr? x) (if (= 0 (akind x)) (adata x) (arch/null)) (arch/null)))
+
+;; ---------------------------------------------------------------------------
+;; The collection view llvm.core routes here (kind 37)
+
+(defn acount [a] (sq/box-int (alen* a)))
+
+;; TypedArray.Seq: null when empty. The seq is a List built now, so a later
+;; aset is not seen through it (native's TypedArraySeq reads the array as it
+;; walks); it prints, counts and types (PersistentList) the same.
+(defn aseq [a]
+  (loop [i (dec (alen* a)) acc (arch/null)]
+    (if (< i 0) acc (recur (dec i) (arch/new sq/Cons (aget* a i) acc)))))
+
+;; ValueAtOr: an Int key in range, else nf (get, and nth with a default).
+(defn aget-nf [a key nf]
+  (if (int-val? key)
+    (let [i (sq/unbox-int key)] (if (if (< i 0) true (>= i (alen* a))) nf (aget* a i)))
+    nf))
+
+;; String(): #int-array[0 7 0] / #byte-array[1 2] / #object-array[1 "a"]
+;; (elements by their String()); the same in every mode.
+(defn print-arr [a]
+  (let [n (alen* a) k (akind a)]
+    (loop [i 0 acc (lit (cond (= 0 k) (arch/bytes-of-string "#byte-array[") (= 1 k) (arch/bytes-of-string "#int-array[")
+                              :else (arch/bytes-of-string "#object-array[")))]
+      (if (< i n)
+        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (arch/bytes-of-string " "))) acc)
+                              (if (= 2 k) (s/value-string (aget* a i)) (aget* a i))))
+        (s/str acc (lit (arch/bytes-of-string "]")))))))

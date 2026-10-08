@@ -1,0 +1,458 @@
+;; llvm.str (rt/llvm/str.lg) checked against native lg on the same inputs:
+;; str / pr-str / print-str of every value kind, the string escape table,
+;; the float corpus (corpus/floats/pr-str.expected, line by line), strings as
+;; collections (rune vs byte indexing), subs, split, replace, the searches,
+;; keywords/symbols/chars/ints, compare, equality and hash, interning, and
+;; the dialect claim. Every expectation is computed live from native lg; the
+;; float snapshot is additionally checked for staleness (D13). Ports the
+;; string lines of let-go's subs_test, string_unicode_test,
+;; sort_count_unicode_test, string_replace_fn_test (literal matches) and
+;; string_split_test (literal separators) from corpus/core-tests.txt.
+(ns str-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.core :as c]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; ---------------------------------------------------------------------------
+;; Boundary glue (test only): lg values to wasm refs and back, deep.
+
+(declare ->w <-w)
+
+(defn clo [f]
+  (arch/new sq/Fn
+            (arch/funcref sq/Code0 (fn [_] (->w (f))))
+            (arch/funcref sq/Code1 (fn [_ a] (->w (f (<-w a)))))
+            (arch/funcref sq/Code2 (fn [_ a b] (->w (f (<-w a) (<-w b)))))
+            (arch/null) (arch/null) (arch/null) (arch/null) 0))
+
+(def ^:private array-type (type (object-array 0)))
+(defn- wref? [x] (and (= (type x) array-type) (pos? (alength x)) (map? (aget x 0))))
+
+(defn ->w [x]
+  (cond (nil? x) (arch/null)
+        (wref? x) x
+        (int? x) (sq/box-int x)
+        (boolean? x) (sq/bool x)
+        (string? x) (s/mk-str (arch/bytes-of-string x))
+        (char? x) (s/mk-char (int x))
+        (keyword? x) (s/kw-of-bytes (arch/bytes-of-string (subs (str x) 1)))
+        (symbol? x) (s/sym-of-bytes (arch/bytes-of-string (str x)))
+        (float? x) (s/box-float x)
+        ;; the Go type native holds (D73): a meta'd/conj-grown PersistentVector or an ArrayVector
+        (vector? x) (pv/vretag (reduce (fn [v e] (pv/vconj v (->w e))) (pv/empty-vec) x)
+                               (if (= (type x) (type (with-meta [] {}))) 1 0) (arch/null))
+        (fn? x) (clo x)
+        (seq? x) (reduce (fn [l e] (sq/conj l (->w e))) (sq/list) (reverse x))
+        :else (throw (ex-info (str "->w: no wasm form for " (pr-str x)) {}))))
+
+(defn <-w [r]
+  (let [k (sq/kind r)]
+    (cond (= k 0) nil
+          (= k 1) (sq/unbox-int r)
+          (= k 15) (= 1 (arch/get sq/Bool 0 r))
+          (= k 17) (arch/string-of-bytes (s/str-bytes r))
+          (= k 19) (char (s/char-val r))
+          (= k 20) (keyword (<-w (s/namespace r)) (<-w (s/name r)))
+          (= k 21) (symbol (<-w (s/namespace r)) (<-w (s/name r)))
+          (= k 22) (s/unbox-float r)
+          (or (<= 2 k 10) (= k 27)) (loop [q (sq/seq r) out []] (if (arch/null? q) (apply list out) (recur (sq/next q) (conj out (<-w (sq/first q))))))
+          (= k 11) (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r)))
+          :else r)))
+
+(defn- res
+  "[:ok v], [:err message] for a native exception or a raised runtime Err
+   (D68), or [:trap message] for a reference trap, so a trap never matches
+   a catchable native error (P2.13, D74)."
+  [f]
+  (try [:ok (f)]
+       (catch Throwable e
+         (cond (and (wref? e) (arch/is? sq/Err e)) [:err (arch/string-of-bytes (arch/get sq/Err 2 e))]
+               (wref? e) [:err (str "thrown ref " e)]
+               (:arch/trap (ex-data e)) [:trap (string/replace (ex-message e) "wasm trap: " "")]
+               :else [:err (ex-message e)]))))
+
+(defmacro same
+  "Native expression and llvm.str expression agree on value, or on the error message."
+  [native mine]
+  `(is (= (res (fn [] ~native)) (res (fn [] (<-w ~mine)))) (pr-str '~native)))
+
+(defmacro same-err
+  "Both throw. For let-go errors whose message embeds the value (\"%s can't
+   be coerced to int\"): arch/trap's text is static until ex-info (P2.7)."
+  [native mine]
+  `(is (= [:err :err] [(first (res (fn [] ~native))) (first (res (fn [] (<-w ~mine))))]) (pr-str '~native)))
+
+(defn- pvec [xs] (with-meta (vec xs) {:pv true}))           ; native PersistentVector, as llvm.pvec models
+
+;; ---------------------------------------------------------------------------
+;; Printing
+
+(def ^:private scalars
+  [nil 0 -1 1073741824 -9223372036854775808 9223372036854775807 true false
+   "" "d" "héllo" "a\"b\\c\nd\te\rf\bg\fh\u0001\u001f\u007f\u0080é𝄞 " "�"
+   \a \space \newline \tab \return \é \😀 (char 0) (char 127) (char 0xD800) (char 0x10FFFF) \" \\
+   :a :a/b (keyword "/") (keyword "a" "b/c") (keyword "" "b") (keyword "a/b/c")
+   'b 'c/d (symbol "x y") (symbol "a" "b") (symbol "/")
+   1.5 1.0 -0.0 0.1 1e21 1e-7 ##Inf ##-Inf ##NaN])
+
+(def ^:private colls
+  [[] [1 "x" \y nil :k] [[1 [2 "q"]] '(3) [] ""] '() '(1 2) '("a" \b 1.5 nil true)
+   [##Inf ##NaN 1.0 -0.0] [\space \newline (char 0)] ['a/b :c "\n"]])
+
+(deftest print-scalars-and-collections
+  (doseq [x (concat scalars colls)]
+    (same (str x) (s/str (->w x)))
+    (same (pr-str x) (s/pr-str (->w x)))
+    (same (print-str x) (s/print-str (->w x)))))
+
+(deftest print-arities-and-seq-args
+  (same (str) (s/str))
+  (same (pr-str) (s/pr-str))
+  (same (print-str) (s/print-str))
+  (same (str nil "a" nil) (s/str (->w nil) (->w "a") (->w nil)))
+  (same (pr-str nil "a" \b) (s/pr-str (->w nil) (->w "a") (->w \b)))
+  (same (print-str nil "a" \b) (s/print-str (->w nil) (->w "a") (->w \b)))
+  (same (str 1 :a 'b) (s/str (->w 1) (->w :a) (->w 'b)))
+  (let [xs [nil 1 :a 'b \c "d" true false 1.5 [1 "x" \y nil :k] '(1 2) 1.0 ##Inf ##-Inf ##NaN]]
+    (same (apply str xs) (s/str-seq (->w (apply list xs))))
+    (same (apply pr-str xs) (s/pr-str-seq (->w (apply list xs))))
+    (same (apply print-str xs) (s/print-str-seq (->w (apply list xs))))))
+
+(deftest print-seq-kinds
+  (let [w sq/box-int]
+    (same (str (range 3)) (s/str (sq/range (w 3))))
+    (same (str (range 0)) (s/str (sq/range (w 0))))
+    (same (pr-str (map str [1 2])) (s/pr-str (sq/map* (clo str) (->w [1 2]))))
+    (same (str (lazy-seq nil)) (s/str (sq/lazy-seq* (clo (fn [] nil)))))
+    (same (str (repeat 2 :a)) (s/str (sq/repeat (w 2) (->w :a))))
+    (same (str (seq [1 2])) (s/str (sq/seq (->w [1 2]))))
+    (same (str (cons "a" '(\b))) (s/str (sq/cons (->w "a") (->w '(\b)))))
+    (same (str (seq (map inc (range 3)))) (s/str (sq/seq (sq/map* (clo inc) (sq/range (w 3))))))))
+
+(deftest pr-str-escape-table
+  ;; every code point below 0x80 alone and mid-string, plus non-ASCII passthrough
+  (doseq [c (concat (range 0 128) [0x80 0x9f 0xa0 0xe9 0x2028 0xfeff 0xfffd 0x1d11e 0x1f600])]
+    (let [x (str (char c)) y (str "a" (char c) "b")]
+      (same (pr-str x) (s/pr-str (->w x)))
+      (same (pr-str y) (s/pr-str (->w y)))
+      (same (pr-str (char c)) (s/pr-str (->w (char c)))))))
+
+;; ---------------------------------------------------------------------------
+;; Floats: the corpus, its snapshot, str's Infinity spelling, and hash, which
+;; reads float-bits, so it checks the IEEE decomposition of every value.
+
+(def ^:private float-values
+  ;; the corpus file's forms minus its ns form, evaluated here (an eval'd ns
+  ;; form would switch the namespace this file is compiling in)
+  (do (doseq [f (rest (read-string (str "[" (slurp "corpus/floats/corpus.lg") "\n]")))] (eval f))
+      @(resolve 'values)))
+
+(def ^:private float-lines (string/split-lines (slurp "corpus/floats/pr-str.expected")))
+
+(deftest float-corpus
+  (is (= (count float-values) (count float-lines)) "pr-str.expected has one line per corpus value")
+  (let [results (map (fn [x line]
+                       [line (pr-str x) (arch/string-of-bytes (s/str-bytes (s/float->str (s/box-float x))))])
+                     float-values float-lines)
+        stale (remove (fn [[line nat _]] (= line nat)) results)
+        wrong (remove (fn [[line _ mine]] (= line mine)) results)]
+    (is (empty? stale) (str "STALE-EXPECTED (rerun corpus/floats/gen.lg): " (pr-str (take 3 stale))))
+    (is (empty? wrong) (str (count wrong) " float lines differ: " (pr-str (take 5 wrong))))
+    (is (= 281 (count (filter (fn [[line _ mine]] (= line mine)) results))) "all 281 corpus lines byte-exact"))
+  (doseq [x float-values]
+    (same (str x) (s/str (->w x)))
+    (same (hash x) (s/hash (->w x)))))
+
+(deftest float-bits-landmarks
+  (is (= 0 (sq/float-bits 0.0)))
+  (is (= -9223372036854775808 (sq/float-bits -0.0)))
+  (is (= 1 (sq/float-bits 5e-324)))
+  (is (= 4607182418800017408 (sq/float-bits 1.0)))                 ; 0x3FF0000000000000
+  (is (= 9218868437227405311 (sq/float-bits 1.7976931348623157e308)))
+  (is (= 4503599627370495 (sq/float-bits 2.225073858507201e-308)))  ; largest subnormal
+  (is (= 9221120237041090561 (sq/float-bits ##NaN))))               ; Go math.NaN()
+
+;; ---------------------------------------------------------------------------
+;; Strings as collections. count/seq/first/rest/next walk runes; nth is
+;; bounded by the BYTE length and answers nil (even with not-found) for an
+;; index past the last rune but inside the bytes (string.go:46, :276).
+
+(deftest string-as-collection
+  (doseq [x ["héllo" "𝄞a" "" "a" "é" "a😀b😀c" "abc"]]
+    (same (count x) (s/count (->w x)))
+    (same (seq x) (s/seq (->w x)))
+    (same (first x) (s/first (->w x)))
+    (same (rest x) (s/rest (->w x)))
+    (same (next x) (s/next (->w x)))
+    (doseq [i (range -1 10)]
+      (same (nth x i) (s/nth (->w x) (->w i)))
+      (same (nth x i :nf) (s/nth (->w x) (->w i) (->w :nf)))))
+  (testing "non-strings still go to llvm.seq"
+    (same (count [1 2]) (s/count (->w [1 2])))
+    (same (nth [1 2] 1) (s/nth (->w [1 2]) (->w 1)))
+    (same (seq [1 2]) (s/seq (->w [1 2])))))
+
+;; let-go test/string_unicode_test.lg and the string half of sort_count_unicode_test.lg
+(deftest core-test-unicode
+  (doseq [[a b] [["é" "é"] ["中" "中"] ["A" "A"] ["😀" "😀"] ["😀😁" "😀😁"]]]
+    (same (= a b) (s/equals (->w a) (->w b))))
+  (same (count "😀") (s/count (->w "😀")))
+  (doseq [x ["café" "caf`" "日本" "cba"]]
+    (is (= (sort x)
+           (map <-w (sort (fn [a b] (<-w (s/compare a b))) (let [q (s/seq (->w x))] (map ->w (<-w q))))))
+        (str "sort " x))))
+
+;; let-go test/subs_test.lg, every line, plus the error messages
+(deftest core-test-subs
+  (doseq [[x & args] [["hello" 1 4] ["hello" 2] ["hello" 5] ["hello" 2 2] ["hello" 0 5]
+                      ["héllo" 1 4] ["héllo" 2] ["héllo" 0 1]
+                      ["a😀b😀c" 1 4] ["a😀b😀c" 4] ["a😀b😀c" 5]
+                      ["hi" 5] ["hi" 0 9] ["hi" -1] ["hi" 2 1] ["héllo" 6] ["héllo" 5 6] ["" 0] ["" 0 0]]]
+    (if (= 1 (count args))
+      (same (subs x (first args)) (s/subs (->w x) (->w (first args))))
+      (same (subs x (first args) (second args)) (s/subs (->w x) (->w (first args)) (->w (second args))))))
+  (same-err (subs 1 0) (s/subs (->w 1) (->w 0))))
+
+;; let-go test/string_replace_fn_test.lg: the literal-match lines (regex
+;; patterns are not in the value model)
+(deftest core-test-replace-literal
+  (same (string/replace "a.b.c" "." (fn [_] "/")) (s/str-replace (->w "a.b.c") (->w ".") (->w (fn [_] "/"))))
+  (same (string/replace "hello world" "o" "0") (s/str-replace (->w "hello world") (->w "o") (->w "0")))
+  (doseq [[x m r] [["aaa" "" "-"] ["héllo" "" "-"] ["aaaa" "aa" "b"] ["abc" "z" "q"] ["" "" "x"] ["" "a" "x"]]]
+    (same (str-replace x m r) (s/str-replace (->w x) (->w m) (->w r))))
+  (same (str-replace "abc" "b" (fn [m] (str "<" m ">"))) (s/str-replace (->w "abc") (->w "b") (->w (fn [m] (str "<" m ">")))))
+  (same (str-replace "abc" "" (fn [m] "X")) (s/str-replace (->w "abc") (->w "") (->w (fn [m] "X"))))
+  (same (str-replace "abc" "b" (fn [m] 1)) (s/str-replace (->w "abc") (->w "b") (->w (fn [m] 1)))))
+
+;; let-go test/string_split_test.lg with literal separators: clojure.string/split
+;; is lg code (string.lg:98) over core/split; here that wrapper runs over s/split.
+(defn- lg-split
+  ([x sep] (lg-split x sep 0))
+  ([x sep limit]
+   (if (zero? limit)
+     (let [v (vec (<-w (s/split (->w x) (->w sep) (->w -1))))]
+       (if (= 1 (count v)) v (loop [v v] (if (and (seq v) (= "" (peek v))) (recur (pop v)) v))))
+     (vec (<-w (s/split (->w x) (->w sep) (->w limit)))))))
+
+(deftest core-test-split
+  (doseq [x ["a\n" "a\n\n" "\n" "" "a\n\nb" "\na" "a"]]
+    (is (= (string/split x #"\n") (lg-split x "\n")) (pr-str x)))
+  (doseq [[x lim] [["a:b:c" 2] ["a::" -1] ["a:b:c" 5] ["a:b:c" 1] ["a:" 2]]]
+    (is (= (string/split x #":" lim) (lg-split x ":" lim)) (pr-str [x lim])))
+  (testing "core/split itself (strings.SplitN)"
+    (doseq [args [["a,b,,c,," ","] ["a,b" "," 0] ["" ","] ["abc" ""] [""] ["héllo"] ["a,b,c" "," 2]
+                  ["abc" "" 2] ["a,,b" "," -1] ["aaa" "a"] ["abc" "abc"] ["abc" "abcd"] ["a😀b" ""]]]
+      (same (apply split args) (apply s/split (map ->w args))))))
+
+;; ---------------------------------------------------------------------------
+;; Searches, trims, case, parse-long
+
+(deftest searches
+  (doseq [[x p] [["hello" "ell"] ["hello" ""] ["" ""] ["" "a"] ["abc" "abcd"] ["héllo" "él"] ["abc" "c"]]]
+    (same (includes? x p) (s/includes? (->w x) (->w p)))
+    (same (string/includes? x p) (s/includes? (->w x) (->w p)))
+    (same (starts-with? x p) (s/starts-with? (->w x) (->w p)))
+    (same (ends-with? x p) (s/ends-with? (->w x) (->w p)))
+    (same (index-of x p) (s/index-of (->w x) (->w p)))
+    (same (last-index-of x p) (s/last-index-of (->w x) (->w p))))
+  (doseq [args [["héllo" "l"] ["héllo" \l 3] ["abc" ""] ["abc" "" 9] ["abc" "" 3] ["abc" "z"] ["abc" \c -1]
+                ["a😀b😀" \😀 2] ["aaa" "aa" 1]]]
+    (same (apply index-of args) (apply s/index-of (map ->w args))))
+  (doseq [args [["héllo" "l"] ["abc" ""] ["abcabc" "b" 3] ["abcabc" "bc" 9] ["abc" "" 1] ["a😀b😀" \😀]]]
+    (same (apply last-index-of args) (apply s/last-index-of (map ->w args))))
+  (same (index-of "abc" 1) (s/index-of (->w "abc") (->w 1)))
+  (same (includes? 1 "a") (s/includes? (->w 1) (->w "a"))))
+
+(deftest trims-case-parse
+  (doseq [x ["  a b \t\n" "  x　" "  x " " x\u000b" "" "   " "\u0085x᠎" "é "]]
+    (same (trim x) (s/trim (->w x)))
+    (same (triml x) (s/triml (->w x)))
+    (same (trimr x) (s/trimr (->w x))))
+  (same (string/trim " q ") (s/trim (->w " q ")))
+  (doseq [x ["abcXYZ1" "" "Hello, World!"]]
+    (same (upper-case x) (s/upper-case (->w x)))
+    (same (lower-case x) (s/lower-case (->w x))))
+  (doseq [x [:k 'S 1.5 "aB" \c]]
+    (same (string/upper-case x) (s/string-upper-case (->w x))))
+  (same (string/upper-case nil) (s/string-upper-case (->w nil)))
+  (doseq [x ["123" "-9223372036854775808" "9223372036854775807" "9223372036854775808" "-9223372036854775809"
+             "+5" "1_0" "" " 1" "-" "+" "007" "-0" "12a"]]
+    (same (parse-long x) (s/parse-long (->w x)))))
+
+;; ---------------------------------------------------------------------------
+;; Keywords, symbols, name/namespace, char, int, compare
+
+(deftest named-values
+  (c/install!)                                           ; messages that name a type use llvm.core's namer
+  (doseq [x ["a/b" "a" "/" "a/b/c" "" "/b" "a/"]]
+    (same (keyword x) (s/keyword (->w x)))
+    (same (symbol x) (s/symbol (->w x)))
+    (same (name (keyword x)) (s/name (s/keyword (->w x))))
+    (same (namespace (keyword x)) (s/namespace (s/keyword (->w x))))
+    (same (name (symbol x)) (s/name (s/symbol (->w x))))
+    (same (namespace (symbol x)) (s/namespace (s/symbol (->w x)))))
+  (doseq [[a b] [["a" "b/c"] [nil "b"] ["" "b"] ["x" ""]]]
+    (same (keyword a b) (s/keyword (->w a) (->w b)))
+    (same (symbol a b) (s/symbol (->w a) (->w b))))
+  (same (keyword 'a/b) (s/keyword (->w 'a/b)))
+  (same (keyword :x) (s/keyword (->w :x)))
+  (same (keyword nil) (s/keyword (->w nil)))
+  (same (symbol :k) (s/symbol (->w :k)))
+  (same (symbol :a/b) (s/symbol (->w :a/b)))
+  (same (name "x/y") (s/name (->w "x/y")))
+  (same (keyword 1) (s/keyword (->w 1)))
+  (same (keyword 1.5) (s/keyword (->w 1.5)))
+  (same-err (keyword "a" 1) (s/keyword (->w "a") (->w 1)))
+  (same-err (keyword 1 "a") (s/keyword (->w 1) (->w "a")))
+  (same (symbol nil) (s/symbol (->w nil)))
+  (same (symbol 1) (s/symbol (->w 1)))
+  (same (symbol 1 "a") (s/symbol (->w 1) (->w "a")))
+  (same (symbol "a" 1) (s/symbol (->w "a") (->w 1)))
+  (same (name nil) (s/name (->w nil)))
+  (same (name 1) (s/name (->w 1)))
+  (same (namespace "a/b") (s/namespace (->w "a/b"))))
+
+(deftest interning
+  (is (arch/ref-eq (->w :a) (s/keyword (->w "a"))))
+  (is (arch/ref-eq (->w 'a/b) (s/symbol (->w "a") (->w "b"))))
+  (is (not (arch/ref-eq (->w :a) (->w 'a))) "keyword and symbol of one text are distinct")
+  (let [ks (mapv #(->w (keyword (str "k" %))) (range 300))]  ; forces several rehashes
+    (is (every? true? (map-indexed (fn [i k] (arch/ref-eq k (->w (keyword (str "k" i))))) ks)))
+    (is (= 300 (count (distinct (map #(<-w (s/name %)) ks)))))))
+
+(deftest char-and-int
+  (doseq [n [97 0 0x1F600 0xD800 0x10FFFF]]
+    (same (char n) (s/char (->w n))))
+  (doseq [n [1114112 -1]] (same-err (char n) (s/char (->w n))))
+  (doseq [x ["a" "é" "😀"]] (same (char x) (s/char (->w x))))
+  (same-err (char "ab") (s/char (->w "ab")))
+  (same-err (char "") (s/char (->w "")))
+  (same (char \x) (s/char (->w \x)))
+  (doseq [x [\a \😀 (char 0xD800) 5 -2147483648 2147483647 2.7 -2.7 true false 2147483647.0 -2147483647.9]]
+    (same (int x) (s/int (->w x))))
+  (doseq [x [3000000000 -2147483649 2147483647.9 -2147483648.9 2147483648.0 -2147483649.0 "a" :k]]
+    (same-err (int x) (s/int (->w x)))))
+
+(deftest compare-values
+  (doseq [[a b] [["a" "b"] ["b" "a"] ["a" "a"] ["abc" "ab"] ["é" "z"] ["￿" "𝄞"] ["" "a"]
+                 [:a :b] [:a/b :a] [:b :a/c] [(keyword "" "b") :b] ['a 'b] ['x/a 'y]
+                 [\a \b] [\b \a] [1 1.5] [2.0 1] [1.0 1] [0.0 -0.0] [##NaN 1.0]
+                 [true false] [false true] [nil "a"] ["a" nil] [nil nil]
+                 [["a" 1] ["a" 2]] [["a"] ["a" 1]] [[] []]]]
+    (same (compare a b) (s/compare (->w a) (->w b))))
+  (same-err (compare "a" :a) (s/compare (->w "a") (->w :a))))
+
+;; ---------------------------------------------------------------------------
+;; Equality and hash (corpus/hash/SPEC.md: FNV for strings, byte-pair murmur
+;; for symbols, keyword = symbol + 0x9e3779b9, hashUint64 for chars/floats)
+
+(def ^:private eq-values
+  ["" "a" "héllo" "ab" "abc" "日本語" "a/b" :a :a/b :abc 'a 'a/b 'abc \a \é (char 0xD800) 97 1.5 0.0 -0.0 ##NaN nil true])
+
+(deftest equality-and-hash
+  (doseq [a eq-values]
+    (same (hash a) (s/hash (->w a)))
+    (doseq [b eq-values]
+      (same (= a b) (s/equals (->w a) (->w b)))))
+  (let [nan (->w ##NaN)] (same (let [x ##NaN] (= x x)) (s/equals nan nan)))
+  (testing "string hash is cached"
+    (let [x (->w "cache me")] (s/hash x) (is (= (hash "cache me") (arch/get sq/Str 1 x))))))
+
+(deftest nested-through-seq-hooks
+  ;; strings, chars, keywords, symbols and floats inside llvm.seq collections:
+  ;; until P2.9 they reached seq.lg's foreign-kind hook; now seq.lg's own
+  ;; equiv?/hash cover them, with no hook installed for them
+  (doseq [[a b] [[["a" \b :c] ["a" \b :c]] [["a"] ["b"]] [["a" 1.5] ["a" 1.5]] ['("x" y) '("x" y)] [["a"] '("a")]
+                 [[1.0] [1]] [[-0.0] [0.0]] [[:a/b] ['a/b]] [[\a] [97]]]]
+    (same (= a b) (sq/equals (->w a) (->w b))))
+  (doseq [x [["a" :b \c 1.5 'd] [] ["héllo" ["x"]]]]
+    (same (hash (pvec x)) (sq/hash (->w (pvec x))))
+    (same (hash (vec x)) (sq/hash (->w (vec x))))
+    (same (hash (apply list x)) (sq/hash (->w (apply list x)))))
+  (same (count "héllo") (sq/count (->w "héllo")))
+  (same (seq "日本") (sq/seq (->w "日本")))
+  (same (nth "héllo" 5) (sq/nth (->w "héllo") (->w 5))))
+
+;; ---------------------------------------------------------------------------
+;; The dialect claim, as pvec_test/seq_test check theirs: every var a defn
+;; body references is a llvm.str/llvm.seq/llvm.pvec fn, an intrinsic or
+;; declaration, or a core fn the IR lowers to an op. (float-bits, with its one
+;; float division, moved to llvm.seq at P2.9 and is whitelisted there.)
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote throw}) ; throw: D68 raises (P2.13)
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(defn- non-literal-bytes-of-string
+  "(arch/bytes-of-string x) forms whose x is not a string literal; heads are
+   resolved in llvm.str, since expansion keeps the alias spelling."
+  [form]
+  (cond (seq? form)
+        (concat (when (and (symbol? (first form))
+                           (= "#'llvm.arch/bytes-of-string"
+                              (str (binding [*ns* (find-ns 'llvm.str)] (resolve (first form)))))
+                           (not (string? (second form))))
+                  [form])
+                (mapcat non-literal-bytes-of-string form))
+        (coll? form) (mapcat non-literal-bytes-of-string form)
+        :else []))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/llvm/str.lg") "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        globals (filter #(and (seq? %) (= 'def (first %))) forms)
+        in-ns* #(binding [*ns* (find-ns 'llvm.str)] (%))
+        expanded (for [d defns [params & body] (arities d) b body]
+                   [(second d) (set params) (in-ns* (fn [] (pipeline/expand-all b)))])
+        offending
+        (for [[nm params body] expanded
+              sym (var-refs body params)
+              :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                    vname (str v)]
+              :when (not (or (string/starts-with? vname "#'llvm.str/")
+                             (string/starts-with? vname "#'llvm.seq/")
+                             (string/starts-with? vname "#'llvm.pvec/")
+                             (and (string/starts-with? vname "#'llvm.arch/")
+                                  (or (:intrinsic (meta v)) (:llvm.arch/kind @v)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [nm sym])]
+    (is (< 80 (count defns)))
+    (is (= '[globals] (mapv second globals)) "one runtime global: intern table + print hook")
+    (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))
+    (is (empty? (mapcat (fn [[_ _ b]] (non-literal-bytes-of-string b)) expanded))
+        "bytes-of-string only on literals (D27)")
+    (is (= 1 (count (non-literal-bytes-of-string '(if a (arch/bytes-of-string "ok") (arch/bytes-of-string s)))))
+        "the literal check can fail")))

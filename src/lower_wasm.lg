@@ -410,7 +410,7 @@
   "(wasm/null): pure, so it takes no local and each use materialises the
    null of the slot's hierarchy (none for eq, nofunc for a funcref slot)."
   [nid]
-  (= #'wasm.intrinsics/null (call-var (src-of nid))))
+  (= (lw-rt/rt-var 'intrinsics 'null) (call-var (src-of nid))))
 
 (defn nullish? [nid]
   (or (null-call? nid)
@@ -854,16 +854,16 @@
   ;; as its own (max-seq and cmp-seq lead with a mode), or that have none in
   ;; rt/ (map* over several colls: lw-ext/map-n): twin -> [seq fn, fixed
   ;; args, boxed WAT exprs passed before them]
-  {#'wasm.core/max [#'wasm.core/max-seq 0 ["(call $rt_box_bool (i32.const 0))"]]
-   #'wasm.core/min [#'wasm.core/max-seq 0 ["(call $rt_box_bool (i32.const 1))"]]
-   #'wasm.core/lt [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 0))"]]
-   #'wasm.core/le [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 1))"]]
-   #'wasm.core/gt [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 2))"]]
-   #'wasm.core/ge [#'wasm.core/cmp-seq 0 ["(ref.i31 (i32.const 3))"]]
-   #'wasm.seq/map* [#'lw-ext/map-n 1 []]
-   #'wasm.seq/list [#'lw-ext/list-n 0 []]
+  {(lw-rt/rt-var 'core 'max) [(lw-rt/rt-var 'core 'max-seq) 0 ["(call $rt_box_bool (i32.const 0))"]]
+   (lw-rt/rt-var 'core 'min) [(lw-rt/rt-var 'core 'max-seq) 0 ["(call $rt_box_bool (i32.const 1))"]]
+   (lw-rt/rt-var 'core 'lt) [(lw-rt/rt-var 'core 'cmp-seq) 0 ["(ref.i31 (i32.const 0))"]]
+   (lw-rt/rt-var 'core 'le) [(lw-rt/rt-var 'core 'cmp-seq) 0 ["(ref.i31 (i32.const 1))"]]
+   (lw-rt/rt-var 'core 'gt) [(lw-rt/rt-var 'core 'cmp-seq) 0 ["(ref.i31 (i32.const 2))"]]
+   (lw-rt/rt-var 'core 'ge) [(lw-rt/rt-var 'core 'cmp-seq) 0 ["(ref.i31 (i32.const 3))"]]
+   (lw-rt/rt-var 'seq 'map*) [#'lw-ext/map-n 1 []]
+   (lw-rt/rt-var 'seq 'list) [#'lw-ext/list-n 0 []]
    ;; P4.1: n-ary dissoc (main.lg's screen exits)
-   #'wasm.core/dissoc [#'lw-ext/dissoc-n 1 []]})
+   (lw-rt/rt-var 'core 'dissoc) [#'lw-ext/dissoc-n 1 []]})
 
 ;; natives the backend builds inline when called (coll-ctors) and that have
 ;; no runtime defn to be a value: as values they are lw-ext's variadic fns
@@ -970,32 +970,32 @@
          (when-not (no-local? nid) (str " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))))
 
 (def rt-overrides
-  {#'wasm.seq/float-bits
+  {(lw-rt/rt-var 'seq 'float-bits)
    (fn [nid args]
      (str "(local.set $v" nid " (i64.reinterpret_f64 " (f64-arg (first args)) ")" (coerce :int (ty nid)) ")"))
-   #'wasm.seq/invoke0 (rt-invoke-override 0)
-   #'wasm.seq/invoke1 (rt-invoke-override 1)
-   #'wasm.seq/invoke2 (rt-invoke-override 2)
-   #'wasm.core/invoke3 (rt-invoke-override 3)
-   #'wasm.core/invoke4 (rt-invoke-override 4)
+   (lw-rt/rt-var 'seq 'invoke0) (rt-invoke-override 0)
+   (lw-rt/rt-var 'seq 'invoke1) (rt-invoke-override 1)
+   (lw-rt/rt-var 'seq 'invoke2) (rt-invoke-override 2)
+   (lw-rt/rt-var 'core 'invoke3) (rt-invoke-override 3)
+   (lw-rt/rt-var 'core 'invoke4) (rt-invoke-override 4)
    ;; P2.12: the runtime's own dispatch stops at 4 args and knows no
    ;; variadic slot; these two reach $rt_invokeN's and spread any count
-   #'wasm.core/invoke-args
+   (lw-rt/rt-var 'core 'invoke-args)
    (fn [nid [f n & xs]]
      (let [call (str "(call $rt_invoke_args " (arg-as f :box) " " (arg-as n :int)
                      (apply str (map #(str " " (arg-as % :box)) xs)) ")")]
        (if (no-local? nid) (str "(drop " call ")") (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")"))))
-   #'wasm.core/invoke-vec
+   (lw-rt/rt-var 'core 'invoke-vec)
    (fn [nid [f v]]
      (let [call (str "(call $rt_apply_vec " (arg-as f :box) " " (arg-as v :box) ")")]
        (if (no-local? nid) (str "(drop " call ")") (str "(local.set $v" nid " " call (coerce :box (ty nid)) ")"))))
    ;; P6.7 (bound-fn*): only the backend knows the $bs_ binding stacks
    ;; (bframe-runtime); the runtime's three stand-ins become these calls
-   #'wasm.core/binding-frame
+   (lw-rt/rt-var 'core 'binding-frame)
    (fn [nid _]
      (if (no-local? nid) "" (str "(local.set $v" nid " (call $rt_bframe)" (coerce :box (ty nid)) ")")))
-   #'wasm.core/frame-push! (bframe-override "$rt_bframe_push")
-   #'wasm.core/frame-pop! (bframe-override "$rt_bframe_pop")})
+   (lw-rt/rt-var 'core 'frame-push!) (bframe-override "$rt_bframe_push")
+   (lw-rt/rt-var 'core 'frame-pop!) (bframe-override "$rt_bframe_pop")})
 
 (defn rt-call-expr
   "A boxed-result call of runtime defn v on boxed operand exprs."
@@ -1011,15 +1011,15 @@
 (def coll-ctors
   ;; a literal or `vector` is an ArrayVector at any size, while conj promotes
   ;; past 32 (D79): the chain is retagged at the end
-  {#'vector (fn [xs] (rt-call-expr #'wasm.pvec/varray
-                                   [(reduce (fn [acc x] (rt-call-expr #'wasm.pvec/vconj [acc x]))
-                                            (rt-call-expr #'wasm.pvec/empty-vec []) xs)]))
-   #'hash-set (fn [xs] (reduce (fn [acc x] (rt-call-expr #'wasm.phs/sconj [acc x]))
-                               (rt-call-expr #'wasm.phs/empty-set []) xs))
-   #'array-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr #'wasm.core/assoc [acc k x]))
-                                (rt-call-expr #'wasm.phm/empty-map []) (partition 2 xs)))
-   #'hash-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr #'wasm.core/assoc [acc k x]))
-                               (rt-call-expr #'wasm.phm/empty-map []) (partition 2 xs)))})
+  {#'vector (fn [xs] (rt-call-expr (lw-rt/rt-var 'pvec 'varray)
+                                   [(reduce (fn [acc x] (rt-call-expr (lw-rt/rt-var 'pvec 'vconj) [acc x]))
+                                            (rt-call-expr (lw-rt/rt-var 'pvec 'empty-vec) []) xs)]))
+   #'hash-set (fn [xs] (reduce (fn [acc x] (rt-call-expr (lw-rt/rt-var 'phs 'sconj) [acc x]))
+                               (rt-call-expr (lw-rt/rt-var 'phs 'empty-set) []) xs))
+   #'array-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr (lw-rt/rt-var 'core 'assoc) [acc k x]))
+                                (rt-call-expr (lw-rt/rt-var 'phm 'empty-map) []) (partition 2 xs)))
+   #'hash-map (fn [xs] (reduce (fn [acc [k x]] (rt-call-expr (lw-rt/rt-var 'core 'assoc) [acc k x]))
+                               (rt-call-expr (lw-rt/rt-var 'phm 'empty-map) []) (partition 2 xs)))})
 
 (defn neg-wat
   "lower-wasm/neg: NumNeg. An int wraps ((- MinInt64) = MinInt64, D16), a
@@ -1032,7 +1032,7 @@
       :int (set (str "(i64.sub (i64.const 0) " (arg-as x :int) ")") :int)
       :float (set (str "(f64.neg " (arg-as x :float) ")") :float)
       (if *rt*
-        (set (rt-call-expr #'wasm.core/sub [(arg-as x :box)]) :box)
+        (set (rt-call-expr (lw-rt/rt-var 'core 'sub) [(arg-as x :box)]) :box)
         (set (str "(i64.sub (i64.const 0) (call $rt_int_sub " (arg-as x :box) "))") :int)))))
 
 (defn push-out!
@@ -1094,7 +1094,7 @@
     (apply list 'do (binding-out (second form)) (map #(binding-out (print->rt %)) (drop 2 form)))
     :else (apply list (map binding-out form))))
 
-(def print-twins {#'println 'wasm.host/println #'print 'wasm.host/print #'prn 'wasm.host/prn #'pr 'wasm.host/pr})
+(def print-twins {#'println (lw-rt/rt-sym 'host 'println) #'print (lw-rt/rt-sym 'host 'print) #'prn (lw-rt/rt-sym 'host 'prn) #'pr (lw-rt/rt-sym 'host 'pr)})
 
 (defn print->rt [form]
   (cond (vector? form) (keep-meta form (mapv print->rt form))
@@ -1400,13 +1400,15 @@
     "capture-begin" "capture-end"})
 
 ;; every ^:intrinsic var has an emitter: a new intrinsic fails the backend's
-;; load, not a program's compile (D24: the set is read from the metadata)
-(let [missing (for [v (lw-rt/intrinsic-vars)
+;; load, not a program's compile (D24: the set is read from the metadata).
+;; The llvm target's runtime has its own set (lower-llvm-rt checks it).
+(when-not lw-rt/llvm-target?
+ (let [missing (for [v (lw-rt/intrinsic-vars)
                     :let [s (name (symbol v))]
                     :when (not (contains? emitted-intrinsics s))]
                 (symbol v))]
   (when (seq missing)
-    (throw (ex-info (str "lower-wasm: intrinsics without an emitter: " (vec (sort missing))) {}))))
+    (throw (ex-info (str "lower-wasm: intrinsics without an emitter: " (vec (sort missing))) {})))))
 
 (defn intrinsic-call-wat [nid v args]
   (let [[expr raw] (emit-intrinsic (name (symbol v)) args)
@@ -1443,8 +1445,8 @@
 (def float-binops {:add "f64.add" :sub "f64.sub" :mul "f64.mul" :div "f64.div"})
 (def float-cmps {:lt "f64.lt" :lte "f64.le" :gt "f64.gt" :gte "f64.ge"})
 ;; the runtime's numeric twins: boxed operands that are not both ints
-(def num-twins {:add #'wasm.core/add :sub #'wasm.core/sub :mul #'wasm.core/mul
-                :lt #'wasm.core/lt :lte #'wasm.core/le :gt #'wasm.core/gt :gte #'wasm.core/ge})
+(def num-twins {:add (lw-rt/rt-var 'core 'add) :sub (lw-rt/rt-var 'core 'sub) :mul (lw-rt/rt-var 'core 'mul)
+                :lt (lw-rt/rt-var 'core 'lt) :lte (lw-rt/rt-var 'core 'le) :gt (lw-rt/rt-var 'core 'gt) :gte (lw-rt/rt-var 'core 'ge)})
 
 (defn prim-wat
   "Arithmetic/compare op `op` over value ids `refs`, result into local nid;
@@ -1493,7 +1495,7 @@
       (and (= op :eq) (= 2 (count refs)) (every? #(= (ty %) :bool) refs))
       (set (str "(i32.eq " (arg-as (first refs) :bool) " " (arg-as (second refs) :bool) ")" (coerce :bool (ty nid))))
       (and (= op :eq) (= 2 (count refs)) *rt* (not all-int?))
-      (direct-call-wat nid (callee-sig #'wasm.seq/equiv?) refs)
+      (direct-call-wat nid (callee-sig (lw-rt/rt-var 'seq 'equiv?)) refs)
       (and (cmp-ops op) (= 2 (count refs)))
       (set (str "(" (cmp-ops op) " " (op-int-arg op (first refs)) " " (op-int-arg op (second refs)) ")"
                 (coerce :bool (ty nid))))
@@ -1696,7 +1698,7 @@
             ;; compiled in they go through its generic +/- (native's text,
             ;; `cannot add nil and let-go.lang.Int`, and floats)
             body (if (and *rt* (#{#'inc #'dec} v))
-                   (rt-call-expr (if (= v #'inc) #'wasm.core/add #'wasm.core/sub)
+                   (rt-call-expr (if (= v #'inc) (lw-rt/rt-var 'core 'add) (lw-rt/rt-var 'core 'sub))
                                  ["(local.get $p0)" "(call $rt_box_int (i64.const 1))"])
                    body)
             op (core-var-ops v)
@@ -1751,8 +1753,8 @@
 (defn- root-rt [sym]
   (or (resolve sym) (fail (str "the runtime has no " sym " (alter-var-root of a native)") {:fn *fname*})))
 (defn root-test-wat [v]
-  (str "(call $rt_truthy " (rt-call-expr (root-rt 'wasm.core/var-root-set?) [(const-box-wat v)]) ")"))
-(defn root-value-wat [v] (rt-call-expr (root-rt 'wasm.core/var-value) [(const-box-wat v)]))
+  (str "(call $rt_truthy " (rt-call-expr (root-rt (lw-rt/rt-sym 'core 'var-root-set?)) [(const-box-wat v)]) ")"))
+(defn root-value-wat [v] (rt-call-expr (root-rt (lw-rt/rt-sym 'core 'var-value)) [(const-box-wat v)]))
 
 (defn rooted-call-wat
   "A call of rooted native v (P6.8): through its altered root when it has
@@ -1783,7 +1785,7 @@
         (= v #'*assert*) "(global.get $true)"
         ;; D87: *out*/*err* are the runtime's two standard handles
         (and *rt* (#{#'*out* #'*err*} v))
-        (let [s (get-in (callee-sig (if (= v #'*out*) #'wasm.host/out-handle #'wasm.host/err-handle)) [:arities 0])]
+        (let [s (get-in (callee-sig (if (= v #'*out*) (lw-rt/rt-var 'host 'out-handle) (lw-rt/rt-var 'host 'err-handle))) [:arities 0])]
           (str "(call $" (:name s) ")" (coerce (:ret s) :box)))
         (and *rt* (= v #'os/args)) "(call $rt_os_args)"
         ;; P2.14: *file* is the program's path (native binds it while the
@@ -1793,8 +1795,8 @@
         ;; namespace, so it follows in-ns and evaluated ns forms. Guarded
         ;; while the runtime lacks current-ns. Named limit: a read inside
         ;; (binding [*ns* ..]) still sees the registry, not the binding.
-        (and *rt* (= v #'*ns*) (lw-rt/ns-var 'wasm.natives 'current-ns))
-        (rt-call-expr (lw-rt/ns-var 'wasm.natives 'current-ns) [])
+        (and *rt* (= v #'*ns*) (lw-rt/ns-var (lw-rt/rt-ns 'natives) 'current-ns))
+        (rt-call-expr (lw-rt/ns-var (lw-rt/rt-ns 'natives) 'current-ns) [])
         ;; P2.14: a native var holding a scalar constant (math/PI, math/E):
         ;; its value, as native reads it
         (and *rt* (native-scalar-const? v)) (scalar-const-wat @v)
@@ -1918,7 +1920,7 @@
       (fail "unsupported op :div under linear (Ratio/BigInt result)" {:nid nid :fn *fname*})
       ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
       (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
-      (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
+      (direct-call-wat nid (callee-sig (lw-rt/rt-var 'math 'div)) refs)
       (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
       (= op :call)
@@ -3372,7 +3374,7 @@
 ;; here too: scanning `=` as the twin wasm.seq/equals would analyse equiv?
 ;; while kind, which compares with =, is still in progress.
 (def intercepted (into #{#'neg #'println #'throw #'catch-matches? #'atom #'deref #'reset! #'swap!
-                         #'vector #'hash-set #'array-map #'hash-map #'wasm.seq/float-bits
+                         #'vector #'hash-set #'array-map #'hash-map (lw-rt/rt-var 'seq 'float-bits)
                          #'= #'bit-and #'bit-or #'bit-xor #'bit-and-not #'bit-not #'bit-shift-left
                          #'bit-shift-right #'unsigned-bit-shift-right #'unchecked-add
                          #'unchecked-subtract #'unchecked-multiply #'quot #'/}
@@ -3405,10 +3407,10 @@
 
 (defn analyze-deps! [form]
   (when *rt*
-    (when (some #{#'neg} (form-vars form)) (rt-analyze! #'wasm.core/sub))
+    (when (some #{#'neg} (form-vars form)) (rt-analyze! (lw-rt/rt-var 'core 'sub)))
     (when (some #(contains? coll-ctors %) (form-vars form))
-      (doseq [v [#'wasm.pvec/vconj #'wasm.pvec/empty-vec #'wasm.pvec/varray #'wasm.phs/sconj #'wasm.phs/empty-set
-                 #'wasm.core/assoc #'wasm.phm/empty-map]]
+      (doseq [v [(lw-rt/rt-var 'pvec 'vconj) (lw-rt/rt-var 'pvec 'empty-vec) (lw-rt/rt-var 'pvec 'varray) (lw-rt/rt-var 'phs 'sconj) (lw-rt/rt-var 'phs 'empty-set)
+                 (lw-rt/rt-var 'core 'assoc) (lw-rt/rt-var 'phm 'empty-map)]]
         (rt-analyze! v)))
     (doseq [v (form-vars form) :when (not (contains? intercepted v))]
       (when-let [t (rt-target v)] (rt-analyze! t))
@@ -3592,8 +3594,8 @@
                (or (value-substs v) (and (rt-target v) (callee-sig v)) (core-fn-impls v)
                    (no-twin-message v) (native-scalar-const? v))))
     (list 'fn* [] (symbol v))
-    (list 'fn* [] (list 'wasm.core/raise
-                        (list 'wasm.intrinsics/bytes-of-string
+    (list 'fn* [] (list (lw-rt/rt-sym 'core 'raise)
+                        (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string)
                               (str "lower-wasm: the value of " (pr-str v) " is not reachable from its stand-in:"
                                    " only a var the program defines has one (named limit)"))))))
 
@@ -3619,9 +3621,9 @@
                             (plain-data? x) (assoc acc k x)
                             :else acc)))
                   {} ks)]
-    (list 'wasm.core/with-meta
-          (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (str "#'" (subs (str v) 2))))
-          (list 'wasm.core/assoc (const-form m) (const-form :lw/var) (var-value-form v)))))
+    (list (lw-rt/rt-sym 'core 'with-meta)
+          (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (str "#'" (subs (str v) 2))))
+          (list (lw-rt/rt-sym 'core 'assoc) (const-form m) (const-form :lw/var) (var-value-form v)))))
 
 (defn const-user-meta
   "P5.9 (review3 bug-05): the metadata a collection constant v carries into
@@ -3651,7 +3653,7 @@
   (if-let [m (const-user-meta v)]
     ;; P5.9: ir.build keeps a literal's literal metadata on the Const
     ;; (build-coll-const), so ^:k {:a 1} arrives here meta'd
-    (list 'wasm.core/with-meta (const-form (with-meta v nil)) (const-form m))
+    (list (lw-rt/rt-sym 'core 'with-meta) (const-form (with-meta v nil)) (const-form m))
     (const-form* v)))
 
 (defn const-form*
@@ -3661,19 +3663,19 @@
     ;; P2.14: a regex stand-in keeps its pattern in its metadata
     (and (symbol? v) (:lw/regex (meta v)))
     ;; (str v): natively `namespace` refuses a meta'd symbol
-    (list 'wasm.core/with-meta (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (str v)))
+    (list (lw-rt/rt-sym 'core 'with-meta) (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (str v)))
           (const-form (meta v)))
-    (vector? v) (list 'wasm.pvec/varray (reduce (fn [acc x] (list 'wasm.pvec/vconj acc (const-form x))) '(wasm.pvec/empty-vec) v))
-    (map? v) (reduce (fn [acc [k x]] (list 'wasm.core/assoc acc (const-form k) (const-form x))) '(wasm.phm/empty-map) v)
-    (set? v) (reduce (fn [acc x] (list 'wasm.phs/sconj acc (const-form x))) '(wasm.phs/empty-set) v)
+    (vector? v) (list (lw-rt/rt-sym 'pvec 'varray) (reduce (fn [acc x] (list (lw-rt/rt-sym 'pvec 'vconj) acc (const-form x))) (list (lw-rt/rt-sym 'pvec 'empty-vec)) v))
+    (map? v) (reduce (fn [acc [k x]] (list (lw-rt/rt-sym 'core 'assoc) acc (const-form k) (const-form x))) (list (lw-rt/rt-sym 'phm 'empty-map)) v)
+    (set? v) (reduce (fn [acc x] (list (lw-rt/rt-sym 'phs 'sconj) acc (const-form x))) (list (lw-rt/rt-sym 'phs 'empty-set)) v)
     (seq? v) (let [xs (vec v)]
-               (loop [i (dec (count xs)) acc '(wasm.seq/empty-list)]
+               (loop [i (dec (count xs)) acc (list (lw-rt/rt-sym 'seq 'empty-list))]
                  (if (< i 0)
                    acc
-                   (recur (dec i) (list 'wasm.intrinsics/new 'wasm.seq/List (const-form (xs i)) acc
-                                        (- (count xs) i) '(wasm.intrinsics/null))))))
-    (symbol? v) (list 'wasm.str/sym-of-bytes (list 'wasm.intrinsics/bytes-of-string (named-text v)))
-    (keyword? v) (list 'wasm.str/kw-of-bytes (list 'wasm.intrinsics/bytes-of-string (named-text v)))
+                   (recur (dec i) (list (lw-rt/rt-sym 'intrinsics 'new) (lw-rt/rt-sym 'seq 'List) (const-form (xs i)) acc
+                                        (- (count xs) i) (list (lw-rt/rt-sym 'intrinsics 'null)))))))
+    (symbol? v) (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (named-text v)))
+    (keyword? v) (list (lw-rt/rt-sym 'str 'kw-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (named-text v)))
     :else v))
 
 (defn const-global!
@@ -3686,7 +3688,7 @@
     (or (get-in @*rt* [:consts k])
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
-          (rt-init-fn! (str "const_" i "__init") 'wasm.core (const-form v))
+          (rt-init-fn! (str "const_" i "__init") (lw-rt/rt-ns 'core) (const-form v))
           (swap! *rt* update :const-order conj g)
           g))))
 
@@ -3737,7 +3739,7 @@
                 (and (= v #'neg) (= 1 (count args)))
                 (let [t (ir/type-of (first args) f) t (if (and (vector? t) (= :const (first t))) (second t) t)]
                   (when (contains? #{:int :float} t) t))
-                (and *rt* (= v #'wasm.seq/float-bits)) :int
+                (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))) :int
                 :else (let [ent (or (get @*sigs* v) (when-let [t (rt-target v)] (get @*sigs* t)))
                             r (:ret (get-in ent [:arities (count args)]))]
                         (case r :int :int :bool :bool :float :float nil))))))))
@@ -3968,7 +3970,7 @@
        (apply str
               (for [{:keys [tn decl]} (concat (for [d lw-rt/decls] {:tn (lw-rt/type-name (:var d)) :decl (:decl d)})
                                               (for [[_ d] (sort-by (comp :order val) @*prog-decls*)] {:tn (:name d) :decl (:decl d)}))
-                    :let [k (:wasm.intrinsics/kind decl)]]
+                    :let [k (lw-rt/decl-kind decl)]]
                 (str "  (type " tn " "
                      (case k
                        ;; P2.12: $Fn is open, so the backend's $FnV can extend it
@@ -4016,11 +4018,11 @@
    wasm.watread and wasm.wasmbin (P10.0: their bytes are wasm-tools'), and
    the group's type names in order, space-separated."
   []
-  (load-rt-file 'wasm.wasmbin "wasmbin.lg")
-  (load-rt-file 'wasm.watread "watread.lg")
+  (load-rt-file (lw-rt/rt-ns 'wasmbin) "wasmbin.lg")
+  (load-rt-file (lw-rt/rt-ns 'watread) "watread.lg")
   (let [text (rec-group)
-        model ((resolve 'wasm.watread/module-model) (str "(module\n" text ")"))
-        bs ((resolve 'wasm.wasmbin/encode-module) {:types (:types model)})
+        model ((resolve (lw-rt/rt-sym 'watread 'module-model)) (str "(module\n" text ")"))
+        bs ((resolve (lw-rt/rt-sym 'wasmbin 'encode-module)) {:types (:types model)})
         ;; 8 header bytes, the section id, its LEB128 size, then the payload
         start (loop [i 9] (if (zero? (bit-and (nth bs i) 128)) (inc i) (recur (inc i))))
         names (map second (re-seq #"\(type (\$[^\s()]+)" text))
@@ -4036,7 +4038,7 @@
    lk-* defn of the runtime (rt/wasm/emit.lg)."
   []
   (sort (mapcat (fn [d]
-                  (when (and (= 'wasm.eval (:ns d)) (str/starts-with? (str (:name d)) "lk-")
+                  (when (and (= (lw-rt/rt-ns 'eval) (:ns d)) (str/starts-with? (str (:name d)) "lk-")
                              (not (:private (meta (:var d)))))
                     (map (fn [a] (str "wasm.eval/" (:name d) "#" (count (first a)) "__box")) (:arities d))))
                 lw-rt/defns)))
@@ -4121,7 +4123,7 @@
   "name -> decl text and name -> deps for the runtime's globals and constants."
   []
   (let [st @*rt*
-        gs (concat (for [[v {:keys [name init]}] (:globals st)] [name init (= v #'wasm.seq/hooks)])
+        gs (concat (for [[v {:keys [name init]}] (:globals st)] [name init (= v (lw-rt/rt-var 'seq 'hooks))])
                    (for [g (vals (:consts st))] [g (str (subs g 1) "__init") false]))]
     [(into {} (for [[g] gs] [g (str "(global " g " (mut (ref null eq)) (ref.null none))")]))
      (into {} (for [[g init hooks?] gs] [g (cond-> [(str "$" init)] hooks? (conj "$wasm.core/install!"))]))]))
@@ -4228,11 +4230,11 @@
                                 :let [nm (str "$" q "#" argc "__box")]
                                 :when (not (contains? (:lowered @*rt*) nm))]
                             [nm (resolve (symbol q)) (parse-long argc)]))
-          need-install (and (contains? live "$wasm.seq/hooks") (not (get-in @*rt* [:state #'wasm.core/install!])))]
+          need-install (and (contains? live "$wasm.seq/hooks") (not (get-in @*rt* [:state (lw-rt/rt-var 'core 'install!)])))]
       (doseq [[nm v argc] wants]
         (when-not v (fail "box wrapper for an unknown runtime var" {:name nm}))
         (swap! *rt* assoc-in [:lowered nm] (box-wrapper v argc)))
-      (when need-install (rt-analyze! #'wasm.core/install!))
+      (when need-install (rt-analyze! (lw-rt/rt-var 'core 'install!)))
       (when (or (seq wants) need-install (seq (:pending @*rt*)))
         (recur (inc n))))))
 

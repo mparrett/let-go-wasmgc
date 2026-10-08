@@ -1,0 +1,654 @@
+;; llvm.phm — let-go's PersistentMap (pkg/vm/persistent_map.go at ff1e6dac)
+;; and its TransientMap (pkg/vm/transient.go), written in the runtime dialect
+;; (see llvm.pvec's header): IR special forms, IR-op core fns on :int, this
+;; file's own fns, llvm.arch, and the runtime it shares a value model
+;; with: llvm.seq (D38: Int/Bool boxes, `kind`, `equiv?`, `hash`) and
+;; llvm.pvec (a map entry is a 2-element vector, as MapEntry is an
+;; ArrayVector, persistent_map.go:61).
+;;
+;; Structure is mirrored, not reinvented, because structure IS the iteration
+;; order: an ordered array-map mode up to 8 entries, then a HAMT of bitmap
+;; nodes and collision nodes only (let-go has no ArrayNode), walked slot by
+;; slot. Go line numbers are cited at each function; corpus/maporder/SPEC.md
+;; has the order rules they produce.
+;;
+;; Representation differences that do not change behaviour:
+;;  - Go marks a child slot with a Go-nil key. Here lg nil IS wasm null (D2),
+;;    so a nil key could not be told apart; a slot is a child when its value
+;;    slot holds a node struct (`node?`), which no map value can be.
+;;  - Go's transient nodes keep slack capacity (persistent_map.go:354-364,
+;;    :410-436); here arrays are exact-length and an insert reallocates. The
+;;    contents, and so the order, are the same.
+;;  - Lookup returns a caller-chosen not-found sentinel instead of (v, ok).
+;;  - Errors Go returns (transient used after persistent!) are raised as D68
+;;    Errs (P2.13).
+;;
+;; Natives here take and return refs per D37 only at the seq.lg hook boundary
+;; (install-hooks! below, slot 0); the map API itself takes :int/:bool where Go's
+;; does (mcount, mcontains?), which the backend boxes at a call site.
+;;
+;; seq: `entries` returns a fresh HSlots array [k0 v0 k1 v1 ...] in seq order,
+;; which is what Go's Seq materialises (persistent_map.go:1002-1023) before
+;; wrapping it in a MapSeq; `entry-seq` turns that into seq.lg's MapSeq
+;; (kind 27) over MapEntry values for the `seq` hook (R5, P2.13).
+(ns llvm.phm
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]))
+
+(arch/defarray HSlots :ref)
+;; count, root (null = ordered array-map mode, persistent_map.go:629),
+;; okvs (ordered mode: exactly 2*count slots; HAMT mode: null), hash cache (-1 = none),
+;; meta (null = none; assoc/dissoc keep it, persistent! of a transient drops it).
+(arch/defstruct HMap [:i64 :ref :ref [:mut :i64] :ref])
+;; bitmap, edit token (null = persistent), pairs [key val] or [null child].
+(arch/defstruct HBitmapNode [[:mut :i64] :ref [:mut :ref]])
+;; hash, count, pairs in insertion order (persistent_map.go:489-493).
+(arch/defstruct HCollisionNode [:i64 :i64 :ref])
+;; A mutable i32: the addedLeaf out-parameter, and the transient edit token
+;; (1 while editable, 0 after persistent!; transient.go:23).
+(arch/defstruct HFlag [[:mut :i32]])
+;; edit (HFlag), root, okvs (ordered mode, capacity 2*(max+1)), hamt (0/1), count.
+(arch/defstruct HTransient [:ref [:mut :ref] [:mut :ref] [:mut :i32] [:mut :i64]])
+
+;; arrayMapMaxEntries (persistent_map.go:601).
+(defmacro ^:private array-map-max-entries [] 8)
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+
+(defn- slots [n] (arch/array-new HSlots n (arch/null)))
+(defn- sget [a i] (arch/aget HSlots a i))
+(defn- sset! [a i x] (arch/aset! HSlots a i x))
+(defn- clone-slots [a]
+  (let [n (arch/alen a) d (slots n)]
+    (arch/array-copy HSlots d 0 a 0 n)
+    d))
+
+(defn- new-flag [] (arch/new HFlag 0))
+(defn- flag-set! [f] (arch/set! HFlag 0 f 1))
+(defn- flag? [f] (= 1 (arch/get HFlag 0 f)))
+
+;; Key hash and equality: hashValue and valueEquiv (hash.go:23, :143-210).
+;; valueEquiv is NOT lg's `=`. It is asymmetric: when its first operand has a
+;; Go Equals method (ArrayVector/PersistentVector/MapEntry, PersistentMap),
+;; that decides, and Equals takes only its own kind: a vector equals only a
+;; vector (elements by `=`), a map only a map (values by valueEquiv). Any
+;; other first operand falls back to `=`. So {:a [1]} != {:a '(1)} but
+;; {:a '(1)} = {:a [1]}, and (contains? #{[1]} '(1)) is true while
+;; (contains? #{'(1)} [1]) is false: lookups pass the probe first. One rule
+;; `=` lacks: nil and the empty list are equivalent (hash.go:161-163), so
+;; {nil 1} finds () in ordered mode; the HAMT never sees that pair together
+;; (hashes 0 and 1257683291). Identity (:165-168) is a shortcut only for
+;; Go-comparable values: Equals has none, so a vector holding NaN is not
+;; valueEquiv to itself.
+(declare mequiv)
+(defn- khash [k] (sq/unbox-int (sq/hash k)))
+(defn- vec-like? [k] (if (= k 11) true (= k 23)))
+(defn- vequals [a b]                                          ; ArrayVector/PersistentVector.Equals
+  (let [a (if (= 23 (sq/kind a)) (sq/entry-vec a) a)
+        b (if (= 23 (sq/kind b)) (sq/entry-vec b) b)
+        n (pv/vcount a)]
+    (if (= n (pv/vcount b))
+      (loop [i 0]
+        (if (< i n)
+          (let [x (pv/vnth a i) y (pv/vnth b i)]
+            (if (if (arch/null? x) (= 2 (sq/kind y)) (if (arch/null? y) (= 2 (sq/kind x)) false))
+              (recur (inc i))
+              (if (sq/equiv? x y) (recur (inc i)) false)))
+          true))
+      false)))
+(defn- kequiv [a b]
+  (cond (arch/ref-eq a b) (let [k (sq/kind a)]
+                            (cond (= 22 k) (sq/equiv? a b)     ; Go's a == b is false for one NaN
+                                  (vec-like? k) (vequals a b)
+                                  (arch/is? HMap a) (mequiv a b)
+                                  :else true))
+        ;; equiv? says nil equals only nil, so a null side decides here
+        (arch/null? a) (= 2 (sq/kind b))
+        (arch/null? b) (= 2 (sq/kind a))
+        :else (let [k (sq/kind a)]
+                (cond (vec-like? k) (if (vec-like? (sq/kind b)) (vequals a b) false)
+                      (arch/is? HMap a) (if (arch/is? HMap b) (mequiv a b) false)
+                      :else (sq/equiv? a b)))))
+
+(defn- u32 [x] (bit-and x 0xffffffff))
+
+(defn mix-finish
+  "mixFinish = mixFinishLen(h, 0) (hash.go:127-138): Murmur3 fmix32 over a
+   uint32 held in an i64."
+  [h]
+  (let [h (bit-xor h (unsigned-bit-shift-right h 16))
+        h (u32 (arch/i64-mul h 0x85ebca6b))
+        h (bit-xor h (unsigned-bit-shift-right h 13))
+        h (u32 (arch/i64-mul h 0xc2b2ae35))]
+    (bit-xor h (unsigned-bit-shift-right h 16))))
+
+;; hmapMaskFn / hmapBitpos / hmapIndex (persistent_map.go:125-135).
+(defn- hmask [h shift] (bit-and (unsigned-bit-shift-right h shift) 31))
+(defn- bitpos [h shift] (bit-shift-left 1 (hmask h shift)))
+(defn- bindex [bitmap bit] (arch/i64-popcnt (bit-and bitmap (dec bit))))
+
+(defn- node? [x] (if (arch/is? HBitmapNode x) true (arch/is? HCollisionNode x)))
+
+(defn- bnode [bitmap edit arr] (arch/new HBitmapNode bitmap edit arr))
+(defn- empty-bnode [] (bnode 0 (arch/null) (slots 0)))
+(defn- b-bitmap [n] (arch/get HBitmapNode 0 n))
+(defn- b-edit [n] (arch/get HBitmapNode 1 n))
+(defn- b-arr [n] (arch/get HBitmapNode 2 n))
+
+(defn- c-hash [n] (arch/get HCollisionNode 0 n))
+(defn- c-count [n] (arch/get HCollisionNode 1 n))
+(defn- c-arr [n] (arch/get HCollisionNode 2 n))
+
+(declare node-find node-assoc node-dissoc)
+
+;; ---------------------------------------------------------------------------
+;; Bitmap node (persistent_map.go:139-470)
+
+(defn- bnode-find [n shift h key nf]                       ; :147-163
+  (let [bit (bitpos h shift) bm (b-bitmap n)]
+    (if (= 0 (bit-and bm bit))
+      nf
+      (let [i (* 2 (bindex bm bit)) arr (b-arr n)
+            k (sget arr i) vn (sget arr (inc i))]
+        (if (node? vn)
+          (node-find vn (+ shift 5) h key nf)
+          (if (kequiv key k) vn nf))))))
+
+(defn- b-clone-set [n i x]                                  ; cloneAndSet :313-321
+  (let [a (clone-slots (b-arr n))]
+    (sset! a i x)
+    (bnode (b-bitmap n) (arch/null) a)))
+
+(defn- b-clone-set2 [n i x j y]                             ; cloneAndSet2 :323-332
+  (let [a (clone-slots (b-arr n))]
+    (sset! a i x)
+    (sset! a j y)
+    (bnode (b-bitmap n) (arch/null) a)))
+
+(declare bnode-assoc)
+
+(defn- create-node [shift h1 k1 v1 h2 k2 v2]                ; :473-485
+  (if (= h1 h2)
+    (let [a (slots 4)]                                      ; [existing, new]
+      (sset! a 0 k1) (sset! a 1 v1) (sset! a 2 k2) (sset! a 3 v2)
+      (arch/new HCollisionNode h1 2 a))
+    (let [added (new-flag)]
+      (bnode-assoc (bnode-assoc (empty-bnode) shift h1 k1 v1 added) shift h2 k2 v2 added))))
+
+(defn- bnode-assoc [n shift h key val added]                ; :184-237
+  (let [bit (bitpos h shift) bm (b-bitmap n) i (* 2 (bindex bm bit)) arr (b-arr n)]
+    (if (= 0 (bit-and bm bit))
+      (let [na (slots (* 2 (inc (arch/i64-popcnt bm))))]   ; new entry: splice at i
+        (flag-set! added)
+        (arch/array-copy HSlots na 0 arr 0 i)
+        (sset! na i key)
+        (sset! na (inc i) val)
+        (arch/array-copy HSlots na (+ i 2) arr i (- (arch/alen arr) i))
+        (bnode (bit-or bm bit) (arch/null) na))
+      (let [k (sget arr i) vn (sget arr (inc i))]
+        (if (node? vn)
+          (let [nc (node-assoc vn (+ shift 5) h key val added)]
+            (if (arch/ref-eq nc vn) n (b-clone-set n (inc i) nc)))
+          (if (kequiv key k)
+            (if (kequiv vn val) n (b-clone-set n (inc i) val))
+            (do (flag-set! added)                           ; push both down a level
+                (b-clone-set2 n i (arch/null) (inc i)
+                              (create-node (+ shift 5) (khash k) k vn h key val)))))))))
+
+(defn- bit-at-index [bm idx]                                ; bitAtIndex :455-462
+  (loop [b bm j 0]
+    (if (< j idx)
+      (recur (bit-and b (dec b)) (inc j))
+      (bit-and b (- 0 b)))))
+
+(defn- remove-pair [n idx]                                  ; removePair :441-452
+  (let [arr (b-arr n) len (arch/alen arr) i (* 2 idx) a (slots (- len 2))]
+    (arch/array-copy HSlots a 0 arr 0 i)
+    (arch/array-copy HSlots a i arr (+ i 2) (- len (+ i 2)))
+    (bnode (bit-and-not (b-bitmap n) (bit-at-index (b-bitmap n) idx)) (arch/null) a)))
+
+(defn- bnode-dissoc [n shift h key]                         ; :239-275
+  (let [bit (bitpos h shift) bm (b-bitmap n)]
+    (if (= 0 (bit-and bm bit))
+      n
+      (let [idx (bindex bm bit) i (* 2 idx) arr (b-arr n)
+            k (sget arr i) vn (sget arr (inc i))]
+        (if (node? vn)
+          (let [nc (node-dissoc vn (+ shift 5) h key)]
+            (cond (arch/ref-eq nc vn) n
+                  (arch/null? nc) (if (= bm bit) (arch/null) (remove-pair n idx))
+                  :else (b-clone-set n (inc i) nc)))
+          (if (kequiv key k)
+            (if (= bm bit) (arch/null) (remove-pair n idx))
+            n))))))
+
+;; Transient bitmap-node editing (:334-439): mutate in place when the node
+;; carries this transient's edit token, otherwise clone.
+(defn- b-edit-set [n edit i x]                              ; editAndSet :336-342
+  (if (arch/ref-eq (b-edit n) edit)
+    (do (sset! (b-arr n) i x) n)
+    (b-clone-set n i x)))
+
+(defn- b-ensure-editable [n edit]                           ; :354-364
+  (if (arch/ref-eq (b-edit n) edit)
+    n
+    (bnode (b-bitmap n) edit (clone-slots (b-arr n)))))
+
+(defn- bnode-assoc-t [n edit shift h key val added]         ; assocTransient :367-439
+  (let [bit (bitpos h shift) bm (b-bitmap n) i (* 2 (bindex bm bit)) arr (b-arr n)]
+    (if (= 0 (bit-and bm bit))
+      (let [ne (arch/i64-popcnt bm)
+            e (b-ensure-editable n edit)
+            ea (b-arr e)
+            na (slots (* 2 (inc ne)))]
+        (flag-set! added)
+        (arch/array-copy HSlots na 0 ea 0 i)
+        (sset! na i key)
+        (sset! na (inc i) val)
+        (arch/array-copy HSlots na (+ i 2) ea i (- (* 2 ne) i))
+        (arch/set! HBitmapNode 2 e na)
+        (arch/set! HBitmapNode 0 e (bit-or bm bit))
+        e)
+      (let [k (sget arr i) vn (sget arr (inc i))]
+        (if (node? vn)
+          (let [nc (if (arch/is? HBitmapNode vn)
+                     (bnode-assoc-t vn edit (+ shift 5) h key val added)
+                     (node-assoc vn (+ shift 5) h key val added))]   ; collision child: persistent (:378-382)
+            (if (arch/ref-eq nc vn) n (b-edit-set n edit (inc i) nc)))
+          (if (kequiv key k)
+            (if (kequiv vn val) n (b-edit-set n edit (inc i) val))
+            (let [hk (khash k) e (b-ensure-editable n edit)]
+              (flag-set! added)
+              (sset! (b-arr e) i (arch/null))
+              (sset! (b-arr e) (inc i) (create-node (+ shift 5) hk k vn h key val))
+              e)))))))
+
+;; ---------------------------------------------------------------------------
+;; Collision node (persistent_map.go:487-594). find ignores the hash, as Go's
+;; does (:495-501).
+
+(defn- cnode-find-index [n key]                             ; :587-594
+  (let [cnt (c-count n) arr (c-arr n)]
+    (loop [j 0]
+      (if (< j cnt)
+        (if (kequiv key (sget arr (* 2 j))) (* 2 j) (recur (inc j)))
+        -1))))
+
+(defn- cnode-find [n key nf]
+  (let [i (cnode-find-index n key)]
+    (if (< i 0) nf (sget (c-arr n) (inc i)))))
+
+(defn- cnode-assoc [n shift h key val added]                ; :513-542
+  (if (= h (c-hash n))
+    (let [i (cnode-find-index n key) arr (c-arr n)]
+      (if (>= i 0)
+        (if (kequiv (sget arr (inc i)) val)
+          n
+          (let [a (clone-slots arr)]
+            (sset! a (inc i) val)
+            (arch/new HCollisionNode (c-hash n) (c-count n) a)))
+        (let [len (arch/alen arr) a (slots (+ len 2))]     ; new colliding key: append
+          (flag-set! added)
+          (arch/array-copy HSlots a 0 arr 0 len)
+          (sset! a len key)
+          (sset! a (inc len) val)
+          (arch/new HCollisionNode (c-hash n) (inc (c-count n)) a))))
+    (let [a (slots 2)]                                      ; different hash: wrap, then insert
+      (flag-set! added)
+      (sset! a 1 n)
+      (bnode-assoc (bnode (bitpos (c-hash n) shift) (arch/null) a) shift h key val added))))
+
+(defn- cnode-dissoc [n key]                                 ; :544-568
+  (let [i (cnode-find-index n key) cnt (c-count n) arr (c-arr n)]
+    (cond
+      (< i 0) n
+      (= cnt 1) (arch/null)
+      ;; let-go bug, mirrored (D19): the survivor is rebuilt at shift 0 whatever
+      ;; depth this bucket sits at (:552-562), so get/contains? can miss it
+      ;; while seq still walks it. corpus/maporder/SPEC.md "bucket 2 -> 1".
+      (= cnt 2) (let [r (if (= i 0) 2 0)]
+                  (bnode-assoc (empty-bnode) 0 (c-hash n) (sget arr r) (sget arr (inc r)) (new-flag)))
+      :else (let [len (arch/alen arr) a (slots (- len 2))]
+              (arch/array-copy HSlots a 0 arr 0 i)
+              (arch/array-copy HSlots a i arr (+ i 2) (- len (+ i 2)))
+              (arch/new HCollisionNode (c-hash n) (dec cnt) a)))))
+
+;; ---------------------------------------------------------------------------
+;; Node dispatch (the hmapNode interface, :43-53)
+
+(defn- node-find [n shift h key nf]
+  (if (arch/is? HBitmapNode n) (bnode-find n shift h key nf) (cnode-find n key nf)))
+
+(defn- node-assoc [n shift h key val added]
+  (if (arch/is? HBitmapNode n)
+    (bnode-assoc n shift h key val added)
+    (cnode-assoc n shift h key val added)))
+
+(defn- node-dissoc [n shift h key]
+  (if (arch/is? HBitmapNode n) (bnode-dissoc n shift h key) (cnode-dissoc n key)))
+
+(defn- node-fill
+  "nodeSeq (:277-293, :570-576): write n's entries into out from slot i,
+   slots in array order, children depth-first in place; returns the next i."
+  [n out i]
+  (if (arch/is? HBitmapNode n)
+    (let [arr (b-arr n) nslots (unsigned-bit-shift-right (arch/alen arr) 1)]
+      (loop [s 0 i i]
+        (if (< s nslots)
+          (let [k (sget arr (* 2 s)) vn (sget arr (inc (* 2 s)))]
+            (if (node? vn)
+              (recur (inc s) (node-fill vn out i))
+              (do (sset! out i k)
+                  (sset! out (inc i) vn)
+                  (recur (inc s) (+ i 2)))))
+          i)))
+    (let [len (* 2 (c-count n))]
+      (arch/array-copy HSlots out i (c-arr n) 0 len)
+      (+ i len))))
+
+;; ---------------------------------------------------------------------------
+;; PersistentMap (:596-1047)
+
+(defn- mk [cnt root okvs] (arch/new HMap cnt root okvs -1 (arch/null)))
+(defn mmeta [m] (arch/get HMap 4 m))
+(defn mwith-meta [m meta]                                  ; with-meta: structure and hash cache shared
+  (arch/new HMap (arch/get HMap 0 m) (arch/get HMap 1 m) (arch/get HMap 2 m) (arch/get HMap 3 m) meta))
+(defn- carry-meta [m r] (if (if (arch/ref-eq m r) true (arch/null? (mmeta m))) r (mwith-meta r (mmeta m))))
+(defn- m-root [m] (arch/get HMap 1 m))
+(defn- m-okvs [m] (arch/get HMap 2 m))
+(defn- ordered? [m] (arch/null? (m-root m)))               ; :629
+
+(defn empty-map [] (mk 0 (arch/null) (slots 0)))           ; EmptyPersistentMap :720
+
+(defn empty-hamt-map
+  "A HAMT-mode empty map (non-null empty root): emptySetImpl
+   (persistent_set.go:29). Sets build on this so they never run ordered."
+  []
+  (mk 0 (empty-bnode) (arch/null)))
+
+(defn mcount [m] (arch/get HMap 0 m))
+
+(defn- okvs-index [okvs len key]                            ; :633-640
+  (loop [i 0]
+    (if (< i len)
+      (if (kequiv key (sget okvs i)) i (recur (+ i 2)))
+      -1)))
+
+(defn- find-value [m key nf]                                ; :643-651
+  (if (ordered? m)
+    (let [o (m-okvs m) i (okvs-index o (arch/alen o) key)]
+      (if (< i 0) nf (sget o (inc i))))
+    (node-find (m-root m) 0 (khash key) key nf)))
+
+(defn mget [m key nf]                                       ; ValueAtOr :939-948
+  (if (= 0 (mcount m)) nf (find-value m key nf)))
+
+(defn mcontains?                                            ; Contains :977-983
+  "m itself is the not-found sentinel: no map can contain itself."
+  [m key]
+  (if (= 0 (mcount m))
+    false
+    (if (arch/ref-eq (find-value m key m) m) false true)))
+
+(declare transient-map t-force-hamt tassoc! tpersistent!)
+
+(defn- promote-with-assoc [m key val]                       ; :682-700
+  (let [t (transient-map (empty-map)) o (m-okvs m) len (arch/alen o)]
+    (t-force-hamt t)
+    (loop [i 0]
+      (if (< i len)
+        (do (tassoc! t (sget o i) (sget o (inc i)))
+            (recur (+ i 2)))
+        nil))
+    (tassoc! t key val)
+    (tpersistent! t)))
+
+(defn- massoc* [m key val]                                  ; Assoc :865-898
+  (if (ordered? m)
+    (let [o (m-okvs m) len (arch/alen o) i (okvs-index o len key)]
+      (if (>= i 0)
+        (if (kequiv (sget o (inc i)) val)
+          m
+          (let [a (clone-slots o)]
+            (sset! a (inc i) val)
+            (mk (mcount m) (arch/null) a)))
+        (if (>= (mcount m) (array-map-max-entries))
+          (promote-with-assoc m key val)
+          (let [a (slots (+ len 2))]
+            (arch/array-copy HSlots a 0 o 0 len)
+            (sset! a len key)
+            (sset! a (inc len) val)
+            (mk (inc (mcount m)) (arch/null) a)))))
+    (let [added (new-flag) root (m-root m)
+          nr (node-assoc root 0 (khash key) key val added)]
+      (if (arch/ref-eq nr root)
+        m
+        (mk (if (flag? added) (inc (mcount m)) (mcount m)) nr (arch/null))))))
+
+(defn- mdissoc* [m key]                                     ; Dissoc :900-931
+  (if (ordered? m)
+    (let [o (m-okvs m) len (arch/alen o) i (okvs-index o len key)]
+      (cond
+        (< i 0) m
+        (= (mcount m) 1) (mk 0 (arch/null) (slots 0))
+        :else (let [a (slots (- len 2))]
+                (arch/array-copy HSlots a 0 o 0 i)
+                (arch/array-copy HSlots a i o (+ i 2) (- len (+ i 2)))
+                (mk (dec (mcount m)) (arch/null) a))))
+    (let [root (m-root m) nr (node-dissoc root 0 (khash key) key)]
+      (cond
+        (arch/ref-eq nr root) m
+        ;; Drained: the empty ORDERED map (:922-927), so regrowing is like {}.
+        (arch/null? nr) (mk 0 (arch/null) (slots 0))
+        ;; No demotion while entries remain (:928-930).
+        :else (mk (dec (mcount m)) nr (arch/null))))))
+
+(defn massoc [m key val] (carry-meta m (massoc* m key val)))
+(defn mdissoc [m key] (carry-meta m (mdissoc* m key)))
+
+(defn entries
+  "Seq order as a fresh [k0 v0 k1 v1 ...] array (mapEntries :669-678)."
+  [m]
+  (let [cnt (mcount m)]
+    (cond
+      (= cnt 0) (slots 0)
+      (ordered? m) (clone-slots (m-okvs m))
+      :else (let [out (slots (* 2 cnt))]
+              (if (= (node-fill (m-root m) out 0) (* 2 cnt))
+                out
+                (arch/trap "phm: count disagrees with the node walk"))))))
+
+(defn- half [m off]
+  (let [e (entries m) n (unsigned-bit-shift-right (arch/alen e) 1) out (slots n)]
+    (loop [j 0]
+      (if (< j n)
+        (do (sset! out j (sget e (+ (* 2 j) off))) (recur (inc j)))
+        out))))
+
+(defn- entries->map-seq [e n]                               ; the first n slot pairs of e as a MapSeq
+  (let [a (arch/array-new pv/Node n (arch/null))]
+    (loop [j 0]
+      (when (< j n)
+        (arch/aset! pv/Node a j (arch/new sq/MapEntry (sget e (* 2 j)) (sget e (inc (* 2 j)))))
+        (recur (inc j))))
+    (sq/arr-seq a 0)))
+
+(defn entry-seq
+  "The seq of m as seq.lg sees it: a MapSeq (seq.lg kind 27) of MapEntry in
+   seq order, or null when empty (Seq :1002-1008 returns EmptyList; seq.lg's
+   `seq` turns that into nil either way)."
+  [m]
+  (let [e (entries m)] (entries->map-seq e (unsigned-bit-shift-right (arch/alen e) 1))))
+
+(defn mkeys "(map first (seq m)) (core.lg:1679)." [m] (half m 0))
+(defn mvals "(map second (seq m)) (core.lg:1683)." [m] (half m 1))
+
+(defn mhash                                                 ; Hash :777-799
+  "mixFinish(sum of hash(k) ^ hash(v)), uint32 wrapping; cached."
+  [m]
+  (let [c (arch/get HMap 3 m)]
+    (if (>= c 0)
+      c
+      (let [e (entries m) n (arch/alen e)
+            h (loop [i 0 h 0]
+                (if (< i n)
+                  (recur (+ i 2) (u32 (+ h (bit-xor (khash (sget e i)) (khash (sget e (inc i)))))))
+                  h))
+            r (mix-finish h)]
+        (arch/set! HMap 3 m r)
+        r))))
+
+(defn mequiv                                                ; Equals :1027-1047
+  "Same count, and every entry of m is in o with an equiv value. o is the
+   not-found sentinel for lookups in itself."
+  [m o]
+  (if (= (mcount m) (mcount o))
+    (if (= 0 (mcount m))
+      true
+      (let [e (entries m) n (arch/alen e)]
+        (loop [i 0]
+          (if (< i n)
+            (let [ov (find-value o (sget e i) o)]
+              (if (arch/ref-eq ov o)
+                false
+                (if (kequiv (sget e (inc i)) ov) (recur (+ i 2)) false)))
+            true))))
+    false))
+
+;; ---------------------------------------------------------------------------
+;; seq.lg hooks for maps (kind 18 = foreign, slot 0; SEQ.md "Composition
+;; hooks"). Each takes the closure first (D36) and returns refs (D37). A map
+;; equals only a map (PersistentMap.Equals :1028).
+
+(defn- map-pred [self x] (sq/bool (arch/is? HMap x)))
+(defn map-seq-hook [self x] (entry-seq x))
+(defn map-count-hook [self x] (sq/box-int (mcount x)))
+(defn map-equiv-hook [self a b]
+  (sq/bool (if (if (arch/is? HMap a) (arch/is? HMap b) false) (mequiv a b) false)))
+(defn map-hash-hook [self x] (sq/box-int (mhash x)))
+
+(defn install-hooks!
+  "Link-time step: register maps in seq.lg's slot 0."
+  []
+  (sq/set-kind-hooks! 0 (sq/mk-fn1 (arch/funcref sq/Code1 map-pred))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 map-seq-hook))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 map-count-hook))
+                      (sq/mk-fn2 (arch/funcref sq/Code2 map-equiv-hook))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 map-hash-hook))))
+
+;; ---------------------------------------------------------------------------
+;; TransientMap (transient.go:13-276)
+
+(defn- t-edit [t] (arch/get HTransient 0 t))
+(defn- t-root [t] (arch/get HTransient 1 t))
+(defn- t-okvs [t] (arch/get HTransient 2 t))
+(defn- t-hamt? [t] (= 1 (arch/get HTransient 3 t)))
+(defn tcount [t] (arch/get HTransient 4 t))
+(defn- t-count! [t n] (arch/set! HTransient 4 t n))
+
+(defn transient-map [m]                                     ; NewTransientMap :30-41
+  (let [edit (arch/new HFlag 1)]
+    (if (ordered? m)
+      (let [o (m-okvs m) a (slots (* 2 (inc (array-map-max-entries))))]
+        (arch/array-copy HSlots a 0 o 0 (arch/alen o))
+        (arch/new HTransient edit (arch/null) a 0 (mcount m)))
+      (arch/new HTransient edit (m-root m) (arch/null) 1 (mcount m)))))
+
+(defn- t-ensure-editable [t]                                ; :75-80
+  (if (= 1 (arch/get HFlag 0 (t-edit t)))
+    nil
+    (let [bs (arch/bytes-of-string "transient used after persistent! call")] ; catchable natively (transient.go:77)
+      (throw (arch/new sq/Err 1 bs bs (arch/null) (arch/null))))))
+
+(defn- t-root-assoc! [t key val added]                      ; :103-111 and :49-59
+  (let [h (khash key) edit (t-edit t) root (t-root t)]
+    (arch/set! HTransient 1 t
+               (cond
+                 (arch/null? root) (bnode-assoc-t (bnode 0 edit (slots 0)) edit 0 h key val added)
+                 (arch/is? HBitmapNode root) (bnode-assoc-t root edit 0 h key val added)
+                 :else (node-assoc root 0 h key val added)))))
+
+(defn t-force-hamt [t]                                      ; forceHAMT :45-63
+  (if (t-hamt? t)
+    nil
+    (let [o (t-okvs t) len (* 2 (tcount t))]
+      (loop [i 0]
+        (if (< i len)
+          (do (t-root-assoc! t (sget o i) (sget o (inc i)) (new-flag))
+              (recur (+ i 2)))
+          nil))
+      (arch/set! HTransient 2 t (arch/null))
+      (arch/set! HTransient 3 t 1))))
+
+(defn- t-hamt-assoc! [t key val]
+  (let [added (new-flag)]
+    (t-root-assoc! t key val added)
+    (if (flag? added) (t-count! t (inc (tcount t))) nil)
+    t))
+
+(defn tassoc! [t key val]                                   ; Assoc :87-116
+  (t-ensure-editable t)
+  (if (t-hamt? t)
+    (t-hamt-assoc! t key val)
+    (let [o (t-okvs t) len (* 2 (tcount t)) i (okvs-index o len key)]
+      (cond
+        (>= i 0) (do (sset! o (inc i) val) t)              ; no same-value check here (:92-95)
+        (< (tcount t) (array-map-max-entries))
+        (do (sset! o len key)
+            (sset! o (inc len) val)
+            (t-count! t (inc (tcount t)))
+            t)
+        :else (do (t-force-hamt t) (t-hamt-assoc! t key val))))))
+
+(defn tdissoc! [t key]                                      ; Dissoc :119-140
+  (t-ensure-editable t)
+  (if (t-hamt? t)
+    (let [root (t-root t)]
+      (if (arch/null? root)
+        t
+        (let [nr (node-dissoc root 0 (khash key) key)]
+          (if (arch/ref-eq nr root)
+            t
+            ;; A drain leaves root null but the transient in HAMT mode: keys
+            ;; assoc!'d afterwards, in this same transient, are hash-ordered
+            ;; even at <= 8 entries. The persistent path goes back to ordered.
+            (do (arch/set! HTransient 1 t nr)
+                (t-count! t (dec (tcount t)))
+                t)))))
+    (let [o (t-okvs t) len (* 2 (tcount t)) i (okvs-index o len key)]
+      (if (>= i 0)
+        (do (arch/array-copy HSlots o i o (+ i 2) (- len (+ i 2)))
+            (sset! o (- len 2) (arch/null))
+            (sset! o (- len 1) (arch/null))
+            (t-count! t (dec (tcount t)))
+            t)
+        t))))
+
+(defn tget [t key nf]                                       ; ValueAtOr :214-229
+  (if (t-hamt? t)
+    (if (arch/null? (t-root t)) nf (node-find (t-root t) 0 (khash key) key nf))
+    (let [o (t-okvs t) i (okvs-index o (* 2 (tcount t)) key)]
+      (if (< i 0) nf (sget o (inc i))))))
+
+(defn tentry-seq                                            ; TransientMap.Seq :231-251, as entry-seq
+  "The seq of transient t: a MapSeq of MapEntry in seq order, or null."
+  [t]
+  (let [n (tcount t)
+        e (cond (= n 0) (slots 0)
+                (if (t-hamt? t) false true) (t-okvs t)
+                (arch/null? (t-root t)) (slots 0)
+                :else (let [out (slots (* 2 n))] (node-fill (t-root t) out 0) out))]
+    (entries->map-seq e (if (= 0 (arch/alen e)) 0 n))))
+
+(defn tpersistent! [t]                                      ; Persistent :193-207
+  (t-ensure-editable t)
+  (arch/set! HFlag 0 (t-edit t) 0)
+  (if (t-hamt? t)
+    (if (arch/null? (t-root t))
+      (mk (tcount t) (arch/null) (slots 0))                 ; root nil reads as ordered
+      (mk (tcount t) (t-root t) (arch/null)))
+    (let [len (* 2 (tcount t)) a (slots len)]
+      (arch/array-copy HSlots a 0 (t-okvs t) 0 len)
+      (mk (tcount t) (arch/null) a))))

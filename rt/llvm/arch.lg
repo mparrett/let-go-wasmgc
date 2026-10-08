@@ -1,0 +1,546 @@
+;; llvm.arch — the intrinsic var set the wasm runtime is written
+;; against (plan D4), plus its reference implementation under native lg.
+;;
+;; Every public defn tagged ^:intrinsic is recognised by the backend by var
+;; identity at a :call site and emitted inline; its metadata names the wasm
+;; instruction(s) (:wasm) and the typeinfer signature (:type). In the type
+;; strings :int is i64, :float f64, :bool i32, :any (ref null eq). Indices and
+;; lengths are :int on the lg side; the backend wraps them with i32.wrap_i64
+;; and extends i32 results back with i64.extend_i32_s/u as noted.
+;;
+;; The reference implementation is deliberately stricter than wasm where
+;; wasm would silently do something a correct runtime never relies on
+;; (an out-of-range i31, an index >= 2^32 that wasm would wrap, a raw lg value
+;; in a :ref slot): those throw here, so runtime bugs surface under native lg
+;; before the backend exists. Where wasm has defined semantics that runtime
+;; code DOES rely on (wrapping i64 arithmetic, shift counts mod 64, packed i8
+;; truncation, memmove-style array.copy) the reference reproduces them.
+;;
+;; Representation under native lg: struct and array instances are Go-backed
+;; object-arrays whose slot 0 is the type's declaration map; an i31 is a
+;; two-slot array tagged i31-tag; a funcref is [sig f]; null is nil.
+(ns llvm.arch
+  (:refer-clojure :exclude [get set! aget new]))
+
+(def ^:private array-type (type (object-array 0)))
+(def ^:private i31-tag {::kind :i31 :name 'i31})
+
+(defn- trap!
+  "Raise the reference impl's stand-in for a wasm trap. Runtime code must
+   never catch these: in wasm a trap is not an exception."
+  [msg data]
+  (throw (ex-info (str "wasm trap: " msg) (assoc data :arch/trap true))))
+
+(defn- tagged? [x]
+  (and (= (type x) array-type)
+       (pos? (alength x))
+       (map? (core/aget x 0))
+       (some? (::kind (core/aget x 0)))))
+
+(defn- kind-name [x]
+  (cond (nil? x) "null"
+        (tagged? x) (str (name (::kind (core/aget x 0))) " " (:name (core/aget x 0)))
+        :else (str "non-wasm value " (pr-str x) " (" (type x) ")")))
+
+(defn- eqref? [x]
+  ;; A native exception is the reference's stand-in for the payload a wasm
+  ;; `catch $lgex` binds, which is always a (ref null eq): runtime code may
+  ;; keep what it caught (a LazySeq caches its thunk's error, D74).
+  (or (nil? x) (and (tagged? x) (not= :func (::kind (core/aget x 0)))) (instance? Throwable x)))
+
+(defn- funcref? [x]
+  (or (nil? x) (and (tagged? x) (= :func (::kind (core/aget x 0))))))
+
+(defn- check-ref! [who x]
+  (when-not (eqref? x)
+    (throw (ex-info (str who ": expected a wasm ref, got " (kind-name x)) {:who who}))))
+
+(defn- check-int! [who x]
+  (when-not (int? x)
+    (throw (ex-info (str who ": expected i64 (lg int), got " (pr-str x)) {:who who})))
+  x)
+
+(def ^:private i32-min -2147483648)
+(def ^:private i32-max 2147483647)
+
+(defn- check-val!
+  "A value stored into a field/element of wasm type t must already be that
+   type; the backend inserts no conversions at a store."
+  [who t v]
+  (case t
+    :i64 (check-int! who v)
+    :i32 (when-not (and (int? v) (<= i32-min v i32-max))
+           (throw (ex-info (str who ": i32 slot needs an int in [-2^31, 2^31), got " (pr-str v)
+                                " (use i32-wrap first)") {:who who})))
+    :f64 (when-not (float? v)
+           (throw (ex-info (str who ": f64 slot needs a float, got " (pr-str v)) {:who who})))
+    :i8 (when-not (and (int? v) (<= 0 v 255))
+          (throw (ex-info (str who ": i8 slot needs an int in [0, 256), got " (pr-str v)) {:who who})))
+    :ref (check-ref! who v)
+    :funcref (when-not (funcref? v)
+               (throw (ex-info (str who ": funcref slot got " (kind-name v)) {:who who})))
+    (throw (ex-info (str who ": unknown slot type " t) {:who who})))
+  v)
+
+(defn- check-index! [who i n]
+  (check-int! who i)
+  (when-not (and (<= 0 i) (< i n))
+    (trap! (str who ": index " i " out of bounds for length " n) {:who who :index i :length n})))
+
+;; ---------------------------------------------------------------------------
+;; Declarations. Field types are :i64 :f64 :i32 :ref :funcref; a mutable
+;; field is written [:mut <type>]. The backend reads these defs as a data table
+;; and emits one (rec ...) group, so types are nominal by position even when
+;; two declarations have the same field list (wasm canonicalises structurally
+;; identical types across rec groups; inside one group they stay distinct).
+
+(def ^:private slot-types #{:i64 :f64 :i32 :ref :funcref})
+
+(defn struct-decl [nm fields]
+  (let [norm (mapv (fn [f]
+                     (let [[mut? t] (if (vector? f)
+                                      (if (and (= 2 (count f)) (= :mut (first f)))
+                                        [true (second f)]
+                                        (throw (ex-info (str "defstruct " nm ": bad field " (pr-str f)) {})))
+                                      [false f])]
+                       (when-not (slot-types t)
+                         (throw (ex-info (str "defstruct " nm ": bad field type " (pr-str t)) {})))
+                       {:type t :mut mut?}))
+                   fields)]
+    {::kind :struct :name nm :fields norm}))
+
+(defn array-decl [nm elem]
+  (when-not (slot-types elem)
+    (throw (ex-info (str "defarray " nm ": bad element type " (pr-str elem)) {})))
+  {::kind :array :name nm :elem elem})
+
+(defn func-decl [nm params result]
+  (doseq [t (conj (vec params) result)]
+    (when-not (slot-types t)
+      (throw (ex-info (str "deffunc " nm ": bad type " (pr-str t)) {}))))
+  {::kind :func :name nm :params (vec params) :result result})
+
+(defmacro defstruct
+  "(defstruct Name [field-type ...]) => (type $Name (struct (field ...) ...))."
+  [nm fields]
+  `(def ~nm (struct-decl '~nm ~fields)))
+
+(defmacro defarray
+  "(defarray Name elem-type) => (type $Name (array (mut elem-type)))."
+  [nm elem]
+  `(def ~nm (array-decl '~nm ~elem)))
+
+(defmacro deffunc
+  "(deffunc Name [param-type ...] result-type) => (type $Name (func ...))."
+  [nm params result]
+  `(def ~nm (func-decl '~nm ~params ~result)))
+
+;; The built-in byte array: strings are (array (mut i8)) per D5.
+(def Bytes {::kind :array :name 'Bytes :elem :i8})
+
+(defn- check-decl! [who decl k]
+  (when-not (and (map? decl) (= k (::kind decl)))
+    (throw (ex-info (str who ": expected a " (name k) " declaration, got " (pr-str decl)) {:who who}))))
+
+(defn- instance-of? [decl x]
+  (and (tagged? x) (identical? decl (core/aget x 0))))
+
+(defn- cast! [who decl x]
+  (when-not (instance-of? decl x)
+    (trap! (str who ": cast failure, expected " (name (::kind decl)) " " (:name decl)
+                ", got " (kind-name x))
+           {:who who :expected (:name decl)}))
+  x)
+
+;; ---------------------------------------------------------------------------
+;; Structs
+
+(defn- new* [decl vals]
+  (check-decl! "arch/new" decl :struct)
+  (let [fs (:fields decl)]
+    (when-not (= (count fs) (count vals))
+      (throw (ex-info (str "arch/new " (:name decl) ": " (count fs) " fields, got " (count vals)) {})))
+    (let [a (object-array (inc (count fs)))]
+      (core/aset a 0 decl)
+      (dotimes [i (count fs)]
+        (core/aset a (inc i) (check-val! (str "arch/new " (:name decl) " field " i)
+                                         (:type (nth fs i)) (nth vals i))))
+      a)))
+
+(defn ^{:intrinsic true :wasm "struct.new $Name" :type "[decl fields...] -> :any"} new
+  "(new Name f1 ... fn) => struct.new $Name. Arity is the field count; the
+   backend sees it statically. Multi-arity only because a struct's operand
+   count is its declaration's."
+  ([decl] (new* decl []))
+  ([decl a] (new* decl [a]))
+  ([decl a b] (new* decl [a b]))
+  ([decl a b c] (new* decl [a b c]))
+  ([decl a b c d] (new* decl [a b c d]))
+  ([decl a b c d e] (new* decl [a b c d e]))
+  ([decl a b c d e f] (new* decl [a b c d e f]))
+  ([decl a b c d e f g] (new* decl [a b c d e f g]))
+  ([decl a b c d e f g h] (new* decl [a b c d e f g h])))
+
+(defn- check-field! [who decl idx]
+  (when-not (and (int? idx) (<= 0 idx) (< idx (count (:fields decl))))
+    (throw (ex-info (str who " " (:name decl) ": field index " (pr-str idx) " out of range 0.."
+                         (dec (count (:fields decl)))) {:who who}))))
+
+(defn ^{:intrinsic true :wasm "ref.cast (ref $Name); struct.get $Name idx (i32 field: i64.extend_i32_s)"
+        :type "[decl const-int :any] -> field type"} get
+  "(get Name idx x): idx is a literal. Traps on null or a non-Name x."
+  [decl idx x]
+  (check-decl! "arch/get" decl :struct)
+  (check-field! "arch/get" decl idx)
+  (cast! "arch/get" decl x)
+  (core/aget x (inc idx)))
+
+(defn ^{:intrinsic true :wasm "ref.cast (ref $Name); struct.set $Name idx"
+        :type "[decl const-int :any T] -> :nil"} set!
+  "(set! Name idx x v): only for fields declared [:mut t]."
+  [decl idx x v]
+  (check-decl! "arch/set!" decl :struct)
+  (check-field! "arch/set!" decl idx)
+  (when-not (:mut (nth (:fields decl) idx))
+    (throw (ex-info (str "arch/set! " (:name decl) ": field " idx " is immutable") {})))
+  (cast! "arch/set!" decl x)
+  (core/aset x (inc idx) (check-val! "arch/set!" (:type (nth (:fields decl) idx)) v))
+  nil)
+
+(defn ^{:intrinsic true :wasm "ref.test (ref $Name)" :type "[decl :any] -> :bool"} is?
+  [decl x]
+  (when-not (#{:struct :array} (::kind decl))
+    (throw (ex-info (str "arch/is?: not a type declaration " (pr-str decl)) {})))
+  (check-ref! "arch/is?" x)
+  (instance-of? decl x))
+
+(defn ^{:intrinsic true :wasm "ref.cast (ref $Name)" :type "[decl :any] -> :any"} as
+  "Traps on null and on any other type, naming both."
+  [decl x]
+  (when-not (#{:struct :array} (::kind decl))
+    (throw (ex-info (str "arch/as: not a type declaration " (pr-str decl)) {})))
+  (check-ref! "arch/as" x)
+  (cast! "arch/as" decl x))
+
+;; ---------------------------------------------------------------------------
+;; Arrays
+
+(def ^:private max-array-len 2147483647)
+
+(defn ^{:intrinsic true :wasm "array.new $Name (len: i32.wrap_i64)" :type "[decl :int T] -> :any"} array-new
+  [decl len init]
+  (check-decl! "arch/array-new" decl :array)
+  (check-int! "arch/array-new" len)
+  (when-not (<= 0 len max-array-len)
+    (trap! (str "arch/array-new " (:name decl) ": bad length " len) {}))
+  (check-val! (str "arch/array-new " (:name decl)) (:elem decl) init)
+  (let [a (object-array (inc len))]
+    (core/aset a 0 decl)
+    (dotimes [i len] (core/aset a (inc i) init))
+    a))
+
+(defn ^{:intrinsic true :wasm "array.get $Name (i32 elem: i64.extend_i32_s)" :type "[decl :any :int] -> T"} aget
+  [decl a i]
+  (check-decl! "arch/aget" decl :array)
+  (cast! "arch/aget" decl a)
+  (check-index! "arch/aget" i (dec (alength a)))
+  (core/aget a (inc i)))
+
+(defn ^{:intrinsic true :wasm "array.set $Name" :type "[decl :any :int T] -> :nil"} aset!
+  [decl a i v]
+  (check-decl! "arch/aset!" decl :array)
+  (cast! "arch/aset!" decl a)
+  (check-index! "arch/aset!" i (dec (alength a)))
+  (core/aset a (inc i) (check-val! (str "arch/aset! " (:name decl)) (:elem decl) v))
+  nil)
+
+(defn ^{:intrinsic true :wasm "array.len; i64.extend_i32_u" :type "[:any] -> :int"} alen
+  "Any array type, including Bytes. Traps on null or a non-array."
+  [a]
+  (when-not (and (tagged? a) (= :array (::kind (core/aget a 0))))
+    (trap! (str "arch/alen: expected an array, got " (kind-name a)) {}))
+  (dec (alength a)))
+
+(defn ^{:intrinsic true :wasm "array.copy $Name $Name" :type "[decl :any :int :any :int :int] -> :nil"} array-copy
+  "(array-copy Name dst dst-i src src-i n). Overlap-safe (memmove), as wasm's."
+  [decl dst di src si n]
+  (check-decl! "arch/array-copy" decl :array)
+  (cast! "arch/array-copy dst" decl dst)
+  (cast! "arch/array-copy src" decl src)
+  (doseq [x [di si n]] (check-int! "arch/array-copy" x))
+  (when-not (and (<= 0 n) (<= 0 di) (<= 0 si)
+                 (<= (+ di n) (dec (alength dst))) (<= (+ si n) (dec (alength src))))
+    (trap! (str "arch/array-copy " (:name decl) ": range out of bounds") {:di di :si si :n n}))
+  (if (<= di si)
+    (dotimes [k n] (core/aset dst (+ 1 di k) (core/aget src (+ 1 si k))))
+    (loop [k (dec n)]
+      (when (>= k 0)
+        (core/aset dst (+ 1 di k) (core/aget src (+ 1 si k)))
+        (recur (dec k)))))
+  nil)
+
+;; ---------------------------------------------------------------------------
+;; References
+
+(defn ^{:intrinsic true :wasm "ref.eq" :type "[:any :any] -> :bool"} ref-eq
+  "Identity on structs/arrays; value equality on i31 (as ref.eq on i31ref)."
+  [a b]
+  (check-ref! "arch/ref-eq" a)
+  (check-ref! "arch/ref-eq" b)
+  (cond (and (nil? a) (nil? b)) true
+        (or (nil? a) (nil? b)) false
+        (and (identical? i31-tag (core/aget a 0)) (identical? i31-tag (core/aget b 0)))
+        (= (core/aget a 1) (core/aget b 1))
+        :else (identical? a b)))
+
+(defn ^{:intrinsic true :wasm "ref.null none" :type "[] -> :nil"} null [] nil)
+
+(defn ^{:intrinsic true :wasm "ref.is_null" :type "[:any] -> :bool"} null?
+  [x]
+  (when-not (or (eqref? x) (funcref? x))
+    (throw (ex-info (str "arch/null?: expected a wasm ref, got " (kind-name x)) {})))
+  (nil? x))
+
+;; Fixnums (spec decision 8, D200): an int boxed in the value word itself.
+;; The range is the target's: gc and linear use wasm's i31, -2^30..2^30-1
+;; (D41), which the reference reproduces; --target llvm takes the hardware
+;; profile's :fixnum-bits. Runtime code reads the bounds from fix-min and
+;; fix-max, never from literals.
+(def ^:private i31-min -1073741824)
+(def ^:private i31-max 1073741823)
+
+(defn ^{:intrinsic true :wasm "i64.const -1073741824 (gc, linear); the profile's bound (llvm)" :type "[] -> :int"} fix-min
+  [] i31-min)
+
+(defn ^{:intrinsic true :wasm "i64.const 1073741823 (gc, linear); the profile's bound (llvm)" :type "[] -> :int"} fix-max
+  [] i31-max)
+
+(defn ^{:intrinsic true :wasm "i32.wrap_i64; ref.i31" :type "[:int] -> :any"} fix
+  "Wasm would silently drop the top bit of an out-of-range value; the
+   reference traps, because D2's hybrid box range-checks before boxing."
+  [n]
+  (check-int! "arch/fix" n)
+  (when-not (<= i31-min n i31-max)
+    (trap! (str "arch/fix: " n " outside [-2^30, 2^30)") {:n n}))
+  (doto (object-array 2) (core/aset 0 i31-tag) (core/aset 1 n)))
+
+(defn ^{:intrinsic true :wasm "ref.test (ref i31)" :type "[:any] -> :bool"} fix?
+  [x]
+  (check-ref! "arch/fix?" x)
+  (and (some? x) (identical? i31-tag (core/aget x 0))))
+
+(defn ^{:intrinsic true :wasm "ref.cast (ref i31); i31.get_s; i64.extend_i32_s" :type "[:any] -> :int"} fix-get
+  [x]
+  (when-not (and (tagged? x) (identical? i31-tag (core/aget x 0)))
+    (trap! (str "arch/fix-get: cast failure, expected a fixnum, got " (kind-name x)) {}))
+  (core/aget x 1))
+
+;; ---------------------------------------------------------------------------
+;; Raw i64 arithmetic: wraps, never throws (lg's + - * throw on overflow).
+
+(def ^:private i64-min -9223372036854775808)
+
+(defn ^{:intrinsic true :wasm "i64.add" :type "[:int :int] -> :int"} i64-add
+  [a b] (unchecked-add (check-int! "arch/i64-add" a) (check-int! "arch/i64-add" b)))
+(defn ^{:intrinsic true :wasm "i64.sub" :type "[:int :int] -> :int"} i64-sub
+  [a b] (unchecked-subtract (check-int! "arch/i64-sub" a) (check-int! "arch/i64-sub" b)))
+(defn ^{:intrinsic true :wasm "i64.mul" :type "[:int :int] -> :int"} i64-mul
+  [a b] (unchecked-multiply (check-int! "arch/i64-mul" a) (check-int! "arch/i64-mul" b)))
+
+;; lg's shifts follow Go (count >= 64 gives 0 or -1, D16); wasm takes the
+;; count mod 64. Measured on lg 4e769212: (bit-shift-right -8 64) = -1.
+(defn ^{:intrinsic true :wasm "i64.shl" :type "[:int :int] -> :int"} i64-shl
+  [a n] (bit-shift-left (check-int! "arch/i64-shl" a) (bit-and (check-int! "arch/i64-shl" n) 63)))
+(defn ^{:intrinsic true :wasm "i64.shr_s" :type "[:int :int] -> :int"} i64-shr-s
+  [a n] (bit-shift-right (check-int! "arch/i64-shr-s" a) (bit-and (check-int! "arch/i64-shr-s" n) 63)))
+(defn ^{:intrinsic true :wasm "i64.shr_u" :type "[:int :int] -> :int"} i64-shr-u
+  [a n] (unsigned-bit-shift-right (check-int! "arch/i64-shr-u" a) (bit-and (check-int! "arch/i64-shr-u" n) 63)))
+
+(defn ^{:intrinsic true :wasm "i64.lt_u" :type "[:int :int] -> :bool"} i64-lt-u
+  [a b] (< (bit-xor (check-int! "arch/i64-lt-u" a) i64-min) (bit-xor (check-int! "arch/i64-lt-u" b) i64-min)))
+
+(defn ^{:intrinsic true :wasm "i64.clz" :type "[:int] -> :int"} i64-clz
+  [a]
+  (check-int! "arch/i64-clz" a)
+  (loop [n 0 x a]
+    (if (or (= n 64) (neg? x)) n (recur (inc n) (bit-shift-left x 1)))))
+
+(defn ^{:intrinsic true :wasm "i64.ctz" :type "[:int] -> :int"} i64-ctz
+  [a]
+  (check-int! "arch/i64-ctz" a)
+  (loop [n 0 x a]
+    (if (or (= n 64) (= 1 (bit-and x 1))) n (recur (inc n) (unsigned-bit-shift-right x 1)))))
+
+(defn ^{:intrinsic true :wasm "i64.popcnt" :type "[:int] -> :int"} i64-popcnt
+  [a]
+  (check-int! "arch/i64-popcnt" a)
+  (loop [n 0 x a]
+    (if (zero? x) n (recur (inc n) (bit-and x (unchecked-subtract x 1))))))
+
+(defn ^{:intrinsic true :wasm "i64.extend_i32_s (i32.wrap_i64 x)" :type "[:int] -> :int"} i32-wrap
+  "Low 32 bits, sign-extended: 32-bit wrapping arithmetic (murmur3) in i64."
+  [a]
+  (let [l (bit-and (check-int! "arch/i32-wrap" a) 0xffffffff)]
+    (if (>= l 0x80000000) (- l 0x100000000) l)))
+
+(defn ^{:intrinsic true :wasm "i64.extend_i32_u (i32.wrap_i64 x)" :type "[:int] -> :int"} i64-extend-i32-u
+  "Low 32 bits, zero-extended: a uint32 hash as a non-negative i64."
+  [a] (bit-and (check-int! "arch/i64-extend-i32-u" a) 0xffffffff))
+
+(defn ^{:intrinsic true :wasm "f64.convert_i64_s" :type "[:int] -> :float"} i64-to-f64
+  [a] (double (check-int! "arch/i64-to-f64" a)))
+
+(defn ^{:intrinsic true :wasm "i64.trunc_f64_s" :type "[:float] -> :int"} f64-to-i64
+  "Truncates toward zero; traps on NaN and outside [-2^63, 2^63), as wasm.
+   lg's own (long x) returns 0 for NaN and saturates, so it is guarded."
+  [x]
+  (when-not (float? x) (throw (ex-info (str "arch/f64-to-i64: expected f64, got " (pr-str x)) {})))
+  ;; NaN? rather than (not= x x): on lg 4e769212 (not= ##NaN ##NaN) is false.
+  (when (or (NaN? x) (>= x 9.223372036854775808e18) (< x -9.223372036854775808e18))
+    (trap! (str "arch/f64-to-i64: invalid conversion of " x) {}))
+  (long x))
+
+(defn ^{:intrinsic true :wasm "f64.neg" :type "[:float] -> :float"} f64-neg
+  "Flips the sign bit and nothing else, NaN included (Go's -x). lg's own unary
+   - on a float is Go's -x too (measured on 4e769212: (hash (- ##NaN)) is
+   3505668245, (hash ##NaN) 3363640502), so it is the reference. (* -1.0 x)
+   is not: wasm's f64.mul may return any NaN sign for a NaN operand. P2.13."
+  [x]
+  (when-not (float? x) (throw (ex-info (str "arch/f64-neg: expected f64, got " (pr-str x)) {})))
+  (- x))
+
+;; ---------------------------------------------------------------------------
+;; Bytes: the built-in (array (mut i8)) type.
+
+(defn ^{:intrinsic true :wasm "array.new_default $Bytes" :type "[:int] -> :any"} bytes-new
+  [len] (array-new Bytes len 0))
+
+(defn ^{:intrinsic true :wasm "array.get_u $Bytes; i64.extend_i32_u" :type "[:any :int] -> :int"} bget
+  "Unsigned: 0..255."
+  [b i]
+  (cast! "arch/bget" Bytes b)
+  (check-index! "arch/bget" i (dec (alength b)))
+  (core/aget b (inc i)))
+
+(defn ^{:intrinsic true :wasm "i32.wrap_i64; array.set $Bytes" :type "[:any :int :int] -> :nil"} bset!
+  "Stores the low 8 bits, as a packed i8 array.set does."
+  [b i v]
+  (cast! "arch/bset!" Bytes b)
+  (check-index! "arch/bset!" i (dec (alength b)))
+  (core/aset b (inc i) (bit-and (check-int! "arch/bset!" v) 255))
+  nil)
+
+(defn ^{:intrinsic true :wasm "array.new_data $Bytes $seg (s must be a string literal)" :type "[:string] -> :any"} bytes-of-string
+  "UTF-8 bytes of s. In wasm a string literal already is its bytes (D5)."
+  [s]
+  (when-not (string? s) (throw (ex-info (str "arch/bytes-of-string: not a string " (pr-str s)) {})))
+  (let [bs (vec (bytes s)) b (bytes-new (count bs))]
+    (dotimes [i (count bs)] (core/aset b (inc i) (nth bs i)))
+    b))
+
+(defn- utf8-decode [b]
+  (let [n (dec (alength b))
+        at (fn [i] (if (< i n) (core/aget b (inc i)) (trap! "string-of-bytes: truncated UTF-8" {})))
+        cont (fn [i] (let [c (at i)]
+                       (when-not (= 0x80 (bit-and c 0xC0)) (trap! "string-of-bytes: bad continuation byte" {:at i}))
+                       (bit-and c 0x3F)))]
+    (loop [i 0 out []]
+      (if (>= i n)
+        (apply str out)
+        (let [c (at i)
+              [cp len] (cond (< c 0x80) [c 1]
+                             (= 0xC0 (bit-and c 0xE0)) [(+ (* (bit-and c 0x1F) 64) (cont (inc i))) 2]
+                             ;; lg's bit-or is binary; the bit groups are disjoint, so + composes them.
+                             (= 0xE0 (bit-and c 0xF0)) [(+ (* (bit-and c 0x0F) 4096) (* (cont (inc i)) 64) (cont (+ i 2))) 3]
+                             (= 0xF0 (bit-and c 0xF8)) [(+ (* (bit-and c 0x07) 262144) (* (cont (inc i)) 4096)
+                                                           (* (cont (+ i 2)) 64) (cont (+ i 3))) 4]
+                             :else (trap! "string-of-bytes: bad lead byte" {:at i}))]
+          (when (or (and (= len 2) (< cp 0x80)) (and (= len 3) (< cp 0x800)) (and (= len 4) (< cp 0x10000))
+                    (<= 0xD800 cp 0xDFFF) (> cp 0x10FFFF))
+            (trap! "string-of-bytes: overlong, surrogate or out-of-range code point" {:at i :cp cp}))
+          (recur (+ i len) (conj out (char cp))))))))
+
+(defn ^{:intrinsic true :wasm "none: identity (a $Bytes is the string, D5)" :type "[:any] -> :string"} string-of-bytes
+  "Reference/boundary helper: strict UTF-8 decode to an lg string."
+  [b]
+  (cast! "arch/string-of-bytes" Bytes b)
+  (utf8-decode b))
+
+;; ---------------------------------------------------------------------------
+;; Host. The reference is deterministic: a virtual clock that only
+;; host-sleep advances, and an environment that is *host-env*, not the
+;; process's.
+
+(def ^:dynamic *host-env* {})
+(def host-clock (atom 0))
+
+(defn ^{:intrinsic true :wasm "call $env.write (fd: i32.wrap_i64; result i64.extend_i32_s)" :type "[:int :any] -> :int"} host-write
+  "Write Bytes to fd 1 (stdout) or 2 (stderr); returns the byte count."
+  [fd b]
+  (let [s (string-of-bytes b)]
+    (case fd
+      1 (do (print s))
+      2 (binding [*out* *err*] (print s))
+      (trap! (str "arch/host-write: bad fd " fd) {}))
+    (alen b)))
+
+(defn ^{:intrinsic true :wasm "call $env.sleep (JSPI-suspending on JS hosts, D6)" :type "[:int] -> :nil"} host-sleep
+  [ms]
+  (check-int! "arch/host-sleep" ms)
+  (when (neg? ms) (trap! "arch/host-sleep: negative" {}))
+  (swap! host-clock + (* ms 1000000))
+  nil)
+
+(defn ^{:intrinsic true :wasm "call $env.nanotime" :type "[] -> :int"} host-nanotime
+  [] @host-clock)
+
+(defn ^{:intrinsic true :wasm "call $env.getenv" :type "[:any] -> :any"} host-getenv
+  "Bytes name -> Bytes value, or null when unset."
+  [name-bytes]
+  (let [v (core/get *host-env* (string-of-bytes name-bytes))]
+    (when v (bytes-of-string v))))
+
+(def ^:dynamic *host-args* ["lg"])
+
+(defn ^{:intrinsic true :wasm "call $env.argc" :type "[] -> :int"} host-argc
+  "The number of host arguments (os/args: the lg path, the program, its args)."
+  [] (count *host-args*))
+
+(defn ^{:intrinsic true :wasm "call $env.arg" :type "[:int] -> :any"} host-arg
+  "Host argument i as Bytes."
+  [i]
+  (check-int! "arch/host-arg" i)
+  (bytes-of-string (nth *host-args* i)))
+
+(defn ^{:intrinsic true :wasm "unreachable (message kept in a custom section for the host's error line)" :type "[:string] -> :bottom"} trap
+  [msg]
+  (trap! msg {}))
+
+;; ---------------------------------------------------------------------------
+;; Function references, for arity dispatch through closures (P1.3).
+
+(defn ^{:intrinsic true :wasm "ref.func $f (f: a top-level defn; elem declare)" :type "[decl var] -> funcref"} funcref
+  [sig f]
+  (check-decl! "arch/funcref" sig :func)
+  (when-not (fn? f) (throw (ex-info (str "arch/funcref: not a fn " (pr-str f)) {})))
+  (doto (object-array 2) (core/aset 0 sig) (core/aset 1 f)))
+
+(defn- call-ref* [sig fr args]
+  (check-decl! "arch/call-ref" sig :func)
+  (when (nil? fr) (trap! "arch/call-ref: null funcref" {}))
+  (when-not (instance-of? sig fr)
+    (trap! (str "arch/call-ref: expected funcref of " (:name sig) ", got " (kind-name fr)) {}))
+  (when-not (= (count args) (count (:params sig)))
+    (throw (ex-info (str "arch/call-ref " (:name sig) ": " (count (:params sig)) " params, got " (count args)) {})))
+  (doseq [[t v] (map vector (:params sig) args)] (check-val! (str "arch/call-ref " (:name sig)) t v))
+  (check-val! (str "arch/call-ref " (:name sig) " result") (:result sig) (apply (core/aget fr 1) args)))
+
+(defn ^{:intrinsic true :wasm "call_ref $Sig" :type "[decl funcref args...] -> result"} call-ref
+  "(call-ref Sig fr a ...). Multi-arity only because call_ref's operand
+   count is its signature's; each call site's count is static."
+  ([sig fr] (call-ref* sig fr []))
+  ([sig fr a] (call-ref* sig fr [a]))
+  ([sig fr a b] (call-ref* sig fr [a b]))
+  ([sig fr a b c] (call-ref* sig fr [a b c]))
+  ([sig fr a b c d] (call-ref* sig fr [a b c d]))
+  ([sig fr a b c d e] (call-ref* sig fr [a b c d e])))

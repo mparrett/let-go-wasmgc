@@ -48,6 +48,10 @@ void lg_host_exit(int status) {
 extern char __heap_start[];
 static char *heap_next = __heap_start;
 
+/* os/args on a board: no program path to report, only the lg name. */
+int lg_host_argc(void) { return 1; }
+const char *lg_host_argv(int i) { return i == 0 ? "lg" : ""; }
+
 void *lg_host_chunk(size_t n) {
   if ((size_t)(__heap_start + LG_HEAP_BYTES - heap_next) < n) {
     static const char msg[] = "error: out of memory\n";

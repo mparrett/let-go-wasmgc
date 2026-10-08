@@ -1,0 +1,957 @@
+;; llvm.eval — P7.0: `eval` inside the module, a closure-compiling evaluator
+;; over the reader's data. Ground truth is let-go ff1e6dac: the special forms
+;; are pkg/compiler/compiler.go's (if do def set! fn* quote var let* loop*
+;; recur try), the core macros are pkg/rt/core/core.lg's, ported as expanders
+;; that build the same forms, so the CompileError chains native prints
+;; ("CompileError: compiling if condition\n\tcaused by CompileError: Can't
+;; resolve x in this context") come out of the same nesting.
+;;
+;; DIALECT: plain lg, as rt/wasm/natives.lg (the round-3 seam note, kept with the campaign notes). The
+;; evaluator itself uses only core fns; everything it needs from its host
+;; goes through the host seam below, so it also runs under native lg.
+;;
+;; Host seam (eval-seam, 2026-10-04; D185, D187). This file is host-free: it
+;; declares the seam fns and defines none of them; a host file defines them.
+;;   cur-ns  ns-value  enter-ns!  canon      current ns name, *ns*, the
+;;                                           compile-time in-ns, ns aliases
+;;   resolve-global  local-def?  core-var    symbol -> {:kind :cell|:prog|
+;;                                           :pmacro|:core ..}, own-var test
+;;                                           (syntax-quote), #'core/x
+;;   cell-get  set-cell!                     read / set! a var at run time
+;;   def-var!  var-of  def-root!             def: intern + meta at compile
+;;                                           time, the var, its root at run time
+;;   raise  var-value  ensure-hook!          throw a message, read a program
+;;                                           var, give the reader its hook
+;; Selection is by load order: a host file re-enters this namespace with its
+;; own (ns llvm.eval ...) form and is loaded after this file, so its defns
+;; land on the declared vars and calls to them stay direct.
+;;   rt/wasm/eval_wasm.lg    the module's host: llvm.natives' registry of
+;;                           cells, the backend's program table, var
+;;                           stand-ins, the core table evaluated code
+;;                           resolves against; rt/wasm/README.md's load order
+;;                           lists it right after this file
+;;   rt/wasm/eval_native.lg  stock lg's host: real let-go namespaces and
+;;                           vars; (require 'llvm.eval-native) loads this
+;;                           file first, then the host (corpus/intrinsics/
+;;                           eval_test.lg, checks/eval-native.sh)
+;; Without a host file the seam fns are unbound and eval fails at its first
+;; call. What this file keeps beyond the evaluator is the plumbing its
+;; expanders emit and every host resolves to: concat-star (`concat*`),
+;; concat-list*, and the `macro-form` atom (`llvm.eval/macro-form*`).
+;;
+;; Shape: (compile form cenv) returns an lg fn of the run-time environment,
+;; a vector of local values indexed at compile time (cenv :locals name ->
+;; [index boxed?]). Evaluated fns are ordinary variadic lg closures that pick
+;; their arity inside, so they work wherever a fn works. loop/recur and fn
+;; recur return the `recur-box` sentinel (holding the new values) to the
+;; loop in the compiled closure. try is lg's try; finally runs after the
+;; catch and the outcome is rethrown (let-go's finally cannot propagate).
+;;
+;; Resolution order, def and the var stand-ins are the host's; each host
+;; file's header states them, and its named limits.
+;;
+;; Named limits of the evaluator, on every host (each raises `lower-wasm: ...
+;; (named limit)` or is a silent difference listed here):
+;;   - catch clauses do not dispatch on the class: the first clause catches
+;;     every exception (native matches by catch-matches?);
+;;   - arity errors of an evaluated fn: native's text names the fn's address
+;;     ("function <fn 0x...> expected 1 args, got 0"); here "<fn>" stands in;
+;;   - "Executing macro" layers name the macro fn's address natively; here
+;;     "<fn name>" stands in; native's "ExecutionError: calling X" frames
+;;     for calls inside a macro appear only for let/loop over a non-seqable
+;;     binding form and the when-let/when-first arity throw;
+;;   - host interop (`.`, `(.method x)`, `Foo.`, `new`), deftype, defrecord,
+;;     defprotocol, reify, defmulti, go, future: not evaluator built-ins
+;;     (they resolve as calls and fail as unknown symbols);
+;;   - gensym counters: native expansions call gensym a different number of
+;;     times, so printed gensym names differ.
+(ns llvm.eval
+  (:refer-clojure :exclude [eval compile])
+  (:require [clojure.string :as string]))
+
+;; ---------------------------------------------------------------------------
+;; The host seam: defined by the host file loaded after this one
+
+(declare cur-ns ns-value enter-ns! canon resolve-global local-def? core-var
+         cell-get set-cell! def-var! var-of def-root! raise var-value ensure-hook!)
+
+(defn- limit [msg] (raise (str "lower-wasm: " msg " (named limit)")))
+(defn- cerr [msg] (raise (str "CompileError: " msg)))
+
+(defn- wrap
+  "Run (f); an error out of it gains the native compiler's context layer."
+  [ctx f]
+  (try (f)
+       (catch Exception e
+         (raise (str "CompileError: " ctx "\n\tcaused by " (ex-message e))))))
+
+(defn- core-std-ns? [q] (or (= q "core") (= q "clojure.core")))
+
+(defn- cant-resolve [sym] (cerr (str "Can't resolve " sym " in this context")))
+
+;; ---------------------------------------------------------------------------
+;; Forms
+
+(defn- unmeta
+  "A name as the reader gives it: x, or (with-meta x m) for ^m x."
+  [x]
+  (if (and (seq? x) (= 'with-meta (first x))) (second x) x))
+
+(def ^:private recur-box (atom nil))
+
+(defn- konst [v] (fn [env] v))
+
+(defn- run-seq
+  "One closure running the compiled forms fs in order, the last one's value."
+  [fs]
+  (let [n (count fs)]
+    (cond (= n 0) (konst nil)
+          (= n 1) (nth fs 0)
+          (= n 2) (let [a (nth fs 0) b (nth fs 1)] (fn [env] (a env) (b env)))
+          :else (fn [env]
+                  (loop [i 0]
+                    (if (= i (dec n))
+                      ((nth fs i) env)
+                      (do ((nth fs i) env) (recur (inc i)))))))))
+
+(declare comp*)
+
+(defn- comp-body
+  "The forms of a body under ctx (each error wrapped), the last one in tail
+   position when tail? is true."
+  [forms ce ctx tail?]
+  (let [forms (vec forms) n (count forms)]
+    (run-seq (vec (map-indexed (fn [i f]
+                                 (let [g (fn [] (comp* f (assoc ce :tail (and tail? (= i (dec n))))))]
+                                   (if ctx (wrap ctx g) (g))))
+                               forms)))))
+
+;; ---------------------------------------------------------------------------
+;; Special forms (compiler.go's specialForms)
+
+(defn- sf-quote [form ce]
+  (konst (if (next form) (second form) nil)))
+
+(defn- sf-if [form ce]
+  (let [args (vec (rest form)) l (count args)]
+    (when (or (< l 2) (> l 3)) (cerr (str "if: wrong number of forms (" l "), need 2 or 3")))
+    (let [c (wrap "compiling if condition" (fn [] (comp* (nth args 0) (assoc ce :tail false))))
+          t (wrap "compiling if then branch" (fn [] (comp* (nth args 1) ce)))
+          e (if (= l 3) (wrap "compiling if else branch" (fn [] (comp* (nth args 2) ce))) (konst nil))]
+      (fn [env] (if (c env) (t env) (e env))))))
+
+(defn- quoted-sym [x]
+  (when (and (seq? x) (= 'quote (first x)) (symbol? (second x))) (second x)))
+
+;; tryDetectInNS (compiler.go:2103): when a do's first member is
+;; (in-ns 'x), the compiler switches to x before compiling the rest, so
+;; (do (in-ns 'x) (def v 1)) interns x/v. Native does not switch back, even
+;; when a later member fails to compile.
+(defn- sf-do [form ce]
+  (let [m (second form)]
+    (when (and (seq? m) (= 'in-ns (first m)))
+      (when-let [nm (quoted-sym (second m))]
+        (enter-ns! nm))))
+  (comp-body (rest form) ce "compiling do member" (:tail ce)))
+
+(defn- check-bindings [form op]
+  (let [b (second form)]
+    (when (nil? (next form)) (cerr (str op " requires bindings")))
+    (when-not (vector? b)
+      (raise (str "CompileError: " op " bindings should be a vector\n\tcaused by bindings should be a vector, got "
+                  (pr-str b))))
+    b))
+
+(defn- comp-bindings
+  "[inits ce'] for let*/loop* bindings, each init compiled in the env the
+   earlier ones extend."
+  [b ce op]
+  (let [b (vec b) n (count b)]
+    (loop [i 0 ce (assoc ce :tail false) inits []]
+      (if (>= i n)
+        [inits ce]
+        (let [nm (unmeta (nth b i))]
+          (when-not (symbol? nm) (cerr (str op " binding name must be a symbol: " nm)))
+          (when (>= (inc i) n) (cerr (str op " bindings must have even number of forms")))
+          (let [init (wrap (str "compiling " op " binding") (fn [] (comp* (nth b (inc i)) ce)))
+                d (:depth ce)]
+            (recur (+ i 2)
+                   (-> ce (assoc-in [:locals (str nm)] [d false]) (assoc :depth (inc d)))
+                   (conj inits init))))))))
+
+(defn- extend-env [env inits]
+  (reduce (fn [e init] (conj e (init e))) env inits))
+
+(defn- sf-let [form ce]
+  (let [b (check-bindings form "let")
+        [inits ce2] (comp-bindings b ce "let")
+        body (comp-body (nnext form) (assoc ce2 :tail (:tail ce)) "compiling let body" (:tail ce))]
+    (fn [env] (body (extend-env env inits)))))
+
+(defn- run-loop [body env vals]
+  (loop [vals vals]
+    (let [r (body (into env vals))]
+      (if (identical? r recur-box) (recur @recur-box) r))))
+
+(defn- sf-loop [form ce]
+  (let [b (check-bindings form "loop")
+        [inits ce2] (comp-bindings b ce "loop")
+        k (count inits)
+        body (comp-body (nnext form) (assoc ce2 :loop k) "compiling loop body" true)]
+    (fn [env]
+      (let [env2 (extend-env env inits)]
+        (run-loop body env (subvec env2 (count env)))))))
+
+(defn- sf-recur [form ce]
+  (when-not (:tail ce) (cerr "recur is only allowed in tail position"))
+  (let [args (vec (rest form)) argc (count args)]
+    (if (:loop ce)
+      (when (not= argc (:loop ce)) (cerr "recur argument count must match loop bindings count"))
+      (do (when-not (:fn? ce) (cerr "recur is only allowed inside loops and functions"))
+          (when (not= argc (:argc ce)) (cerr "recur argument count must match function argument count"))))
+    (let [ce2 (assoc ce :tail false)
+          afs (mapv (fn [a] (wrap "compiling recur arguments" (fn [] (comp* a ce2)))) args)]
+      (fn [env]
+        (reset! recur-box (mapv (fn [a] (a env)) afs))
+        recur-box))))
+
+;; enterFn (compiler.go:417)
+(defn- parse-params [params]
+  (let [ps (vec params) n (count ps)]
+    (loop [i 0 names [] variadic false]
+      (if (>= i n)
+        {:names names :variadic variadic}
+        (let [a (unmeta (nth ps i))]
+          (when-not (symbol? a) (cerr "all fn formal arguments must be symbols"))
+          (if (= a '&)
+            (do (when variadic (cerr "only one rest argument allowed"))
+                (recur (inc i) names true))
+            (do (when (and variadic (< i (dec n))) (cerr "only one argument allowed after &"))
+                (recur (inc i) (conj names a) variadic))))))))
+
+(defn- comp-arity [params body ce]
+  (let [p (wrap "compiling fn args" (fn [] (parse-params params)))
+        names (:names p) k (count names) d (:depth ce)
+        locals (reduce (fn [m i] (assoc m (str (nth names i)) [(+ d i) false])) (:locals ce) (range k))
+        ce2 (assoc ce :locals locals :depth (+ d k) :tail true :loop nil :fn? true :argc k)]
+    {:fixed (if (:variadic p) (dec k) k) :variadic (:variadic p)
+     :body (comp-body body ce2 "compiling fn body" true)}))
+
+(defn- pick-arity [ars n]
+  ;; the LAST fixed arity of a count wins, as native dispatches
+  (or (some (fn [a] (when (and (not (:variadic a)) (= n (:fixed a))) a)) (rseq ars))
+      (some (fn [a] (when (and (:variadic a) (>= n (:fixed a))) a)) ars)))
+
+(defn- arity-error [ars n]
+  (if (= 1 (count ars))
+    (let [a (first ars)]
+      (raise (str "ExecutionError: function <fn> expected " (when (:variadic a) "at least ") (:fixed a) " args, got " n)))
+    (raise (str "ExecutionError: function <mfn > doesn't have a " n "-arity variant"))))
+
+(defn- call-fn [ars env args]
+  (let [argv (if (nil? args) [] (vec args)) n (count argv) a (pick-arity ars n)]
+    (if (nil? a)
+      (arity-error ars n)
+      (let [k (:fixed a)
+            vals (if (:variadic a) (conj (subvec argv 0 k) (seq (subvec argv k))) argv)]
+        (run-loop (:body a) env vals)))))
+
+(defn- sf-fn [form ce]
+  (let [f (next form)]
+    (when (nil? f) (cerr "unexpected fn form"))
+    (let [h (first f)
+          specs (cond (vector? h) [(cons h (next f))]
+                      (seq? h) (mapv (fn [e] (if (and (seq? e) (vector? (first e))) e (cerr "unexpected fn form"))) f)
+                      :else (cerr "unexpected fn form"))
+          ars (mapv (fn [sp] (comp-arity (first sp) (rest sp) ce)) specs)]
+      (fn [env] (fn [& args] (call-fn ars env args))))))
+
+(defn- sf-def [form ce]
+  (let [args (vec (rest form)) l (count args)]
+    (when (or (< l 1) (> l 3)) (cerr (str "def: wrong number of forms (" l "), need 1, 2 or 3")))
+    (when (and (= l 3) (not (string? (nth args 1))))
+      (cerr "def: 3-arg form requires a docstring (String) as second argument"))
+    (let [doc (when (= l 3) (nth args 1))
+          valf (cond (= l 3) (nth args 2) (= l 2) (nth args 1) :else nil)
+          sym0 (nth args 0)
+          wm? (and (seq? sym0) (= 'with-meta (first sym0)))
+          _ (when (and (seq? sym0) (not wm?)) (cerr (str "def: first argument must be a symbol, got (" (pr-str sym0) ")")))
+          sym (if wm? (second sym0) sym0)
+          m (if wm? (nth sym0 2) nil)
+          _ (when-not (symbol? sym) (cerr (str "def: first argument must be a symbol, got (" (pr-str sym) ")")))
+          m (if doc (assoc (or m {}) :doc doc) m)
+          m (assoc (or m {}) :name sym)
+          nsn (cur-ns)
+          key (def-var! nsn sym m)
+          v (var-of key)]
+      (if (= l 1)
+        ;; (def x) / (declare x) leave the var unbound (bound? false), so a
+        ;; later defonce still defines it
+        (konst v)
+        (let [vf (wrap "compiling def value" (fn [] (comp* valf (assoc ce :tail false))))]
+          (fn [env]
+            (let [x (vf env)]
+              (def-root! key x)
+              v)))))))
+
+(defn- sf-set [form ce]
+  (let [args (vec (rest form)) l (count args)]
+    (when (not= l 2) (cerr (str "set!: wrong number of forms (" l "), need 2")))
+    (let [sym (nth args 0)]
+      (when-not (symbol? sym) (cerr (str "set!: first argument must be a symbol, got (" sym ")")))
+      (let [g (when-not (and (nil? (namespace sym)) (get (:locals ce) (str sym))) (resolve-global sym))
+            vf (wrap "compiling set! value" (fn [] (comp* (nth args 1) (assoc ce :tail false))))]
+        (cond (= :cell (:kind g)) (let [key (:key g) v (:var g)] (fn [env] (set-cell! key (vf env)) v))
+              (= :prog (:kind g)) (fn [env] (vf env) (limit (str "set! of the program var " sym)))
+              :else (fn [env] (vf env) (raise "ExecutionError: SET_VAR invalid Var")))))))
+
+(defn- sf-var [form ce]
+  (let [sym (second form)
+        g (when (symbol? sym) (resolve-global sym true))]
+    (cond (nil? g) (cant-resolve sym)
+          (#{:cell :prog} (:kind g)) (konst (:var g))
+          (= :core (:kind g)) (konst (core-var (:name g) (:val g)))
+          ;; a host that resolves core macros to their var (eval_native.lg)
+          (and (= :core-macro (:kind g)) (:var g)) (konst (:var g))
+          :else (cant-resolve sym))))
+
+(defn- class-sym? [x]
+  (and (symbol? x)
+       (let [t (str x)]
+         (or (string/includes? t ".") (string/includes? t "/")
+             (let [ch (first t)] (and (char? ch) (not= (string/lower-case (str ch)) (str ch))))))))
+
+;; Bare catches: an evaluated try must see every thrown value, strings and
+;; numbers included (case's "No matching clause: "), and the module's
+;; `catch Exception` matches only exception objects.
+(defn- run-try [bf hf fin env]
+  (let [res (try [0 (bf env)]
+                 (catch e
+                   (if hf
+                     (try [0 (hf (conj env e))] (catch e2 [1 e2]))
+                     [1 e])))]
+    (when fin (fin env))
+    (if (= 0 (nth res 0)) (nth res 1) (throw (nth res 1)))))
+
+(defn- sf-try [form ce]
+  (when (nil? (next form)) (cerr "try requires a body"))
+  (let [parts (reduce (fn [acc f]
+                        (let [h (when (seq? f) (first f))]
+                          (cond (= h 'catch)
+                                (let [r (next f)
+                                      _ (when (nil? r) (cerr "catch requires a binding symbol"))
+                                      r (if (and (next r) (class-sym? (first r)) (symbol? (second r))) (next r) r)
+                                      b (first r)]
+                                  (when-not (symbol? b) (cerr "catch requires a binding symbol"))
+                                  (update acc :catches conj [b (next r)]))
+                                (= h 'finally) (update acc :finally into (rest f))
+                                :else (update acc :body conj f))))
+                      {:body [] :catches [] :finally []}
+                      (rest form))
+        body (:body parts) catches (:catches parts) fins (:finally parts)]
+    (if (and (empty? catches) (empty? fins) (not (some (fn [f] (and (seq? f) (= 'finally (first f)))) (rest form))))
+      (comp-body body ce nil (:tail ce))
+      (let [ce2 (assoc ce :tail false)
+            bf (if (empty? body) (konst nil) (run-seq (mapv (fn [f] (comp* f ce2)) body)))
+            hf (when (seq catches)
+                 (let [[b hbody] (first catches) d (:depth ce)
+                       ce3 (-> ce2 (assoc-in [:locals (str b)] [d false]) (assoc :depth (inc d)))]
+                   ;; native desugars a catch to (if (catch-matches? ..) (let [b ex] body..) ..),
+                   ;; and those two layers show in a handler's compile errors
+                   (wrap "compiling if then branch" (fn [] (comp-body hbody ce3 "compiling let body" false)))))
+            fin (when (seq fins) (run-seq (mapv (fn [f] (comp* f ce2)) fins)))]
+        (fn [env] (run-try bf hf fin env))))))
+
+(defn- specials []
+  {"quote" sf-quote "if" sf-if "do" sf-do "let*" sf-let "loop*" sf-loop "recur" sf-recur
+   "fn*" sf-fn "def" sf-def "set!" sf-set "var" sf-var "try" sf-try})
+
+(def ^:private specials-cache (atom nil))
+(defn- special-of [nm] (get (or @specials-cache (reset! specials-cache (specials))) nm))
+
+;; ---------------------------------------------------------------------------
+;; Core macros (core.lg's, as expanders over the same forms)
+
+(defn- cat-list [a b] (apply list (concat a b)))
+
+;; destructure / destructure* (core.lg:768-863)
+(declare destructure*)
+
+(defn- destructure-vector [nn v]
+  (loop [e v i 0 o []]
+    (if (empty? e)
+      (destructure* o)
+      (let [x (first e)]
+        (cond (= x '&) (recur (drop 2 e) i (conj o (second e) (list 'clojure.core/seq (list 'drop i nn))))
+              (= x :as) (recur (drop 2 e) i (conj o (second e) nn))
+              :else (recur (next e) (inc i) (conj o x (list 'nth nn i nil))))))))
+
+(defn- directive? [k]
+  (and (keyword? k) (let [nm (name k)] (or (= nm "keys") (= nm "syms") (= nm "strs")))))
+
+(defn- destructure-map [nn m]
+  (let [defaults (:or m)
+        gwd (fn [sym key]
+              (if (and defaults (contains? defaults sym))
+                (list 'get nn key (get defaults sym))
+                (list 'get nn key)))
+        explicit (reduce (fn [acc x] (let [k (first x)] (if (or (= k :as) (= k :or) (directive? k)) acc (conj acc x))))
+                         [] (map identity m))
+        gs (reduce (fn [a x] (conj a (first x) (gwd (first x) (second x)))) [] explicit)
+        rs (if (:as m) (conj gs (:as m) nn) gs)
+        rs (reduce (fn [acc entry]
+                     (let [dk (first entry)]
+                       (if (directive? dk)
+                         (let [dns (namespace dk) kind (name dk)]
+                           (reduce (fn [a x]
+                                     (let [sym (if (or (keyword? x) (symbol? x)) (symbol (name x)) x)
+                                           lk (cond (= kind "strs") (str (name x))
+                                                    (= kind "syms") (list 'quote (symbol dns (name x)))
+                                                    :else (keyword dns (name x)))]
+                                       (conj a sym (gwd sym lk))))
+                                   acc (second entry)))
+                         acc)))
+                   rs (map identity m))]
+    (destructure* rs)))
+
+(defn- destructure-pair [n f o]
+  (cond (vector? n) (let [nn (gensym "vec__")] [nn (destructure-vector nn n)])
+        (map? n) (let [nn (gensym "map__")] [nn (destructure-map nn n)])
+        :else nil))
+
+;; Native runs destructure/destructure* as lg fns, so a non-seqable binding
+;; form fails inside (empty? b) -> (seq b) and each call adds a frame. These
+;; two entry points and the when-let/when-first throws reproduce that chain;
+;; other expander errors carry only the root message (named limit).
+(defn- seqable-binds! [fname binds]
+  (try (seq binds)
+       (catch e
+         (raise (str "ExecutionError: calling " fname "\n\tcaused by ExecutionError: calling empty?"
+                     "\n\tcaused by ExecutionError: calling seq\n\tcaused by " (ex-message e))))))
+
+(defn- throw-in-macro [msg] (raise (str "ExecutionError: calling throw\n\tcaused by " msg)))
+
+(defn- destructure* [binds]
+  (seqable-binds! "destructure*" binds)
+  (loop [b binds o []]
+    (if (empty? b)
+      o
+      (let [nm (first b) f (second b)]
+        (if-let [[nn ds] (destructure-pair nm f o)]
+          (recur (drop 2 b) (into (conj o nn f) ds))
+          (recur (drop 2 b) (conj o nm f)))))))
+
+(defn- destructure [binds]
+  (seqable-binds! "destructure" binds)
+  (loop [b binds o [] ob []]
+    (if (empty? b)
+      [ob o]
+      (let [nm (first b) f (second b)]
+        (if-let [[nn ds] (destructure-pair nm f o)]
+          (recur (drop 2 b) (into o ds) (conj ob nn f))
+          (recur (drop 2 b) o (conj ob nm f)))))))
+
+(defn- m-let [bindings & body] (list* 'let* (destructure* bindings) body))
+
+(defn- m-loop [bindings & body]
+  (let [[bs nbs] (destructure bindings)]
+    (if (> (count nbs) 0)
+      (list 'loop* bs (list* 'let* nbs body))
+      (list* 'loop* bindings body))))
+
+(defn- unwrap-arity-vec [form]
+  (if (and (seq? form) (= 'with-meta (first form)) (vector? (second form))) (second form) form))
+
+(defn- fn-expand [bindings body]
+  (let [conds (when (and (next body) (map? (first body))) (first body))
+        body (if conds (next body) body)
+        rsym (symbol "%")
+        body (if (:post conds)
+               (list (list* 'clojure.core/let (vector rsym (cons 'do body))
+                            (concat (map (fn [p] (list 'clojure.core/assert p)) (:post conds)) (list rsym))))
+               body)
+        body (concat (map (fn [p] (list 'clojure.core/assert p)) (:pre conds)) body)
+        amp (loop [i 0 bs (seq bindings)] (if bs (if (= (first bs) '&) i (recur (inc i) (next bs))) -1))
+        kw-args (and (>= amp 0) (< (inc amp) (count bindings)) (map? (nth bindings (inc amp))))]
+    (if kw-args
+      (let [pre (vec (take amp bindings))
+            md (nth bindings (inc amp))
+            rest-sym (gensym "rest__") map-sym (gensym "map__")]
+        (fn-expand (conj pre '& rest-sym)
+                   (list (list* 'let (vector map-sym (list 'seq-to-map-for-destructuring rest-sym) md map-sym) body))))
+      (if (some (fn [x] (not (symbol? x))) bindings)
+        (let [padded (reduce (fn [a x] (conj a x nil)) [] bindings)
+              [bs nbs] (destructure padded)
+              clean (vec (filter some? bs))]
+          (list clean (list* 'let* nbs body)))
+        (cons bindings body)))))
+
+(defn- name-fn-arity [nm self arity]
+  (list (first arity) (list* 'let (vector nm (list 'deref self)) (next arity))))
+
+(defn- m-fn [& forms]
+  (let [forms (if (string? (first forms)) (next forms) forms)]
+    (cond
+      (symbol? (first forms))
+      (let [nm (first forms)
+            forms (next forms)
+            forms (if (string? (first forms)) (next forms) forms)
+            ff (unwrap-arity-vec (first forms))
+            self (gensym "self__")
+            fstar (if (vector? ff)
+                    (list 'fn* (name-fn-arity nm self (fn-expand ff (next forms))))
+                    (cons 'fn* (map (fn [a] (name-fn-arity nm self (fn-expand (unwrap-arity-vec (first a)) (next a)))) forms)))]
+        (list 'let [self (list 'atom nil)] (list 'reset! self fstar) (list 'deref self)))
+      (vector? (unwrap-arity-vec (first forms)))
+      (cons 'fn* (fn-expand (unwrap-arity-vec (first forms)) (next forms)))
+      (seq? (first forms))
+      (cons 'fn* (map (fn [a] (fn-expand (unwrap-arity-vec (first a)) (next a))) forms))
+      :else nil)))
+
+(defn- def-meta-name [nm doc attr]
+  (let [wrapped? (and (seq? nm) (= 'with-meta (first nm)))
+        sym (if wrapped? (second nm) nm)
+        base (if wrapped? (nth nm 2) nil)
+        m (if (nil? attr) base (reduce-kv assoc (or base {}) attr))
+        m (if (string? doc) (assoc (or m {}) :doc doc) m)]
+    (if (nil? m) nm (list 'with-meta sym m))))
+
+(defn- fn-arglists [forms]
+  (let [ff (unwrap-arity-vec (first forms))]
+    (if (vector? ff) (list ff) (apply list (map (fn [a] (unwrap-arity-vec (first a))) forms)))))
+
+(defn- defn-parts [forms]
+  (let [doc (if (string? (first forms)) (first forms) nil)
+        forms (if (string? (first forms)) (next forms) forms)
+        attr (if (map? (first forms)) (first forms) nil)
+        forms (if (map? (first forms)) (next forms) forms)]
+    [doc attr forms]))
+
+(defn- m-defn [nm & forms]
+  (let [[doc attr forms] (defn-parts forms)
+        attr (assoc (or attr {}) :arglists (fn-arglists forms))]
+    (list 'def (def-meta-name nm doc attr) (cons 'fn forms))))
+
+(defn- m-defn- [nm & forms]
+  (let [[doc attr forms] (defn-parts forms)
+        attr (assoc (or attr {}) :private true :arglists (fn-arglists forms))]
+    (list 'def (def-meta-name nm doc attr) (cons 'fn forms))))
+
+(defn- m-defmacro [nm & forms]
+  (let [[doc attr forms] (defn-parts forms)
+        args (first forms) body (next forms)
+        bare (unmeta nm)
+        wrap-body (fn [b]
+                    (let [conds (when (and (next b) (map? (first b))) (first b))
+                          inner (if conds (next b) b)
+                          wrapped (list* 'let [(symbol "&form") (list 'llvm.eval/macro-form*) (symbol "&env") nil] inner)]
+                      (if conds (list conds wrapped) (list wrapped))))
+        tail (if (vector? args)
+               (cons args (wrap-body body))
+               (map (fn [cl] (cons (first cl) (wrap-body (next cl)))) forms))]
+    (list 'do
+          (list* 'defn nm (concat (if (string? doc) (list doc) nil) (if (nil? attr) nil (list attr)) tail))
+          (list 'set-macro! (list 'var bare)))))
+
+(defn- m-and
+  ([] true)
+  ([x] x)
+  ([x & more] (list 'let ['and__x x] (list 'if 'and__x (cons 'and more) 'and__x))))
+
+(defn- m-or
+  ([] nil)
+  ([x] x)
+  ([x & more] (list 'let ['or__x x] (list 'if 'or__x 'or__x (cons 'or more)))))
+
+(defn- m-cond [& forms]
+  (when (>= (count forms) 2)
+    (list 'if (first forms) (second forms) (cons 'cond (next (next forms))))))
+
+(defn- m-condp [comparator arg & forms]
+  (let [l (count forms)]
+    (cond (= l 0) nil
+          (= l 1) (first forms)
+          :else (list 'if (list comparator (first forms) arg) (second forms)
+                      (cons 'condp (cons comparator (cons arg (next (next forms)))))))))
+
+(defn- m-case [arg & forms]
+  (let [g (gensym "case__")
+        fv (vec forms) n (count fv)
+        has-default (odd? n)
+        default-val (if has-default (nth fv (dec n)) (list 'throw (str "No matching clause: ")))
+        pc (if has-default (dec n) n)
+        clauses (loop [i 0 acc []]
+                  (if (>= i pc)
+                    acc
+                    (let [tv (nth fv i) result (nth fv (inc i))
+                          set-lit? (and (list? tv) (= 'hash-set (first tv)))
+                          qt (if (or (set? tv) set-lit?) tv (list 'quote tv))]
+                      (if (and (list? tv) (not set-lit?) (not (empty? tv)))
+                        (recur (+ i 2) (conj acc (cons 'or (map (fn [v] (list '= g (list 'quote v))) tv)) result))
+                        (recur (+ i 2) (conj acc (list '= g qt) result))))))]
+    (list 'let [g arg] (cat-list (cons 'cond clauses) (list :else default-val)))))
+
+(defn- thread-first [initial forms]
+  (if (zero? (count forms))
+    initial
+    (reduce (fn [a x] (if (list? x) (cons (first x) (cons a (next x))) (list x a))) initial forms)))
+
+(defn- thread-last [initial forms]
+  (if (zero? (count forms))
+    initial
+    (reduce (fn [a x] (if (list? x) (cat-list x (list a)) (list x a))) initial forms)))
+
+(defn- m-if-let
+  ([bindings then] (m-if-let bindings then nil))
+  ([bindings then else]
+   (let [form (nth bindings 0) tst (nth bindings 1) t (gensym "temp__")]
+     (list 'let [t tst] (list 'if t (list 'let [form t] then) else)))))
+
+(defn- m-when-let [bindings & body]
+  (if (not (= 2 (count bindings)))
+    (throw-in-macro "when-let requires exactly two forms in binding vector")
+    (let [form (nth bindings 0) tst (nth bindings 1) t (gensym "temp__")]
+      (list 'let [t tst] (list 'when t (list* 'let [form t] body))))))
+
+(defn- m-if-some
+  ([bindings then] (m-if-some bindings then nil))
+  ([bindings then else]
+   (let [form (nth bindings 0) tst (nth bindings 1) t (gensym "temp__")]
+     (list 'let [t tst] (list 'if (list 'nil? t) else (list 'let [form t] then))))))
+
+(defn- m-when-some [bindings & body]
+  (let [form (nth bindings 0) tst (nth bindings 1) t (gensym "temp__")]
+    (list 'let [t tst] (list 'if (list 'nil? t) nil (list* 'let [form t] body)))))
+
+(defn- m-when-first [bindings & body]
+  (if (not (= 2 (count bindings)))
+    (throw-in-macro "when-first requires exactly two forms in binding vector")
+    (let [x (nth bindings 0) coll (nth bindings 1) sg (gensym "s__")]
+      (list 'when-let [sg (list 'seq coll)] (list* 'let [x (list 'first sg)] body)))))
+
+(defn- m-binding [bindings & body]
+  (let [pairs (partition 2 bindings)
+        pushes (map (fn [p] (list 'push-binding! (list 'var (first p)) (second p))) pairs)
+        pops (map (fn [p] (list 'pop-binding! (list 'var (first p)))) pairs)]
+    (cat-list (list 'do) (cat-list (vec pushes) (list (list 'try (cons 'do body) (cons 'finally pops)))))))
+
+(defn- m-dotimes [bindings & body]
+  (let [i (first bindings) nn (second bindings) g (gensym "n__")]
+    (list 'let [g nn] (list 'loop [i 0] (list* 'when (list '< i g) (concat body (list (list 'recur (list 'inc i)))))))))
+
+(defn- m-declare [& names] (cons 'do (map (fn [x] (list 'def x)) names)))
+
+(defn- m-defonce [nm expr]
+  (let [bare (unmeta nm) v (gensym "v")]
+    (list 'let [v (list 'resolve (list 'quote bare))]
+          (list 'when-not (list 'and v (list 'bound? v)) (list 'def nm expr)))))
+
+(defn- m-letfn [fnspecs & body]
+  (let [names (map first fnspecs)
+        atom-syms (map (fn [_] (gensym "letfn__")) names)
+        atom-binds (vec (mapcat (fn [sym] [sym (list 'atom nil)]) atom-syms))
+        wrapper-binds (vec (mapcat (fn [nm a] [nm (list 'fn ['& 'args__] (list 'apply (list 'deref a) 'args__))]) names atom-syms))
+        resets (map (fn [spec a] (list 'reset! a (cons 'fn (rest spec)))) fnspecs atom-syms)]
+    (list 'let atom-binds (list* 'let wrapper-binds (concat resets body)))))
+
+(defn- seq-steps [bind]
+  (loop [b bind acc []]
+    (if (empty? b)
+      acc
+      (cond (= (first b) :let) (recur (drop 2 b) (conj acc [:let (second b)]))
+            (= (first b) :when) (recur (drop 2 b) (conj acc [:when (second b)]))
+            (= (first b) :while) (recur (drop 2 b) (conj acc [:while (second b)]))
+            :else (recur (drop 2 b) (conj acc [:bind (first b) (second b)]))))))
+
+(defn- doseq-emit [ss recform body]
+  (if (empty? ss)
+    (if recform (cat-list (cons 'do body) (list recform)) (cons 'do body))
+    (let [step (first ss) rest-ss (or (next ss) []) k (first step)]
+      (cond (= k :let) (list 'let (second step) (doseq-emit rest-ss recform body))
+            (= k :when) (list 'if (second step) (doseq-emit rest-ss recform body) recform)
+            (= k :while) (list 'when (second step) (doseq-emit rest-ss recform body))
+            :else (let [sym (nth step 1) coll (nth step 2)
+                        seq-s (gensym "doseq_seq__") loop-s (gensym "doseq_loop__")
+                        inner (doseq-emit rest-ss (list 'recur (list 'next loop-s)) body)
+                        bind-form (list 'let [seq-s (list 'seq coll)]
+                                        (list 'loop [loop-s seq-s]
+                                              (list 'when loop-s (list 'let [sym (list 'first loop-s)] inner))))]
+                    (if recform (list 'do bind-form recform) bind-form))))))
+
+(defn- m-doseq [bind & body] (doseq-emit (seq-steps bind) nil body))
+
+(defn- for-emit [steps body]
+  (if (empty? steps)
+    (list 'list body)
+    (let [step (first steps) inner (for-emit (or (next steps) []) body) k (first step)]
+      (cond (= k :let) (list 'let (second step) inner)
+            (= k :when) (list 'when (second step) inner)
+            (= k :while) inner
+            :else (let [sym (nth step 1) coll (nth step 2)
+                        itersym (gensym "for__iter") atomsym (gensym "for__a")
+                        ssym (gensym "for__s") xssym (gensym "for__xs")]
+                    (list 'let [atomsym (list 'atom nil)
+                                '_ (list 'reset! atomsym
+                                         (list 'fn [ssym]
+                                               (list 'lazy-seq
+                                                     (list 'when-let [xssym (list 'seq ssym)]
+                                                           (list 'let [sym (list 'first xssym)]
+                                                                 (list 'concat-list inner
+                                                                       (list (list 'deref atomsym) (list 'rest xssym))))))))
+                                itersym (list 'deref atomsym)]
+                          (list itersym coll)))))))
+
+(defn- m-for [bindings body] (for-emit (seq-steps bindings) body))
+
+(defn- steps-let [g expr steps]
+  (if (empty? steps)
+    expr
+    (if (> (count steps) 1)
+      (list 'let (into [g expr] (interleave (repeat g) (butlast steps))) (last steps))
+      (list 'let [g expr] (last steps)))))
+
+(defn- m-cond-> [expr & clauses]
+  (let [g (gensym)] (steps-let g expr (vec (map (fn [[t st]] (list 'if t (list '-> g st) g)) (partition 2 clauses))))))
+(defn- m-cond->> [expr & clauses]
+  (let [g (gensym)] (steps-let g expr (vec (map (fn [[t st]] (list 'if t (list '->> g st) g)) (partition 2 clauses))))))
+(defn- m-some-> [expr & forms]
+  (let [g (gensym)] (steps-let g expr (vec (map (fn [st] (list 'if (list 'nil? g) nil (list '-> g st))) forms)))))
+(defn- m-some->> [expr & forms]
+  (let [g (gensym)] (steps-let g expr (vec (map (fn [st] (list 'if (list 'nil? g) nil (list '->> g st))) forms)))))
+
+(defn- m-as-> [expr nm & forms]
+  (list 'let (into [nm expr] (interleave (repeat nm) (butlast forms))) (if (empty? forms) nm (last forms))))
+
+(defn- m-doto [x & forms]
+  (let [gx (gensym "doto__")]
+    (list* 'let [gx x] (concat (map (fn [f] (if (seq? f) (list* (first f) gx (rest f)) (list f gx))) forms) (list gx)))))
+
+(defn- m-assert
+  ([x] (list 'when '*assert* (list 'when-not x (list 'throw (list '->AssertionError (list 'str "Assert failed: " (list 'quote x)))))))
+  ([x message] (list 'when '*assert* (list 'when-not x (list 'throw (list '->AssertionError (list 'str "Assert failed: " message "\n" (list 'quote x))))))))
+
+(defn- m-while [test & body] (list 'loop* [] (list* 'when test (concat body (list (list 'recur))))))
+
+(defn- m-ns [nm & body]
+  (let [nm (unmeta nm)
+        body (if (string? (first body)) (next body) body)
+        body (if (map? (first body)) (next body) body)
+        reqs (mapcat (fn [f] (if (and (sequential? f) (= :require (first f))) (rest f) ())) body)]
+    (list* 'do (list 'in-ns (list 'quote nm)) (map (fn [r] (list 'require (list 'quote r))) reqs))))
+
+(defn- m-with-redefs [bindings & body]
+  (list 'with-redefs-fn (vec (map (fn [x] (list 'var x)) (take-nth 2 bindings)))
+        (vec (take-nth 2 (next bindings))) (list* 'fn [] body)))
+
+(defn- macros []
+  {"let" m-let "loop" m-loop "fn" m-fn "defn" m-defn "defn-" m-defn- "defmacro" m-defmacro
+   "when" (fn [c & forms] (list 'if c (cons 'do forms) nil))
+   "when-not" (fn [c & forms] (list 'if c nil (cons 'do forms)))
+   "if-not" (fn [c & forms] (list 'if c (first (next forms)) (first forms)))
+   "and" m-and "or" m-or "cond" m-cond "condp" m-condp "case" m-case
+   "->" (fn [x & forms] (thread-first x forms)) "->>" (fn [x & forms] (thread-last x forms))
+   "if-let" m-if-let "when-let" m-when-let "if-some" m-if-some "when-some" m-when-some "when-first" m-when-first
+   "binding" m-binding "dotimes" m-dotimes "declare" m-declare "defonce" m-defonce "letfn" m-letfn
+   "doseq" m-doseq "for" m-for "cond->" m-cond-> "cond->>" m-cond->> "some->" m-some-> "some->>" m-some->>
+   "as->" m-as-> "doto" m-doto "assert" m-assert "while" m-while "ns" m-ns "with-redefs" m-with-redefs
+   "comment" (fn [& _] nil)
+   "lazy-seq" (fn [& body] (list 'lazy-seq* (list* 'fn [] body)))
+   "delay" (fn [& body] (list 'delay* (list* 'fn [] body)))
+   "with-out-str" (fn [& body] (list 'with-out-str* (list* 'core/fn [] body)))
+   "def-" (fn [nm form] (list 'def (list 'with-meta nm {:private true}) form))})
+
+(def ^:private macros-cache (atom nil))
+(defn- builtin-macro [nm] (get (or @macros-cache (reset! macros-cache (macros))) nm))
+
+(defn- find-macro
+  "The expander head names (a fn of the unevaluated args), or nil: an
+   evaluated defmacro (a cell with :macro), a program macro, or a builtin
+   one when nothing shadows it."
+  [h]
+  (let [g (resolve-global h) q (namespace h)]
+    (cond (and (= :cell (:kind g)) (:macro g)) (cell-get (:key g))
+          (= :pmacro (:kind g)) (:val g)
+          (#{:cell :prog} (:kind g)) nil
+          (or (nil? q) (core-std-ns? (canon q))) (builtin-macro (name h))
+          :else nil)))
+
+;; The form being expanded, which an evaluated defmacro's body binds to
+;; &form first thing (before any nested expansion can replace it); nil
+;; outside an expansion, so the macro fn called as a fn sees nil, as native.
+(def ^:private macro-form (atom nil))
+
+(defn- macro-var-name
+  "ns/name of the macro head h names: the cell's key for an evaluated
+   defmacro or a program macro, core/name for a builtin (native's #'core/let)."
+  [h]
+  (let [g (resolve-global h)]
+    (if (#{:cell :pmacro} (:kind g)) (:key g) (str "core/" (name h)))))
+
+(defn- expand [mf h form]
+  (reset! macro-form form)
+  (try (let [r (apply mf (rest form))] (reset! macro-form nil) r)
+       (catch e
+         (reset! macro-form nil)
+         (raise (str "CompileError: Executing macro #'" (macro-var-name h) " (<fn " (name h) ">) failed\n\tcaused by "
+                     (ex-message e))))))
+
+;; ---------------------------------------------------------------------------
+;; Reader code forms that need the current ns (llvm.reader's code hook):
+;; `::name`, `::alias/name`, syntax-quote (syntaxQuote, reader.go:969) and
+;; #"regex" literals (compiled by re-pattern, lw-ext's run-time compiler)
+
+(defn- unquote-form? [x tag] (and (list? x) (= 2 (count x)) (= tag (first x))))
+
+(declare sq-form)
+
+(defn- expand-unquotes [xs genv]
+  (vec (map (fn [v]
+              (cond (unquote-form? v 'unquote) [(second v)]
+                    (unquote-form? v 'unquote-splicing) (second v)
+                    :else [(sq-form v genv)]))
+            xs)))
+
+(defn- sq-form [form genv]
+  (cond (symbol? form)
+        (let [t (str form)]
+          (cond (special-of t) (list 'quote form)
+                (and (nil? (namespace form)) (string/ends-with? t "#"))
+                (list 'quote (or (get (:syms @genv) t)
+                                 (let [y (symbol (str (subs t 0 (max 0 (- (count t) 2))) "__G__" (:cnt @genv)))]
+                                   (swap! genv (fn [g] (-> g (assoc-in [:syms t] y) (update :cnt inc))))
+                                   y)))
+                (and (nil? (namespace form)) (not= t "with-meta") (local-def? t)) (list 'quote (symbol (cur-ns) t))
+                :else (list 'quote form)))
+        (unquote-form? form 'unquote) (second form)
+        (unquote-form? form 'unquote-splicing)
+        (raise "Syntax error reading source at (<read-string>).\nunquote-splicing used outside of a list")
+        (and (vector? form) (nil? (meta form))) (list 'apply 'vector (list 'apply 'concat* (expand-unquotes form genv)))
+        (map? form) (list 'apply 'hash-map (list 'apply 'concat* (expand-unquotes (mapcat identity form) genv)))
+        (set? form) (list 'apply 'hash-set (list 'apply 'concat* (expand-unquotes (seq form) genv)))
+        (list? form) (list 'apply 'concat* (expand-unquotes form genv))
+        :else (list 'quote form)))
+
+(defn syntax-quote
+  "The expansion native's reader gives `form, against the current ns."
+  [form]
+  (sq-form form (atom {:syms {} :cnt 0})))
+
+;; ---------------------------------------------------------------------------
+;; The compiler
+
+(defn- comp-sym [sym ce]
+  (let [l (when (nil? (namespace sym)) (get (:locals ce) (str sym)))]
+    (if l
+      (let [i (nth l 0)] (if (nth l 1) (fn [env] @(nth env i)) (fn [env] (nth env i))))
+      (cond
+        (= sym '*ns*) (fn [env] (ns-value))
+        ;; read when the form runs: with-out-str rebinds *out*
+        (= sym '*out*) (fn [env] *out*)
+        (= sym '*err*) (fn [env] *err*)
+        :else
+        (let [g (resolve-global sym)]
+          (cond (nil? g) (cant-resolve sym)
+                (= :cell (:kind g)) (let [key (:key g)] (fn [env] (cell-get key)))
+                (= :prog (:kind g)) (let [v (:var g)] (fn [env] (var-value v)))
+                (= :core (:kind g)) (konst (:val g))
+                :else (cant-resolve sym)))))))
+
+(defn- call-closure [hf afs]
+  (let [n (count afs)]
+    (cond (= n 0) (fn [env] (let [f (hf env)] (f)))
+          (= n 1) (let [a (nth afs 0)] (fn [env] (let [f (hf env) x (a env)] (f x))))
+          (= n 2) (let [a (nth afs 0) b (nth afs 1)] (fn [env] (let [f (hf env) x (a env) y (b env)] (f x y))))
+          (= n 3) (let [a (nth afs 0) b (nth afs 1) cc (nth afs 2)]
+                    (fn [env] (let [f (hf env) x (a env) y (b env) z (cc env)] (f x y z))))
+          :else (fn [env] (let [f (hf env)] (apply f (mapv (fn [a] (a env)) afs)))))))
+
+;; A binary +, - or * naming the core fn runs as a direct op here, not a call
+;; of the fn value: the backend's IR op raises native's direct-call text
+;; ("ExecutionError: integer overflow"), the value's text has no prefix.
+(defn- arith-closure [h afs]
+  (when (and (symbol? h) (= 2 (count afs)))
+    (let [g (resolve-global h) a (nth afs 0) b (nth afs 1)]
+      (when (= :core (:kind g))
+        (case (:name g)
+          "+" (fn [env] (+ (a env) (b env)))
+          "-" (fn [env] (- (a env) (b env)))
+          "*" (fn [env] (* (a env) (b env)))
+          nil)))))
+
+(defn- comp-call [form ce]
+  (let [ce2 (assoc ce :tail false)
+        h (first form)
+        hf (wrap "compiling function position" (fn [] (comp* h ce2)))
+        afs (mapv (fn [a] (wrap (str "compiling arguments " a) (fn [] (comp* a ce2)))) (rest form))
+        local? (and (symbol? h) (nil? (namespace h)) (get (:locals ce) (str h)))]
+    (or (when-not local? (arith-closure h afs))
+        (call-closure hf afs))))
+
+(defn- comp-seq [form ce]
+  (let [h (first form)]
+    (if (symbol? h)
+      (let [sf (when (nil? (namespace h)) (special-of (str h)))]
+        (cond sf (sf form ce)
+              (and (nil? (namespace h)) (get (:locals ce) (str h))) (comp-call form ce)
+              :else (if-let [mf (find-macro h)]
+                      (comp* (expand mf h form) ce)
+                      (comp-call form ce))))
+      (comp-call form ce))))
+
+(defn- with-meta-of [form mk ce]
+  ;; native keeps a symbol :tag (a type hint, ^String) as data and
+  ;; evaluates the other entries
+  (let [m (meta form)
+        m (if (symbol? (:tag m)) (assoc m :tag (list 'quote (:tag m))) m)]
+    (if (nil? m)
+      mk
+      (let [mf (wrap "compiling collection metadata" (fn [] (comp* m (assoc ce :tail false))))]
+        (fn [env] (with-meta (mk env) (mf env)))))))
+
+(defn- comp-coll [form ce]
+  (let [ce2 (assoc ce :tail false)]
+    (cond (vector? form)
+          (let [fs (mapv (fn [e] (wrap "compiling vector elements" (fn [] (comp* e ce2)))) form)]
+            (with-meta-of form (fn [env] (vec (map (fn [f] (f env)) fs))) ce2))
+          (map? form)
+          (let [fs (vec (mapcat (fn [[k v]] [(wrap "compiling map entry" (fn [] (comp* k ce2)))
+                                             (wrap "compiling map entry" (fn [] (comp* v ce2)))]) form))]
+            (with-meta-of form (fn [env] (apply array-map (map (fn [f] (f env)) fs))) ce2))
+          :else
+          (let [fs (mapv (fn [e] (wrap "compiling set element" (fn [] (comp* e ce2)))) form)]
+            (with-meta-of form (fn [env] (apply hash-set (map (fn [f] (f env)) fs))) ce2)))))
+
+(defn- comp* [form ce]
+  (cond (symbol? form) (comp-sym form ce)
+        (seq? form) (if (seq form) (comp-seq (apply list form) ce) (konst form))
+        (or (vector? form) (map? form) (set? form)) (comp-coll form ce)
+        :else (konst form)))
+
+(defn compile
+  "form as an lg fn of the run-time environment (a vector), compiled once
+   against the current namespace."
+  [form]
+  (ensure-hook!)
+  (comp* form {:locals {} :depth 0 :tail false :loop nil :fn? false :argc 0}))
+
+(defn ^{:twin "core/eval"} eval
+  "Evaluate form in the current namespace (the host's)."
+  [form]
+  ((compile form) []))
+
+;; ---------------------------------------------------------------------------
+;; Plumbing the expanders emit, which a host resolves to these values by
+;; name: `concat*` (syntax-quote), `concat-list` (for; let-go defines its
+;; own) and `llvm.eval/macro-form*` (an evaluated defmacro's &form, read
+;; from the macro-form atom above)
+
+(defn- concat-star [& xs] (apply list (apply concat xs)))
+
+;; core.lg's concat-list, which `for` expands to: it walks a (one element's
+;; inner result) and conses onto b, the lazy rest of the iteration, without
+;; forcing it. cat-list (the expanders' helper) realises both, which made an
+;; evaluated `for` eager and O(n^2).
+(defn- concat-list* [a b]
+  (if (empty? a)
+    b
+    (cons (first a) (concat-list* (next a) b))))

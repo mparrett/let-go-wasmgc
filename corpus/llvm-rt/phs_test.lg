@@ -1,0 +1,140 @@
+;; llvm.phs (rt/llvm/phs.lg) checked against lg's own sets, the same way
+;; phm-test checks maps: one op sequence, applied natively and to llvm.phs,
+;; must give the same seq order element by element; contains?/get/count/
+;; hash/= are probed against native. Helpers come from phm-test.
+(ns phs-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.phm :as m]
+            [llvm.phs :as s]
+            [phm-test :as h]
+            [string]))
+
+(defn- bx [x] (h/->w x))
+(defn- conj-all [[n w] ks] [(reduce conj n ks) (reduce (fn [w k] (s/sconj w (bx k))) w ks)])
+(defn- tconj-all [t ks] (reduce (fn [t k] (s/tconj! t (bx k))) t ks))
+(defn- tdisj-all [t ks] (reduce (fn [t k] (s/tdisj! t (bx k))) t ks))
+
+(defn build-paths
+  "{path (delay [native wasm])}: the wasm side takes the code path let-go
+   takes for the native call (corpus/maporder/SPEC.md, sets)."
+  [ks]
+  (let [c (delay (conj-all [#{} (s/empty-set)] ks))       ; conj, hash-set: Assoc(v, v) from emptySetImpl
+        t (delay (s/tpersistent-set! (tconj-all (s/transient-set (s/empty-set)) ks)))
+        half (h/every-other ks)
+        d (delay (let [[n w] @c] [(reduce disj n half) (reduce (fn [w k] (s/sdisj w (bx k))) w half)]))]
+    {:conj c
+     :hash-set (delay [(apply hash-set ks) (second @c)])
+     :set (delay [(set ks) @t])
+     :into (delay [(into #{} ks) @t])
+     :transient (delay [(persistent! (reduce conj! (transient #{}) ks)) @t])
+     :disj-half d
+     :conj-back (delay (conj-all @d half))
+     :transient-disj
+     (delay (let [[n w] @c]
+              [(persistent! (reduce conj! (reduce disj! (transient n) half) (take 3 half)))
+               (s/tpersistent-set! (tconj-all (tdisj-all (s/transient-set w) half) (take 3 half)))]))
+     :drain-regrow
+     (delay (let [[n w] @c]
+              (conj-all [(reduce disj n ks) (reduce (fn [w k] (s/sdisj w (bx k))) w ks)] (take 6 ks))))
+     :transient-drain-regrow
+     (delay (let [[n w] @c]
+              [(persistent! (reduce conj! (reduce disj! (transient n) ks) (take 6 ks)))
+               (s/tpersistent-set! (tconj-all (tdisj-all (s/transient-set w) ks) (take 6 ks)))]))}))
+
+(defn- wasm-elems [w] (mapv (comp h/tagged h/<-w) (h/arr->vec (s/sseq w))))
+
+(defn- probe-mismatches [n w ks kind seed]
+  (let [nf (bx ::nf)]
+    (for [k (concat (if (<= (count ks) 200) ks (map #(nth ks (mod % (count ks))) (h/lcg-ints seed 200)))
+                    (h/gen-keys kind 40 (+ seed 99991)) [nil () ::absent])
+          :let [nv [(h/tagged (get n k ::nf)) (contains? n k)]
+                wv [(h/tagged (h/<-w (s/sget w (bx k) nf))) (s/scontains? w (bx k))]]
+          :when (not= nv wv)]
+      [k nv wv])))
+
+(defn- check-set [label n w ks kind seed]
+  (is (nil? (h/first-mismatch (mapv h/tagged (seq n)) (wasm-elems w))) (str label " seq order"))
+  (is (= (count n) (s/scount w)) (str label " count"))
+  (is (= (hash n) (s/shash w)) (str label " hash"))
+  (is (empty? (take 3 (probe-mismatches n w ks kind seed))) (str label " contains?/get")))
+
+(defn- run-kind [kind size-pred path-pred]
+  (doseq [sz h/sizes :when (size-pred sz)
+          :let [ks (h/gen-keys kind sz (+ sz 7)) paths (build-paths ks) [nc wc] @(:conj paths)]]
+    (doseq [[path dl] paths :when (path-pred path) :let [[n w] @dl]]
+      (check-set (str kind " n=" sz " " path) n w ks kind sz)
+      (when (<= sz 1000)
+        (let [ab (s/sequiv wc w)]
+          (is (= (= nc n) ab (if (<= sz 100) (s/sequiv w wc) ab)) (str kind " n=" sz " = vs " path)))))))
+
+(def ^:private big-paths #{:conj :transient})
+(def ^:private mid-paths #{:conj :transient :disj-half})
+
+(defn- run-tiers [kind]                                     ; tiers as phm-test's (D51)
+  (run-kind kind #(< % 1000) any?)
+  (run-kind kind #{1000} (if (h/slow?) any? mid-paths))
+  (when (h/slow?) (run-kind kind #{10000} big-paths)))
+
+(deftest int-sets
+  (s/install-hooks!)
+  (run-tiers :int))
+(deftest kw-sets
+  (s/install-hooks!)
+  (run-tiers :kw))
+(deftest str-sets
+  (s/install-hooks!)
+  (run-tiers :str))
+(deftest mixed-sets
+  (s/install-hooks!)
+  (run-tiers :mixed))
+
+(deftest set-collisions
+  (s/install-hooks!)
+  (let [all (vec (apply concat h/collide-groups))]
+    (doseq [[oi order] (map-indexed vector [all (vec (reverse all)) (h/shuffle-lcg all)])
+            nfill [0 3 12]
+            :let [ks (into (vec (take nfill h/fillers)) order)]
+            [path dl] (build-paths ks) :let [[n w] @dl]]
+      (check-set (str "collide order" oi " fill" nfill " " path) n w ks :mixed oi)))
+  (testing "same-key pairs: the first-conj'd representation is kept"
+    (doseq [[a b] h/same-key-pairs
+            :let [ks (conj (vec (take 3 h/fillers)) a b)]
+            [path dl] (build-paths ks) :let [[n w] @dl]]
+      (check-set (str (pr-str a) "/" (pr-str b) " " path) n w ks :mixed 5)))
+  (testing "bucket 2 -> 1 bug: disj one of a pair, conj it back -> present twice"
+    (doseq [[a b] [[97 \a] [:kby0z :kcxik] ["snpfo" "s6rja"]]
+            :let [ks (conj h/fillers a b)
+                  s0 (conj-all [#{} (s/empty-set)] ks)
+                  [n1 w1] [(disj (first s0) a) (s/sdisj (second s0) (bx a))]
+                  [n2 w2] (conj-all [n1 w1] [a])]
+            [label n w] [["disj" n1 w1] ["conj-back" n2 w2]]]
+      (check-set (str "bucket " (pr-str a) " " label) n w ks :mixed 3))))
+
+(deftest sets-are-never-ordered
+  (s/install-hooks!)
+  (testing "#{} of 3 keywords iterates in hash order, not insertion order"
+    (let [ks [:z :y :x]
+          [n w] (conj-all [#{} (s/empty-set)] ks)]
+      (is (= (seq n) (map h/<-w (h/arr->vec (s/sseq w)))))
+      (is (not (arch/null? (arch/get m/HMap 1 (arch/get s/HSet 0 w)))) "backing map is HAMT")
+      (let [w0 (s/sdisj (s/sdisj (s/sdisj w (bx :z)) (bx :y)) (bx :x))]
+        (is (not (arch/null? (arch/get m/HMap 1 (arch/get s/HSet 0 w0)))) "disj to empty stays HAMT")))))
+
+(deftest transient-sentinel-identity
+  (s/install-hooks!)
+  (testing "conj of a present element: same set after conj, new set after a transient (value is true)"
+    (let [ks (h/gen-keys :kw 20 3)
+          [n w] (conj-all [#{} (s/empty-set)] ks)
+          nt (set ks)
+          wt (s/tpersistent-set! (tconj-all (s/transient-set (s/empty-set)) ks))
+          k (first ks)]
+      (is (= (identical? n (conj n k)) (arch/ref-eq w (s/sconj w (bx k)))))
+      (is (= (identical? nt (conj nt k)) (arch/ref-eq wt (s/sconj wt (bx k))))))))
+
+(deftest dialect
+  (s/install-hooks!)
+  (let [[cnt offending] (h/dialect-offenders "rt/llvm/phs.lg" 'llvm.phs
+                                             h/runtime-ns?)]
+    (is (< 12 cnt))
+    (is (empty? offending) (str "non-dialect references: " (pr-str offending)))))

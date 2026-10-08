@@ -1,0 +1,1230 @@
+;; llvm.seq — P2.5 runtime half: let-go's sequence machinery (List,
+;; EmptyList, Cons, LazySeq, ArrayChunk/ChunkBuffer/ChunkedCons, Range,
+;; InfiniteRange, Repeat, Reduced, the seq view of a llvm.pvec vector) and the
+;; Go-native seq fns over them, written in the runtime dialect of pvec.lg:
+;; IR special forms, IR-op core fns on :int, macros expanding to those, this
+;; file's own fns, llvm.pvec, and llvm.arch. Ground truth is let-go
+;; ff1e6dac (pkg/vm/*.go, pkg/rt/lang.go, pkg/rt/native_prims.go); SEQ.md
+;; has the kind table and the realisation/chunking rules with citations.
+;;
+;; Calling convention: every public native takes and returns values (refs),
+;; as a compiled call site passes them; ints arrive boxed and booleans come
+;; back as Bool refs. `kind` is the ONLY place that type-tests a value; every
+;; generic fn branches on its result. Errors let-go raises as catchable
+;; exceptions are raised as D68's Err with let-go's exact message (P2.13,
+;; D74); arch/trap is kept for invariant violations and `lower-wasm:` limits.
+(ns llvm.seq
+  (:refer-clojure :exclude [list seq first next rest cons count nth peek pop conj
+                            reduce reduced reduced? ensure-reduced unreduced second last
+                            some vec range repeat hash realized? chunk chunk-append
+                            chunk-buffer chunk-cons chunk-first chunk-rest chunk-next
+                            chunked-seq? lazy-seq* map*])
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]))
+
+;; ---------------------------------------------------------------------------
+;; The value model (D38), in one place so `kind` sees every box. All runtime
+;; types share one rec group (D25). Ints are D41's hybrid: i31 when they fit
+;; 31 bits signed, else an Int box (canonical, so equality may rely on it).
+(arch/defstruct Int [:i64])
+(arch/defstruct Bool [:i64])                       ; 1 true, 0 false
+(arch/defstruct Str [:ref [:mut :i64]])            ; UTF-8 bytes, cached hash (-1 = not computed)
+(arch/defstruct Char [:i32])                       ; rune; any value 0..0x10FFFF, surrogates included (lang.go:6678)
+(arch/defstruct Kw [:ref :ref :i64])               ; ns bytes or null, name bytes, hash; interned by llvm.str
+(arch/defstruct Sym [:ref :ref :i64])              ; same layout, symbol hash; interned by llvm.str
+(arch/defstruct Float [:f64])
+;; A closure, D52's $Fn exactly: code refs for arities 0/1/2 (null when the
+;; fn lacks that arity), env, code refs for arities 3/4, and the FnInfo
+;; (kind, arity, name bytes or null) native's error messages need. Code
+;; takes the closure itself first, so it reads its captures from field 3.
+;; invoke0/1/2 are the only call sites here.
+(arch/deffunc Code0 [:ref] :ref)
+(arch/deffunc Code1 [:ref :ref] :ref)
+(arch/deffunc Code2 [:ref :ref :ref] :ref)
+(arch/deffunc Code3 [:ref :ref :ref :ref] :ref)
+(arch/deffunc Code4 [:ref :ref :ref :ref :ref] :ref)
+(arch/defstruct FnInfo [:i32 :i32 :ref])
+;; Field 7 is the identity id (P5.3): 0 until the fn is first hashed.
+(arch/defstruct Fn [:funcref :funcref :funcref :ref :funcref :funcref :ref [:mut :i64]])
+(arch/defstruct Env2 [:ref :ref])
+
+;; Seq kinds (field order follows the Go structs).
+(arch/defstruct List [:ref :ref :i64 :ref])        ; first, next, count, meta; count 0 = EmptyList (list.go:41)
+(arch/defstruct Cons [:ref :ref])                  ; first, more (a seq, or null) (cons.go:12)
+(arch/defstruct LazySeq [[:mut :ref] [:mut :ref] [:mut :i64] [:mut :ref]]) ; fn, realised seq s, done, err (lazy_seq.go:16)
+(arch/defstruct ArrayChunk [:ref :i64 :i64])       ; arr (pv/Node), off, end (chunk.go:39)
+(arch/defstruct ChunkBuffer [[:mut :ref] [:mut :i64]]) ; arr, n (chunk.go:225)
+(arch/defstruct ChunkedCons [:ref :ref])           ; chunk, more (chunk.go:112)
+(arch/defstruct Range [:i64 :i64 :i64])            ; start, end, step (range.go:28)
+(arch/defstruct InfiniteRange [:i64 :i64])         ; start, step (range.go:156)
+(arch/defstruct Repeat [:i64 :ref])                ; i (-1 = infinite), val (repeat.go:22)
+;; The seq view of a vector. Of a PersistentVector it is PersistentVectorSeq
+;; (persistent_vector.go:183): 32-wide leaf chunks, prints and hashes as
+;; "(seq [whole vector])", type Sequence. Of an ArrayVector it is
+;; ArrayVectorSeq (vector.go:198): chunks of 1, 2, 4, ... (clen, 0 = 1),
+;; prints "(e_i ...)" from i, type PersistentList (D73).
+(arch/defstruct PVecSeq [:ref :i64 :i64])          ; vec, i, clen
+(arch/defstruct Reduced [:ref])                    ; (reduced.go:6)
+;; P2.7 boxes. A MapEntry is its own Go type (persistent_map.go:56): Type()
+;; says ArrayVector and it equals/hashes as the 2-vector, but it is also a
+;; Seq, key/val accept only it, peek/assoc/subvec refuse it, and with-meta
+;; returns it unchanged. Atom and Volatile are the backend's $Atom shape
+;; (one mutable slot; validators and watches are named limits, llvm.core).
+;; Err is the backend's $Err (kind 0 ex-info, 1 raw runtime error, 2 caught
+;; runtime error; message bytes; message once caught; ex-data) plus a cause.
+(arch/defstruct MapEntry [:ref :ref])              ; key, val
+;; Field 1 of Atom and Volatile is the identity id, as Fn's field 7.
+(arch/defstruct Atom [[:mut :ref] [:mut :i64]])
+(arch/defstruct Volatile [[:mut :ref] [:mut :i64]])
+(arch/defstruct Err [:i32 :ref :ref :ref :ref])    ; kind, msg bytes, caught msg bytes, data, cause
+;; Foreign-kind hooks (kind 18: maps from phm, sets from phs, anything else),
+;; one Handler per slot so registrations never overwrite each other's:
+;; slot 0 maps, 1 sets, 2 the generic fallback. A Handler is [pred seq count
+;; equiv hash], each a Fn; pred (null = matches every foreign value) answers
+;; whether the value is this handler's. Dispatch tries 0, 1, then 2.
+(arch/defstruct Handler [:ref :ref :ref :ref :ref])
+(arch/defstruct Hooks [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref] [:mut :i64]]) ; slots 0-2, the printer, seqable?, ifn, type namer
+;; the last Hooks field is the identity-id counter (P5.3)
+(def hooks (arch/new Hooks (arch/null) (arch/null) (arch/null) (arch/null) (arch/null) (arch/null) (arch/null) 0))
+;; P2.13 (R5, D105): the seq of a map, a set or a transient map is MapSeq or
+;; SetSeq (map.go:110, set.go:131): a cached array of entries (MapEntry) or
+;; keys plus an index. Type() is ListType and = is sequential, but neither has
+;; Hash(), so it hashes by FNV of String() like Range; Conj panics (a recovered
+;; interface-conversion error), so it is its own kind, not a Cons chain.
+;; Declared after Hooks so no earlier struct moves in the rec group.
+(arch/defstruct ArrSeq [:ref :i64 :i32])          ; arr (pv/Node, never empty), i, flavour (0 MapSeq, 1 SetSeq)
+
+(defn box-int [n]
+  (if (if (>= n (arch/fix-min)) (<= n (arch/fix-max)) false) (arch/fix n) (arch/new Int n)))
+(defn unbox-int [x] (if (arch/fix? x) (arch/fix-get x) (arch/get Int 0 x)))
+(defn bool [b] (arch/new Bool (if b 1 0)))
+
+;; D68 raises. A message that names a type (Go's Type().Name()) gets it from
+;; the type namer llvm.core installs (slot 6): seq.lg cannot require it.
+(defn- err-b [bs] (arch/new Err 1 bs bs (arch/null) (arch/null)))
+(defn- raise-b [bs] (throw (err-b bs)))
+(defn bytes-cat "a ++ b, fresh Bytes." [a b]
+  (let [na (arch/alen a) nb (arch/alen b) out (arch/bytes-new (+ na nb))]
+    (arch/array-copy arch/Bytes out 0 a 0 na)
+    (arch/array-copy arch/Bytes out na b 0 nb)
+    out))
+(defn set-type-name-hook!
+  "Install the Fn (f x) -> Str naming x's type as let-go's Type() does
+   (llvm.core's type-name), for messages that embed a type."
+  [f] (arch/set! Hooks 6 hooks f))
+(declare invoke1)
+(declare kind-type-name kind)
+(defn type-name-bytes
+  "x's let-go type name as bytes: seq.lg names its own kinds; a foreign value
+   (maps, sets, transients, types...) goes through llvm.core's namer, or reads
+   let-go.lang.Unknown before llvm.core/install!."
+  [x]
+  (let [h (arch/get Hooks 6 hooks)]
+    (if (if (= 18 (kind x)) (arch/null? h) true) (kind-type-name x) (arch/get Str 0 (invoke1 h x)))))
+(defn raise-typed "Raise prefix-bytes ++ x's type name (D68)." [prefix x]
+  (raise-b (bytes-cat prefix (type-name-bytes x))))
+
+;; A non-Fn callable (keyword, symbol, map, set, vector: vm.AsFn) is called
+;; through the ifn hook llvm.core installs (slot 5: code 1 = callable?, code
+;; 4 = invoke with the argument count); seq.lg cannot require llvm.core. The
+;; backend lowers calls to these three as its own $rt_invokeN, which does the
+;; same and also raises native's arity error for a missing arity.
+(declare kind)
+(defn- invoke-ifn* [f n a b]
+  (let [h (arch/get Hooks 5 hooks)]
+    (if (arch/null? h)
+      (arch/trap "llvm.seq: a non-Fn callable and no ifn hook installed (llvm.core not linked)")
+      (arch/call-ref Code4 (arch/get Fn 5 h) h f (box-int n) a b))))
+(defn invoke0 [f] (if (= 16 (kind f)) (arch/call-ref Code0 (arch/get Fn 0 f) f) (invoke-ifn* f 0 (arch/null) (arch/null))))
+(defn invoke1 [f a] (if (= 16 (kind f)) (arch/call-ref Code1 (arch/get Fn 1 f) f a) (invoke-ifn* f 1 a (arch/null))))
+(defn invoke2 [f a b] (if (= 16 (kind f)) (arch/call-ref Code2 (arch/get Fn 2 f) f a b) (invoke-ifn* f 2 a b)))
+
+(defn mk-fn1 "A closure with only arity 1 (hook code)." [code]
+  (arch/new Fn (arch/null) code (arch/null) (arch/null) (arch/null) (arch/null) (arch/null) 0))
+(defn mk-fn2 "A closure with only arity 2 (hook code)." [code]
+  (arch/new Fn (arch/null) (arch/null) code (arch/null) (arch/null) (arch/null) (arch/null) 0))
+
+(defn set-kind-hooks!
+  "Register the Handler for one slot (:int 0 maps, 1 sets, 2 generic): pred
+   (or null), seq, count, equiv, hash, each a Fn. Null seq-fn clears the slot."
+  [slot pred seq-fn count-fn equiv-fn hash-fn]
+  (let [h (if (arch/null? seq-fn) (arch/null) (arch/new Handler pred seq-fn count-fn equiv-fn hash-fn))]
+    (cond (= slot 0) (arch/set! Hooks 0 hooks h)
+          (= slot 1) (arch/set! Hooks 1 hooks h)
+          :else (arch/set! Hooks 2 hooks h))))
+
+(defn set-hooks!
+  "The generic fallback slot (2), matching every foreign value no other slot
+   claims. All nulls clear it."
+  [seq-fn count-fn equiv-fn hash-fn]
+  (set-kind-hooks! 2 (arch/null) seq-fn count-fn equiv-fn hash-fn))
+
+(defn set-print-hook!
+  "Install the printer that hashing non-int Range/Repeat/PVecSeq elements
+   needs (Go hashes those kinds by FNV over String()): a Fn called as (f x)
+   returning a Str of x's readable form. llvm.core's install! passes
+   llvm.str's pr-str; seq.lg cannot require llvm.str."
+  [f] (arch/set! Hooks 3 hooks f))
+
+(defn set-ifn-hook!
+  "Install the Fn llvm.core links non-Fn callables through: code 1 (f x) ->
+   Bool, is x callable (vm.AsFn); code 4 (f x n a b) -> x called with n
+   (0-2) of a b."
+  [f] (arch/set! Hooks 5 hooks f))
+
+(declare truthy?)
+(defn callable?
+  "vm.AsFn: a Fn, or a value the ifn hook says calls itself."
+  [f]
+  (if (= 16 (kind f))
+    true
+    (let [h (arch/get Hooks 5 hooks)]
+      (if (arch/null? h) false (truthy? (arch/call-ref Code1 (arch/get Fn 1 h) h f))))))
+
+(defn set-seqable-hook!
+  "Install the Fn (f x) -> Bool saying whether a foreign value is seqable
+   natively (a map, a set, a transient map), so first/rest/seq/reduce & co.
+   raise their own let-go message for the others (a type value, a transient
+   set or vector, a meta'd keyword). Null: every foreign value is seqable."
+  [f] (arch/set! Hooks 4 hooks f))
+
+(declare truthy?)
+
+(defn- claims? [h x]
+  (if (arch/null? h)
+    false
+    (let [p (arch/get Handler 0 h)] (if (arch/null? p) true (truthy? (invoke1 p x))))))
+
+(defn- hook
+  "Hook i (1 seq, 2 count, 3 equiv, 4 hash) of the Handler that claims x."
+  [i x]
+  (let [h0 (arch/get Hooks 0 hooks)
+        h (if (claims? h0 x)
+            h0
+            (let [h1 (arch/get Hooks 1 hooks)]
+              (if (claims? h1 x)
+                h1
+                (let [h2 (arch/get Hooks 2 hooks)]
+                  (if (claims? h2 x) h2 (arch/trap "llvm.seq: foreign value and no hook installed (phm/phs not linked)"))))))]
+    (cond (= i 1) (arch/get Handler 1 h) (= i 2) (arch/get Handler 2 h)
+          (= i 3) (arch/get Handler 3 h) :else (arch/get Handler 4 h))))
+
+;; ---------------------------------------------------------------------------
+;; The one dispatch point. Kind numbers (SEQ.md has the table):
+;;  0 nil  1 int  2 EmptyList  3 List  4 Cons  5 LazySeq  6 ChunkedCons
+;;  7 Range  8 InfiniteRange  9 Repeat  10 PVecSeq  11 PVec  12 ArrayChunk
+;;  13 ChunkBuffer  14 Reduced  15 Bool  16 Fn  17 Str  18 foreign
+;;  19 Char  20 Kw  21 Sym  22 Float  23 MapEntry  24 Atom  25 Volatile  26 Err
+;;  27 ArrSeq (MapSeq/SetSeq)
+(defn kind [x]
+  (cond (arch/null? x) 0
+        (arch/fix? x) 1
+        (arch/is? Int x) 1
+        ;; the scalar boxes early: they are the common map keys (hash/equiv hot path)
+        (arch/is? Kw x) 20
+        (arch/is? Str x) 17
+        (arch/is? Float x) 22
+        (arch/is? Char x) 19
+        (arch/is? Sym x) 21
+        (arch/is? List x) (if (= 0 (arch/get List 2 x)) 2 3)
+        (arch/is? Cons x) 4
+        (arch/is? LazySeq x) 5
+        (arch/is? ChunkedCons x) 6
+        (arch/is? Range x) 7
+        (arch/is? InfiniteRange x) 8
+        (arch/is? Repeat x) 9
+        (arch/is? PVecSeq x) 10
+        (arch/is? ArrSeq x) 27
+        (arch/is? pv/PVec x) 11
+        (arch/is? ArrayChunk x) 12
+        (arch/is? ChunkBuffer x) 13
+        (arch/is? Reduced x) 14
+        (arch/is? Bool x) 15
+        (arch/is? Fn x) 16
+        (arch/is? MapEntry x) 23
+        (arch/is? Atom x) 24
+        (arch/is? Volatile x) 25
+        (arch/is? Err x) 26
+        :else 18))
+
+(defn kind-type-name
+  "Type().Name() for seq.lg's kinds 0-27 (llvm.core/type-name delegates
+   here); a foreign value (18) reads let-go.lang.Unknown."
+  [x]
+  (let [k (kind x)]
+    (cond (= k 0) (arch/bytes-of-string "nil")
+          (= k 1) (arch/bytes-of-string "let-go.lang.Int")
+          (= k 22) (arch/bytes-of-string "let-go.lang.Float")
+          (= k 17) (arch/bytes-of-string "let-go.lang.String")
+          (= k 20) (arch/bytes-of-string "let-go.lang.Keyword")
+          (= k 21) (arch/bytes-of-string "let-go.lang.Symbol")
+          (= k 19) (arch/bytes-of-string "let-go.lang.Character")
+          (= k 15) (arch/bytes-of-string "let-go.lang.Boolean")
+          (= k 11) (if (= 0 (pv/vpkind x)) (arch/bytes-of-string "let-go.lang.ArrayVector")
+                       (arch/bytes-of-string "let-go.lang.PersistentVector"))
+          (= k 10) (if (= 0 (pv/vpkind (arch/get PVecSeq 0 x))) (arch/bytes-of-string "let-go.lang.PersistentList")
+                       (arch/bytes-of-string "let-go.lang.Sequence"))
+          (= k 23) (arch/bytes-of-string "let-go.lang.ArrayVector")
+          (if (= k 7) true (= k 8)) (arch/bytes-of-string "let-go.lang.Range")
+          (= k 9) (arch/bytes-of-string "let-go.lang.Repeat")
+          (= k 14) (arch/bytes-of-string "let-go.lang.Reduced")
+          (= k 16) (arch/bytes-of-string "let-go.lang.Fn")
+          ;; List, Cons, LazySeq, ChunkedCons, PersistentVectorSeq, ArrayChunk,
+          ;; ChunkBuffer, MapSeq/SetSeq: all ListType
+          (if (if (>= k 2) (<= k 13) false) true (= k 27)) (arch/bytes-of-string "let-go.lang.PersistentList")
+          (= k 24) (arch/bytes-of-string "let-go.lang.Atom")
+          (= k 25) (arch/bytes-of-string "let-go.lang.Volatile")
+          (= k 26) (if (= 0 (arch/get Err 0 x)) (arch/bytes-of-string "let-go.lang.ExceptionInfo")
+                       (arch/bytes-of-string "java.lang.Exception"))
+          :else (arch/bytes-of-string "let-go.lang.Unknown"))))
+
+(defn seq-kind? [k] (if (if (>= k 2) (<= k 10) false) true (= k 27))) ; implements vm.Seq
+(defn- seq-empty? [s] (let [k (kind s)] (if (= k 0) true (= k 2)))) ; SeqIsEmpty (iter.go:14)
+(defn truthy? [x]
+  (let [k (kind x)] (cond (= k 0) false (= k 15) (= 1 (arch/get Bool 0 x)) :else true)))
+
+(defn empty-list [] (arch/new List (arch/null) (arch/null) 0 (arch/null)))
+(defn arr-seq
+  "A MapSeq (flavour 0) or SetSeq (1) over a pv/Node array, or null when the
+   array is empty (Seq() of an empty map/set is EmptyList, seq'd to nil)."
+  [arr flavour]
+  (if (= 0 (arch/alen arr)) (arch/null) (arch/new ArrSeq arr 0 flavour)))
+(defn arr-seq-flavour "0 MapSeq, 1 SetSeq." [s] (arch/get ArrSeq 2 s))
+(defn- as-next [s]                                       ; MapSeq/SetSeq.Next
+  (let [a (arch/get ArrSeq 0 s) i (inc (arch/get ArrSeq 1 s))]
+    (if (>= i (arch/alen a)) (arch/null) (arch/new ArrSeq a i (arch/get ArrSeq 2 s)))))
+;; List.Cons (list.go:130) keeps the list's meta: (conj (with-meta '(1) m) 2) has m.
+(defn- list-cons [l x] (arch/new List x l (inc (arch/get List 2 l)) (arch/get List 3 l)))
+(defn list-with-meta "A List cell like l with meta m (with-meta on a list)." [l m]
+  (arch/new List (arch/get List 0 l) (arch/get List 1 l) (arch/get List 2 l) m))
+(defn entry-vec "A MapEntry as the 2-vector it equals." [e]
+  (pv/vconj (pv/vconj (pv/empty-vec) (arch/get MapEntry 0 e)) (arch/get MapEntry 1 e)))
+
+;; ---------------------------------------------------------------------------
+;; Strings as collections (moved from llvm.str at P2.9). A let-go String is a
+;; Go string, so UTF-8 bytes: count/seq walk runes, nth is bounded by bytes
+;; but found by runes (STR.md "Index semantics"). decode-at returns
+;; rune*8 + size; an invalid or truncated sequence decodes as U+FFFD of size
+;; 1, exactly as utf8.DecodeRune.
+
+(defn- cont? [c] (if (>= c 0x80) (<= c 0xBF) false))
+
+(defn decode-at [bs i n]
+  (let [b0 (arch/bget bs i)]
+    (if (< b0 0x80)
+      (+ (* b0 8) 1)
+      (let [len (cond (< b0 0xC2) 0 (< b0 0xE0) 2 (< b0 0xF0) 3 (< b0 0xF5) 4 :else 0)
+            lo (cond (= b0 0xE0) 0xA0 (= b0 0xF0) 0x90 :else 0x80)
+            hi (cond (= b0 0xED) 0x9F (= b0 0xF4) 0x8F :else 0xBF)
+            bad (+ (* 0xFFFD 8) 1)]
+        (if (if (= len 0) true (> (+ i len) n))
+          bad
+          (let [b1 (arch/bget bs (inc i))]
+            (cond (if (< b1 lo) true (> b1 hi)) bad
+                  (= len 2) (+ (* (+ (* (bit-and b0 0x1F) 64) (bit-and b1 0x3F)) 8) 2)
+                  (= len 3) (let [b2 (arch/bget bs (+ i 2))]
+                              (if (cont? b2)
+                                (+ (* (+ (* (bit-and b0 0x0F) 4096) (+ (* (bit-and b1 0x3F) 64) (bit-and b2 0x3F))) 8) 3)
+                                bad))
+                  :else (let [b2 (arch/bget bs (+ i 2)) b3 (arch/bget bs (+ i 3))]
+                          (if (if (cont? b2) (cont? b3) false)
+                            (+ (* (+ (+ (* (bit-and b0 0x07) 262144) (* (bit-and b1 0x3F) 4096))
+                                     (+ (* (bit-and b2 0x3F) 64) (bit-and b3 0x3F))) 8) 4)
+                            bad)))))))))
+
+(defn rune-count* [bs]
+  (let [n (arch/alen bs)]
+    (loop [i 0 c 0] (if (< i n) (recur (+ i (bit-and (decode-at bs i n) 7)) (inc c)) c))))
+
+(defn- string-seq [s]                                    ; String.Seq() (string.go:259): a List of Chars, or null
+  (let [bs (arch/get Str 0 s) n (arch/alen bs)]
+    (if (= n 0)
+      (arch/null)
+      (let [cnt (rune-count* bs) runes (arch/array-new pv/Node cnt (arch/null))]
+        (loop [i 0 j 0]
+          (when (< i n)
+            (let [p (decode-at bs i n)]
+              (arch/aset! pv/Node runes j (arch/new Char (unsigned-bit-shift-right p 3)))
+              (recur (+ i (bit-and p 7)) (inc j)))))
+        (loop [j (dec cnt) l (empty-list)]
+          (if (< j 0) l (recur (dec j) (list-cons l (arch/aget pv/Node runes j)))))))))
+
+(defn- string-nth [s i has-nf nf]                        ; Nth/Nth3 through String.ValueAt (string.go:276)
+  (let [bs (arch/get Str 0 s) n (arch/alen bs)]
+    (if (if (< i 0) true (>= i n))
+      (if has-nf nf (raise-b (arch/bytes-of-string "nth index out of bounds")))
+      ;; in range by bytes but past the last rune: ValueAt's default, nil, even for nth3
+      (loop [b 0 r 0]
+        (cond (>= b n) (arch/null)
+              (= r i) (arch/new Char (unsigned-bit-shift-right (decode-at bs b n) 3))
+              :else (recur (+ b (bit-and (decode-at bs b n) 7)) (inc r)))))))
+
+(defn bytes-eq? [a b]
+  (let [n (arch/alen a)]
+    (if (= n (arch/alen b))
+      (loop [i 0] (if (< i n) (if (= (arch/bget a i) (arch/bget b i)) (recur (inc i)) false) true))
+      false)))
+
+(defn- no-iseq-err [x]                                  ; seqOf's/LazySeq's error (lang.go:1407, lazy_seq.go:127)
+  (err-b (bytes-cat (arch/bytes-of-string "don't know how to create ISeq from ") (type-name-bytes x))))
+(defn- no-iseq [x] (throw (no-iseq-err x)))
+
+;; ---------------------------------------------------------------------------
+;; Range arithmetic wraps like Go's int (range.go), never throws like lg's +.
+
+(defn- range-count [r]                                   ; Range.RawCount (range.go:97)
+  (let [start (arch/get Range 0 r) end (arch/get Range 1 r) step (arch/get Range 2 r)
+        diff (arch/i64-sub end start)]
+    (cond (if (= step 1) true (= step -1)) (if (< diff 0) (arch/i64-sub 0 diff) diff)
+          (> step 0) (quot (arch/i64-add diff (arch/i64-sub step 1)) step)
+          :else (quot (arch/i64-add diff (arch/i64-add step 1)) step))))
+
+(defn- in-bounds? [val end step] (if (> step 0) (< val end) (> val end)))
+
+(defn- new-range [s e st]                                ; vm.NewRange (range.go:188)
+  (cond (= st 0) (empty-list)
+        (if (> st 0) (> e s) false) (arch/new Range s e st)
+        (if (< st 0) (< e s) false) (arch/new Range s e st)
+        :else (empty-list)))
+
+;; ---------------------------------------------------------------------------
+;; LazySeq realisation (lazy_seq.go:47-150): the thunk runs once, its result
+;; goes through Sequable.Seq() and an empty result is cached as null.
+
+(declare seq-view list can-seq?)
+
+;; A thunk that throws stores the error and clears fn: every later access
+;; rethrows it and realized? is true (sval/seq, lazy_seq.go:47-150). The fn
+;; slot is cleared only once the thunk has returned, so a throw can never
+;; leave a null fn to call. Native drops sv BEFORE Sequable.Seq(): when that
+;; throws (a nested lazy seq's thunk), nothing is stored and the next access
+;; reads the outer seq as realized-empty, (). Mirrored: fn is cleared, done
+;; stays 0, err stays null, so the next pass finds no thunk and caches ().
+;; A non-seqable foreign value is the one Seq() failure native stores.
+
+(defn- lazy-fail [l e] (arch/set! LazySeq 3 l e) (arch/set! LazySeq 0 l (arch/null)) (throw e))
+
+(defn- lazy-finish [l s0]
+  (let [s (if (seq-empty? s0) (arch/null) s0)]
+    (arch/set! LazySeq 1 l s)
+    (arch/set! LazySeq 2 l 1)
+    s))
+
+(defn- lazy-step [l]
+  (cond (= 1 (arch/get LazySeq 2 l)) (arch/get LazySeq 1 l)
+        (if (arch/null? (arch/get LazySeq 3 l)) false true) (throw (arch/get LazySeq 3 l))
+        (arch/null? (arch/get LazySeq 0 l)) (lazy-finish l (arch/null))
+        :else
+        (let [sv (try (invoke0 (arch/get LazySeq 0 l)) (catch Throwable e (lazy-fail l e)))]
+          (arch/set! LazySeq 0 l (arch/null))
+          (lazy-finish l (cond (arch/null? sv) (arch/null)
+                               (= 18 (kind sv)) (try (seq-view sv) (catch Throwable e (lazy-fail l e)))
+                               (can-seq? sv) (seq-view sv)
+                               :else (lazy-fail l (no-iseq-err sv)))))))   ; stored (lazy_seq.go:127)
+
+(defn- resolve-lazy [l]                                       ; LazySeq.Resolve (lazy_seq.go:189)
+  (loop [s (lazy-step l)]
+    (if (= 5 (kind s)) (recur (lazy-step s)) s)))
+
+(defn- force-seq [s] (if (= 5 (kind s)) (resolve-lazy s) s)) ; forceSeq (lang.go:1435)
+
+(defn- vec-seq [v]                                       ; PersistentVector.Seq (persistent_vector.go:262), ArrayVector.Seq
+  (if (= 0 (pv/vcount v)) (empty-list) (arch/new PVecSeq v 0 0)))
+(defn- pvs-array? [s] (= 0 (pv/vpkind (arch/get PVecSeq 0 s)))) ; an ArrayVectorSeq
+(defn- pvs-clen [s] (let [c (arch/get PVecSeq 2 s)] (if (< c 1) 1 c)))  ; curChunkLen (vector.go:203)
+
+(defn- seq-view
+  "Sequable.Seq() where the value has one, else the value as a Seq, else an
+   error: what a LazySeq does with its thunk's result (lazy_seq.go:114-130)
+   and what seqOf does with a non-lazy value (lang.go:1407)."
+  [x]
+  (let [k (kind x)]
+    (cond (= k 5) (resolve-lazy x)
+          (= k 7) (if (= 0 (range-count x)) (arch/null) x)
+          (seq-kind? k) x
+          (= k 11) (vec-seq x)
+          (= k 17) (string-seq x)
+          (= k 18) (invoke1 (hook 1 x) x)
+          (= k 23) (vec-seq (entry-vec x))                 ; MapEntry.Seq: ArrayVector{k,v}.Seq(), an ArrayVectorSeq (FNV-hashed, P2.13)
+          :else (no-iseq x))))
+
+(defn- can-seq? [x]
+  (let [k (kind x)] (cond (= k 0) true (seq-kind? k) true (= k 11) true (= k 17) true (= k 18) true (= k 23) true :else false)))
+
+;; A foreign value native lg cannot seq: the caller raises its own catchable
+;; message (bug-11). Only kind 18 is decided here; the other non-seqable kinds
+;; keep their static traps (the D74 follow-up sweep).
+(defn- opaque? [x]
+  (if (= 18 (kind x))
+    (let [p (arch/get Hooks 4 hooks)] (if (arch/null? p) false (if (truthy? (invoke1 p x)) false true)))
+    false))
+
+(defn seq-of
+  "rt.seqOf (lang.go:1407): nil for nil and empty, a LazySeq unresolved, any
+   other seqable through seq-view with empty canonicalised to nil."
+  [x]
+  (let [k (kind x)]
+    (cond (= k 0) (arch/null)
+          (= k 2) (arch/null)
+          (= k 5) x
+          :else (let [s (seq-view x)] (if (seq-empty? s) (arch/null) s)))))
+
+;; ---------------------------------------------------------------------------
+;; Chunks (chunk.go, range_chunked.go, persistent_vector_chunked.go)
+
+(defn- chunk-count* [c] (- (arch/get ArrayChunk 2 c) (arch/get ArrayChunk 1 c)))
+(defn- chunk-nth* [c i] (arch/aget pv/Node (arch/get ArrayChunk 0 c) (+ (arch/get ArrayChunk 1 c) i)))
+(defn- chunk-drop-first [c]
+  (arch/new ArrayChunk (arch/get ArrayChunk 0 c) (inc (arch/get ArrayChunk 1 c)) (arch/get ArrayChunk 2 c)))
+(defn- cons-chunk [c more]                               ; ConsChunk (chunk.go:129)
+  (if (= 0 (chunk-count* c)) more (arch/new ChunkedCons c more)))
+
+(defn- range-chunk [start step n]
+  (let [a (arch/array-new pv/Node n (arch/null))]
+    (loop [i 0 v start]
+      (when (< i n)
+        (arch/aset! pv/Node a i (box-int v))
+        (recur (inc i) (arch/i64-add v step))))
+    (arch/new ArrayChunk a 0 n)))
+
+(defn- tailoff [cnt] (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5)))
+
+(defn- avseq-chunk [s]                                   ; ArrayVectorSeq.ChunkedFirst (vector.go:258): [i, i+clen) clamped
+  (let [v (arch/get PVecSeq 0 s) i (arch/get PVecSeq 1 s) cnt (pv/vcount v)
+        e (if (> (+ i (pvs-clen s)) cnt) cnt (+ i (pvs-clen s))) a (arch/array-new pv/Node (- e i) (arch/null))]
+    ;; Go windows the backing array; the trie is copied out (never mutated, so equivalent)
+    (loop [j i] (when (< j e) (arch/aset! pv/Node a (- j i) (pv/vnth v j)) (recur (inc j))))
+    (arch/new ArrayChunk a 0 (- e i))))
+
+(defn- pvseq-chunk [s]                                   ; PersistentVectorSeq.chunkAt (persistent_vector_chunked.go:34)
+  (let [v (arch/get PVecSeq 0 s) i (arch/get PVecSeq 1 s) to (tailoff (pv/vcount v))]
+    (cond (pvs-array? s) (avseq-chunk s)
+          (>= i to) (let [tail (arch/get pv/PVec 3 v)] (arch/new ArrayChunk tail (- i to) (arch/alen tail)))
+          ;; Go copies the leaf; pvec nodes are never mutated once built, so sharing is equivalent.
+          :else
+          (let [leaf (loop [node (arch/get pv/PVec 2 v) level (arch/get pv/PVec 1 v)]
+                       (if (> level 0)
+                         (recur (arch/aget pv/Node node (bit-and (unsigned-bit-shift-right i level) 31)) (- level 5))
+                         node))]
+            (arch/new ArrayChunk leaf (- i (bit-and i -32)) (arch/alen leaf))))))
+
+(defn- as-chunked [s]                                    ; vm.AsChunkedSeq (chunked_seq.go:18); null if not chunked
+  (loop [s s]
+    (let [k (kind s)]
+      (cond (= k 5) (recur (resolve-lazy s))
+            (= k 6) s (= k 7) s (= k 8) s (= k 10) s
+            :else (arch/null)))))
+
+(defn- cfirst [s]                                        ; ChunkedFirst; s from as-chunked
+  (let [k (kind s)]
+    (cond (= k 6) (arch/get ChunkedCons 0 s)
+          (= k 7) (let [n (range-count s)]
+                    (range-chunk (arch/get Range 0 s) (arch/get Range 2 s) (if (> n 32) 32 n)))
+          (= k 8) (range-chunk (arch/get InfiniteRange 0 s) (arch/get InfiniteRange 1 s) 32)
+          :else (pvseq-chunk s))))
+
+(defn- tail-next [more]                                  ; the `more` step shared by Cons/ChunkedCons Next
+  (let [k (kind more)]
+    (cond (= k 0) (arch/null) (= k 2) (arch/null) (= k 5) (resolve-lazy more) :else more)))
+
+(defn- cnext [s]                                         ; ChunkedNext
+  (let [k (kind s)]
+    (cond (= k 6) (tail-next (arch/get ChunkedCons 1 s))
+          (= k 7) (if (<= (range-count s) 32)
+                    (arch/null)
+                    (arch/new Range (arch/i64-add (arch/get Range 0 s) (arch/i64-mul 32 (arch/get Range 2 s)))
+                              (arch/get Range 1 s) (arch/get Range 2 s)))
+          (= k 8) (arch/new InfiniteRange (arch/i64-add (arch/get InfiniteRange 0 s) (arch/i64-mul 32 (arch/get InfiniteRange 1 s)))
+                            (arch/get InfiniteRange 1 s))
+          (pvs-array? s) (let [v (arch/get PVecSeq 0 s) cl (pvs-clen s) ns (+ (arch/get PVecSeq 1 s) cl)] ; ChunkedNext doubles clen
+                           (if (>= ns (pv/vcount v)) (arch/null) (arch/new PVecSeq v ns (* cl 2))))
+          :else (let [v (arch/get PVecSeq 0 s) i (arch/get PVecSeq 1 s) cnt (pv/vcount v)]
+                  (if (>= i (tailoff cnt))
+                    (arch/null)
+                    (let [ns (+ (bit-and i -32) 32)]
+                      (if (>= ns cnt) (arch/null) (arch/new PVecSeq v ns 0))))))))
+
+(defn- cmore [s]                                         ; ChunkedMore
+  (if (= 6 (kind s))
+    (let [m (arch/get ChunkedCons 1 s)] (if (arch/null? m) (empty-list) m))
+    (let [n (cnext s)] (if (arch/null? n) (empty-list) n))))
+
+;; ---------------------------------------------------------------------------
+;; Seq protocol per kind: s is a non-null seq kind (2..10).
+
+(defn- s-first [s]
+  (let [k (kind s)]
+    (cond (= k 2) (arch/null)
+          (= k 3) (arch/get List 0 s)
+          (= k 4) (arch/get Cons 0 s)
+          (= k 5) (let [r (resolve-lazy s)] (if (arch/null? r) (arch/null) (s-first r)))
+          (= k 6) (chunk-nth* (arch/get ChunkedCons 0 s) 0)
+          (= k 7) (box-int (arch/get Range 0 s))
+          (= k 8) (box-int (arch/get InfiniteRange 0 s))
+          (= k 9) (if (= 0 (arch/get Repeat 0 s)) (arch/null) (arch/get Repeat 1 s))
+          (= k 27) (arch/aget pv/Node (arch/get ArrSeq 0 s) (arch/get ArrSeq 1 s))
+          :else (let [v (arch/get PVecSeq 0 s) i (arch/get PVecSeq 1 s)]
+                  (if (>= i (pv/vcount v)) (arch/null) (pv/vnth v i))))))
+
+(defn- s-next [s]
+  (let [k (kind s)]
+    (cond (= k 2) (arch/null)
+          (= k 3) (if (<= (arch/get List 2 s) 1) (arch/null) (arch/get List 1 s))
+          (= k 4) (tail-next (arch/get Cons 1 s))
+          (= k 5) (let [r (resolve-lazy s)] (if (arch/null? r) (arch/null) (s-next r)))
+          (= k 6) (let [c (arch/get ChunkedCons 0 s)]
+                    (if (> (chunk-count* c) 1)
+                      (arch/new ChunkedCons (chunk-drop-first c) (arch/get ChunkedCons 1 s))
+                      (tail-next (arch/get ChunkedCons 1 s))))
+          (= k 7) (let [n (arch/i64-add (arch/get Range 0 s) (arch/get Range 2 s))]
+                    (if (in-bounds? n (arch/get Range 1 s) (arch/get Range 2 s))
+                      (arch/new Range n (arch/get Range 1 s) (arch/get Range 2 s))
+                      (arch/null)))
+          (= k 8) (arch/new InfiniteRange (arch/i64-add (arch/get InfiniteRange 0 s) (arch/get InfiniteRange 1 s))
+                            (arch/get InfiniteRange 1 s))
+          (= k 9) (let [i (arch/get Repeat 0 s)]
+                    (if (if (= i 0) true (= i 1))
+                      (arch/null)
+                      (arch/new Repeat (if (> i 0) (dec i) i) (arch/get Repeat 1 s))))
+          (= k 27) (as-next s)
+          :else (let [v (arch/get PVecSeq 0 s) i (arch/get PVecSeq 1 s)]
+                  (if (>= (inc i) (pv/vcount v)) (arch/null) (arch/new PVecSeq v (inc i) 0))))))
+
+(defn- s-more [s]
+  (let [k (kind s)]
+    (cond (= k 2) (empty-list)
+          (= k 3) (if (<= (arch/get List 2 s) 1) (empty-list) (arch/get List 1 s))
+          (= k 4) (let [m (arch/get Cons 1 s)] (if (arch/null? m) (empty-list) m))
+          (= k 5) (let [r (resolve-lazy s)] (if (arch/null? r) (empty-list) (s-more r)))
+          (= k 6) (let [c (arch/get ChunkedCons 0 s) m (arch/get ChunkedCons 1 s)]
+                    (cond (> (chunk-count* c) 1) (arch/new ChunkedCons (chunk-drop-first c) m)
+                          (arch/null? m) (empty-list)
+                          :else m))
+          :else (let [n (s-next s)] (if (arch/null? n) (empty-list) n)))))
+
+;; ---------------------------------------------------------------------------
+;; Constructors and the seq natives
+
+(defn ^{:twin "core/list"} list
+  ([] (empty-list))
+  ([a] (list-cons (empty-list) a))
+  ([a b] (list-cons (list b) a))
+  ([a b c] (list-cons (list b c) a)))
+
+(defn ^{:twin "core/lazy-seq*"} lazy-seq* [f]                                      ; CoreLazySeq (lang.go:7898): any IFn, a non-Fn fails when realised
+  (if (callable? f) (arch/new LazySeq f (arch/null) 0 (arch/null)) (raise-b (arch/bytes-of-string "lazy-seq* expected a function"))))
+
+(defn realized? [x]                                      ; the lazy-seq half of CoreIsRealized (lang.go:8043; IsRealized, lazy_seq.go:38); the core/realized? twin is llvm.core's
+  (if (= 5 (kind x))
+    (bool (if (= 1 (arch/get LazySeq 2 x)) true (arch/null? (arch/get LazySeq 0 x))))
+    (raise-b (arch/bytes-of-string "realized? expected delay, promise, future, or lazy seq"))))
+
+(defn ^{:twin "core/seq"} seq [x]                                            ; seq (lang.go:2256)
+  (cond (opaque? x) (raise-b (arch/bytes-of-string "seq expected Seqable"))
+        (can-seq? x) (let [s (seq-of x)] (if (= 5 (kind s)) (resolve-lazy s) s))
+        :else (raise-b (arch/bytes-of-string "seq expected Seqable"))))
+
+(defn ^{:twin "core/first"} first [x]                                          ; first (lang.go:2175)
+  (let [k (kind x)]
+    (cond (= k 0) (arch/null)
+          (seq-kind? k) (s-first x)
+          (opaque? x) (raise-b (arch/bytes-of-string "first expected Seq"))
+          (can-seq? x) (let [s (seq-view x)] (if (seq-empty? s) (arch/null) (s-first s)))
+          :else (raise-b (arch/bytes-of-string "first expected Seq")))))
+
+(defn ^{:twin "core/next"} next [x]                                           ; next (lang.go:2202)
+  (cond (opaque? x) (raise-b (arch/bytes-of-string "next expected Seq"))
+        (can-seq? x) (let [s (seq-of x)] (if (arch/null? s) (arch/null) (s-next s)))
+        :else (raise-b (arch/bytes-of-string "next expected Seq"))))
+
+(defn ^{:twin "core/rest"} rest [x]                                           ; rest (lang.go:2231)
+  (cond (opaque? x) (raise-b (arch/bytes-of-string "rest expected Seq"))
+        (can-seq? x) (let [s (seq-of x)] (if (arch/null? s) (empty-list) (s-more s)))
+        :else (raise-b (arch/bytes-of-string "rest expected Seq"))))
+
+(defn ^{:twin "core/cons"} cons [x coll]                                      ; builtins.Cons (builtins.go:56)
+  (cond (opaque? coll) (raise-b (arch/bytes-of-string "cons expected Seq"))
+        (can-seq? coll) (arch/new Cons x (seq-of coll))
+        :else (raise-b (arch/bytes-of-string "cons expected Seq"))))
+
+(defn ^{:twin "core/second"} second [x]                                         ; CoreSecond (lang.go:6024)
+  (cond (opaque? x) (raise-b (arch/bytes-of-string "second expected Seq"))
+        (can-seq? x) (let [s (seq-of x)]
+                       (if (arch/null? s) (arch/null) (let [n (s-next s)] (if (arch/null? n) (arch/null) (s-first n)))))
+        :else (raise-b (arch/bytes-of-string "second expected Seq"))))
+
+(defn last [s]                                           ; lg-defined (core.lg:1480), here for completeness
+  (loop [s s]
+    (let [n (next s)] (if (arch/null? n) (first s) (recur n)))))
+
+(defn- cons-tail-count [tail]                            ; consTailCount (cons.go:76)
+  (loop [n 0 s tail]
+    (cond (= 5 (kind s)) (recur n (lazy-step s))
+          (seq-empty? s) n
+          :else (recur (inc n) (s-next s)))))
+
+(defn- count* [x]                                        ; CoreCount (lang.go:6110) over each kind's Count
+  (let [k (kind x)]
+    (cond (= k 0) 0
+          (= k 2) 0
+          (= k 3) (arch/get List 2 x)
+          (= k 4) (inc (cons-tail-count (arch/get Cons 1 x)))
+          (= k 5) (loop [n 0 s (lazy-step x)] (if (seq-empty? s) n (recur (inc n) (s-next s))))
+          (= k 7) (range-count x)
+          (= k 9) (arch/get Repeat 0 x)                  ; -1 for (repeat x): repeat.go:68
+          (= k 10) (- (pv/vcount (arch/get PVecSeq 0 x)) (arch/get PVecSeq 1 x))
+          (= k 27) (- (arch/alen (arch/get ArrSeq 0 x)) (arch/get ArrSeq 1 x))
+          (= k 11) (pv/vcount x)
+          (= k 12) (chunk-count* x)
+          (= k 13) (arch/get ChunkBuffer 1 x)
+          (= k 17) (rune-count* (arch/get Str 0 x))   ; runes, not bytes (lang.go:6118)
+          (= k 18) (unbox-int (invoke1 (hook 2 x) x))
+          (= k 23) 2
+          :else (raise-b (arch/bytes-of-string "count expected Counted")))))  ; incl. ChunkedCons, InfiniteRange
+
+(defn ^{:twin "core/count"} count [x] (box-int (count* x)))
+
+(defn- nth-in-seq [s n]                                  ; nthInSeq (lang.go:1462); null s = not found
+  (loop [i 0 s s]
+    (if (arch/null? s)
+      (arch/null)
+      (let [cs (as-chunked s)]
+        (if (arch/null? cs)
+          (if (= i n) (arch/new Cons (s-first s) (arch/null)) (recur (inc i) (s-next s)))
+          (let [c (cfirst cs) nc (chunk-count* c)]
+            (if (< n (+ i nc))
+              (arch/new Cons (chunk-nth* c (- n i)) (arch/null))
+              (recur (+ i nc) (cnext cs)))))))))
+
+(defn- indexed-nth [x k i]
+  (cond (= k 7) (box-int (arch/i64-add (arch/get Range 0 x) (arch/i64-mul i (arch/get Range 2 x))))
+        (= k 10) (pv/vnth (arch/get PVecSeq 0 x) (+ (arch/get PVecSeq 1 x) i))
+        (= k 11) (pv/vnth x i)
+        :else (chunk-nth* x i)))
+
+(defn- oob [has-nf nf] (if has-nf nf (raise-b (arch/bytes-of-string "nth index out of bounds"))))
+
+(defn- nth* [coll i has-nf nf]                           ; Nth/Nth3 (native_prims.go:155-215)
+  (let [k (kind coll)]
+    (cond (= k 0) nf
+          (= k 17) (string-nth coll i has-nf nf)          ; Indexed with byte RawCount, rune ValueAt
+          ;; vm.Indexed: Range, PersistentVectorSeq, PersistentVector, ArrayChunk
+          (if (= k 7) true (if (= k 10) true (if (= k 11) true (= k 12))))
+          (if (if (< i 0) true (>= i (count* coll))) (oob has-nf nf) (indexed-nth coll k i))
+          (< i 0) (oob has-nf nf)
+          (if has-nf (if (can-seq? coll) (opaque? coll) true) false) nf
+          :else (let [hit (nth-in-seq (force-seq (seq-of coll)) i)]
+                  (if (arch/null? hit) (oob has-nf nf) (arch/get Cons 0 hit))))))
+
+(defn int-arg
+  "A native fn's int64 parameter (D42: the boxed path never ref.casts an
+   unchecked operand): an Int unboxed, anything else native's conversion
+   error, raised before the fn body runs."
+  [x]
+  (if (= 1 (kind x)) (unbox-int x) (raise-typed (arch/bytes-of-string "expected int64, got ") x)))
+
+(defn nth                                                ; the core/nth twin is llvm.core/nth (adds TransientVector)
+  ([coll i] (nth* coll (int-arg i) false (arch/null)))
+  ([coll i nf] (nth* coll (int-arg i) true nf)))
+
+(defn peek [x]                                                             ; CorePeek (lang.go:6720)
+  (let [k (kind x)]
+    (cond (= k 0) (arch/null)
+          (= k 11) (if (= 0 (pv/vcount x)) (arch/null) (pv/vnth x (dec (pv/vcount x))))
+          (= k 2) (arch/null)
+          (= k 3) (arch/get List 0 x)
+          :else (raise-typed (arch/bytes-of-string "peek not supported on ") x))))
+
+(defn pop [x]                                                              ; CorePop (lang.go:6752)
+  (let [k (kind x)]
+    (cond (= k 0) (arch/null)
+          (= k 11) (if (< (pv/vcount x) 1) (raise-b (arch/bytes-of-string "can't pop empty vector")) (pv/vpop x))
+          (= k 2) (raise-b (arch/bytes-of-string "can't pop empty seq"))
+          (= k 23) (list (arch/get MapEntry 1 x))            ; MapEntry.More
+          (seq-kind? k)
+          ;; the Counted test walks a Cons/LazySeq to its end, as Go's does
+          (if (if (= k 6) false (if (= k 8) false (= 0 (count* x))))
+            (raise-b (arch/bytes-of-string "can't pop empty seq"))
+            (s-more x))
+          :else (raise-b (arch/bytes-of-string "pop expected Seq or Vec")))))
+
+(defn- conj1 [coll x]                                    ; one step of Conj (native_prims.go:293)
+  (let [k (kind coll)]
+    (cond (= k 0) (list-cons (empty-list) x)
+          (= k 2) (list-cons coll x)
+          (= k 3) (list-cons coll x)
+          (= k 10) (loop [i (dec (pv/vcount (arch/get PVecSeq 0 coll))) l (empty-list)] ; PersistentVectorSeq.Conj copies to a List
+                     (if (< i (arch/get PVecSeq 1 coll))
+                       (list-cons l x)
+                       (recur (dec i) (list-cons l (pv/vnth (arch/get PVecSeq 0 coll) i)))))
+          (= k 11) (pv/vconj coll x)
+          (= k 23) (pv/vconj (entry-vec coll) x)             ; MapEntry.Conj: as the ArrayVector
+          ;; MapSeq/SetSeq.Conj asserts Cons(val).(*List) and panics; the VM
+          ;; reports the recovered panic as a catchable error (map.go:159)
+          (= k 27) (raise-b (arch/bytes-of-string "interface conversion: vm.Seq is *vm.Cons, not *vm.List"))
+          (seq-kind? k) (arch/new Cons x coll)
+          (= k 17) (raise-b (arch/bytes-of-string "conj expected Collection"))
+          :else (arch/trap "llvm.seq: conj on this kind belongs to its own runtime (phm/phs)"))))
+
+(defn conj                                               ; the core/conj twin is llvm.core/conj (adds maps, sets)
+  ([] (pv/empty-vec))                                    ; Go returns an empty ArrayVector
+  ([coll] coll)
+  ([coll x] (conj1 coll x))
+  ([coll x y] (conj1 (conj1 coll x) y)))
+
+(defn- f64-int [f]                                      ; Go's int(f) for a finite f inside int64; else a named limit
+  (if (if (< f 9.223372036854775807e18) (>= f -9.223372036854775808e18) false)
+    (arch/f64-to-i64 f)
+    (arch/trap "lower-wasm: a NaN, infinite or out-of-int64 Float converted to Int (Go leaves it platform-defined)")))
+
+(defn ^{:twin "core/repeat"} repeat                                             ; CoreRepeat (lang.go:6805)
+  ([x] (arch/new Repeat -1 x))
+  ([n x] (let [k (kind n)
+               i (cond (= k 1) (unbox-int n)
+                       (= k 22) (f64-int (arch/get Float 0 n))   ; vm.ToInt truncates a Float
+                       :else (raise-b (arch/bytes-of-string "repeat expected an Int")))]
+           (if (<= i 0) (empty-list) (arch/new Repeat i x)))))
+
+(defn- range-int [x what]                                ; rangeInt: "range <what> must be an integer, got <T>"
+  (if (= 1 (kind x))
+    (unbox-int x)
+    (raise-typed (bytes-cat (bytes-cat (arch/bytes-of-string "range ") what) (arch/bytes-of-string " must be an integer, got ")) x)))
+
+(defn- range-to [start end step]                         ; CoreRangef's end: a Float is ceiled (floored for step <= 0), ±Inf unbounded
+  (if (= 22 (kind end))
+    (let [f (arch/get Float 0 end)]
+      (cond (> f 1.7976931348623157e308) (if (> step 0) (arch/new InfiniteRange start step) (empty-list))
+            (< f -1.7976931348623157e308) (if (< step 0) (arch/new InfiniteRange start step) (empty-list))
+            :else (let [t (f64-int f) tf (arch/i64-to-f64 t)
+                        e (if (> step 0) (if (> f tf) (inc t) t) (if (< f tf) (dec t) t))]
+                    (new-range start e step))))
+    (new-range start (range-int end (arch/bytes-of-string "end")) step)))
+
+(defn ^{:twin "core/range"} range                                              ; CoreRangef (lang.go:5785)
+  ([] (arch/new InfiniteRange 0 1))
+  ([end] (range-to 0 end 1))
+  ([start end] (range-to (range-int start (arch/bytes-of-string "start")) end 1))
+  ([start end step] (let [s0 (range-int start (arch/bytes-of-string "start"))]
+                      (range-to s0 end (range-int step (arch/bytes-of-string "step"))))))
+
+;; ---------------------------------------------------------------------------
+;; Chunk natives (lang.go:5656-5783)
+
+;; asChunked (lang.go:5047): null when x is seqable but not chunked; the
+;; callers raise their own literal messages.
+(defn- chunked-of [x] (as-chunked (seq-of x)))
+(defn- sequable? [x] (if (can-seq? x) (if (opaque? x) false true) false))  ; vm.Sequable, foreign values included
+
+(defn ^{:twin "core/chunk-first"} chunk-first [x]
+  (if (sequable? x)
+    (let [cs (chunked-of x)] (if (arch/null? cs) (raise-b (arch/bytes-of-string "chunk-first: not a chunked seq")) (cfirst cs)))
+    (raise-b (arch/bytes-of-string "chunk-first: not a sequence"))))
+(defn ^{:twin "core/chunk-rest"} chunk-rest [x]
+  (if (sequable? x)
+    (let [cs (chunked-of x)] (if (arch/null? cs) (raise-b (arch/bytes-of-string "chunk-rest: not a chunked seq")) (cmore cs)))
+    (raise-b (arch/bytes-of-string "chunk-rest: not a sequence"))))
+(defn ^{:twin "core/chunk-next"} chunk-next [x]
+  (if (sequable? x)
+    (let [cs (chunked-of x)] (if (arch/null? cs) (raise-b (arch/bytes-of-string "chunk-next: not a chunked seq")) (cnext cs)))
+    (raise-b (arch/bytes-of-string "chunk-next: not a sequence"))))
+
+(defn ^{:twin "core/chunked-seq?"} chunked-seq? [x]
+  (bool (if (if (can-seq? x) (if (opaque? x) false true) false) (if (arch/null? (chunked-of x)) false true) false)))
+
+(defn ^{:twin "core/chunk-cons"} chunk-cons [c rst]
+  (cond (if (= 12 (kind c)) false true) (raise-b (arch/bytes-of-string "chunk-cons: first arg must be a chunk"))
+        (if (arch/null? rst) false (if (sequable? rst) false true)) (raise-b (arch/bytes-of-string "chunk-cons: second arg must be a seq or nil"))
+        :else (let [out (cons-chunk c (seq-of rst))] (if (arch/null? out) (empty-list) out))))
+
+(defn ^{:twin "core/chunk-buffer"} chunk-buffer [n]
+  (if (= 1 (kind n))
+    (let [cap (unbox-int n)] (arch/new ChunkBuffer (arch/array-new pv/Node (if (< cap 0) 0 cap) (arch/null)) 0))
+    (raise-b (arch/bytes-of-string "chunk-buffer: arg must be Int"))))
+
+(defn ^{:twin "core/chunk-append"} chunk-append [b x]
+  (if (= 13 (kind b))
+    (let [arr (arch/get ChunkBuffer 0 b) n (arch/get ChunkBuffer 1 b)]
+      (when (= n (arch/alen arr))                        ; Go's append grows the slice
+        (let [na (arch/array-new pv/Node (if (= n 0) 1 (* 2 n)) (arch/null))]
+          (arch/array-copy pv/Node na 0 arr 0 n)
+          (arch/set! ChunkBuffer 0 b na)))
+      (arch/aset! pv/Node (arch/get ChunkBuffer 0 b) n x)
+      (arch/set! ChunkBuffer 1 b (inc n))
+      b)
+    (raise-b (arch/bytes-of-string "chunk-append: first arg must be a chunk-buffer"))))
+
+(defn ^{:twin "core/chunk"} chunk [b]                                          ; ChunkBuffer.Chunk hands over the slice and clears the buffer
+  (if (= 13 (kind b))
+    (let [c (arch/new ArrayChunk (arch/get ChunkBuffer 0 b) 0 (arch/get ChunkBuffer 1 b))]
+      (arch/set! ChunkBuffer 0 b (arch/array-new pv/Node 0 (arch/null)))
+      (arch/set! ChunkBuffer 1 b 0)
+      c)
+    (raise-b (arch/bytes-of-string "chunk: arg must be a chunk-buffer"))))
+
+;; ---------------------------------------------------------------------------
+;; map* with one collection: mapLazy1 (lang.go:1489), chunk-preserving.
+
+(defn- nil-thunk [self] (arch/null))
+(defn- empty-lazy-seq []                                 ; emptyLazySeq (lang.go:1482)
+  (arch/new LazySeq (arch/new Fn (arch/funcref Code0 nil-thunk) (arch/null) (arch/null) (arch/null) (arch/null) (arch/null) (arch/null) 0) (arch/null) 0 (arch/null)))
+
+(declare map-lazy)
+
+(defn- map-step [self]
+  (let [env (arch/get Fn 3 self) f (arch/get Env2 0 env) head (force-seq (arch/get Env2 1 env))]
+    (if (arch/null? head)
+      (empty-list)
+      (let [cs (as-chunked head)]
+        (if (arch/null? cs)
+          (let [v (invoke1 f (s-first head)) tail (map-lazy f (s-next head))]
+            (if (arch/null? tail) (list-cons (empty-list) v) (arch/new Cons v tail)))
+          (let [c (cfirst cs) n (chunk-count* c) a (arch/array-new pv/Node n (arch/null))]
+            (loop [i 0]
+              (when (< i n)
+                (arch/aset! pv/Node a i (invoke1 f (chunk-nth* c i)))
+                (recur (inc i))))
+            (cons-chunk (arch/new ArrayChunk a 0 n) (map-lazy f (cnext cs)))))))))
+
+(defn- map-lazy [f s]
+  (if (arch/null? s)
+    (arch/null)
+    (arch/new LazySeq (arch/new Fn (arch/funcref Code0 map-step) (arch/null) (arch/null) (arch/new Env2 f s)
+                                 (arch/null) (arch/null) (arch/null) 0)
+              (arch/null) 0 (arch/null))))
+
+(defn ^{:twin "core/map*"} map* [f coll]
+  (cond (if (callable? f) false true) (raise-b (arch/bytes-of-string "map expected Fn"))
+        (opaque? coll) (raise-b (arch/bytes-of-string "map expected Sequable"))
+        (if (can-seq? coll) false true) (raise-b (arch/bytes-of-string "map expected Sequable"))
+        :else (let [s (seq-of coll)] (if (arch/null? s) (empty-lazy-seq) (map-lazy f s)))))
+
+;; ---------------------------------------------------------------------------
+;; reduce (native_prims.go:338-560) and friends (lang.go:8083, 8556)
+
+(defn ^{:twin "core/reduced"} reduced [x] (arch/new Reduced x))
+(defn ^{:twin "core/reduced?"} reduced? [x] (bool (= 14 (kind x))))
+(defn ^{:twin "core/unreduced"} unreduced [x] (if (= 14 (kind x)) (arch/get Reduced 0 x) x))
+(defn ^{:twin "core/ensure-reduced"} ensure-reduced [x] (if (= 14 (kind x)) x (arch/new Reduced x)))
+
+(defn- reduce-chunk
+  "Fold f over chunk c from acc; returns the Reduced itself if f produced one
+   (the caller unwraps and stops), else the new acc. Chunks are never empty,
+   so a Reduced coming back always came from f."
+  [f acc c]
+  (let [n (chunk-count* c)]
+    (loop [i 0 acc acc]
+      (if (< i n)
+        (let [r (invoke2 f acc (chunk-nth* c i))]
+          (if (= 14 (kind r)) r (recur (inc i) r)))
+        acc))))
+
+(defn- empty-result [f has-init init] (if has-init init (invoke0 f)))
+
+(defn- reduce-coll [f coll has-init init]
+  (let [k (kind coll)]
+    (cond
+      (= k 0) (empty-result f has-init init)
+      ;; vm.Collection other than LazySeq/Cons with RawCount 0
+      (if (= k 2) true (if (= k 11) (= 0 (pv/vcount coll)) false)) (empty-result f has-init init)
+      (= k 7)                                            ; Range fast path: no chunk allocation
+      (let [start (arch/get Range 0 coll) end (arch/get Range 1 coll) step (arch/get Range 2 coll)]
+        (loop [acc (if has-init init (box-int start))
+               i (if has-init start (arch/i64-add start step))]
+          (if (in-bounds? i end step)
+            (let [r (invoke2 f acc (box-int i))]
+              (if (= 14 (kind r)) (arch/get Reduced 0 r) (recur r (arch/i64-add i step))))
+            acc)))
+      (opaque? coll) (raise-b (arch/bytes-of-string "reduce expected Seq"))
+      (if (can-seq? coll) false true) (raise-b (arch/bytes-of-string "reduce expected Seq"))
+      :else
+      (let [s0 (force-seq (seq-of coll))]
+        (if (arch/null? s0)
+          (empty-result f has-init init)
+          (loop [acc (if has-init init (s-first s0))
+                 s (if has-init s0 (s-next s0))]
+            (if (arch/null? s)
+              acc
+              (let [cs (as-chunked s)]
+                (if (arch/null? cs)
+                  (let [r (invoke2 f acc (s-first s))]
+                    (if (= 14 (kind r)) (arch/get Reduced 0 r) (recur r (s-next s))))
+                  (let [r (reduce-chunk f acc (cfirst cs))]
+                    (if (= 14 (kind r)) (arch/get Reduced 0 r) (recur r (cnext cs)))))))))))))
+
+(defn ^{:twin "core/reduce"} reduce
+  ([f coll] (if (callable? f) (reduce-coll f coll false (arch/null)) (raise-b (arch/bytes-of-string "reduce expected Fn"))))
+  ([f init coll]
+   (cond (arch/null? coll) init
+         (callable? f) (reduce-coll f coll true init)
+         :else (raise-b (arch/bytes-of-string "reduce expected Fn")))))
+
+(defn ^{:twin "core/some"} some [pred coll]                                   ; Some (native_prims.go:612)
+  (cond (if (callable? pred) false true) (raise-b (arch/bytes-of-string "some expected Fn"))
+        (opaque? coll) (raise-b (arch/bytes-of-string "some expected Seq"))
+        (if (can-seq? coll) false true) (raise-b (arch/bytes-of-string "some expected Seq"))
+        :else
+        (loop [s (force-seq (seq-of coll))]
+          (if (arch/null? s)
+            (arch/null)
+            (let [cs (as-chunked s)]
+              (if (arch/null? cs)
+                (let [v (invoke1 pred (s-first s))] (if (truthy? v) v (recur (s-next s))))
+                (let [c (cfirst cs) n (chunk-count* c)
+                      hit (loop [i 0]
+                            (if (< i n)
+                              (let [v (invoke1 pred (chunk-nth* c i))]
+                                (if (truthy? v) (arch/new Cons v (arch/null)) (recur (inc i))))
+                              (arch/null)))]
+                  (if (arch/null? hit) (recur (cnext cs)) (arch/get Cons 0 hit)))))))))
+
+(defn vec [x]                         ; vec (lang.go:2063): element-wise, not chunked; core/vec's twin is llvm.arrays/vec (object arrays)
+  (cond (seq-empty? x) (pv/empty-vec)
+        (if (can-seq? x) false true) (no-iseq x)
+        :else (loop [s (force-seq (seq-of x)) v (pv/empty-vec)]  ; always an ArrayVector, at any size
+                (if (arch/null? s) (pv/varray v) (recur (s-next s) (pv/vconj v (s-first s)))))))
+
+;; ---------------------------------------------------------------------------
+;; Equality (valueEquals, lang.go:1036-1269) restricted to the kinds above.
+
+(defn- type-group [k]                                    ; Go's Type(): same group = same ValueType
+  (cond (if (if (>= k 2) (<= k 6) false) true (= k 27)) 2 ; List/Cons/LazySeq/ChunkedCons/MapSeq/SetSeq: ListType
+        (= k 8) 7                                        ; InfiniteRange: RangeType
+        :else k))
+
+(defn- sequential-kind? [k] (if (seq-kind? k) true (if (= k 11) true (= k 23))))  ; isSequentialType (lang.go:1367)
+
+(defn- to-seq [v]                                        ; toSeq (lang.go:1383)
+  (let [k (kind v)]
+    (cond (= k 0) (arch/null)
+          (= k 2) (arch/null)
+          (= k 5) (resolve-lazy v)
+          ;; vm.Counted with RawCount 0 (walks a Cons tail, as Go's does)
+          (if (if (= k 6) false (if (= k 8) false true)) (= 0 (count* v)) false) (arch/null)
+          :else (let [s (seq-view v)] (if (= 2 (kind s)) (arch/null) s)))))
+
+(declare equiv?)
+
+(defn- walk-equal? [as bs]
+  (loop [as as bs bs]
+    (if (if (arch/null? as) false (if (arch/null? bs) false true))
+      (if (equiv? (s-first as) (s-first bs)) (recur (s-next as) (s-next bs)) false)
+      (if (arch/null? as) (arch/null? bs) false))))
+
+;; *List.Equals' element test (lang.go:1354 listElementEquals): two NaNs are
+;; equal inside a list, so (= (list ##NaN) (list ##NaN)) is true while the
+;; vector form is false.
+(defn- nan-box? [x] (if (= 22 (kind x)) (let [f (arch/get Float 0 x)] (if (< f 0.0) false (if (>= f 0.0) false true))) false))
+(defn- walk-equal-list? [as bs]
+  (loop [as as bs bs]
+    (if (if (arch/null? as) false (if (arch/null? bs) false true))
+      (let [x (s-first as) y (s-first bs)]
+        (if (if (if (nan-box? x) (nan-box? y) false) true (equiv? x y)) (recur (s-next as) (s-next bs)) false))
+      (if (arch/null? as) (arch/null? bs) false))))
+
+(defn- nil-list-equivalent? [a b]                        ; nilListEquivalent (lang.go:1361)
+  (let [ka (kind a) kb (kind b)] (if (if (= ka 0) (= kb 2) false) true (if (= ka 2) (= kb 0) false))))
+
+;; The scalar boxes (valueEquals' fast paths): Str by bytes, Char by rune,
+;; Float by == (NaN unequal, -0.0 = 0.0), Kw/Sym by text. Int x Float is
+;; false, as native: (= 1 1.0) and {1 :a 1.0 :b} keep two keys.
+(defn- scalar-kind? [k] (if (= k 17) true (if (>= k 19) (<= k 22) false)))
+
+(defn- named-eq? [ans anm ah bns bnm bh]
+  (if (= ah bh)
+    (if (if (arch/null? ans) (arch/null? bns) (if (arch/null? bns) false (bytes-eq? ans bns)))
+      (bytes-eq? anm bnm)
+      false)
+    false))
+
+(defn- scalar-equiv? [k a b]
+  (cond (= k 17) (if (arch/ref-eq a b) true (bytes-eq? (arch/get Str 0 a) (arch/get Str 0 b)))
+        (= k 19) (= (arch/get Char 0 a) (arch/get Char 0 b))
+        (= k 22) (let [x (arch/get Float 0 a) y (arch/get Float 0 b)] (if (< x y) false (if (> x y) false (>= x y))))
+        (= k 20) (if (arch/ref-eq a b) true
+                     (named-eq? (arch/get Kw 0 a) (arch/get Kw 1 a) (arch/get Kw 2 a) (arch/get Kw 0 b) (arch/get Kw 1 b) (arch/get Kw 2 b)))
+        :else (if (arch/ref-eq a b) true
+                  (named-eq? (arch/get Sym 0 a) (arch/get Sym 1 a) (arch/get Sym 2 a) (arch/get Sym 0 b) (arch/get Sym 1 b) (arch/get Sym 2 b)))))
+
+(defn equiv? [a b]
+  (let [a (if (= 23 (kind a)) (entry-vec a) a)             ; MapEntry.Equals is the ArrayVector's
+        b (if (= 23 (kind b)) (entry-vec b) b)
+        ka (kind a) kb (kind b)]
+    (cond
+      (if (= ka 0) (= kb 0) false) true
+      (if (= ka 0) true (= kb 0)) false
+      ;; scalars before identity: one NaN box is not = to itself
+      (if (scalar-kind? ka) true (scalar-kind? kb)) (if (= ka kb) (scalar-equiv? ka a b) false)
+      (arch/ref-eq a b) true
+      (if (= ka 1) (= kb 1) false) (= (unbox-int a) (unbox-int b))
+      ;; two foreign values claimed by different handlers: either side's may
+      ;; know the pair (llvm.core's sorted map = a phm map), so ask b's too
+      (= ka 18) (let [ha (hook 3 a)]
+                  (if (truthy? (invoke2 ha a b))
+                    true
+                    (if (= kb 18) (let [hb (hook 3 b)] (if (arch/ref-eq ha hb) false (truthy? (invoke2 hb a b)))) false)))
+      (= kb 18) (truthy? (invoke2 (hook 3 b) a b))
+      (if (= (type-group ka) (type-group kb)) false true)
+      (if (if (sequential-kind? ka) (sequential-kind? kb) false) (walk-equal? (to-seq a) (to-seq b)) false)
+      ;; same Go type from here on
+      (= ka 2) (if (= kb 2) true (arch/null? (to-seq b)))  ; EmptyList (lang.go:1140)
+      (= ka 3) (if (= kb 2) false (walk-equal-list? a b)) ; *List vs any Seq, b unresolved (lang.go:1149)
+      (= ka 11) (let [n (pv/vcount a)]                   ; PersistentVector.Equals (persistent_vector.go:130)
+                  (if (= n (pv/vcount b))
+                    (loop [i 0]
+                      (if (< i n)
+                        (let [x (pv/vnth a i) y (pv/vnth b i)]
+                          (if (if (nil-list-equivalent? x y) true (equiv? x y)) (recur (inc i)) false))
+                        true))
+                    false))
+      (= ka 15) (= (arch/get Bool 0 a) (arch/get Bool 0 b))
+      (sequential-kind? ka) (walk-equal? (to-seq a) (to-seq b))
+      :else false)))
+
+(defn ^{:twin "core/="} equals [a b] (bool (equiv? a b)))
+
+;; ---------------------------------------------------------------------------
+;; Float bits (moved from llvm.str at P2.9, since Float hashing needs it and
+;; seq.lg must not require llvm.str). Stand-in for the f64-bits intrinsic D28
+;; assigns to P2.2: exact for every double, built from multiplies by powers
+;; of two (exact while the operand stays normal) and one division, the only
+;; way to tell -0.0 from 0.0 without reinterpretation. Swap the body for
+;; (arch/f64-bits x) when that intrinsic lands.
+
+(defn- binary-exponent [a]                               ; e with a * 2^-e in [2^52, 2^53); a finite, > 0
+  (loop [m a e 0]
+    (cond (>= m 1.6615349947311448e35) (recur (* m 5.421010862427522e-20) (+ e 64)) ; m >= 2^117: times 2^-64
+          (>= m 9007199254740992.0) (recur (* m 0.5) (inc e))
+          (< m 0.00048828125) (recur (* m 1.8446744073709552e19) (- e 64))          ; m < 2^-11: times 2^64
+          (< m 4503599627370496.0) (recur (* m 2.0) (dec e))
+          :else e)))
+
+(defn- scale-by [a e]                                    ; a * 2^-e by the same exact steps
+  (loop [m a e e]
+    (cond (>= e 64) (recur (* m 5.421010862427522e-20) (- e 64))
+          (> e 0) (recur (* m 0.5) (dec e))
+          (<= e -64) (recur (* m 1.8446744073709552e19) (+ e 64))
+          (< e 0) (recur (* m 2.0) (inc e))
+          :else m)))
+
+(defn float-bits [x]
+  (cond (if (< x 0.0) false (if (>= x 0.0) false true)) 0x7FF8000000000001 ; NaN: the pattern of Go's math.NaN()
+        (> x 1.7976931348623157e308) 0x7FF0000000000000
+        (< x -1.7976931348623157e308) -4503599627370496                    ; 0xFFF0000000000000
+        (if (< x 0.0) false (if (> x 0.0) false true))
+        (if (< (/ 1.0 x) 0.0) -9223372036854775808 0)
+        :else
+        (let [neg (< x 0.0)
+              a (if neg (- 0.0 x) x)
+              e (binary-exponent a)
+              mant (arch/f64-to-i64 (scale-by a e))      ; an integer in [2^52, 2^53)
+              be (+ e 1075)                              ; biased exponent of mant * 2^e
+              mag (if (>= be 1)
+                    (bit-or (bit-shift-left be 52) (- mant 4503599627370496))
+                    (arch/i64-shr-u mant (- 1 be)))]     ; subnormal: the bits shifted out are zero
+          (if neg (bit-or mag -9223372036854775808) mag))))
+
+;; ---------------------------------------------------------------------------
+;; Hash (corpus/hash/SPEC.md). Results are uint32 in a non-negative i64.
+
+(defn- mix-finish [h]                                    ; mixFinish/fmix32 (hash.go:127-131)
+  (let [h (bit-xor h (unsigned-bit-shift-right h 16))
+        h (bit-and (arch/i64-mul h 2246822507) 0xffffffff)
+        h (bit-xor h (unsigned-bit-shift-right h 13))
+        h (bit-and (arch/i64-mul h 3266489909) 0xffffffff)]
+    (bit-xor h (unsigned-bit-shift-right h 16))))
+
+(defn- hash-u64 [v]                                      ; hashUint64 (hash.go:94)
+  (let [v (bit-xor v (arch/i64-shr-u v 33))
+        v (arch/i64-mul v -49064778989728563)            ; 0xff51afd7ed558ccd
+        v (bit-xor v (arch/i64-shr-u v 33))
+        v (arch/i64-mul v -4265267296055464877)          ; 0xc4ceb9fe1a85ec53
+        v (bit-xor v (arch/i64-shr-u v 33))]
+    (bit-and v 0xffffffff)))
+
+;; Identity ids for atoms, volatiles and fns (P5.3). fmix32 (MurmurHash3's
+;; finaliser) is a bijection on 32 bits, so distinct ids hash apart; native's
+;; pointer hash is also a 32-bit value.
+(defn- next-id []
+  (let [n (inc (arch/get Hooks 7 hooks))] (arch/set! Hooks 7 hooks n) n))
+(defn- fmix32 [h0]
+  (let [h1 (bit-and (arch/i64-mul (bit-xor h0 (unsigned-bit-shift-right h0 16)) 0x85ebca6b) 0xffffffff)
+        h2 (bit-and (arch/i64-mul (bit-xor h1 (unsigned-bit-shift-right h1 13)) 0xc2b2ae35) 0xffffffff)]
+    (bit-xor h2 (unsigned-bit-shift-right h2 16))))
+
+(defn- fnv-byte [h b] (bit-and (arch/i64-mul (bit-xor h b) 16777619) 0xffffffff))
+(defn- fnv-bytes [h bs]
+  (loop [i 0 h h] (if (< i (arch/alen bs)) (recur (inc i) (fnv-byte h (arch/bget bs i))) h)))
+
+(defn- fnv-int [h n]                                     ; FNV over Int.String(): decimal, '-' for negatives
+  (let [buf (arch/bytes-new 20)
+        len (loop [m n i 0]                             ; digits least-significant first; rem keeps MinInt64 safe
+              (let [d (- m (* 10 (quot m 10))) d (if (< d 0) (- 0 d) d)]
+                (arch/bset! buf i (+ 48 d))
+                (if (= 0 (quot m 10)) (inc i) (recur (quot m 10) (inc i)))))
+        h (if (< n 0) (fnv-byte h 45) h)]
+    (loop [i (dec len) h h] (if (< i 0) h (recur (dec i) (fnv-byte h (arch/bget buf i)))))))
+
+(defn- fnv-elem [h x]                                    ; Value.String() for the printable kinds
+  (let [k (kind x)]
+    (cond (= k 0) (fnv-bytes h (arch/bytes-of-string "nil"))
+          (= k 1) (fnv-int h (unbox-int x))
+          :else (let [p (arch/get Hooks 3 hooks)]
+                  (if (arch/null? p)
+                    (arch/trap "llvm.seq: hashing this seq prints its elements; no print hook installed (llvm.core/install!)")
+                    (fnv-bytes h (arch/get Str 0 (invoke1 p x))))))))
+
+(defn- fnv-walk [h s sep-first]                          ; "e1 e2 ...", walking s with s-next
+  (loop [s s h h first? sep-first]
+    (if (arch/null? s) h (recur (s-next s) (fnv-elem (if first? h (fnv-byte h 32)) (s-first s)) false))))
+
+(declare hash*)
+
+(defn- hash-ordered [s]                                  ; hashOrdered (hash.go:108): EmptyList counts as one nil
+  (loop [s s h 1]
+    (if (arch/null? s)
+      (mix-finish h)
+      (recur (s-next s) (bit-and (arch/i64-add (arch/i64-mul h 31) (hash* (s-first s))) 0xffffffff)))))
+
+(defn- hash* [x]
+  (let [k (kind x)]
+    (cond (= k 0) 0
+          (= k 1) (hash-u64 (unbox-int x))
+          (= k 15) (arch/get Bool 0 x)
+          (= k 17) (let [c (arch/get Str 1 x)]               ; hashString = FNV-1a (hash.go:48), cached
+                     (if (>= c 0) c (let [h (fnv-bytes 2166136261 (arch/get Str 0 x))] (arch/set! Str 1 x h) h)))
+          (= k 20) (arch/get Kw 2 x)                         ; hashUnencodedChars + 0x9e3779b9, at intern time
+          (= k 21) (arch/get Sym 2 x)
+          (= k 19) (hash-u64 (arch/get Char 0 x))            ; hashUint64(rune)
+          (= k 22) (hash-u64 (float-bits (arch/get Float 0 x))) ; hashUint64(bits)
+          (if (= k 2) true (if (= k 3) true (if (= k 4) true (= k 6)))) (hash-ordered x)
+          (= k 5) (let [s (resolve-lazy x)] (hash-ordered (if (arch/null? s) (empty-list) s)))
+          ;; ArrayVector.Hash folds its elements, so [] is mixFinish(1); a
+          ;; PersistentVector hashes its seq, so its [] is ()'s hash (H1, D73)
+          (= k 11) (if (if (= 0 (pv/vcount x)) (= 0 (pv/vpkind x)) false) (mix-finish 1) (hash-ordered (vec-seq x)))
+          ;; Range, InfiniteRange, Repeat, PersistentVectorSeq are not Hashable:
+          ;; FNV-1a of String() (hash.go:31)
+          (= k 7) (fnv-byte (fnv-walk (fnv-byte 2166136261 40) x true) 41)
+          (= k 8) (fnv-bytes 2166136261 (arch/bytes-of-string "(range ...)"))
+          (= k 9) (let [n (arch/get Repeat 0 x) v (arch/get Repeat 1 x)]
+                    (fnv-byte (loop [i n h (fnv-byte 2166136261 40)]
+                                (if (> i 0) (recur (dec i) (let [h (fnv-elem h v)] (if (> i 1) (fnv-byte h 32) h))) h))
+                              41))
+          (if (= k 10) (pvs-array? x) false)                ; ArrayVectorSeq.String(): "(e_i ...)" from i
+          (fnv-byte (fnv-walk (fnv-byte 2166136261 40) x true) 41)
+          (= k 10) (let [h (fnv-bytes 2166136261 (arch/bytes-of-string "(seq ["))
+                         v (arch/get PVecSeq 0 x)]       ; prints the WHOLE vector, not from i (persistent_vector.go:748)
+                     (fnv-bytes (fnv-walk h (vec-seq v) true) (arch/bytes-of-string "])")))
+          (= k 27) (fnv-byte (fnv-walk (fnv-byte 2166136261 40) x true) 41) ; MapSeq/SetSeq.String(): "(e_i ...)"
+          (= k 18) (unbox-int (invoke1 (hook 4 x) x))
+          (= k 23) (hash* (entry-vec x))                     ; MapEntry.Hash is the ArrayVector's
+          ;; An exception hashes by FNV of its String(). Atoms, volatiles and fns hash
+          ;; by pointer natively; here by an identity id drawn on first hash (D80's
+          ;; id slot, P5.3): stable per object, distinct between objects.
+          ;; Reduced, ArrayChunk, ChunkBuffer and exceptions are not Hashable either
+          (if (= k 26) true (if (= k 14) true (if (= k 12) true (= k 13)))) (fnv-elem 2166136261 x)
+          (= k 16) (fmix32 (let [id (arch/get Fn 7 x)] (if (= id 0) (let [n (next-id)] (arch/set! Fn 7 x n) n) id)))
+          (= k 24) (fmix32 (let [id (arch/get Atom 1 x)] (if (= id 0) (let [n (next-id)] (arch/set! Atom 1 x n) n) id)))
+          (= k 25) (fmix32 (let [id (arch/get Volatile 1 x)] (if (= id 0) (let [n (next-id)] (arch/set! Volatile 1 x n) n) id)))
+          :else (arch/trap "llvm.seq: hash of this kind is not implemented"))))
+
+(defn ^{:twin "core/hash"} hash [x] (box-int (hash* x)))

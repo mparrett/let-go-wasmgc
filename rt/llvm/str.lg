@@ -1,0 +1,1058 @@
+;; llvm.str — P2.6 runtime half: strings, chars, keywords, symbols and floats
+;; as values, `str`/`pr-str`/`print-str`, float formatting, and the string
+;; natives xsofy and legmacs reach, in the runtime dialect of seq.lg (IR
+;; special forms, IR-op core fns on :int and :float, macros expanding to
+;; those, llvm.arch, llvm.seq, llvm.pvec and this file's own fns).
+;; Ground truth is let-go ff1e6dac (pkg/vm/string.go, char.go, keyword.go,
+;; symbol.go, float.go, compare.go; pkg/rt/lang.go, native_prims.go,
+;; print_method.go) and Go's strconv for floats; STR.md has the citations,
+;; the index semantics, the escape table and the float algorithm.
+;;
+;; Calling convention as seq.lg (D37): natives take and return refs; ints
+;; arrive boxed, booleans leave as sq/Bool refs. Errors let-go raises as
+;; catchable exceptions are raised as D68 Errs with let-go's exact text
+;; (P2.13); arch/trap is kept for invariants and `lower-wasm:` limits.
+(ns llvm.str
+  (:refer-clojure :exclude [str pr-str print-str subs split name namespace keyword symbol char int
+                            compare count nth seq first rest next hash includes? starts-with?
+                            ends-with? index-of last-index-of trim triml trimr lower-case
+                            upper-case str-replace parse-long])
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]))
+
+;; ---------------------------------------------------------------------------
+;; The value boxes (Str Char Kw Sym Float) live in llvm.seq beside Int/Bool,
+;; so its `kind` (17 Str, 19 Char, 20 Kw, 21 Sym, 22 Float) is the one
+;; dispatch point and its equiv?/hash cover them (D38, D48).
+;; Working storage, never a value.
+;; D68 raises (P2.13): let-go's catchable errors with its exact text. A
+;; message naming a type gets it through llvm.seq's type namer.
+(defn- raise-lit [bs] (throw (arch/new sq/Err 1 bs bs (arch/null) (arch/null))))
+(declare value-string)
+(defn- raise-val "Raise prefix ++ x formatted by %v ++ suffix: String(), or Error() for an exception." [prefix x suffix]
+  (raise-lit (sq/bytes-cat (sq/bytes-cat prefix (if (= 26 (sq/kind x)) (arch/get sq/Err 1 x) (arch/get sq/Str 0 (value-string x))))
+                           suffix)))
+
+(arch/defstruct Buf [[:mut :ref] [:mut :i64]])                ; bytes, length
+(arch/defstruct Dec [:ref [:mut :i64] [:mut :i64] [:mut :i64]]) ; strconv decimal: digits 0..9, nd, dp, trunc
+;; The one runtime global (D39): the keyword/symbol intern table (open
+;; addressing over pv/Node), its count, and the print hook for foreign
+;; values (maps and sets print through their own runtime).
+(arch/defstruct Globals [[:mut :ref] [:mut :i64] [:mut :ref]])
+(def globals (arch/new Globals (arch/array-new pv/Node 64 (arch/null)) 0 (arch/null)))
+
+(defn mk-str [bs] (arch/new sq/Str bs -1))
+(defn str-bytes [s] (arch/get sq/Str 0 s))
+(defn mk-char [r] (arch/new sq/Char r))
+(defn char-val [c] (arch/get sq/Char 0 c))
+(defn box-float [f] (arch/new sq/Float f))
+(defn unbox-float [x] (arch/get sq/Float 0 x))
+
+;; ---------------------------------------------------------------------------
+;; Bytes
+
+(defn- range-eq? [a ai b bi n]                           ; a[ai,ai+n) = b[bi,bi+n)
+  (loop [k 0] (if (< k n) (if (= (arch/bget a (+ ai k)) (arch/bget b (+ bi k))) (recur (inc k)) false) true)))
+
+(defn- bytes-cmp [a b]                                   ; Go string order: unsigned bytes, then length
+  (let [na (arch/alen a) nb (arch/alen b) n (if (< na nb) na nb)]
+    (loop [i 0]
+      (if (< i n)
+        (let [x (arch/bget a i) y (arch/bget b i)]
+          (cond (< x y) -1 (> x y) 1 :else (recur (inc i))))
+        (cond (< na nb) -1 (> na nb) 1 :else 0)))))
+
+(defn- slice [bs from to]
+  (let [out (arch/bytes-new (- to from))]
+    (arch/array-copy arch/Bytes out 0 bs from (- to from))
+    out))
+
+(defn- index-in [s sep from]                             ; strings.Index on s[from:], absolute; -1 if absent
+  (let [n (arch/alen s) m (arch/alen sep)]
+    (loop [i from]
+      (cond (> (+ i m) n) -1
+            (range-eq? s i sep 0 m) i
+            :else (recur (inc i))))))
+
+;; ---------------------------------------------------------------------------
+;; UTF-8: decode-at and rune-count* are llvm.seq's (strings as collections).
+
+(defn- byte-at-rune [bs ri]                              ; byte offset of rune index ri, -1 past the end (subs walk)
+  (let [n (arch/alen bs)]
+    (loop [i 0 r 0]
+      (cond (= r ri) i
+            (>= i n) -1
+            :else (recur (+ i (bit-and (sq/decode-at bs i n) 7)) (inc r))))))
+
+;; ---------------------------------------------------------------------------
+;; Byte buffer
+
+(defn- buf-new [] (arch/new Buf (arch/bytes-new 32) 0))
+
+(defn- buf-room! [b extra]
+  (let [bs (arch/get Buf 0 b) len (arch/get Buf 1 b) need (+ len extra)]
+    (when (> need (arch/alen bs))
+      (let [cap (loop [c (* 2 (arch/alen bs))] (if (< c need) (recur (* 2 c)) c))
+            nb (arch/bytes-new cap)]
+        (arch/array-copy arch/Bytes nb 0 bs 0 len)
+        (arch/set! Buf 0 b nb)))))
+
+(defn- buf-byte! [b v]
+  (buf-room! b 1)
+  (arch/bset! (arch/get Buf 0 b) (arch/get Buf 1 b) v)
+  (arch/set! Buf 1 b (inc (arch/get Buf 1 b))))
+
+(defn- buf-range! [b src from to]
+  (let [n (- to from)]
+    (buf-room! b n)
+    (arch/array-copy arch/Bytes (arch/get Buf 0 b) (arch/get Buf 1 b) src from n)
+    (arch/set! Buf 1 b (+ (arch/get Buf 1 b) n))))
+
+(defn- buf-bytes! [b src] (buf-range! b src 0 (arch/alen src)))
+
+(defn- buf-done [b] (mk-str (slice (arch/get Buf 0 b) 0 (arch/get Buf 1 b))))
+
+(defn- encode-rune! [b r]                                ; utf8.AppendRune: surrogates and out-of-range -> U+FFFD
+  (let [r (if (if (< r 0) true (if (> r 0x10FFFF) true (if (>= r 0xD800) (<= r 0xDFFF) false))) 0xFFFD r)]
+    (cond (< r 0x80) (buf-byte! b r)
+          (< r 0x800) (do (buf-byte! b (+ 0xC0 (unsigned-bit-shift-right r 6)))
+                          (buf-byte! b (+ 0x80 (bit-and r 0x3F))))
+          (< r 0x10000) (do (buf-byte! b (+ 0xE0 (unsigned-bit-shift-right r 12)))
+                            (buf-byte! b (+ 0x80 (bit-and (unsigned-bit-shift-right r 6) 0x3F)))
+                            (buf-byte! b (+ 0x80 (bit-and r 0x3F))))
+          :else (do (buf-byte! b (+ 0xF0 (unsigned-bit-shift-right r 18)))
+                    (buf-byte! b (+ 0x80 (bit-and (unsigned-bit-shift-right r 12) 0x3F)))
+                    (buf-byte! b (+ 0x80 (bit-and (unsigned-bit-shift-right r 6) 0x3F)))
+                    (buf-byte! b (+ 0x80 (bit-and r 0x3F)))))))
+
+(defn- buf-int! [b n]                                    ; Int.String(): decimal, MinInt64-safe
+  (let [tmp (arch/bytes-new 20)
+        len (loop [m n i 0]
+              (let [q (quot m 10) d (- m (* 10 q)) d (if (< d 0) (- 0 d) d)]
+                (arch/bset! tmp i (+ 48 d))
+                (if (= 0 q) (inc i) (recur q (inc i)))))]
+    (when (< n 0) (buf-byte! b 45))
+    (loop [i (dec len)] (when (>= i 0) (buf-byte! b (arch/bget tmp i)) (recur (dec i))))))
+
+(defn- hex-digit [d] (if (< d 10) (+ 48 d) (+ 55 d)))   ; uppercase, as %04X
+
+(defmacro lit
+  "A string literal as a Str. A macro because bytes-of-string takes only a
+   literal (D5/D27: the literal is its bytes, array.new_data)."
+  [s] `(mk-str (arch/bytes-of-string ~s)))
+
+;; ---------------------------------------------------------------------------
+;; Keywords and symbols: built from their full "ns/name" text (Go stores
+;; exactly that string), split at the first '/' unless the text is "/"
+;; (splitNamespaced, symbol.go:79), hashed over the whole text, interned.
+
+(defn- mix-k1 [k]
+  (let [k (bit-and (arch/i64-mul k 0xcc9e2d51) 0xffffffff)
+        k (bit-and (bit-or (bit-shift-left k 15) (unsigned-bit-shift-right k 17)) 0xffffffff)]
+    (bit-and (arch/i64-mul k 0x1b873593) 0xffffffff)))
+
+(defn- mix-h1 [h k]
+  (let [h (bit-xor h k)
+        h (bit-and (bit-or (bit-shift-left h 13) (unsigned-bit-shift-right h 19)) 0xffffffff)]
+    (bit-and (arch/i64-add (arch/i64-mul h 5) 0xe6546b64) 0xffffffff)))
+
+(defn- fmix [h len]
+  (let [h (bit-xor h len)
+        h (bit-xor h (unsigned-bit-shift-right h 16))
+        h (bit-and (arch/i64-mul h 0x85ebca6b) 0xffffffff)
+        h (bit-xor h (unsigned-bit-shift-right h 13))
+        h (bit-and (arch/i64-mul h 0xc2b2ae35) 0xffffffff)]
+    (bit-xor h (unsigned-bit-shift-right h 16))))
+
+(defn- hash-unencoded [bs]                               ; hashUnencodedChars (hash.go:67): bytes two at a time
+  (let [n (arch/alen bs)
+        h (loop [i 1 h 0]
+            (if (< i n)
+              (recur (+ i 2) (mix-h1 h (mix-k1 (bit-or (arch/bget bs (dec i)) (bit-shift-left (arch/bget bs i) 16)))))
+              (if (= i n) (bit-xor h (mix-k1 (arch/bget bs (dec i)))) h)))]
+    (fmix h (bit-and (* 2 n) 0xffffffff))))
+
+(defn- slash-of [full]                                   ; -1 when there is no namespace
+  (let [n (arch/alen full)]
+    (if (if (= n 1) (= 47 (arch/bget full 0)) false)
+      -1
+      (loop [i 0] (cond (>= i n) -1 (= 47 (arch/bget full i)) i :else (recur (inc i)))))))
+
+(defn- named-ns [x] (if (arch/is? sq/Kw x) (arch/get sq/Kw 0 x) (arch/get sq/Sym 0 x)))
+(defn- named-name [x] (if (arch/is? sq/Kw x) (arch/get sq/Kw 1 x) (arch/get sq/Sym 1 x)))
+(defn- named-hash [x] (if (arch/is? sq/Kw x) (arch/get sq/Kw 2 x) (arch/get sq/Sym 2 x)))
+
+(defn- named-matches? [e kw? full slash h]
+  (if (if kw? (arch/is? sq/Kw e) (arch/is? sq/Sym e))
+    (if (= h (named-hash e))
+      (let [ns (named-ns e) nm (named-name e) n (arch/alen full)]
+        (if (< slash 0)
+          (if (arch/null? ns) (sq/bytes-eq? nm full) false)
+          (if (arch/null? ns)
+            false
+            (if (if (= slash (arch/alen ns)) (= (- n (inc slash)) (arch/alen nm)) false)
+              (if (range-eq? full 0 ns 0 slash) (range-eq? full (inc slash) nm 0 (arch/alen nm)) false)
+              false))))
+      false)
+    false))
+
+(defn- intern-insert! [tab e]                            ; tab has a free slot
+  (let [mask (dec (arch/alen tab))]
+    (loop [i (bit-and (named-hash e) mask)]
+      (if (arch/null? (arch/aget pv/Node tab i))
+        (arch/aset! pv/Node tab i e)
+        (recur (bit-and (inc i) mask))))))
+
+(defn- named-of [kw? full]
+  (let [slash (slash-of full)
+        sh (hash-unencoded full)
+        h (if kw? (bit-and (arch/i64-add sh 0x9e3779b9) 0xffffffff) sh)
+        tab (arch/get Globals 0 globals)
+        mask (dec (arch/alen tab))
+        hit (loop [i (bit-and h mask)]
+              (let [e (arch/aget pv/Node tab i)]
+                (cond (arch/null? e) e
+                      (named-matches? e kw? full slash h) e
+                      :else (recur (bit-and (inc i) mask)))))]
+    (if (arch/null? hit)
+      (let [n (arch/alen full)
+            ns (if (< slash 0) (arch/null) (slice full 0 slash))
+            nm (if (< slash 0) (slice full 0 n) (slice full (inc slash) n))
+            e (if kw? (arch/new sq/Kw ns nm h) (arch/new sq/Sym ns nm h))
+            cnt (inc (arch/get Globals 1 globals))]
+        (when (> (* 2 cnt) (arch/alen tab))           ; keep load <= 1/2: rehash into twice the slots
+          (let [nt (arch/array-new pv/Node (* 2 (arch/alen tab)) (arch/null))]
+            (loop [i 0]
+              (when (< i (arch/alen tab))
+                (let [o (arch/aget pv/Node tab i)] (when-not (arch/null? o) (intern-insert! nt o)))
+                (recur (inc i))))
+            (arch/set! Globals 0 globals nt)))
+        (intern-insert! (arch/get Globals 0 globals) e)
+        (arch/set! Globals 1 globals cnt)
+        e)
+      hit)))
+
+(defn- full-text [x]                                     ; "ns/name" or "name", as Go stores it
+  (let [ns (named-ns x) nm (named-name x)]
+    (if (arch/null? ns)
+      nm
+      (let [b (buf-new)]
+        (buf-bytes! b ns) (buf-byte! b 47) (buf-bytes! b nm)
+        (slice (arch/get Buf 0 b) 0 (arch/get Buf 1 b))))))
+
+(defn kw-of-bytes [full] (named-of true full))
+(defn sym-of-bytes [full] (named-of false full))
+
+
+;; ---------------------------------------------------------------------------
+;; strconv's multiprecision decimal (Go internal/strconv/decimal.go) with
+;; digits stored as 0..9. Shifts go 59 bits at a time (Go: 60), so that
+;; 10 * 2^k fits a signed i64; leftShift is computed right to left into
+;; scratch instead of through the leftcheats table. Both change only how the
+;; same digits are produced.
+
+(defn- dec-new [] (arch/new Dec (arch/bytes-new 800) 0 0 0))
+(defn- d-nd [a] (arch/get Dec 1 a))
+(defn- d-dp [a] (arch/get Dec 2 a))
+(defn- d-at [a i] (arch/bget (arch/get Dec 0 a) i))
+
+(defn- dec-trim! [a]
+  (let [nd (loop [nd (d-nd a)] (if (if (> nd 0) (= 0 (d-at a (dec nd))) false) (recur (dec nd)) nd))]
+    (arch/set! Dec 1 a nd)
+    (when (= nd 0) (arch/set! Dec 2 a 0))))
+
+(defn- dec-assign! [a v]                                 ; Assign: 0 <= v < 2^63
+  (let [tmp (arch/bytes-new 24)
+        n (loop [v v n 0] (if (> v 0) (let [q (quot v 10)] (arch/bset! tmp n (- v (* 10 q))) (recur q (inc n))) n))
+        d (arch/get Dec 0 a)]
+    (loop [i 0] (when (< i n) (arch/bset! d i (arch/bget tmp (- n (inc i)))) (recur (inc i))))
+    (arch/set! Dec 1 a n)
+    (arch/set! Dec 2 a n)
+    (arch/set! Dec 3 a 0)
+    (dec-trim! a)))
+
+(defn- times-ten-pow [n x] (loop [n n x x] (if (> x 0) (recur (* n 10) (dec x)) n)))
+
+(defn- right-shift! [a k]                                ; rightShift, k <= 59
+  (let [d (arch/get Dec 0 a) nd (d-nd a) mask (dec (bit-shift-left 1 k))
+        ;; pick up enough leading digits to cover the first shift
+        r1 (loop [r 0 n 0]
+             (if (if (= 0 (unsigned-bit-shift-right n k)) (< r nd) false)
+               (recur (inc r) (+ (* n 10) (arch/bget d r)))
+               r))
+        n1 (loop [i 0 n 0] (if (< i r1) (recur (inc i) (+ (* n 10) (arch/bget d i))) n))]
+    (if (= n1 0)
+      (arch/set! Dec 1 a 0)                              ; a == 0: Go's "shouldn't get here" branch
+      (let [ext (loop [x 0 n n1] (if (= 0 (unsigned-bit-shift-right n k)) (recur (inc x) (* n 10)) x))
+            r0 (+ r1 ext)
+            w0 (if (< r0 nd) (- nd r0) 0)
+            ;; pick up a digit, put down a digit
+            n2 (loop [r r0 w 0 n (times-ten-pow n1 ext)]
+                 (if (< r nd)
+                   (let [c (arch/bget d r) dig (unsigned-bit-shift-right n k) n (bit-and n mask)]
+                     (arch/bset! d w dig)
+                     (recur (inc r) (inc w) (+ (* n 10) c)))
+                   n))
+            ;; put down extra digits
+            w (loop [w w0 n n2]
+                (if (> n 0)
+                  (let [dig (unsigned-bit-shift-right n k) n (bit-and n mask)]
+                    (if (< w 800)
+                      (do (arch/bset! d w dig) (recur (inc w) (* n 10)))
+                      (do (when (> dig 0) (arch/set! Dec 3 a 1)) (recur w (* n 10)))))
+                  w))]
+        (arch/set! Dec 2 a (- (d-dp a) (dec r0)))
+        (arch/set! Dec 1 a w)
+        (dec-trim! a)))))
+
+(defn- left-shift! [a k]                                 ; leftShift, k <= 59
+  (let [d (arch/get Dec 0 a) nd (d-nd a) tmp (arch/bytes-new (+ nd 20))
+        w0 (loop [r (dec nd) w 0 n 0]                    ; digits, least significant first, into tmp
+             (if (>= r 0)
+               (let [n (+ n (bit-shift-left (arch/bget d r) k)) q (quot n 10)]
+                 (arch/bset! tmp w (- n (* 10 q)))
+                 (recur (dec r) (inc w) q))
+               (loop [w w n n]
+                 (if (> n 0)
+                   (let [q (quot n 10)] (arch/bset! tmp w (- n (* 10 q))) (recur (inc w) q))
+                   w))))
+        keep (if (> w0 800) 800 w0)]
+    (loop [i 0] (when (< i keep) (arch/bset! d i (arch/bget tmp (- w0 (inc i)))) (recur (inc i))))
+    (loop [i keep] (when (< i w0) (when (> (arch/bget tmp (- w0 (inc i))) 0) (arch/set! Dec 3 a 1)) (recur (inc i))))
+    (arch/set! Dec 1 a keep)
+    (arch/set! Dec 2 a (+ (d-dp a) (- w0 nd)))
+    (dec-trim! a)))
+
+(defn- dec-shift! [a k]                                  ; Shift: binary left (k > 0) or right (k < 0)
+  (cond (= 0 (d-nd a)) nil
+        (> k 0) (loop [k k] (if (> k 59) (do (left-shift! a 59) (recur (- k 59))) (left-shift! a k)))
+        (< k 0) (loop [k k] (if (< k -59) (do (right-shift! a 59) (recur (+ k 59))) (right-shift! a (- 0 k))))
+        :else nil))
+
+(defn- should-round-up? [a nd]
+  (cond (if (< nd 0) true (>= nd (d-nd a))) false
+        (if (= 5 (d-at a nd)) (= (inc nd) (d-nd a)) false) ; exactly halfway: round to even
+        (if (= 1 (arch/get Dec 3 a)) true (if (> nd 0) (= 1 (bit-and (d-at a (dec nd)) 1)) false))
+        :else (>= (d-at a nd) 5)))
+
+(defn- round-down! [a nd]
+  (when (if (< nd 0) false (< nd (d-nd a)))
+    (arch/set! Dec 1 a nd)
+    (dec-trim! a)))
+
+(defn- round-up! [a nd]
+  (when (if (< nd 0) false (< nd (d-nd a)))
+    (let [d (arch/get Dec 0 a)]
+      (loop [i (dec nd)]
+        (if (>= i 0)
+          (if (< (arch/bget d i) 9)
+            (do (arch/bset! d i (inc (arch/bget d i))) (arch/set! Dec 1 a (inc i)))
+            (recur (dec i)))
+          (do (arch/bset! d 0 1) (arch/set! Dec 1 a 1) (arch/set! Dec 2 a (inc (d-dp a)))))))))
+
+(defn- dec-round! [a nd]
+  (when (if (< nd 0) false (< nd (d-nd a)))
+    (if (should-round-up? a nd) (round-up! a nd) (round-down! a nd))))
+
+(defn- round-shortest!
+  "roundShortest (Go 1.26 internal/strconv/ftoa.go:262): round d, the exact
+   decimal of mant * 2^(exp-52), to the fewest digits that still parse back
+   to the same double. mant carries the implicit bit; exp is unbiased."
+  [d mant exp]
+  (cond
+    (= mant 0) (arch/set! Dec 1 d 0)
+    ;; already shortest: fewer digits than the binary point allows
+    (if (> exp -1022) (>= (* 332 (- (d-dp d) (d-nd d))) (* 100 (- exp 52))) false) nil
+    :else
+    (let [upper (dec-new)
+          lo1 (if (> mant 4503599627370496) true (= exp -1022))
+          mantlo (if lo1 (dec mant) (dec (* 2 mant)))
+          explo (if lo1 exp (dec exp))
+          lower (dec-new)
+          inclusive (= 0 (bit-and mant 1))]
+      (dec-assign! upper (inc (* 2 mant)))
+      (dec-shift! upper (- exp 53))
+      (dec-assign! lower (inc (* 2 mantlo)))
+      (dec-shift! lower (- explo 53))
+      (loop [ui 0 upperdelta 0]
+        (let [mi (+ (- ui (d-dp upper)) (d-dp d))]
+          (when (< mi (d-nd d))
+            (let [li (+ (- ui (d-dp upper)) (d-dp lower))
+                  l (if (if (>= li 0) (< li (d-nd lower)) false) (d-at lower li) 0)
+                  m (if (>= mi 0) (d-at d mi) 0)
+                  u (if (< ui (d-nd upper)) (d-at upper ui) 0)
+                  okdown (if (= l m) (if inclusive (= (inc li) (d-nd lower)) false) true)
+                  ud (cond (if (= upperdelta 0) (< (inc m) u) false) 2
+                           (if (= upperdelta 0) (if (= m u) false true) false) 1
+                           (if (= upperdelta 1) (if (= m 9) (if (= u 0) false true) true) false) 2
+                           :else upperdelta)
+                  okup (if (> ud 0) (if inclusive true (if (> ud 1) true (< (inc ui) (d-nd upper)))) false)]
+              (cond (if okdown okup false) (dec-round! d (inc mi))
+                    okdown (round-down! d (inc mi))
+                    okup (round-up! d (inc mi))
+                    :else (recur (inc ui) ud)))))))))
+
+;; fmtEFG's %f and %e arms (Go internal/strconv/ftoa.go), digits from a Dec.
+
+(defn- write-f [b d prec]
+  (let [nd (d-nd d) dp (d-dp d)]
+    (if (> dp 0)
+      (let [m (if (< nd dp) nd dp)]
+        (loop [i 0] (when (< i m) (buf-byte! b (+ 48 (d-at d i))) (recur (inc i))))
+        (loop [i m] (when (< i dp) (buf-byte! b 48) (recur (inc i)))))
+      (buf-byte! b 48))
+    (when (> prec 0)
+      (buf-byte! b 46)
+      (let [ndp (if (< dp 0) (- 0 dp) 0)
+            lz (if (< prec ndp) prec ndp)
+            off (+ dp lz)
+            avail (if (> (- nd off) 0) (- nd off) 0)
+            m (if (< (- prec lz) avail) (- prec lz) avail)]
+        (loop [i 0] (when (< i lz) (buf-byte! b 48) (recur (inc i))))
+        (loop [i 0] (when (< i m) (buf-byte! b (+ 48 (d-at d (+ off i)))) (recur (inc i))))
+        (loop [i (+ lz m)] (when (< i prec) (buf-byte! b 48) (recur (inc i))))))))
+
+(defn- write-e [b d prec]
+  (let [nd (d-nd d)]
+    (buf-byte! b (if (= nd 0) 48 (+ 48 (d-at d 0))))
+    (when (> prec 0)
+      (buf-byte! b 46)
+      (let [m (if (< nd (inc prec)) nd (inc prec))]
+        (loop [i 1] (when (< i m) (buf-byte! b (+ 48 (d-at d i))) (recur (inc i))))
+        (loop [i (if (< m 1) 1 m)] (when (< i (inc prec)) (buf-byte! b 48) (recur (inc i))))))
+    (buf-byte! b 101)
+    (let [x (if (= nd 0) 0 (dec (d-dp d)))
+          ax (if (< x 0) (- 0 x) x)]
+      (buf-byte! b (if (< x 0) 45 43))
+      (cond (< ax 10) (do (buf-byte! b 48) (buf-byte! b (+ 48 ax)))
+            (< ax 100) (do (buf-byte! b (+ 48 (quot ax 10))) (buf-byte! b (+ 48 (- ax (* 10 (quot ax 10))))))
+            :else (do (buf-byte! b (+ 48 (quot ax 100)))
+                      (buf-byte! b (+ 48 (- (quot ax 10) (* 10 (quot ax 100)))))
+                      (buf-byte! b (+ 48 (- ax (* 10 (quot ax 10))))))))))
+
+(defn- write-float-bits!
+  "Float.String() (float.go:60): integral finite values as
+   FormatFloat(f, 'f', 1, 64), everything else FormatFloat(f, 'g', -1, 64)."
+  [b bits]
+  (let [neg (< bits 0)
+        ex (bit-and (arch/i64-shr-u bits 52) 0x7ff)
+        fr (bit-and bits 0xFFFFFFFFFFFFF)]
+    (if (= ex 0x7ff)
+      (cond (> fr 0) (buf-bytes! b (arch/bytes-of-string "NaN"))
+            neg (buf-bytes! b (arch/bytes-of-string "-Inf"))
+            :else (buf-bytes! b (arch/bytes-of-string "+Inf")))
+      (let [mant (if (= ex 0) fr (bit-or fr 4503599627370496))
+            exp (- (if (= ex 0) 1 ex) 1023)
+            e2 (- exp 52)                                ; value = mant * 2^e2
+            integral (cond (= mant 0) true
+                           (>= e2 0) true
+                           (< e2 -52) false
+                           :else (= 0 (bit-and mant (dec (bit-shift-left 1 (- 0 e2))))))
+            d (dec-new)]
+        (when neg (buf-byte! b 45))
+        (dec-assign! d mant)
+        (dec-shift! d e2)
+        (if integral
+          (write-f b d 1)
+          (do (round-shortest! d mant exp)
+              (let [nd (d-nd d) dp (d-dp d) x (dec dp)]
+                ;; shortest %g: eprec is 6, %e precision nd-1, %f precision max(nd-dp, 0)
+                (if (if (< x -4) true (>= x 6))
+                  (write-e b d (dec nd))
+                  (write-f b d (if (> nd dp) (- nd dp) 0))))))))))
+
+(defn float->str [x]
+  (let [b (buf-new)] (write-float-bits! b (sq/float-bits (unbox-float x))) (buf-done b)))
+
+;; ---------------------------------------------------------------------------
+;; Printing. write-val is Value.String() for nested values (readably) and
+;; the print-method path of print-str (not readably: strings and chars raw
+;; at every depth, print_method.go:30). The top level of str is strValue
+;; (lang.go:5019): nil is "", strings and chars raw, +-Inf as Infinity.
+
+(defn set-print-hook!
+  "Install the printer for foreign values (maps, sets): a closure called as
+   (f x mode) returning a Str, mode a boxed Int as write-val's (0 String(),
+   1 pr-str, 2 print-str)."
+  [f] (arch/set! Globals 2 globals f))
+
+(defn- write-quoted [b s]                                ; String.String() (string.go:309)
+  (let [bs (str-bytes s) n (arch/alen bs)]
+    (buf-byte! b 34)
+    (loop [i 0]
+      (when (< i n)
+        (let [p (sq/decode-at bs i n) r (unsigned-bit-shift-right p 3) sz (bit-and p 7)]
+          (cond (= r 34) (do (buf-byte! b 92) (buf-byte! b 34))
+                (= r 92) (do (buf-byte! b 92) (buf-byte! b 92))
+                (= r 9) (do (buf-byte! b 92) (buf-byte! b 116))
+                (= r 13) (do (buf-byte! b 92) (buf-byte! b 114))
+                (= r 10) (do (buf-byte! b 92) (buf-byte! b 110))
+                (= r 8) (do (buf-byte! b 92) (buf-byte! b 98))
+                (= r 12) (do (buf-byte! b 92) (buf-byte! b 102))
+                (if (< r 0x20) true (= r 0x7f))
+                (do (buf-byte! b 92) (buf-byte! b 117) (buf-byte! b 48) (buf-byte! b 48)
+                    (buf-byte! b (hex-digit (unsigned-bit-shift-right r 4))) (buf-byte! b (hex-digit (bit-and r 15))))
+                (= r 0xFFFD) (encode-rune! b r)        ; an invalid byte is written as U+FFFD (WriteRune)
+                :else (buf-range! b bs i (+ i sz)))
+          (recur (+ i sz)))))
+    (buf-byte! b 34)))
+
+(defn- write-char-name [b r]                             ; Char.String() (char.go:50)
+  (buf-byte! b 92)
+  (cond (= r 32) (buf-bytes! b (arch/bytes-of-string "space"))
+        (= r 10) (buf-bytes! b (arch/bytes-of-string "newline"))
+        (= r 9) (buf-bytes! b (arch/bytes-of-string "tab"))
+        (= r 13) (buf-bytes! b (arch/bytes-of-string "return"))
+        :else (encode-rune! b r)))
+
+(defn- write-named [b x]
+  (let [ns (named-ns x)]
+    (when-not (arch/null? ns) (buf-bytes! b ns) (buf-byte! b 47))
+    (buf-bytes! b (named-name x))))
+
+(declare write-val)
+
+(defn- write-seq [b x mode]
+  (buf-byte! b 40)
+  (loop [s (sq/seq x) first? true]
+    (when-not (arch/null? s)
+      (when-not first? (buf-byte! b 32))
+      (write-val b (sq/first s) mode)
+      (recur (sq/next s) false)))
+  (buf-byte! b 41))
+
+(defn- write-pvec [b v mode]
+  (buf-byte! b 91)
+  (loop [i 0]
+    (when (< i (pv/vcount v))
+      (when (> i 0) (buf-byte! b 32))
+      (write-val b (pv/vnth v i) mode)
+      (recur (inc i))))
+  (buf-byte! b 93))
+
+;; mode: 0 Value.String() (str's nested values), 1 pr-str, 2 print-str (not
+;; readably). 0 and 1 differ only in the foreign printer: a map's String()
+;; separates entries with " ", its print-method with ", " (print_method.go).
+(defn- write-val [b x mode]
+  (let [k (sq/kind x) readably (if (= mode 2) false true)]
+    (cond (= k 0) (buf-bytes! b (arch/bytes-of-string "nil"))
+          (= k 1) (buf-int! b (sq/unbox-int x))
+          (= k 15) (buf-bytes! b (if (= 1 (arch/get sq/Bool 0 x)) (arch/bytes-of-string "true") (arch/bytes-of-string "false")))
+          (= k 17) (if readably (write-quoted b x) (buf-bytes! b (str-bytes x)))
+          (= k 19) (if readably (write-char-name b (char-val x)) (encode-rune! b (char-val x)))
+          (= k 20) (do (buf-byte! b 58) (write-named b x))
+          (= k 21) (write-named b x)
+          (= k 22) (write-float-bits! b (sq/float-bits (unbox-float x)))
+          ;; A PersistentVector, its seq and a Repeat print their elements through
+          ;; Value.String() in every mode (no print-method of their own); the seq
+          ;; of a PersistentVector prints the whole vector (persistent_vector.go:748)
+          (if (= k 10) (= 1 (pv/vpkind (arch/get sq/PVecSeq 0 x))) false)
+          (do (buf-bytes! b (arch/bytes-of-string "(seq ")) (write-pvec b (arch/get sq/PVecSeq 0 x) 0) (buf-byte! b 41))
+          (= k 9) (write-seq b x 0)
+          (sq/seq-kind? k) (write-seq b x mode)        ; incl. MapSeq/SetSeq (27)
+          (= k 11) (write-pvec b x (if (= 1 (pv/vpkind x)) 0 mode))
+          (= k 23) (write-pvec b (sq/entry-vec x) mode)       ; MapEntry.String(): [k v]
+          ;; Reduced prints "#reduced<v>" with v's String() in every mode; an ArrayChunk's
+          ;; String() is "[e ...]" and a ChunkBuffer's "#<chunk-buffer>", but neither has a
+          ;; print-method: pr-str/print-str seq them and fail natively (P2.13)
+          (= k 14) (do (buf-bytes! b (arch/bytes-of-string "#reduced<")) (write-val b (sq/unreduced x) 0) (buf-byte! b 62))
+          (if (= k 12) true (= k 13))
+          (cond (if (= mode 0) false true) (raise-lit (arch/bytes-of-string "seq expected Seqable"))
+                (= k 13) (buf-bytes! b (arch/bytes-of-string "#<chunk-buffer>"))
+                :else (let [n (sq/unbox-int (sq/count x))]
+                        (buf-byte! b 91)
+                        (loop [i 0] (when (< i n) (when (> i 0) (buf-byte! b 32)) (write-val b (sq/nth x (sq/box-int i)) 0) (recur (inc i))))
+                        (buf-byte! b 93)))
+          ;; foreign kinds, fns and the P2.7 boxes (atom, volatile, exception) print through llvm.core
+          (if (= k 18) true (if (= k 16) true (>= k 24))) (let [h (arch/get Globals 2 globals)]
+                     (if (arch/null? h)
+                       (arch/trap "llvm.str: printing a foreign value and no print hook installed")
+                       (buf-bytes! b (str-bytes (sq/invoke2 h x (sq/box-int mode))))))
+          :else (arch/trap "llvm.str: printing this kind is not implemented"))))
+
+(defn- write-str-val [b x]                               ; strValue (lang.go:5019)
+  (let [k (sq/kind x)]
+    (cond (= k 0) nil
+          (= k 17) (buf-bytes! b (str-bytes x))
+          (= k 19) (encode-rune! b (char-val x))
+          (= k 22) (let [f (unbox-float x)]
+                     (cond (> f 1.7976931348623157e308) (buf-bytes! b (arch/bytes-of-string "Infinity"))
+                           (< f -1.7976931348623157e308) (buf-bytes! b (arch/bytes-of-string "-Infinity"))
+                           :else (write-float-bits! b (sq/float-bits f))))
+          :else (write-val b x 0))))
+
+;; mode 0 = str, 1 = pr-str, 2 = print-str (prThroughToString: space-separated)
+(defn- write-arg [b x mode first?]
+  (cond (= mode 0) (write-str-val b x)
+        :else (do (when-not first? (buf-byte! b 32)) (write-val b x mode))))
+
+(defn- out1 [mode a] (let [b (buf-new)] (write-arg b a mode true) (buf-done b)))
+(defn- out2 [mode a c] (let [b (buf-new)] (write-arg b a mode true) (write-arg b c mode false) (buf-done b)))
+(defn- out3 [mode a c d]
+  (let [b (buf-new)] (write-arg b a mode true) (write-arg b c mode false) (write-arg b d mode false) (buf-done b)))
+(defn- out-seq [mode xs]
+  (let [b (buf-new)]
+    (loop [s (sq/seq xs) first? true]
+      (when-not (arch/null? s) (write-arg b (sq/first s) mode first?) (recur (sq/next s) false)))
+    (buf-done b)))
+
+;; Fixed arities until the backend's variadic-native convention exists;
+;; the -seq forms take the argument list (what apply passes).
+(defn ^{:twin "core/str"} str ([] (lit "")) ([a] (out1 0 a)) ([a b] (out2 0 a b)) ([a b c] (out3 0 a b c)))
+(defn ^{:twin "core/pr-str"} pr-str ([] (lit "")) ([a] (out1 1 a)) ([a b] (out2 1 a b)) ([a b c] (out3 1 a b c)))
+(defn ^{:twin "core/print-str"} print-str ([] (lit "")) ([a] (out1 2 a)) ([a b] (out2 2 a b)) ([a b c] (out3 2 a b c)))
+(defn str-seq [xs] (out-seq 0 xs))
+(defn value-string "Value.String(): what Go hashes a non-Hashable seq's elements by." [x]
+  (let [b (buf-new)] (write-val b x 0) (buf-done b)))
+(defn pr-str-seq [xs] (out-seq 1 xs))
+(defn print-str-seq [xs] (out-seq 2 xs))
+
+;; ---------------------------------------------------------------------------
+;; A string as a collection. Go's String is Indexed with RawCount = BYTE
+;; length (string.go:46) while count, seq, nth and subs walk runes; see STR.md.
+;; The walks live in llvm.seq (decode-at, rune-count*, string-seq, string-nth).
+
+;; llvm.seq's natives are string-aware since P2.9; these names stay so
+;; callers written against llvm.str keep resolving.
+(defn count [x] (sq/count x))
+(defn nth ([coll i] (sq/nth coll i)) ([coll i nf] (sq/nth coll i nf)))
+(defn seq [x] (sq/seq x))
+(defn first [x] (sq/first x))
+(defn rest [x] (sq/rest x))
+(defn next [x] (sq/next x))
+
+;; ---------------------------------------------------------------------------
+;; Equality and hash of every box are llvm.seq's (corpus/hash/SPEC.md,
+;; valueEquals); these names stay for callers written against llvm.str.
+
+(defn equiv? [a b] (sq/equiv? a b))
+(defn equals [a b] (sq/equals a b))
+(defn hash* [x] (sq/unbox-int (sq/hash x)))
+(defn hash [x] (sq/box-int (hash* x)))
+
+;; ---------------------------------------------------------------------------
+;; compare (vm.DefaultCompare, compare.go:44)
+
+(declare compare*)
+
+(defn- num-cmp [a ka b kb]                               ; NumLt / NumGt; NaN compares 0
+  (if (if (= ka 1) (= kb 1) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b)] (cond (< x y) -1 (> x y) 1 :else 0))
+    (let [x (if (= ka 1) (arch/i64-to-f64 (sq/unbox-int a)) (unbox-float a))
+          y (if (= kb 1) (arch/i64-to-f64 (sq/unbox-int b)) (unbox-float b))]
+      (cond (< x y) -1 (> x y) 1 :else 0))))
+
+(defn- part-cmp [x y]                                    ; compareNamePart: null reads as ""
+  (bytes-cmp (if (arch/null? x) (arch/bytes-new 0) x) (if (arch/null? y) (arch/bytes-new 0) y)))
+
+(defn- pvec-cmp [a b]                                    ; lexicographic over the seqs
+  (let [na (pv/vcount a) nb (pv/vcount b)]
+    (loop [i 0]
+      (cond (if (< i na) (< i nb) false)
+            (let [c (compare* (pv/vnth a i) (pv/vnth b i))] (if (= c 0) (recur (inc i)) c))
+            (if (>= i na) (>= i nb) false) 0
+            (>= i na) -1
+            :else 1))))
+
+(defn- num-kind? [k] (if (= k 1) true (= k 22)))
+
+(defn compare* [a b]
+  (let [a (if (= 23 (sq/kind a)) (sq/entry-vec a) a)       ; a MapEntry compares as its 2-vector
+        b (if (= 23 (sq/kind b)) (sq/entry-vec b) b)
+        ka (sq/kind a) kb (sq/kind b)]
+    (cond (if (= ka 0) (= kb 0) false) 0
+          (= ka 0) -1
+          (= kb 0) 1
+          (if (num-kind? ka) (num-kind? kb) false) (num-cmp a ka b kb)
+          (if (= ka 17) (= kb 17) false) (bytes-cmp (str-bytes a) (str-bytes b))
+          (if (if (= ka 20) (= kb 20) false) true (if (= ka 21) (= kb 21) false))
+          (let [c (part-cmp (named-ns a) (named-ns b))] (if (= c 0) (part-cmp (named-name a) (named-name b)) c))
+          (if (= ka 15) (= kb 15) false) (- (arch/get sq/Bool 0 a) (arch/get sq/Bool 0 b))
+          (if (= ka 19) (= kb 19) false) (let [x (char-val a) y (char-val b)] (cond (< x y) -1 (> x y) 1 :else 0))
+          (if (= ka 11) (= kb 11) false) (pvec-cmp a b)
+          :else (raise-lit (sq/bytes-cat (sq/bytes-cat (sq/bytes-cat (arch/bytes-of-string "cannot compare ") (sq/type-name-bytes a))
+                                                     (arch/bytes-of-string " and "))
+                                         (sq/type-name-bytes b))))))
+
+(defn compare [a b] (sq/box-int (compare* a b)))           ; the core/compare twin is llvm.core/compare (let-go's error text)
+
+;; ---------------------------------------------------------------------------
+;; Named values: name, namespace, keyword, symbol
+
+(defn- type-trap-keyword [x] (sq/raise-typed (arch/bytes-of-string "keyword expects keyword, symbol, or string, got ") x))
+
+(defn ^{:twin "core/name"} name [x]                                           ; Name (native_prims.go:25)
+  (let [k (sq/kind x)]
+    (cond (= k 0) (raise-lit (arch/bytes-of-string "name called on nil"))
+          (= k 17) x
+          (if (= k 20) true (= k 21)) (mk-str (named-name x))
+          :else (raise-lit (arch/bytes-of-string "name expected Symbol, Keyword or String")))))
+
+(defn ^{:twin "core/namespace"} namespace [x]                                      ; Namespace (native_prims.go:543)
+  (let [k (sq/kind x)]
+    (if (if (= k 20) true (= k 21))
+      (let [ns (named-ns x)] (if (arch/null? ns) (arch/null) (mk-str ns)))
+      (raise-lit (arch/bytes-of-string "namespace expected Named")))))
+
+(defn- join-ns [ns nm]                                   ; ns "/" name, or name when ns is nil
+  (if (arch/null? ns)
+    (str-bytes nm)
+    (let [b (buf-new)]
+      (buf-bytes! b (str-bytes ns)) (buf-byte! b 47) (buf-bytes! b (str-bytes nm))
+      (slice (arch/get Buf 0 b) 0 (arch/get Buf 1 b)))))
+
+(defn ^{:twin "core/keyword"} keyword                                            ; CoreKeyword (lang.go:5836)
+  ([x] (let [k (sq/kind x)]
+         (cond (= k 0) (arch/null)
+               (= k 20) x
+               (= k 21) (kw-of-bytes (full-text x))
+               (= k 17) (kw-of-bytes (str-bytes x))
+               :else (type-trap-keyword x))))
+  ([ns nm] (cond (if (arch/null? ns) false (if (= 17 (sq/kind ns)) false true))
+                 (sq/raise-typed (arch/bytes-of-string "keyword namespace must be a string, got ") ns)
+                 (if (= 17 (sq/kind nm)) false true) (sq/raise-typed (arch/bytes-of-string "keyword name must be a string, got ") nm)
+                 :else (kw-of-bytes (join-ns ns nm)))))
+
+(defn ^{:twin "core/symbol"} symbol                                             ; CoreSymbolf (lang.go:5879)
+  ([x] (let [k (sq/kind x)]
+         (cond (= k 0) (raise-lit (arch/bytes-of-string "symbol expected String, Symbol, Keyword, or Var"))
+               (= k 21) x
+               (= k 20) (sym-of-bytes (full-text x))
+               (= k 17) (sym-of-bytes (str-bytes x))
+               :else (raise-lit (arch/bytes-of-string "symbol expected String or Symbol")))))
+  ([ns nm] (cond (if (arch/null? ns) false (if (= 17 (sq/kind ns)) false true)) (raise-lit (arch/bytes-of-string "symbol expected String namespace"))
+                 (if (= 17 (sq/kind nm)) false true) (raise-lit (arch/bytes-of-string "symbol expected String name"))
+                 :else (sym-of-bytes (join-ns ns nm)))))
+
+;; ---------------------------------------------------------------------------
+;; char, int
+
+(defn ^{:twin "core/char"} char [x]                                           ; CoreChar (lang.go:6673)
+  (let [k (sq/kind x)]
+    (cond (= k 1) (let [n (sq/unbox-int x)]
+                    (if (if (< n 0) true (> n 0x10FFFF)) (raise-val (arch/bytes-of-string "value out of range for char: ") x (arch/bytes-of-string "")) (mk-char n)))
+          (= k 19) x
+          (= k 17) (let [bs (str-bytes x) n (arch/alen bs)]
+                     (if (if (> n 0) (= n (bit-and (sq/decode-at bs 0 n) 7)) false)
+                       (mk-char (unsigned-bit-shift-right (sq/decode-at bs 0 n) 3))
+                       (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to char"))))
+          :else (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to char")))))
+
+(defn ^{:twin "core/int"} int [x]                                            ; intf (lang.go:3003)
+  (let [k (sq/kind x)]
+    (cond (= k 1) (let [n (sq/unbox-int x)]
+                    (if (if (< n -2147483648) true (> n 2147483647)) (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to int")) x))
+          (= k 22) (let [f (unbox-float x)]
+                     (cond (if (< f -2147483648.0) true (> f 2147483647.0)) (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to int"))
+                           (if (< f 0.0) false (if (>= f 0.0) false true))
+                           (arch/trap "lower-wasm: (int ##NaN) is platform-defined in Go (0 on arm64, MinInt64 on amd64); not reproduced")
+                           :else (sq/box-int (arch/f64-to-i64 f))))   ; truncates, as math.Trunc
+          (= k 19) (sq/box-int (char-val x))
+          (= k 15) (sq/box-int (arch/get sq/Bool 0 x))
+          :else (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to int")))))
+
+;; ---------------------------------------------------------------------------
+;; subs (lang.go:3174): rune indices mapped to byte offsets by walking.
+
+(defn ^{:twin "core/subs"} subs
+  ([s start] (cond (if (= 17 (sq/kind s)) false true) (sq/raise-typed (arch/bytes-of-string "expected string, got ") s)
+                   (if (= 1 (sq/kind start)) false true) (sq/raise-typed (arch/bytes-of-string "expected int64, got ") start)
+                   :else (let [si (sq/unbox-int start) bs (str-bytes s)]
+                           (if (< si 0) (raise-lit (arch/bytes-of-string "string index out of range"))
+                               (let [bo (byte-at-rune bs si)]
+                                 (if (< bo 0) (raise-lit (arch/bytes-of-string "string index out of range"))
+                                     (mk-str (slice bs bo (arch/alen bs)))))))))
+  ([s start end] (cond (if (= 17 (sq/kind s)) false true) (sq/raise-typed (arch/bytes-of-string "expected string, got ") s)
+                       (if (= 1 (sq/kind start)) false true) (sq/raise-typed (arch/bytes-of-string "expected int64, got ") start)
+                       (if (= 1 (sq/kind end)) false true) (sq/raise-typed (arch/bytes-of-string "expected int64, got ") end)
+                       :else (let [si (sq/unbox-int start) ei (sq/unbox-int end) bs (str-bytes s)]
+                               (cond (< si 0) (raise-lit (arch/bytes-of-string "string index out of range"))
+                                     (< ei si) (raise-lit (arch/bytes-of-string "string index out of range"))
+                                     :else (let [bo (byte-at-rune bs si) be (byte-at-rune bs ei)]
+                                             (if (if (< bo 0) true (< be 0))
+                                               (raise-lit (arch/bytes-of-string "string index out of range"))
+                                               (mk-str (slice bs bo be)))))))))
+
+;; ---------------------------------------------------------------------------
+;; split (lang.go:2925): strings.SplitN over a literal separator, as a List.
+;; A regex separator is not in the value model.
+
+(defn- count-sep [s sep]                                 ; strings.Count, non-empty sep
+  (loop [i 0 c 0] (let [j (index-in s sep i)] (if (< j 0) c (recur (+ j (arch/alen sep)) (inc c))))))
+
+(defn- frags->list [v] (loop [j (dec (pv/vcount v)) l (sq/empty-list)] (if (< j 0) l (recur (dec j) (sq/conj l (pv/vnth v j))))))
+
+(defn- explode [bs n]                                    ; strings.explode
+  (let [len (arch/alen bs) l (sq/rune-count* bs) n (if (if (< n 0) true (> n l)) l n)]
+    (loop [i 0 at 0 v (pv/empty-vec)]
+      (cond (< i (dec n)) (let [sz (bit-and (sq/decode-at bs at len) 7)]
+                            (recur (inc i) (+ at sz) (pv/vconj v (mk-str (slice bs at (+ at sz))))))
+            (> n 0) (pv/vconj v (mk-str (slice bs at len)))
+            :else v))))
+
+(defn- split-n [bs sep n]                                ; strings.SplitN
+  (cond (= n 0) (pv/empty-vec)
+        (= 0 (arch/alen sep)) (explode bs n)
+        :else (let [len (arch/alen bs)
+                    n (if (< n 0) (inc (count-sep bs sep)) n)
+                    n (if (> n (inc len)) (inc len) n)]
+                (loop [i 0 at 0 v (pv/empty-vec)]
+                  (let [m (if (< i (dec n)) (index-in bs sep at) -1)]
+                    (if (< m 0)
+                      (pv/vconj v (mk-str (slice bs at len)))
+                      (recur (inc i) (+ m (arch/alen sep)) (pv/vconj v (mk-str (slice bs at m))))))))))
+
+(defn ^{:twin "core/split"} split
+  ([s] (if (= 17 (sq/kind s)) (frags->list (explode (str-bytes s) -1)) (raise-lit (arch/bytes-of-string "split expected String"))))
+  ([s sep] (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "split expected String"))
+                 (if (= 17 (sq/kind sep)) false true) (raise-lit (arch/bytes-of-string "split expected String or Regex"))
+                 :else (frags->list (split-n (str-bytes s) (str-bytes sep) -1))))
+  ([s sep limit] (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "split expected String"))
+                       (if (= 1 (sq/kind limit)) false true) (raise-lit (arch/bytes-of-string "split expected Int limit"))
+                       (if (= 17 (sq/kind sep)) false true) (raise-lit (arch/bytes-of-string "split expected String or Regex"))
+                       :else (frags->list (split-n (str-bytes s) (str-bytes sep) (sq/unbox-int limit))))))
+
+;; ---------------------------------------------------------------------------
+;; Predicates and searches
+
+(defn- has-prefix? [s p] (if (<= (arch/alen p) (arch/alen s)) (range-eq? s 0 p 0 (arch/alen p)) false))
+(defn- has-suffix? [s p]
+  (let [n (arch/alen s) m (arch/alen p)] (if (<= m n) (range-eq? s (- n m) p 0 m) false)))
+
+(defn ^{:twin "core/starts-with?"} starts-with? [s p]
+  (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "starts-with? expected String"))
+        (if (= 17 (sq/kind p)) false true) (raise-lit (arch/bytes-of-string "starts-with? expected String prefix"))
+        :else (sq/bool (has-prefix? (str-bytes s) (str-bytes p)))))
+
+(defn ^{:twin "core/ends-with?"} ends-with? [s p]
+  (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "ends-with? expected String"))
+        (if (= 17 (sq/kind p)) false true) (raise-lit (arch/bytes-of-string "ends-with? expected String suffix"))
+        :else (sq/bool (has-suffix? (str-bytes s) (str-bytes p)))))
+
+(defn ^{:twin "core/includes?"} includes? [s p]                                    ; core/includes? = string/includes?
+  (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "includes? expected String"))
+        (if (= 17 (sq/kind p)) false true) (raise-lit (arch/bytes-of-string "includes? expected String substr"))
+        :else (sq/bool (>= (index-in (str-bytes s) (str-bytes p) 0) 0))))
+
+(arch/defarray Runes :i64)
+
+(defn- runes-of [bs]                                     ; []rune(s)
+  (let [n (arch/alen bs) out (arch/array-new Runes (sq/rune-count* bs) 0)]
+    (loop [i 0 j 0]
+      (when (< i n)
+        (let [p (sq/decode-at bs i n)]
+          (arch/aset! Runes out j (unsigned-bit-shift-right p 3))
+          (recur (+ i (bit-and p 7)) (inc j)))))
+    out))
+
+(defn- runes-match? [hay at needle]
+  (loop [j 0] (if (< j (arch/alen needle)) (if (= (arch/aget Runes hay (+ at j)) (arch/aget Runes needle j)) (recur (inc j)) false) true)))
+
+(defn- needle-of [v who]                                 ; String or Char second argument, as runes
+  (let [k (sq/kind v)]
+    (cond (= k 17) (runes-of (str-bytes v))
+          (= k 19) (let [r (char-val v)
+                         r (if (if (>= r 0xD800) (<= r 0xDFFF) false) 0xFFFD r)] ; string(rune) of a surrogate
+                     (arch/array-new Runes 1 r))
+          (= who 0) (raise-lit (arch/bytes-of-string "index-of expected String or Char as second arg"))
+          :else (raise-lit (arch/bytes-of-string "last-index-of expected String or Char as second arg")))))
+
+(defn- index-of* [s v from]                     ; index-of (lang.go:4112) + runeIndex (:4707)
+  (let [hay (runes-of (str-bytes s)) nd (needle-of v 0) len (arch/alen hay) m (arch/alen nd)]
+    (cond (if (< from 0) true (> from len)) (arch/null)
+          (= m 0) (sq/box-int from)
+          :else (loop [i from]
+                  (cond (> (+ i m) len) (arch/null)
+                        (runes-match? hay i nd) (sq/box-int i)
+                        :else (recur (inc i)))))))
+
+(defn ^{:twin "core/index-of"} index-of
+  ([s v] (if (= 17 (sq/kind s)) (index-of* s v 0) (raise-lit (arch/bytes-of-string "index-of expected String as first arg"))))
+  ([s v from] (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "index-of expected String as first arg"))
+                    (if (= 1 (sq/kind from)) false true) (raise-lit (arch/bytes-of-string "index-of expected Int as third arg"))
+                    :else (index-of* s v (sq/unbox-int from)))))
+
+(defn- last-index-of* [s v end]                          ; last-index-of (lang.go:4152) + runeLastIndex (:4727)
+  (let [hay (runes-of (str-bytes s)) nd (needle-of v 1) len (arch/alen hay)
+        end (if (> end len) len end) m (arch/alen nd)]
+    ;; strRunes[:end] panics natively; the VM reports the recovered panic as a catchable error
+    (cond (< end 0) (raise-val (arch/bytes-of-string "runtime error: slice bounds out of range [:") (sq/box-int end) (arch/bytes-of-string "]"))
+          (= m 0) (sq/box-int end)
+          (> m end) (arch/null)
+          :else (loop [i (- end m)]
+                  (cond (< i 0) (arch/null)
+                        (runes-match? hay i nd) (sq/box-int i)
+                        :else (recur (dec i)))))))
+
+(defn ^{:twin "core/last-index-of"} last-index-of
+  ([s v] (if (= 17 (sq/kind s)) (last-index-of* s v 2147483647) (raise-lit (arch/bytes-of-string "last-index-of expected String as first arg"))))
+  ([s v from] (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "last-index-of expected String as first arg"))
+                    (if (= 1 (sq/kind from)) false true) (raise-lit (arch/bytes-of-string "last-index-of expected Int as third arg"))
+                    :else (last-index-of* s v (inc (sq/unbox-int from))))))
+
+;; ---------------------------------------------------------------------------
+;; trim, case
+
+(defn- space-rune? [r]                                   ; unicode.IsSpace
+  (cond (< r 0x100) (if (if (>= r 9) (<= r 13) false) true (if (= r 32) true (if (= r 0x85) true (= r 0xA0))))
+        (= r 0x1680) true
+        (if (>= r 0x2000) (<= r 0x200A) false) true
+        (if (= r 0x2028) true (if (= r 0x2029) true (if (= r 0x202F) true (if (= r 0x205F) true (= r 0x3000))))) true
+        :else false))
+
+(defn ^{:twin "core/trim"} trim [s]                                           ; strings.TrimSpace
+  (if (= 17 (sq/kind s))
+    (let [bs (str-bytes s) n (arch/alen bs)
+          start (loop [i 0] (if (< i n) (let [p (sq/decode-at bs i n)] (if (space-rune? (unsigned-bit-shift-right p 3)) (recur (+ i (bit-and p 7))) i)) n))
+          stop (loop [i start last start]                ; end of the last non-space rune
+                 (if (< i n)
+                   (let [p (sq/decode-at bs i n) j (+ i (bit-and p 7))]
+                     (recur j (if (space-rune? (unsigned-bit-shift-right p 3)) last j)))
+                   last))]
+      (mk-str (slice bs start stop)))
+    (raise-lit (arch/bytes-of-string "trim expected String"))))
+
+(defn- cut-ascii? [c] (if (= c 32) true (if (= c 9) true (if (= c 10) true (= c 13)))))  ; cutset " \t\n\r"
+
+(defn ^{:twin "core/triml"} triml [s]                                          ; strings.TrimLeft(s, " \t\n\r")
+  (if (= 17 (sq/kind s))
+    (let [bs (str-bytes s) n (arch/alen bs)
+          start (loop [i 0] (if (if (< i n) (cut-ascii? (arch/bget bs i)) false) (recur (inc i)) i))]
+      (mk-str (slice bs start n)))
+    (raise-lit (arch/bytes-of-string "triml expected String"))))
+
+(defn ^{:twin "core/trimr"} trimr [s]                                          ; strings.TrimRight(s, " \t\n\r")
+  (if (= 17 (sq/kind s))
+    (let [bs (str-bytes s)
+          stop (loop [i (arch/alen bs)] (if (if (> i 0) (cut-ascii? (arch/bget bs (dec i))) false) (recur (dec i)) i))]
+      (mk-str (slice bs 0 stop)))
+    (raise-lit (arch/bytes-of-string "trimr expected String"))))
+
+(defn- caseless? [r]                                     ; no simple case mapping in Go's unicode tables
+  (cond (< r 0x0590) false
+        (< r 0x1000) true                                ; Hebrew, Arabic ... Indic, Thai, Lao, Tibetan
+        (< r 0x2000) false
+        (< r 0x2100) true                                ; punctuation, super/subscripts, currency, combining
+        (< r 0x2190) false                               ; letterlike symbols and number forms carry case (Ω K Å Ⅰ)
+        (if (>= r 0x24B6) (<= r 0x24E9) false) false     ; circled letters
+        (< r 0x2C00) true                                ; arrows ... dingbats, braille, misc symbols
+        (< r 0x2E00) false
+        (< r 0xA000) true                                ; CJK punctuation, kana, bopomofo, CJK ideographs
+        (< r 0xAC00) false
+        (< r 0xFB00) true                                ; Hangul, private use, CJK compatibility
+        (< r 0xFF21) (>= r 0xFE30)                       ; CJK compatibility forms, fullwidth punctuation/digits
+        (< r 0xFF3B) false                               ; fullwidth A-Z
+        (< r 0xFF41) true
+        (< r 0xFF5B) false                               ; fullwidth a-z
+        (< r 0x10000) true                               ; halfwidth forms, specials (incl. U+FFFD)
+        (< r 0x1F000) false
+        (< r 0x1F100) true                               ; mahjong, domino, playing cards
+        (< r 0x1F300) false
+        (< r 0x1FB00) true                               ; pictographs, emoticons, symbols
+        :else (if (>= r 0x20000) (< r 0x40000) false)))  ; CJK extensions
+
+(defn- case-rune                                         ; unicode.ToUpper/ToLower on Latin-1 and caseless runes; -1 = not ported
+  [r up]
+  (cond (< r 0x80) (if up (if (if (>= r 97) (<= r 122) false) (- r 32) r) (if (if (>= r 65) (<= r 90) false) (+ r 32) r))
+        (< r 0x100) (if up
+                      (cond (= r 0xB5) 0x39C (= r 0xFF) 0x178 (= r 0xF7) r
+                            (if (>= r 0xE0) (<= r 0xFE) false) (- r 32) :else r)
+                      (if (if (>= r 0xC0) (if (<= r 0xDE) (if (= r 0xD7) false true) false) false) (+ r 32) r))
+        (caseless? r) r
+        :else -1))
+
+(defn- map-runes [bs n up]                               ; strings.Map: an invalid byte becomes U+FFFD
+  (let [b (buf-new)]
+    (loop [i 0]
+      (when (< i n)
+        (let [p (sq/decode-at bs i n) r (case-rune (unsigned-bit-shift-right p 3) up)]
+          (when (< r 0) (arch/trap "lower-wasm: upper-case/lower-case of cased non-ASCII text outside Latin-1 (Unicode case tables are not ported)"))
+          (encode-rune! b r)
+          (recur (+ i (bit-and p 7))))))
+    (buf-done b)))
+
+(defn- map-ascii [s lo hi delta]                         ; strings.ToUpper/ToLower: byte-wise when all ASCII, else per rune
+  (let [bs (str-bytes s) n (arch/alen bs) out (arch/bytes-new n)]
+    (if (loop [i 0] (if (< i n) (if (>= (arch/bget bs i) 0x80) false (recur (inc i))) true))
+      (do (loop [i 0]
+            (when (< i n)
+              (let [c (arch/bget bs i)]
+                (arch/bset! out i (if (if (>= c lo) (<= c hi) false) (+ c delta) c))
+                (recur (inc i)))))
+          (mk-str out))
+      (map-runes bs n (< delta 0)))))
+
+(defn ^{:twin "core/upper-case"} upper-case [s] (if (= 17 (sq/kind s)) (map-ascii s 97 122 -32) (raise-lit (arch/bytes-of-string "upper-case expected String"))))
+(defn ^{:twin "core/lower-case"} lower-case [s] (if (= 17 (sq/kind s)) (map-ascii s 65 90 32) (raise-lit (arch/bytes-of-string "lower-case expected String"))))
+
+(defn ^{:twin "string/upper-case"} string-upper-case [x]                              ; clojure.string/upper-case: UpperCase (native_prims.go:57)
+  (if (arch/null? x) (raise-lit (arch/bytes-of-string "upper-case expected non-nil")) (map-ascii (str x) 97 122 -32)))
+
+;; ---------------------------------------------------------------------------
+;; str-replace (lang.go:6522) with a literal match: strings.ReplaceAll, or
+;; literalReplaceFn (lang.go:1317) when the replacement is a function.
+
+(defn ^{:twin "core/str-replace"} str-replace [s m r]       ; CoreStrReplace (lang.go:6522): s, then r (any IFn), then m
+  (cond (if (= 17 (sq/kind s)) false true) (raise-lit (arch/bytes-of-string "str-replace expected String"))
+        (if (sq/callable? r) (if (= 17 (sq/kind m)) false true) false)
+        (raise-lit (arch/bytes-of-string "str-replace expected String or Regex"))
+        (sq/callable? r)
+        (let [bs (str-bytes s) lit (str-bytes m) n (arch/alen bs) ml (arch/alen lit)]
+          (if (= ml 0)
+            s
+            (let [b (buf-new)]
+              (loop [at 0]
+                (let [j (index-in bs lit at)]
+                  (if (< j 0)
+                    (buf-range! b bs at n)
+                    (let [rep (sq/invoke1 r m)]
+                      (when-not (= 17 (sq/kind rep)) (raise-lit (arch/bytes-of-string "str-replace replacement function must return a String")))
+                      (buf-range! b bs at j)
+                      (buf-bytes! b (str-bytes rep))
+                      (recur (+ j ml))))))
+              (buf-done b))))
+        (if (= 17 (sq/kind r)) false true) (raise-lit (arch/bytes-of-string "str-replace expected String"))
+        (if (= 17 (sq/kind m)) false true) (raise-lit (arch/bytes-of-string "str-replace expected String or Regex"))
+        :else
+        (let [bs (str-bytes s) old (str-bytes m) new (str-bytes r) n (arch/alen bs) ol (arch/alen old) b (buf-new)]
+          (if (= ol 0)
+            (do (buf-bytes! b new)                       ; "" matches before every rune and at the end
+                (loop [at 0]
+                  (when (< at n)
+                    (let [sz (bit-and (sq/decode-at bs at n) 7)]
+                      (buf-range! b bs at (+ at sz))
+                      (buf-bytes! b new)
+                      (recur (+ at sz))))))
+            (loop [at 0]
+              (let [j (index-in bs old at)]
+                (if (< j 0)
+                  (buf-range! b bs at n)
+                  (do (buf-range! b bs at j) (buf-bytes! b new) (recur (+ j ol)))))))
+          (buf-done b))))
+
+;; ---------------------------------------------------------------------------
+;; parse-long (lang.go:2836): strconv.ParseInt(s, 10, 64), nil on any error.
+
+(defn ^{:twin "core/parse-long"} parse-long [s]
+  (if (= 17 (sq/kind s))
+    (let [bs (str-bytes s) n (arch/alen bs)
+          c0 (if (> n 0) (arch/bget bs 0) 0)
+          neg (= c0 45)
+          start (if (if neg true (= c0 43)) 1 0)]
+      (if (>= start n)
+        (arch/null)
+        ;; accumulate negatively so MinInt64 fits; 1 (never a valid acc) marks an error
+        (let [acc (loop [i start acc 0]
+                    (if (< i n)
+                      (let [c (arch/bget bs i) d (- c 48)]
+                        (cond (if (< d 0) true (> d 9)) 1        ; not a digit
+                              (< acc -922337203685477580) 1     ; overflow
+                              (if (= acc -922337203685477580) (> d 8) false) 1
+                              :else (recur (inc i) (- (* acc 10) d))))
+                      acc))]
+          (cond (= acc 1) (arch/null)
+                neg (sq/box-int acc)
+                (= acc -9223372036854775808) (arch/null)
+                :else (sq/box-int (- 0 acc))))))
+    (raise-lit (arch/bytes-of-string "parse-int expected String"))))

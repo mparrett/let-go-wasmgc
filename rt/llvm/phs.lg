@@ -1,0 +1,128 @@
+;; llvm.phs — let-go's PersistentSet (pkg/vm/persistent_set.go at ff1e6dac)
+;; and TransientSet (pkg/vm/transient.go:451-519) over llvm.phm, in the
+;; runtime dialect (see llvm.phm's header).
+;;
+;; As in let-go, a set is a map from each element to itself (:15-20) whose
+;; backing map is always in HAMT mode: the empty impl has a non-null empty
+;; root (emptySetImpl :29), disj-to-empty and persistent! of an empty
+;; transient land back on it (:128-133, transient.go:513-517), and a transient
+;; set forces its map to HAMT (transient.go:469). So a set of any size
+;; iterates in hash order; insertion order shows only inside a collision bucket.
+;; A transient set stores the boxed `true` as every value
+;; (transientSetSentinel, transient.go:457), not the element.
+;;
+;; Sets register their own seq.lg hooks (slot 1); `install-hooks!` here also
+;; calls llvm.phm's, so existing callers link both collections in one step.
+(ns llvm.phs
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.phm :as m]
+            [llvm.seq :as sq]))
+
+;; impl (an HMap in HAMT mode), hash cache (-1 = none), meta (null = none).
+(arch/defstruct HSet [:ref [:mut :i64] :ref])
+
+(defn- impl [s] (arch/get HSet 0 s))
+(defn- mkset [i] (arch/new HSet i -1 (arch/null)))
+(defn smeta [s] (arch/get HSet 2 s))
+(defn swith-meta [s meta] (arch/new HSet (impl s) (arch/get HSet 1 s) meta))
+(defn- carry-meta [s r] (if (if (arch/ref-eq s r) true (arch/null? (smeta s))) r (swith-meta r (smeta s))))
+
+(defn empty-set [] (mkset (m/empty-hamt-map)))            ; EmptyPersistentSet :32
+
+(defn scount [s] (m/mcount (impl s)))
+
+(defn sconj [s x]                                           ; Conj :114-120
+  (let [i (impl s) ni (m/massoc i x x)]
+    (if (arch/ref-eq ni i) s (carry-meta s (mkset ni)))))
+
+(defn sdisj [s x]                                           ; Disj :124-135
+  (let [i (impl s) ni (m/mdissoc i x)]
+    (cond
+      (arch/ref-eq ni i) s
+      ;; mdissoc drains to the ORDERED empty map; a set must not regrow from it.
+      (= 0 (m/mcount ni)) (carry-meta s (mkset (m/empty-hamt-map)))
+      :else (carry-meta s (mkset ni)))))
+
+(defn scontains? [s x]                                      ; Contains :137-146
+  (if (= 0 (scount s)) false (m/mcontains? (impl s) x)))
+
+(defn sget                                                  ; ValueAtOr :160-169
+  "Returns the probe x, not the stored element, when found (as Go does)."
+  [s x nf]
+  (if (scontains? s x) x nf))
+
+(defn sseq "Elements in seq order (entries :188-199): the map's keys." [s]
+  (m/mkeys (impl s)))
+
+(defn shash                                                 ; Hash :69-82
+  "mixFinish(sum of hash(e)), uint32 wrapping; cached."
+  [s]
+  (let [c (arch/get HSet 1 s)]
+    (if (>= c 0)
+      c
+      (let [ks (sseq s) n (arch/alen ks)
+            h (loop [j 0 h 0]
+                (if (< j n)
+                  (recur (inc j) (bit-and (+ h (sq/unbox-int (sq/hash (arch/aget m/HSlots ks j)))) 0xffffffff))
+                  h))
+            r (m/mix-finish h)]
+        (arch/set! HSet 1 s r)
+        r))))
+
+(defn sequiv                                                ; setEquals (rt/lang.go:1236-1242)
+  "Same count and every element of s is in o."
+  [s o]
+  (if (= (scount s) (scount o))
+    (let [ks (sseq s) n (arch/alen ks)]
+      (loop [j 0]
+        (if (< j n)
+          (if (scontains? o (arch/aget m/HSlots ks j)) (recur (inc j)) false)
+          true)))
+    false))
+
+;; TransientSet (transient.go:451-519): a TransientMap forced to HAMT.
+
+(defn transient-set [s]                                     ; NewTransientSet :459-473
+  (let [t (m/transient-map (impl s))]
+    (m/t-force-hamt t)
+    t))
+
+(defn tconj! [t x] (m/tassoc! t x (sq/bool true)))            ; :488-494
+(defn tdisj! [t x] (m/tdissoc! t x))                        ; :496-502
+(defn tscount [t] (m/tcount t))
+
+(defn tpersistent-set! [t]                                  ; :504-519
+  (let [i (m/tpersistent! t)]
+    (mkset (if (= 0 (m/mcount i)) (m/empty-hamt-map) i))))
+
+;; ---------------------------------------------------------------------------
+;; seq.lg hooks for sets (kind 18 = foreign, slot 1; SEQ.md "Composition
+;; hooks"). Each takes the closure first (D36) and returns refs (D37). A set
+;; equals only a set (setEquals); seq.lg asks this handler only about values
+;; its pred claims, or about a pair whose other side is not foreign.
+
+(defn- set-pred [self x] (sq/bool (arch/is? HSet x)))
+
+(defn set-seq-hook [self x]                                 ; SetSeq over the keys (persistent_set.go:174-186)
+  (let [ks (sseq x) n (arch/alen ks) a (arch/array-new pv/Node n (arch/null))]
+    (loop [j 0] (when (< j n) (arch/aset! pv/Node a j (arch/aget m/HSlots ks j)) (recur (inc j))))
+    (sq/arr-seq a 1)))
+
+(defn set-count-hook [self x] (sq/box-int (scount x)))
+
+(defn set-equiv-hook [self a b]
+  (sq/bool (if (if (arch/is? HSet a) (arch/is? HSet b) false) (sequiv a b) false)))
+
+(defn set-hash-hook [self x] (sq/box-int (shash x)))
+
+(defn install-hooks!
+  "Link-time step: register sets in seq.lg's slot 1, and maps (llvm.phm's
+   own install-hooks!, slot 0), so one call links both collections."
+  []
+  (m/install-hooks!)
+  (sq/set-kind-hooks! 1 (sq/mk-fn1 (arch/funcref sq/Code1 set-pred))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 set-seq-hook))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 set-count-hook))
+                      (sq/mk-fn2 (arch/funcref sq/Code2 set-equiv-hook))
+                      (sq/mk-fn1 (arch/funcref sq/Code1 set-hash-hook))))

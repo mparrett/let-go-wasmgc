@@ -1,0 +1,119 @@
+;; llvm.pvec (rt/llvm/pvec.lg) checked against lg's own vectors: the
+;; design validation that the intrinsic set suffices for a persistent vector.
+(ns pvec-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; Deterministic 31-bit LCG so the op sequence is the same on every run.
+(defn- lcg [s] (bit-and (+ (* s 1103515245) 12345) 0x7fffffff))
+(defn- box [n] (arch/fix n))
+(defn- unbox [r] (arch/fix-get r))
+
+(defn- to-vec [v] (mapv #(unbox (pv/vnth v %)) (range (pv/vcount v))))
+
+(defn- trap? [f] (try (f) false (catch Exception e (boolean (:arch/trap (ex-data e))))))
+
+(deftest conj-and-nth-10k
+  (let [n 10000
+        v (reduce (fn [v i] (pv/vconj v (box (- i 5000)))) (pv/empty-vec) (range n))]
+    (is (= n (pv/vcount v)))
+    (is (= (mapv #(- % 5000) (range n)) (to-vec v)))
+    (is (trap? #(pv/vnth v n)))
+    (is (trap? #(pv/vnth v -1)))
+    (is (trap? #(pv/vpop (pv/empty-vec))))))
+
+(deftest mixed-ops-10k
+  (loop [k 0 s 42 v (pv/empty-vec) m [] snaps []]
+    (if (< k 10000)
+      (let [s1 (lcg s) s2 (lcg s1) op (mod s1 10) val (- (mod s2 2000001) 1000000)
+            cnt (count m)
+            snaps (if (zero? (mod k 997)) (conj snaps [v m]) snaps)]
+        (cond
+          (or (< op 5) (zero? cnt))
+          (recur (inc k) s2 (pv/vconj v (box val)) (conj m val) snaps)
+          (< op 8)
+          (let [i (mod s2 (inc cnt))]           ; i = cnt appends, as assoc does
+            (recur (inc k) s2 (pv/vassoc v i (box val)) (assoc m i val) snaps))
+          :else
+          (recur (inc k) s2 (pv/vpop v) (pop m) snaps)))
+      (do
+        (is (= (count m) (pv/vcount v)))
+        (is (= 10 (arch/get pv/PVec 1 v)) "grew past one trie level (> 1056 elements)")
+        (is (= m (to-vec v)) "final contents match lg's vector")
+        (testing "older versions are untouched (persistence)"
+          (is (pos? (count snaps)))
+          (doseq [[sv sm] snaps]
+            (is (= sm (to-vec sv)))))))))
+
+(deftest deep-trie
+  (testing "past 32^3 elements the root grows to shift 15, then pops shrink it back"
+    (let [n 33825                                   ; 32 + 32^3 + 1: forces a third trie level
+          v (reduce (fn [v i] (pv/vconj v (box i))) (pv/empty-vec) (range n))
+          shift (fn [v] (arch/get pv/PVec 1 v))]
+      (is (= 15 (shift v)))
+      (is (= (range n) (to-vec v)))
+      (let [v2 (pv/vassoc v 20000 (box -7))]
+        (is (= -7 (unbox (pv/vnth v2 20000))))
+        (is (= 20000 (unbox (pv/vnth v 20000)))))
+      (let [shrink (fn [v k] (loop [v v] (if (> (pv/vcount v) k) (recur (pv/vpop v)) v)))
+            mid (shrink v 2000)        ; 2000 needs two trie levels
+            small (shrink mid 1000)]   ; 992 trie elements fit one level
+        (is (= [10 5] [(shift mid) (shift small)]))
+        (is (= (range 2000) (to-vec mid)))
+        (is (= (range 1000) (to-vec small)))))))
+
+;; The dialect claim, checked: expand each defn body as the IR pipeline does
+;; and require every var it references to be an intrinsic, a llvm.pvec fn,
+;; or a core fn the IR lowers to an op (ir/ops.lg's catalog). Anything else
+;; (nil?, not, count, a core collection fn) would need a runtime twin.
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+
+(defn- var-refs
+  "Symbols in `form` that are not locals or special forms, plus
+   :collection-literal for any vector/map/set literal in value position
+   (building one needs the runtime's own constructors)."
+  [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/llvm/pvec.lg") "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        offending
+        (for [[_ nm params & body] defns
+              sym (mapcat #(var-refs (binding [*ns* (find-ns 'llvm.pvec)] (pipeline/expand-all %)) (set params)) body)
+              ;; ns-resolve returns nil on lg 4e769212 and core vars carry no
+              ;; :ns meta, so resolve under a *ns* binding and classify by name.
+              :let [v (when (symbol? sym) (binding [*ns* (find-ns 'llvm.pvec)] (resolve sym)))
+                    vname (str v)]
+              :when (not (or (string/starts-with? vname "#'llvm.pvec/")
+                             (and (string/starts-with? vname "#'llvm.arch/") (:intrinsic (meta v)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [nm sym])]
+    (is (< 10 (count defns)))
+    (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))

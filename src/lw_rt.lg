@@ -16,7 +16,17 @@
 (def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
 ;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
 ;; patch without editing rt/; the rtlib cache key covers the sources read)
-(def rt-dir (let [d (os/getenv "LW_RT_DIR")] (if (seq d) d (str src-dir "/../rt/wasm"))))
+;; --target llvm compiles its own runtime, rt/llvm (D204, D206):
+;; the target is read from the command line or LW_TARGET here, because the
+;; runtime loads before the driver parses its flags.
+(def llvm-target?
+  (let [args (vec *command-line-args*)
+        flag (some (fn [i] (cond (= "--target" (nth args i)) (get args (inc i))
+                                 (str/starts-with? (nth args i) "--target=") (subs (nth args i) 9)))
+                   (range (count args)))]
+    (= "llvm" (or flag (os/getenv "LW_TARGET")))))
+(def rt-dir (let [d (os/getenv "LW_RT_DIR")]
+              (if (seq d) d (str src-dir (if llvm-target? "/../rt/llvm" "/../rt/wasm")))))
 
 (def ^:private row-file #"^\| [0-9]+ \| `([A-Za-z0-9_.-]+\.lg)` \|")
 ;; LW_RUNTIME_COMPILE=1 (self-host stage 3b, D193): also load the rows whose
@@ -64,7 +74,17 @@
 ;; runtime ns; since, it restores *ns*. Either way, continue in lw-rt.
 (in-ns 'lw-rt)
 
-(def intrinsics-ns 'wasm.intrinsics)
+;; The runtime interface (D206). The WasmGC and linear lanes compile rt/wasm
+;; (namespaces wasm.*, intrinsics wasm.intrinsics); --target llvm compiles its
+;; own runtime, rt/llvm (llvm.*, intrinsics llvm.arch). The compiler names a
+;; runtime var only through rt-ns, rt-var and rt-sym, so the vars it names are
+;; the interface every target's runtime provides.
+(def rt-prefix (if llvm-target? "llvm" "wasm"))
+(def intrinsics-ns (if llvm-target? 'llvm.arch 'wasm.intrinsics))
+(defn rt-ns
+  "The target runtime's namespace for logical name n (seq, core, intrinsics ...)."
+  [n] (if (= "intrinsics" (str n)) intrinsics-ns (symbol (str rt-prefix "." n))))
+(defn rt-sym "The symbol nm qualified by the runtime namespace n." [n nm] (symbol (str (rt-ns n)) (str nm)))
 
 (defn intrinsic-meta?
   "A defn whose calls the backend emits as an instruction sequence (D24): an
@@ -77,7 +97,15 @@
   "The var nm names in ns, private ones included (ns-resolve skips those)."
   [ns-sym nm] (get (ns-interns ns-sym) nm))
 
-(defn decl? [v] (and (map? v) (contains? #{:struct :array :func} (:wasm.intrinsics/kind v))))
+(defn rt-var
+  "The var nm of the target runtime's namespace n, or nil."
+  [n nm] (when (find-ns (rt-ns n)) (ns-var (rt-ns n) (symbol (str nm)))))
+
+(defn decl-kind
+  "A declaration's kind (:struct :array :func), keyed in the intrinsics namespace."
+  [d] (get d (keyword (str intrinsics-ns) "kind")))
+
+(defn decl? [v] (and (map? v) (contains? #{:struct :array :func} (decl-kind v))))
 
 (defn strip-meta-name
   "A defn/def name as read: a symbol, or the reader's (with-meta sym m)."
@@ -90,7 +118,7 @@
 
 (def rt-nss (set (keep second file-forms)))
 
-(def decl-heads #{#'wasm.intrinsics/defstruct #'wasm.intrinsics/defarray #'wasm.intrinsics/deffunc})
+(def decl-heads #{(rt-var 'intrinsics 'defstruct) (rt-var 'intrinsics 'defarray) (rt-var 'intrinsics 'deffunc)})
 
 (def decls
   ;; [{:var v :decl map :ns sym}] in source order
@@ -180,7 +208,7 @@
 (def twins
   (into {} (for [d defns
                  :let [t (:twin (meta (:var d)))]
-                 :when (and t (not (and no-eval? (= 'wasm.eval (:ns d)))))
+                 :when (and t (not (and no-eval? (= (rt-ns 'eval) (:ns d)))))
                  tw (if (string? t) [t] t)
                  :let [nv (resolve (symbol tw))]
                  :when nv]
@@ -189,10 +217,10 @@
 ;; Natives the runtime implements without a :twin marker (wasm.core keeps
 ;; these unmarked because P2.7 gave them names that shadow core's, D68).
 (def extra-twins
-  (into {} (for [[n r] [['core/ex-message 'wasm.core/ex-message] ['core/ex-data 'wasm.core/ex-data]
-                        ['core/ex-cause 'wasm.core/ex-cause]
+  (into {} (for [[n r] [['core/ex-message (rt-sym 'core 'ex-message)] ['core/ex-data (rt-sym 'core 'ex-data)]
+                        ['core/ex-cause (rt-sym 'core 'ex-cause)]
                         ;; P2.14 (D112): defined in wasm.core, never marked
-                        ['core/meta 'wasm.core/meta] ['core/dissoc! 'wasm.core/dissoc!]]
+                        ['core/meta (rt-sym 'core 'meta)] ['core/dissoc! (rt-sym 'core 'dissoc!)]]
                  :let [nv (resolve n) rv (resolve r)]
                  :when (and nv rv)]
              [nv rv])))
@@ -254,7 +282,7 @@
 ;; P2.12: lg defns the backend adds where rt/ has no form for a native's
 ;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
 ;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
-(def ext-path (str src-dir "/lw_ext.lg"))
+(def ext-path (if llvm-target? (str rt-dir "/ext.lg") (str src-dir "/lw_ext.lg")))
 (load-string (slurp ext-path))
 (in-ns 'lw-rt)
 
@@ -299,8 +327,8 @@
    #'clojure.math/floor-div #'lw-ext/floor-div-v
    ;; P6.8: review4 bug-10's static interop call (strconv.ParseInt(s, 10, 32))
    (resolve 'Integer/parseInt) #'lw-ext/parse-int-v
-   #'clojure.math/sqrt #'wasm.math/sqrt #'clojure.math/pow #'wasm.math/pow
-   #'clojure.math/exp #'wasm.math/exp #'clojure.math/abs #'wasm.math/abs
+   #'clojure.math/sqrt (rt-var 'math 'sqrt) #'clojure.math/pow (rt-var 'math 'pow)
+   #'clojure.math/exp (rt-var 'math 'exp) #'clojure.math/abs (rt-var 'math 'abs)
    #'core/with-out-str* #'lw-ext/with-out-str-v #'core/read-all-string #'lw-ext/read-all-string-v
    #'core/double #'lw-ext/double-v #'math/log #'lw-ext/log-v
    ;; P5.8: re-pattern of a run-time String. (core/format and core/find-ns
@@ -314,7 +342,7 @@
   ;; D100: js/emit and js/url-param through the host imports, until rt/'s
   ;; host.lg twins call the intrinsics themselves (the requested patch
   ;; defines wasm.host/host-emit; then the runtime twins are used as is)
-  (when-not (ns-var 'wasm.host 'host-emit)
+  (when-not (rt-var 'host 'host-emit)
     {#'js/emit #'lw-ext/emit-v #'js/url-param #'lw-ext/url-param-v})))
 
 ;; ---------------------------------------------------------------------------

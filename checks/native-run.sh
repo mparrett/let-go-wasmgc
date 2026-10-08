@@ -46,7 +46,7 @@ host_c=("$here/host/native/rt.c" "$here/host/native/posix.c")
 if [ -n "${LW_NATIVE_JIT:-}" ]; then
   for c in "${host_c[@]}"; do "$llvm/clang" "${cflags[@]}" -c -emit-llvm "$c" -o "$t/$(basename "$c" .c).bc"; done
   "$llvm/llvm-link" "$t/m.ll" "$t/rt.bc" "$t/posix.bc" -o "$t/all.bc"
-  exec "$llvm/lli" -O2 "$t/all.bc" "$@"
+  exec "$llvm/lli" -O2 "$t/all.bc" "$prog" "$@"
 fi
 "$llvm/clang" "${cflags[@]}" "${host_c[@]}" "$t/m.ll" -o "$t/m"
-"$t/m" "$@"
+"$t/m" "$prog" "$@"
