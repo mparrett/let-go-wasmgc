@@ -3,7 +3,7 @@
 Written 2026-10-07 as a work order for an agent or a person who has not
 seen this code before. Read `README.md`, then `docs/READING-GUIDE.md`
 (stops 1 to 8 and 11), then `docs/LINEAR-TARGET-SPEC.md` for the shape of
-a second target, then this file. The spike behind it is D199, on branch
+a second target, then this file. The spike behind it is D206, on branch
 `spike/llvm-target`.
 
 ## Why
@@ -58,7 +58,7 @@ described so that M1 does not paint them out.
 
 ## What exists that this builds on
 
-- **The spike (D199).** `src/lower_llvm.lg` is in the `lower-wasm`
+- **The spike (D206).** `src/lower_llvm.lg` is in the `lower-wasm`
   namespace and loads on demand, as `lower_linear.lg` does. It handles
   integer arithmetic with overflow checks, comparisons, branches, joins,
   calls between program defns, and `println` of scalars, with every value

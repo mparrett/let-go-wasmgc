@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # checks/run-intrinsics-native.sh — P2.1 native half: run the intrinsic and
-# (TEST_DIR=corpus/llvm-rt: the llvm target's runtime, rt/llvm, D206)
+# (TEST_DIR=corpus/llvm-rt: the llvm target's runtime, rt/llvm, D213)
 # pvec test files under native lg with the reference wasm.intrinsics.
 # Exit 0 iff every assertion passes AND the number of tests run equals the
 # number of deftest forms in the files (guards the run-tests zero-suite trap).

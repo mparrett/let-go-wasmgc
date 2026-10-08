@@ -187,9 +187,9 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 
 | item | state | by | note |
 |---|---|---|---|
-| P12.1 | done 2026-10-07 | claude | corpus/llvm-scalar 4/4 MATCH on the host profile (D199) |
-| P12.2 | done 2026-10-07 | claude | hardware profiles load and validate; malformed and unimplemented profiles refused by name (D200) |
+| P12.1 | done 2026-10-07 | claude | corpus/llvm-scalar 4/4 MATCH on the host profile (D206) |
+| P12.2 | done 2026-10-07 | claude | hardware profiles load and validate; malformed and unimplemented profiles refused by name (D207) |
 | P12.3 | done 2026-10-07 | claude | corpus/llvm (fixnum edges, closures, vars, recur, deep recursion, arity error) MATCH on the host profile and its 31-bit-fixnum variant; 32-bit word module compiles with llc for i686 |
-| P12.20 | done 2026-10-07 | claude | armv7-virt under qemu, LLVM only: fixnum edges, loop-recur, fib(35), ref.lg MATCH (D202) |
-| P12.21 | done 2026-10-07 | claude | bare heap exhaustion is the named `error: out of memory` (D202) |
+| P12.20 | done 2026-10-07 | claude | armv7-virt under qemu, LLVM only: fixnum edges, loop-recur, fib(35), ref.lg MATCH (D209) |
+| P12.21 | done 2026-10-07 | claude | bare heap exhaustion is the named `error: out of memory` (D209) |
 | P12.4 jank suite, first measurement | measured 2026-10-07 | claude | checks/jank-suite.sh over 241 core_test/string_test files (242 deftests). WasmGC lane: files MATCH 0/241, deftests 0/242; llvm lane: 0/241, 0/242. Single cause on both: every file requires clojure.core-test.portability, whose let-go shim (test/compat at ff1e6dac) defines a `deftype`, refused by driver.lg (`unsupported top-level form deftype`). Task 10 (defmulti/deftype/defprotocol/defrecord) unblocks it; the measurement is retaken then. Native lg at the pin: 242 files, 6,311 assertions, 0 failures |

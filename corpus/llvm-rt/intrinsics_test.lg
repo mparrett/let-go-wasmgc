@@ -113,7 +113,7 @@
     (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/null? false)))))
 
 (deftest fix-bounds
-  ;; the fixnum range is the target's (spec decision 8, D200): gc and linear
+  ;; the fixnum range is the target's (spec decision 8, D207): gc and linear
   ;; keep D41's i31 range, which the reference implementation reproduces
   (is (= -1073741824 (arch/fix-min)))
   (is (= 1073741823 (arch/fix-max)))

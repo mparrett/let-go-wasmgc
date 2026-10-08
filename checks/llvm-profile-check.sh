@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# P12.2 (D200, spec decision 2): hardware profiles for --target llvm.
+# P12.2 (D207, spec decision 2): hardware profiles for --target llvm.
 # Asserts: the default (host) profile and an explicit --profile both compile
 # a scalar program; each malformed profile in corpus/llvm-profile/ fails
 # with a first error line naming the profile and the field; a :tail-calls

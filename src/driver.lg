@@ -861,7 +861,7 @@
             (recur (drop 2 xs) out (second xs) profile)
             (throw (ex-info "lower-wasm: --target needs gc, linear or llvm" {})))
           (clojure.string/starts-with? x "--target=") (recur (rest xs) out (subs x 9) profile)
-          ;; --profile names a hardware profile for --target llvm (D200)
+          ;; --profile names a hardware profile for --target llvm (D207)
           (= "--profile" x)
           (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
             (recur (drop 2 xs) out target (second xs))
@@ -884,12 +884,12 @@
         argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
         flags (set (filter #(clojure.string/starts-with? % "--") argv))
         ;; --read-clj: .cljc reader conditionals take their :clj branch, as
-        ;; let-go's clojure-test-suite harness reads them (D201)
+        ;; let-go's clojure-test-suite harness reads them (D208)
         _ (when (flags "--read-clj") (set-read-clj! true))
         [in out] (remove flags argv)
         opts {:target target :profile profile :rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
         ;; --target llvm compiles the runtime it reaches on demand: the cached
-        ;; runtime library holds lowered WAT (D201)
+        ;; runtime library holds lowered WAT (D208)
         rtlib? (and (:rt opts) (not= target :llvm) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))

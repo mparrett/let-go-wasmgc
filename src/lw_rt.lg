@@ -16,7 +16,7 @@
 (def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
 ;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
 ;; patch without editing rt/; the rtlib cache key covers the sources read)
-;; --target llvm compiles its own runtime, rt/llvm (D204, D206):
+;; --target llvm compiles its own runtime, rt/llvm (D211, D213):
 ;; the target is read from the command line or LW_TARGET here, because the
 ;; runtime loads before the driver parses its flags.
 (def llvm-target?
@@ -74,7 +74,7 @@
 ;; runtime ns; since, it restores *ns*. Either way, continue in lw-rt.
 (in-ns 'lw-rt)
 
-;; The runtime interface (D206). The WasmGC and linear lanes compile rt/wasm
+;; The runtime interface (D213). The WasmGC and linear lanes compile rt/wasm
 ;; (namespaces wasm.*, intrinsics wasm.intrinsics); --target llvm compiles its
 ;; own runtime, rt/llvm (llvm.*, intrinsics llvm.arch). The compiler names a
 ;; runtime var only through rt-ns, rt-var and rt-sym, so the vars it names are

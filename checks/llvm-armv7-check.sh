@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# P12.20 (D202): the 32-bit early check. Runs the fixnum edges and the scalar
+# P12.20 (D209): the 32-bit early check. Runs the fixnum edges and the scalar
 # programs that fit without a collector on targets/armv7-virt.edn under qemu
 # through checks/oracle.sh; exit 0 when every one MATCHes native lg.
 set -uo pipefail
