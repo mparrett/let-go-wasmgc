@@ -368,7 +368,7 @@
   "Index stdlib namespace ns-sym (once); its {var entry} map."
   [ns-sym]
   (or (get @stdlib-index ns-sym)
-      (let [file (str (str/replace (str ns-sym) "." "/") ".lg")
+      (let [file (str (str/replace (str/replace (str ns-sym) "." "/") "-" "_") ".lg")
             forms (embedded-forms file ns-sym)
             fills (protocol-fills forms)
             ;; eval of a defn under (binding [*ns* ..]) leaves *ns* there
