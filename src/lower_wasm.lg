@@ -1772,8 +1772,19 @@
   "A call of rooted native v (P6.8): through its altered root when it has
    one, else `normal` (the static lowering of the same call)."
   [nid v args normal]
-  (let [inv (str "(call $rt_invoke" (invoke-n! (count args)) " " (root-value-wat v)
-                 (apply str (map #(str " " (arg-as % :box)) args)) ")")]
+  ;; Past the positional cap (max-arity-x) the altered root is applied to the
+  ;; args as a vector through $rt_apply_vec, apply's own path, and invoke-n! is
+  ;; not told: rt/wasm/eval_wasm.lg's core table is a 295-entry map literal, a
+  ;; 590-arg hash-map call, and a program rooting #'hash-map raised
+  ;; *invoke-max* to 590, ~100 MB of $rt_invoke<n> helper text (P12.0b).
+  (let [inv (if (> (count args) max-arity-x)
+              (str "(call $rt_apply_vec " (root-value-wat v) " "
+                   (rt-call-expr #'wasm.pvec/varray
+                                 [(reduce (fn [acc a] (rt-call-expr #'wasm.pvec/vconj [acc (arg-as a :box)]))
+                                          (rt-call-expr #'wasm.pvec/empty-vec []) args)])
+                   ")")
+              (str "(call $rt_invoke" (invoke-n! (count args)) " " (root-value-wat v)
+                   (apply str (map #(str " " (arg-as % :box)) args)) ")"))]
     (str "(if " (root-test-wat v) " (then "
          (if (no-local? nid) (str "(drop " inv ")") (str "(local.set $v" nid " " inv (coerce :box (ty nid)) ")"))
          ") (else " normal "))")))
