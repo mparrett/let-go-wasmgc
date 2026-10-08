@@ -2,15 +2,15 @@
 ;; design validation that the intrinsic set suffices for a persistent vector.
 (ns pvec-test
   (:require [test :refer [deftest is testing]]
-            [wasm.intrinsics :as wasm]
+            [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
             [wasm.pvec :as pv]
             [ir.passes.pipeline :as pipeline]
             [string]))
 
 ;; Deterministic 31-bit LCG so the op sequence is the same on every run.
 (defn- lcg [s] (bit-and (+ (* s 1103515245) 12345) 0x7fffffff))
-(defn- box [n] (wasm/i31 n))
-(defn- unbox [r] (wasm/i31-get r))
+(defn- box [n] (wasm/fix n))
+(defn- unbox [r] (wasm/fix-get r))
 
 (defn- to-vec [v] (mapv #(unbox (pv/vnth v %)) (range (pv/vcount v))))
 

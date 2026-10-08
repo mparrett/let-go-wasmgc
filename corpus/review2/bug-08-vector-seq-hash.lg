@@ -12,7 +12,7 @@
 ;; with the "(seq [" prefix (and the WHOLE vector). The runtime does not record ArrayVector vs
 ;; PersistentVector (D69 picks ArrayVector for `type`, this path picks PersistentVector); bug-03 is
 ;; the same split seen from the printer.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn wv [xs] (reduce (fn [v i] (c/conj v (sq/box-int i))) (pv/empty-vec) xs))
 (defn H [w] (sq/unbox-int (sq/hash w)))

@@ -5,7 +5,7 @@
 ;;          (count works; transient sets are NOT seqable natively, and the runtime matches that)
 ;; Implicated: wasm.core foreign-seq (slot-2 seq hook) returns nothing for HTransient (ckind 32);
 ;; sq/seq, reduce-coll and sq/nth all go through it.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
 (c/install!)
 (defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
 (defn r [f] (try (f) (catch Throwable e (str "THROWS " (if (instance? clojure.lang.ExceptionInfo e) (ex-message e) (wasm/string-of-bytes (wasm/get sq/Err 2 e)))))))

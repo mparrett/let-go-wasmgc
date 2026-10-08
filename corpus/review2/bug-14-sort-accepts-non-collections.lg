@@ -5,7 +5,7 @@
 ;; runtime: (2 2 2) and (1 2 3); range matches
 ;; Implicated: wasm.core sortable? (core.lg ~975) accepts every seq kind 2..11; native's
 ;; vm.Collection excludes Repeat (9) and ChunkedCons (6). A silent value where native raises.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn r [f] (try (let [v (f)] (if (= (type v) (type (object-array 0))) (wasm/string-of-bytes (s/str-bytes (s/pr-str v))) (pr-str v)))
                  (catch Throwable e (str "THROWS " (if (= (type e) (type (object-array 0))) (wasm/string-of-bytes (wasm/get sq/Err 2 e)) (ex-message e))))))

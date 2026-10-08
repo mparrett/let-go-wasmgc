@@ -7,7 +7,7 @@
 ;; Implicated: wasm.seq/float-bits returns 0x7FF8000000000001 for every NaN (D28/D45 stand-in for
 ;; f64-bits). The real i64.reinterpret_f64 intrinsic should give the operation's actual bits;
 ;; re-check this row when P2.2-wasm lands rather than patching the stand-in.
-(require '[wasm.intrinsics :as wasm] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (def inf (s/box-float ##Inf))
 (println "native " (hash ##NaN) (hash (- ##Inf ##Inf)))

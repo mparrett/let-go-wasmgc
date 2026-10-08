@@ -8,7 +8,7 @@
 ;; platform-defined in Go; not reproduced" (2 fuzz hits). A defensible limit, but unprefixed.
 ;; Implicated: wasm.str map-ascii / upper-case / lower-case (str.lg ~910-921). At least strings
 ;; whose non-ASCII runes have no case could pass through; otherwise the trap wants the prefix.
-(require '[wasm.intrinsics :as wasm] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn r [f] (try (wasm/string-of-bytes (s/str-bytes (f))) (catch Throwable e (str "THROWS " (ex-message e)))))
 (defn st [x] (s/mk-str (wasm/bytes-of-string x)))

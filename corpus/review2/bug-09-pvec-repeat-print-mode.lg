@@ -12,7 +12,7 @@
 ;; Implicated: wasm.str's printer for kind 11 (vector, with meta) and kind 9 (Repeat): elements should
 ;; go through mode 0 (value-string) there. The >32-element case also needs the ArrayVector /
 ;; PersistentVector split (bug-03, bug-08); the meta'd and Repeat cases do not.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
 (c/install!)
 (defn R [w] (wasm/string-of-bytes (s/str-bytes w)))
 (defn kw [x] (s/kw-of-bytes (wasm/bytes-of-string x)))

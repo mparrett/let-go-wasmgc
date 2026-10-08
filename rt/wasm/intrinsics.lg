@@ -301,27 +301,38 @@
     (throw (ex-info (str "wasm/null?: expected a wasm ref, got " (kind-name x)) {})))
   (nil? x))
 
+;; Fixnums (spec decision 8, D200): an int boxed in the value word itself.
+;; The range is the target's: gc and linear use wasm's i31, -2^30..2^30-1
+;; (D41), which the reference reproduces; --target llvm takes the hardware
+;; profile's :fixnum-bits. Runtime code reads the bounds from fix-min and
+;; fix-max, never from literals.
 (def ^:private i31-min -1073741824)
 (def ^:private i31-max 1073741823)
 
-(defn ^{:intrinsic true :wasm "i32.wrap_i64; ref.i31" :type "[:int] -> :any"} i31
+(defn ^{:intrinsic true :wasm "i64.const -1073741824 (gc, linear); the profile's bound (llvm)" :type "[] -> :int"} fix-min
+  [] i31-min)
+
+(defn ^{:intrinsic true :wasm "i64.const 1073741823 (gc, linear); the profile's bound (llvm)" :type "[] -> :int"} fix-max
+  [] i31-max)
+
+(defn ^{:intrinsic true :wasm "i32.wrap_i64; ref.i31" :type "[:int] -> :any"} fix
   "Wasm would silently drop the top bit of an out-of-range value; the
-   reference traps, because D2's hybrid box range-checks before choosing i31."
+   reference traps, because D2's hybrid box range-checks before boxing."
   [n]
-  (check-int! "wasm/i31" n)
+  (check-int! "wasm/fix" n)
   (when-not (<= i31-min n i31-max)
-    (trap! (str "wasm/i31: " n " outside [-2^30, 2^30)") {:n n}))
+    (trap! (str "wasm/fix: " n " outside [-2^30, 2^30)") {:n n}))
   (doto (object-array 2) (core/aset 0 i31-tag) (core/aset 1 n)))
 
-(defn ^{:intrinsic true :wasm "ref.test (ref i31)" :type "[:any] -> :bool"} i31?
+(defn ^{:intrinsic true :wasm "ref.test (ref i31)" :type "[:any] -> :bool"} fix?
   [x]
-  (check-ref! "wasm/i31?" x)
+  (check-ref! "wasm/fix?" x)
   (and (some? x) (identical? i31-tag (core/aget x 0))))
 
-(defn ^{:intrinsic true :wasm "ref.cast (ref i31); i31.get_s; i64.extend_i32_s" :type "[:any] -> :int"} i31-get
+(defn ^{:intrinsic true :wasm "ref.cast (ref i31); i31.get_s; i64.extend_i32_s" :type "[:any] -> :int"} fix-get
   [x]
   (when-not (and (tagged? x) (identical? i31-tag (core/aget x 0)))
-    (trap! (str "wasm/i31-get: cast failure, expected i31, got " (kind-name x)) {}))
+    (trap! (str "wasm/fix-get: cast failure, expected a fixnum, got " (kind-name x)) {}))
   (core/aget x 1))
 
 ;; ---------------------------------------------------------------------------

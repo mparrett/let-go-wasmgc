@@ -4,7 +4,7 @@
 ;; runtime: (type (type (repeat 2 1))) let-go.lang.Type
 ;; Implicated: wasm.core/type-of for a TypeVal (id 9). Probably a let-go bug (Repeat's ValueType
 ;; implements Type() as the Repeat type); decide mirror-or-document per D19, like H1/M1.
-(require '[wasm.intrinsics :as wasm] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn P [w] (wasm/string-of-bytes (s/str-bytes (s/str w))))
 (println "native " (type (type (repeat 2 1))) (type (type 1)))

@@ -7,7 +7,7 @@
 ;;          and the same trap from (hash [atom]) and (conj #{} atom)
 ;; Implicated: wasm.seq/hash* :else arm. The value can't match native (an address), but it should be
 ;; an identity hash, not a trap; fuzz sigs [:hasheq :result :ok :trap], [:cons :hash :ok :trap].
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phs :as hs] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phs :as hs] '[wasm.core :as c])
 (c/install!)
 (defn r [f] (try (f) (catch Throwable e (str "THROWS " (ex-message e)))))
 (def a (c/atom (sq/box-int 1)))

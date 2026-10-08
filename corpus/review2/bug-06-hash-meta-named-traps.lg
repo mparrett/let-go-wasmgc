@@ -8,7 +8,7 @@
 ;; Implicated: wasm.core foreign-hash (slot-2 hash hook) covers MetaNamed (ckind 36) and TypeVal (35).
 ;; Native's meta'd-named hash differs from the bare name's hash (3826002220 vs (hash 'a)), so the fix
 ;; has to reproduce native's MetaNamed hash, not delegate to the inner symbol.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
 (c/install!)
 (defn r [f] (try (f) (catch Throwable e (str "THROWS " (ex-message e)))))
 (defn sym [x] (s/sym-of-bytes (wasm/bytes-of-string x)))

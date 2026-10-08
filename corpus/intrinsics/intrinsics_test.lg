@@ -3,7 +3,7 @@
 ;; checks that mechanically against the namespace's ^:intrinsic vars.
 (ns intrinsics-test
   (:require [test :refer [deftest is testing]]
-            [wasm.intrinsics :as wasm]))
+            [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]))
 
 (def max64 9223372036854775807)
 (def min64 -9223372036854775808)
@@ -31,8 +31,8 @@
   (let [p (wasm/new Pair 7 nil)]
     (is (= 7 (wasm/get Pair 0 p)))
     (is (nil? (wasm/get Pair 1 p)))
-    (wasm/set! Pair 1 p (wasm/i31 3))
-    (is (= 3 (wasm/i31-get (wasm/get Pair 1 p))))
+    (wasm/set! Pair 1 p (wasm/fix 3))
+    (is (= 3 (wasm/fix-get (wasm/get Pair 1 p))))
     (testing "immutable field, field index range, arity"
       (is (thrown-with-msg? Exception #"immutable" (wasm/set! Pair 0 p 8)))
       (is (thrown-with-msg? Exception #"out of range 0..1" (wasm/get Pair 2 p)))
@@ -57,7 +57,7 @@
     (is (true? (wasm/is? Pair p)))
     (is (false? (wasm/is? Pair q)) "same field list, different declared type")
     (is (false? (wasm/is? Pair nil)))
-    (is (false? (wasm/is? Pair (wasm/i31 1))))
+    (is (false? (wasm/is? Pair (wasm/fix 1))))
     (is (true? (wasm/is? Refs a)))
     (is (false? (wasm/is? Longs a)))
     (is (identical? p (wasm/as Pair p)))
@@ -103,8 +103,8 @@
   (let [p (wasm/new Pair 1 nil) p2 (wasm/new Pair 1 nil)]
     (is (true? (wasm/ref-eq p p)))
     (is (false? (wasm/ref-eq p p2)) "identity, not structure")
-    (is (true? (wasm/ref-eq (wasm/i31 9) (wasm/i31 9))) "i31 compares by value")
-    (is (false? (wasm/ref-eq (wasm/i31 9) (wasm/i31 8))))
+    (is (true? (wasm/ref-eq (wasm/fix 9) (wasm/fix 9))) "i31 compares by value")
+    (is (false? (wasm/ref-eq (wasm/fix 9) (wasm/fix 8))))
     (is (true? (wasm/ref-eq (wasm/null) nil)))
     (is (false? (wasm/ref-eq p nil)))
     (is (true? (wasm/null? (wasm/null))))
@@ -112,19 +112,27 @@
     (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/ref-eq 1 1)))
     (is (thrown-with-msg? Exception #"expected a wasm ref" (wasm/null? false)))))
 
-(deftest i31-box
-  (is (= -1073741824 (wasm/i31-get (wasm/i31 -1073741824))) "-2^30 fits")
-  (is (= 1073741823 (wasm/i31-get (wasm/i31 1073741823))) "2^30-1 fits")
-  (is (= -1 (wasm/i31-get (wasm/i31 -1))) "i31.get_s sign-extends")
-  (is (= 0 (wasm/i31-get (wasm/i31 0))))
-  (is (thrown-with-msg? Exception #"outside" (wasm/i31 1073741824)) "2^30 does not fit")
-  (is (thrown-with-msg? Exception #"outside" (wasm/i31 -1073741825)) "-2^30-1 does not fit")
-  (is (trap? #(wasm/i31 max64)))
-  (is (true? (wasm/i31? (wasm/i31 5))))
-  (is (false? (wasm/i31? nil)))
-  (is (false? (wasm/i31? (wasm/new Pair 1 nil))))
-  (is (thrown-with-msg? Exception #"expected i31, got struct Pair" (wasm/i31-get (wasm/new Pair 1 nil))))
-  (is (thrown-with-msg? Exception #"expected i31, got null" (wasm/i31-get nil))))
+(deftest fix-bounds
+  ;; the fixnum range is the target's (spec decision 8, D200): gc and linear
+  ;; keep D41's i31 range, which the reference implementation reproduces
+  (is (= -1073741824 (wasm/fix-min)))
+  (is (= 1073741823 (wasm/fix-max)))
+  (is (= (wasm/fix-min) (wasm/fix-get (wasm/fix (wasm/fix-min)))))
+  (is (= (wasm/fix-max) (wasm/fix-get (wasm/fix (wasm/fix-max))))))
+
+(deftest fix-box
+  (is (= -1073741824 (wasm/fix-get (wasm/fix -1073741824))) "-2^30 fits")
+  (is (= 1073741823 (wasm/fix-get (wasm/fix 1073741823))) "2^30-1 fits")
+  (is (= -1 (wasm/fix-get (wasm/fix -1))) "i31.get_s sign-extends")
+  (is (= 0 (wasm/fix-get (wasm/fix 0))))
+  (is (thrown-with-msg? Exception #"outside" (wasm/fix 1073741824)) "2^30 does not fit")
+  (is (thrown-with-msg? Exception #"outside" (wasm/fix -1073741825)) "-2^30-1 does not fit")
+  (is (trap? #(wasm/fix max64)))
+  (is (true? (wasm/fix? (wasm/fix 5))))
+  (is (false? (wasm/fix? nil)))
+  (is (false? (wasm/fix? (wasm/new Pair 1 nil))))
+  (is (thrown-with-msg? Exception #"expected a fixnum, got struct Pair" (wasm/fix-get (wasm/new Pair 1 nil))))
+  (is (thrown-with-msg? Exception #"expected a fixnum, got null" (wasm/fix-get nil))))
 
 (deftest i64-arith
   (testing "add/sub/mul wrap"
@@ -236,7 +244,7 @@
 (deftest funcrefs
   (let [f1 (wasm/funcref Fn1 first-of)
         f2 (wasm/funcref Fn2 second-of)
-        x (wasm/i31 1) y (wasm/i31 2)]
+        x (wasm/fix 1) y (wasm/fix 2)]
     (is (wasm/ref-eq x (wasm/call-ref Fn1 f1 x)))
     (is (wasm/ref-eq y (wasm/call-ref Fn2 f2 x y)))
     (testing "a funcref lives in a :funcref field, not a :ref one"

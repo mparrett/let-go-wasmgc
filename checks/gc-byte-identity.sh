@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-07 at
+# 69681c1, D203: the runtime reads its fixnum bounds through wasm/fix-min and wasm/fix-max,
+# which changes box-int's bytes and nothing else; before that 2026-10-07 at
 # 167f95e, the let-go ff1e6dac pin with D198 and the deferred read-json conversion; before
 # that 6a8401b, the pin alone; before that 2026-10-05 at 138f341, after
 # D185-D187; 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).
@@ -12,7 +14,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
-base=167f95e60acc1c1e4b75ddfee55b0cb34f4499ba
+base=69681c1f56e040f7c2058c9a940cc969721e4b59
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT

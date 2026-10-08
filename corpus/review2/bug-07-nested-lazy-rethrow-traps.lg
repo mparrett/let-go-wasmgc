@@ -9,7 +9,7 @@
 ;; is left with fn = null and realized = 0, so the next lazy-step
 ;; call-refs a null Fn. Distinct from bug-02 (flat thunk re-runs); reached by the fuzzer through
 ;; (concat <empty> (transient-map)) printed twice. Fuzz sig: [:concat :str :ok :trap].
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn thunk [f] (wasm/new sq/Fn (wasm/funcref sq/Code0 (fn [_] (f))) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) (wasm/null) 0))
 (defn r [f] (try (f) (catch Throwable e (str "THROWS " (if (and (= (type e) (type (object-array 0)))) (wasm/string-of-bytes (wasm/get sq/Err 2 e)) (ex-message e))))))

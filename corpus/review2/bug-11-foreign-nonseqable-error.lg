@@ -12,7 +12,7 @@
 ;; Implicated: wasm.core foreign-seq (slot-2 seq hook) raises raise-not-supported for every non-seqable
 ;; foreign value, before the caller's own check; sq/nth* reaches it through seq-of instead of
 ;; returning nf. Messages are catchable on both sides, so this is a wrong-message bug except for nth.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn em [e] (if (= (type e) (type (object-array 0))) (wasm/string-of-bytes (wasm/get sq/Err 2 e)) (ex-message e)))
 (defn r [f] (try (let [v (f)] (str "=> " (if (= (type v) (type (object-array 0))) (wasm/string-of-bytes (s/str-bytes (s/pr-str v))) (pr-str v)))) (catch Throwable e (str "THROWS " (em e)))))

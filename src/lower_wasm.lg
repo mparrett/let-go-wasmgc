@@ -1321,9 +1321,12 @@
       "ref-eq" [(str "(ref.eq " (arg-as (a 0) :box) " " (arg-as (a 1) :box) ")") :bool]
       "null" ["(ref.null none)" :box]
       "null?" [(str "(ref.is_null " (arg-as (a 0) (if (= :func (ty (a 0))) :func :box)) ")") :bool]
-      "i31" [(str "(ref.i31 (i32.wrap_i64 " (arg-as (a 0) :int) "))") :box]
-      "i31?" [(str "(ref.test (ref i31) " (arg-as (a 0) :box) ")") :bool]
-      "i31-get" [(str "(i64.extend_i32_s (i31.get_s (ref.cast (ref i31) " (arg-as (a 0) :box) ")))") :int]
+      ;; fixnums are wasm's i31 on this lane (D41, spec decision 8)
+      "fix" [(str "(ref.i31 (i32.wrap_i64 " (arg-as (a 0) :int) "))") :box]
+      "fix?" [(str "(ref.test (ref i31) " (arg-as (a 0) :box) ")") :bool]
+      "fix-get" [(str "(i64.extend_i32_s (i31.get_s (ref.cast (ref i31) " (arg-as (a 0) :box) ")))") :int]
+      "fix-min" ["(i64.const -1073741824)" :int]
+      "fix-max" ["(i64.const 1073741823)" :int]
       "i64-add" (bin "i64.add" :int)
       "i64-sub" (bin "i64.sub" :int)
       "i64-mul" (bin "i64.mul" :int)
@@ -1389,7 +1392,7 @@
 
 (def emitted-intrinsics
   #{"new" "get" "set!" "is?" "as" "array-new" "aget" "aset!" "alen" "array-copy" "ref-eq" "null" "null?"
-    "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
+    "fix" "fix?" "fix-get" "fix-min" "fix-max" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
     "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
     "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"

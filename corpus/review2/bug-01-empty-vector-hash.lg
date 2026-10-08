@@ -7,7 +7,7 @@
 ;; EmptyList, which hashOrdered counts as one nil (H1). Native's literal/vec/pop-to-empty vector is an
 ;; ArrayVector whose hash folds zero elements (mixFinish 1). Only a meta'd or >32-conj'd vector is a
 ;; PersistentVector natively (with-meta [] m) hashes 1257683291.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s]
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s]
          '[wasm.phs :as hs] '[wasm.core :as c])
 (c/install!)
 (defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))

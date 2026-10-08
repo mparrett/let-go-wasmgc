@@ -7,7 +7,7 @@
 ;; result) and false in the runtime; fuzz sig [:gensym-like :pr :ok :ok] = (realized? (take 9 false)).
 ;; Implicated: wasm.seq resolve-lazy / lazy-step (LazySeq field 2 is set only on success), and the
 ;; map* chunk thunk. Fuzz signature: [:flaky :str :err :ok] and :print/:hash/:count.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.core :as c])
 (c/install!)
 (defn P [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
 (defn msg [e] (ex-message e))

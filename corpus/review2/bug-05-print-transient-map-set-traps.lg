@@ -4,7 +4,7 @@
 ;; runtime: wasm trap "wasm.core: printing this value is not implemented" (pr-str, str, print-str)
 ;;          transient vectors print fine ("<transient-vector count=1>"), so only ckind 32/33 are missing
 ;; Implicated: wasm.core print-foreign (core.lg ~1031) has no HTransient / TSet arm.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.phs :as hs] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.phs :as hs] '[wasm.core :as c])
 (c/install!)
 (defn P [w] (try (wasm/string-of-bytes (s/str-bytes (s/pr-str w))) (catch Throwable e (str "THROWS " (ex-message e)))))
 (println "native  " (pr-str (transient {})) (pr-str (transient #{1})) (pr-str (transient [1])))

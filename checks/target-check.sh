@@ -28,7 +28,7 @@ if "$LG" -source-paths "$PWD/src" "$PWD/checks/linear-refuse-check.lg" "$fixture
 grep -q 'lower-wasm: unsupported op ref.null (flat instruction) under linear' "$t/flat.log"
 for bad in '' invalid; do
   if env -u LW_TARGET "${driver[@]}" --target $bad > "$t/log" 2>&1; then exit 1; fi
-  grep -Eq 'lower-wasm: (--target needs gc or linear|unsupported target invalid)' "$t/log"
+  grep -Eq 'lower-wasm: (--target needs gc, linear or llvm|unsupported target invalid)' "$t/log"
 done
 cat > "$t/key.lg" <<'LG'
 (require '[lower-wasm :as lw])

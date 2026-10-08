@@ -5,7 +5,7 @@
 ;; runtime: raises "assoc failed for key {:a 1, :b 2}"
 ;; Implicated: wasm.core assoc1 (core.lg ~585) and dissoc1 build the message with s/pr-str; native
 ;; uses the key's String() (mode 0, wasm.str/value-string). Catchable both sides: wrong message.
-(require '[wasm.intrinsics :as wasm] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
+(require '[wasm.intrinsics :as wasm] [wasm.intrinsics :as arch] '[wasm.pvec :as pv] '[wasm.seq :as sq] '[wasm.str :as s] '[wasm.phm :as m] '[wasm.core :as c])
 (c/install!)
 (defn kw [x] (s/kw-of-bytes (wasm/bytes-of-string x)))
 (def wk (c/assoc (c/assoc (m/empty-map) (kw "a") (sq/box-int 1)) (kw "b") (sq/box-int 2)))

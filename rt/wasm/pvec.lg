@@ -4,10 +4,10 @@
 ;; (+ - inc dec < <= > >= = bit-and unsigned-bit-shift-right
 ;; bit-shift-left), macros that expand to those, calls to this file's own
 ;; fns, and wasm.intrinsics. No nil?, not, core collections or interop.
-;; Elements are refs (box ints with wasm/i31). Out-of-range access traps;
+;; Elements are refs (box ints with wasm/fix). Out-of-range access traps;
 ;; the catchable lg exception arrives with ex-info in P2.7.
 (ns wasm.pvec
-  (:require [wasm.intrinsics :as wasm]))
+  (:require [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]))
 
 ;; pkind (D73) records which Go type native would hold: 0 ArrayVector
 ;; (literals, vec, subvec, persistent! up to 32, conj up to 32), 1
