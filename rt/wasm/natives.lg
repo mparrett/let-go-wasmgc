@@ -329,6 +329,13 @@
   ([x] (ns-of (ns-arg "the-ns: " x)))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
+(defn- private-var?
+  "Whether var v, found as nsn/nm, is :private: its cell's def meta, else
+   the stand-in's own meta, the test interns-of makes for ns-publics."
+  [nsn nm v]
+  (let [cl (cell (str nsn "/" nm))]
+    (boolean (:private (if cl (:meta cl) (meta v))))))
+
 (defn- lookup
   "The var named nm in namespace nsn (canonical): one intern (or a def in
    evaluated code) made, else the program's own var from wasm.eval's
@@ -379,8 +386,17 @@
                    ;; P10.6: core's names-only table entry (driver.lg
                    ;; core-names-entry, under LW_PROGRAM_TABLE=1)
                    (lookup "core" nm)))
-             (let [nsn (or (get-in t [:aliases (:cur t) q]) (get-in t [:program (:cur t) :aliases q]) (canon q))]
-               (lookup nsn (name x)))))
+             (let [cur (:cur t)
+                   al (or (get-in t [:aliases cur q]) (get-in t [:program cur :aliases q]))
+                   nsn (or al (canon q))
+                   v (lookup nsn (name x))]
+               ;; Namespace.lookup (namespace.go:473, 486): a qualified
+               ;; reference sees a :private var only from the var's own
+               ;; namespace and never through an alias, so ns-resolve
+               ;; (core.lg:1658, a qualified resolve) of another ns's
+               ;; private is nil; find-var (lang.go:7851) still finds it
+               (when-not (and v (private-var? nsn (name x) v) (or al (not= nsn cur)))
+                 v))))
          (raise-lit "resolve expected Symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
@@ -395,12 +411,19 @@
             (native-var? v key) (c/var-value v)          ; its altered root, or the stand-in's value (or limit)
             :else (program-var-limit "var-get" v)))))
 
-;; CoreBoundQ (lang.go:9190). Named limit: a declared program var that is
+;; CoreBoundQ (lang.go:9190) asks Var.IsBound (var.go:201): a root or an
+;; active dynamic binding. A cell has a root once a def or intern gave it
+;; :val; (def x) and (declare x) give it none (eval.lg:288), so it is
+;; unbound until defined. Named limit: a var with no cell (a builtin's
+;; stand-in, a program var) answers true, so a compiled (declare x) that is
 ;; never defined is bound? here (natively false).
 (defn ^{:twin "core/bound?"} bound? [& args]
   (cond (not= 1 (count args)) (raise-lit "bound? expects 1 arg")
         (nil? (cell-key (first args))) (raise-lit "bound? expects a Var")
-        :else true))
+        :else (let [cl (cell (cell-key (first args)))]
+                (if cl
+                  (or (contains? cl :val) (some? (seq (:stack cl))))
+                  true))))
 
 (defn ^{:twin "core/alter-var-root"} alter-var-root [& args] ; alterVarRoot (lang.go:4364)
   (if (< (count args) 2)
