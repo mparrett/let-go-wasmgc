@@ -1741,8 +1741,9 @@
 (defn scalar-const-wat [x]
   (if (int? x) (str "(i64.const " x ")" (coerce :int :box)) (const-box-wat x)))
 
-;; P6.8: natives whose var the program names (#'x, (var x), find-var of a
-;; quoted symbol; the driver's scan): alter-var-root may give one a root in
+;; P6.8, D207: natives the program alters (the literal var of an
+;; alter-var-root or with-redefs; every #'x when one is not literal; the
+;; driver's scan): alter-var-root may give one a root in
 ;; the runtime's var-roots table (wasm.core/var-root-set?, var-value), which
 ;; a direct call and a value read consult first, as native lg's var does.
 ;; Every other native keeps its static twin call.
@@ -3898,25 +3899,23 @@
 ;; the two vectors are distinct objects (no identity shortcut, NaN elements),
 ;; and merging them made it true. A :call's key carries its own id, so calls
 ;; are never merged. Upstream IR findings.
-(let [ik (get (ns-interns 'ir.passes.cse) 'inst-key)]
-  (alter-var-root ik (fn [orig] (fn [nid f]
-                                  (let [[op refs aux] (orig nid f)]
-                                    (case op
-                                      :const [op refs (strict-key aux)]
-                                      :call [op refs aux nid]
-                                      [op refs aux]))))))
+(alter-var-root (get (ns-interns 'ir.passes.cse) 'inst-key) (fn [orig] (fn [nid f]
+                                (let [[op refs aux] (orig nid f)]
+                                  (case op
+                                    :const [op refs (strict-key aux)]
+                                    :call [op refs aux nid]
+                                    [op refs aux])))))
 
 ;; P2.11 (F4 corpus nan-arith): constfold's algebraic identities ((+ x 0),
 ;; (* x 1), (* x 0) -> 0, (- x 0), the bit-op ones) hold only for an int x:
 ;; (* inf 0) is NaN, (+ -0.0 0) is 0.0, (+ nil 0) throws. They now fire only
 ;; when the non-constant operand is typed :int. Upstream finding (D94 noted
 ;; the non-number half).
-(let [ti (get (ns-interns 'ir.passes.constfold) 'try-identity)]
-  (alter-var-root ti (fn [orig] (fn [nid f]
-                                  (let [int-t? (fn [r] (let [t (ir/type-of r f)]
-                                                         (or (= :int t) (and (vector? t) (= :const (first t)) (= :int (second t))))))]
-                                    (when (every? #(or (= :const (ir/op % f)) (int-t? %)) (ir/refs nid f))
-                                      (orig nid f)))))))
+(alter-var-root (get (ns-interns 'ir.passes.constfold) 'try-identity) (fn [orig] (fn [nid f]
+                                (let [int-t? (fn [r] (let [t (ir/type-of r f)]
+                                                       (or (= :int t) (and (vector? t) (= :const (first t)) (= :int (second t))))))]
+                                  (when (every? #(or (= :const (ir/op % f)) (int-t? %)) (ir/refs nid f))
+                                    (orig nid f))))))
 
 ;; P1.7 (bug-01): infer-arg-types types a param :int from its uses (+ x 1),
 ;; which makes the wasm signature i64, so a caller holding nil or a string
@@ -3937,18 +3936,16 @@
 ;;     arity's capture can be another's param). Native: the param wins. The
 ;;     clashing capture keeps its slot under a name no form can spell.
 ;; Upstream IR finding (lower-go shares the builder).
-(let [fv (get (ns-interns 'ir.build) 'free-vars)]
-  (alter-var-root fv (fn [orig] (fn [form bound]
-                                  (let [r (orig form bound)]
-                                    (if (and (seq? form) (= 'fn* (first form)))
-                                      (into #{} (remove bound r))
-                                      r))))))
-(let [bt (get (ns-interns 'ir.build) 'build-inner-fn-template)]
-  (alter-var-root bt (fn [orig] (fn [name-sym args-vec body-forms capture-syms variadic?]
-                                  (let [params (set args-vec)]
-                                    (orig name-sym args-vec body-forms
-                                          (mapv #(if (contains? params %) (symbol (str "__lw_shadowed " %)) %) capture-syms)
-                                          variadic?))))))
+(alter-var-root (get (ns-interns 'ir.build) 'free-vars) (fn [orig] (fn [form bound]
+                                (let [r (orig form bound)]
+                                  (if (and (seq? form) (= 'fn* (first form)))
+                                    (into #{} (remove bound r))
+                                    r)))))
+(alter-var-root (get (ns-interns 'ir.build) 'build-inner-fn-template) (fn [orig] (fn [name-sym args-vec body-forms capture-syms variadic?]
+                                (let [params (set args-vec)]
+                                  (orig name-sym args-vec body-forms
+                                        (mapv #(if (contains? params %) (symbol (str "__lw_shadowed " %)) %) capture-syms)
+                                        variadic?)))))
 
 (defn- infer-arg-types-skipping
   "infer-arg-types' two-arity body, leaving the params in *box-param-idx*

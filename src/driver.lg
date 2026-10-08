@@ -82,8 +82,14 @@
          (= 'def (first form)) (cons [(def-sym form) thunk?] (mapcat #(nested-defs % thunk?) (drop 2 form)))
          :else (mapcat #(nested-defs % thunk?) form))))
 
-;; every var named by #'x / find-var, program and libraries (lw/*rooted-natives*)
+;; every var named by #'x / find-var, program and libraries: the program
+;; table's var constants (ns-table-entry!), and the rooted natives when the
+;; D207 fallback is taken
 (def rooted-vars (atom #{}))
+;; D207: the vars an alter site names (lw/*rooted-natives*), and the first
+;; alter site whose var is not a literal var form (nil when none)
+(def altered-vars (atom #{}))
+(def alter-fallback (atom nil))
 (defn var-ref-syms
   "P6.8: [:var sym] for each (var sym) / #'sym in form, [:find sym] for
    each (find-var 'sym): the vars a program can alter-var-root."
@@ -118,13 +124,76 @@
         (and (seq? form) (= 'quote (first form))) nil
         (seq? form) (run! note-registry-refs! form)))
 
+(defn literal-var-ref
+  "[:var sym] for (var sym) / #'sym, [:find sym] for (find-var 'sym) and
+   (get (ns-interns 'ns) 'sym), else nil."
+  [x]
+  (cond (and (seq? x) (= 'var (first x)) (symbol? (second x))) [:var (second x)]
+        (and (seq? x) (= 'find-var (first x)) (seq? (second x)) (= 'quote (first (second x)))
+             (symbol? (second (second x))))
+        [:find (second (second x))]
+        ;; (get (ns-interns 'ns) 'sym): how src/ reaches a private var
+        (and (seq? x) (= 'get (first x)) (= 3 (count x))
+             (seq? (nth x 1)) (= 'ns-interns (first (nth x 1))) (seq? (second (nth x 1)))
+             (= 'quote (first (second (nth x 1)))) (symbol? (second (second (nth x 1))))
+             (seq? (nth x 2)) (= 'quote (first (nth x 2))) (symbol? (second (nth x 2))))
+        [:find (symbol (str (second (second (nth x 1)))) (str (second (nth x 2))))]
+        :else nil))
+
+(defn alter-head
+  "D207: :root, :redefs or :redefs-fn when form calls alter-var-root,
+   with-redefs or with-redefs-fn (resolved in the current ns), else nil."
+  [form]
+  (let [h (first form)]
+    (when (and (symbol? h) (contains? #{"alter-var-root" "with-redefs" "with-redefs-fn"} (name h)))
+      (let [v (try (resolve h) (catch e nil))]
+        (cond (= v #'alter-var-root) :root
+              (= v #'with-redefs) :redefs
+              (= v #'with-redefs-fn) :redefs-fn
+              :else nil)))))
+
+(defn alter-site-refs
+  "D207: the vars form alters, as var-ref-syms entries: the literal var
+   argument of alter-var-root, with-redefs' binding names, with-redefs-fn's
+   literal vars. [:fallback site] for an alter site whose var is not
+   literal. Syntactic, on the forms as read, like var-ref-syms."
+  [form]
+  (cond (map? form) (mapcat alter-site-refs (mapcat identity form))
+        (or (vector? form) (set? form)) (mapcat alter-site-refs form)
+        (not (seq? form)) []
+        (empty? form) []
+        (= 'quote (first form)) []
+        :else
+        (let [kind (alter-head form)
+              arg (second form)
+              lit (fn [x] (or (literal-var-ref x) [:fallback form]))
+              own (cond (= kind :root) [(lit arg)]
+                        (= kind :redefs) (if (vector? arg)
+                                           (map (fn [s] (if (symbol? s) [:var s] [:fallback form])) (take-nth 2 arg))
+                                           [[:fallback form]])
+                        (= kind :redefs-fn) (cond (vector? arg) (map lit arg)
+                                                  (map? arg) (map lit (keys arg))
+                                                  :else [[:fallback form]])
+                        :else [])]
+          (concat own (mapcat alter-site-refs (rest form))))))
+
+(defn note-alter-ref!
+  "Resolve one alter-site-refs entry into altered-vars or alter-fallback."
+  [r]
+  (if (= :fallback (first r))
+    (when-not @alter-fallback (reset! alter-fallback (second r)))
+    (let [v (try (if (= :var (first r)) (resolve (second r)) (find-var (second r))) (catch e nil))]
+      (when (var? v) (swap! altered-vars conj v)))))
+
 (defn note-var-refs!
-  "Resolve form's var-ref-syms in the current ns into rooted-vars."
+  "Resolve form's var-ref-syms in the current ns into rooted-vars, and its
+   alter sites into altered-vars (D207)."
   [form]
   (note-registry-refs! form)
   (doseq [[k s] (var-ref-syms form)]
     (when-let [v (try (if (= k :var) (resolve s) (find-var s)) (catch e nil))]
-      (when (var? v) (swap! rooted-vars conj v)))))
+      (when (var? v) (swap! rooted-vars conj v))))
+  (run! note-alter-ref! (alter-site-refs form)))
 
 ;; P7: each program namespace's defmacro forms, in source order (ns-sym ->
 ;; [form ...]), for the program table's :macros.
@@ -1017,11 +1086,16 @@
         (binding [*stub-failures* (boolean test?) lw/*stub-libs* (boolean test?) lw/*program-file* in
                   lw/*thunk-def-vars* @thunk-vars
                   ;; natives only: the program's and its libraries' own vars
-                  ;; are var-table vars or direct-call defns
+                  ;; are var-table vars or direct-call defns. D207: the vars
+                  ;; an alter site names, or every #'x when one is not literal
                   lw/*rooted-natives* (let [own (conj @lib-loaded (ns-name *ns*))]
+                                        (when (and @alter-fallback (= "1" (os/getenv "LW_TRACE")))
+                                          (binding [*out* *err*]
+                                            (println "lower-wasm: D207 fallback, every #'x is rooted; non-literal var in"
+                                                     (let [s (pr-str @alter-fallback)] (subs s 0 (min 200 (count s)))))))
                                         (set (remove #(or (contains? var-globals %)
                                                           (contains? own (some-> (:ns (meta %)) ns-name)))
-                                                     @rooted-vars)))]
+                                                     (if @alter-fallback @rooted-vars @altered-vars))))]
          ;; the cached, fully lowered runtime (lower-wasm/load-rtlib!)
          (when rtlib? (lw/load-rtlib!))
          (doseq [v @decls] (lw/add-decl! v))
