@@ -410,6 +410,30 @@
             (stdlib-ns! n)
             (get @stdlib-twin-map v))))))
 
+(def stdlib-alias-map (atom {}))   ; unsourced var -> the embedded var whose fn it holds
+
+(defn stdlib-alias
+  "The embedded stdlib var whose fn an unsourced var holds, or nil. A core
+   file may define a fn in one namespace and intern its value into another
+   (ir.data's accessors land in ir); the interned var carries no meta, so
+   its source is found through the value. Written without for/doseq: this
+   file loads before any program, and those take gensyms (P9.1)."
+  [v]
+  (when (and (var? v) (nil? (:file (meta v))))
+    (or (get @stdlib-alias-map v)
+        (let [x (try @v (catch e nil))]
+          (when (fn? x)
+            (let [src (some (fn [n]
+                              (some (fn [sv]
+                                      (when (and (not (identical? sv v))
+                                                 (let [en (embedded-ns sv)] (and en (not (#{'core 'string} en))))
+                                                 (identical? x (try @sv (catch e nil))))
+                                        sv))
+                                    (vals (ns-interns (ns-name n)))))
+                            (all-ns))]
+              (when src (swap! stdlib-alias-map assoc v src))
+              src))))))
+
 (defn source-defn
   "The source defn the backend compiles for v: a runtime defn, an lg-defined
    core fn, one of src/lw_ext.lg's, a stdlib defn, or a program library defn."

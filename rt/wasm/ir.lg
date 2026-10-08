@@ -1,0 +1,75 @@
+;; wasm.ir — P10.6: the `ir` substrate primitives let-go's IR data layer and
+;; passes call (pkg/rt/ir_bridge_generated.go at let-go ff1e6dac), so that a
+;; program can carry the IR pipeline itself. Plain lg like natives.lg.
+;;
+;; The op table is the catalog's four columns the non-lowering files read
+;; (terminator? cheap-load? infer-facet? lower-facet?), rows in the native's
+;; op-kws order; checks/ir-pipeline.sh compares it with the native's answers.
+;; Named limits: the chunk primitives (chunk-emit, chunk-intern-const, ...)
+;; have no twin, lowering to bytecode being the VM's; new-consts returns a
+;; placeholder only the lowerer would fill; form-source-info is nil (the
+;; reader's position table is the host's), so a function built here carries
+;; named source infos only.
+;; Written without destructuring, for or doseq: this file loads before any
+;; program and those take gensyms (P9.1).
+(ns wasm.ir)
+
+(def op-table
+  [[:invalid false false false false]
+   [:const false true true true]
+   [:load-arg false true true false]
+   [:load-var false true true false]
+   [:load-closed false true true false]
+   [:block-arg false false true false]
+   [:set-var false false false false]
+   [:call false false false false]
+   [:tail-call true false false false]
+   [:add false false true false]
+   [:sub false false true false]
+   [:mul false false true false]
+   [:bit-and false false true false]
+   [:bit-or false false true false]
+   [:bit-xor false false true false]
+   [:bit-and-not false false true false]
+   [:bit-shift-left false false true false]
+   [:bit-shift-right false false true false]
+   [:unsigned-bit-shift-right false false true false]
+   [:quot false false true false]
+   [:div false false true false]
+   [:unchecked-add false false true false]
+   [:unchecked-sub false false true false]
+   [:unchecked-mul false false true false]
+   [:lt false false true false]
+   [:lte false false true false]
+   [:gt false false true false]
+   [:gte false false true false]
+   [:eq false false true false]
+   [:inc false false true false]
+   [:dec false false true false]
+   [:bit-not false false true false]
+   [:pop false false false false]
+   [:return true false true false]
+   [:branch true false true false]
+   [:branch-if true false true false]
+   [:make-closure false false false false]
+   [:push-closed false false false false]
+   [:try false false false true]
+   [:dot false false false false]
+   [:def false false false false]
+   [:recur-fn true false false false]])
+
+(def op-index (reduce (fn [m r] (assoc m (nth r 0) r)) {} op-table))
+
+(defn- op-row [kw nm]
+  (let [r (get op-index kw)]
+    (if r r (throw (ex-info (str "ir/" nm ": unknown op " kw) {})))))
+
+(defn ^{:twin "ir/op-kws"} op-kws [] (mapv (fn [r] (nth r 0)) op-table))
+(defn ^{:twin "ir/op-terminator?"} op-terminator? [kw] (nth (op-row kw "op-terminator?") 1))
+(defn ^{:twin "ir/op-cheap-load?"} op-cheap-load? [kw] (nth (op-row kw "op-cheap-load?") 2))
+(defn ^{:twin "ir/op-infer-facet?"} op-infer-facet? [kw] (nth (op-row kw "op-infer-facet?") 3))
+(defn ^{:twin "ir/op-lower-facet?"} op-lower-facet? [kw] (nth (op-row kw "op-lower-facet?") 4))
+
+(defn ^{:twin "ir/new-consts"} new-consts [] (atom []))
+(defn ^{:twin "ir/form-source-info"} form-source-info [form] nil)
+(defn ^{:twin "ir/new-named-source-info"} new-named-source-info [s] {:symbol s})

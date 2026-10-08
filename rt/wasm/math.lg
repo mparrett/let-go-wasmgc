@@ -364,6 +364,19 @@
                  (= op 3) (wasm/bytes-of-string "bit-shift-right expects 2 args")
                  :else (wasm/bytes-of-string "unsigned-bit-shift-right expects 2 args"))))
 
+;; P10.6: bit-not and bit-and-not as values (CoreBitNot, CoreBitAndNot)
+(defn ^{:twin "core/bit-not"} bit-not*
+  ([] (c/raise (wasm/bytes-of-string "bit-not expects 1 arg")))
+  ([a] (if (int-val? a) (sq/box-int (bit-xor (sq/unbox-int a) -1)) (c/raise (wasm/bytes-of-string "bit-not expected Int"))))
+  ([a b] (c/raise (wasm/bytes-of-string "bit-not expects 1 arg"))))
+(defn ^{:twin "core/bit-and-not"} bit-and-not*
+  ([] (c/raise (wasm/bytes-of-string "bit-and-not expects 2 args")))
+  ([a] (c/raise (wasm/bytes-of-string "bit-and-not expects 2 args")))
+  ([a b] (if (if (int-val? a) (int-val? b) false)
+           (sq/box-int (bit-and (sq/unbox-int a) (bit-xor (sq/unbox-int b) -1)))
+           (c/raise (wasm/bytes-of-string "bit-and-not expected Int"))))
+  ([a b x] (c/raise (wasm/bytes-of-string "bit-and-not expects 2 args"))))
+
 (defn ^{:twin "core/bit-or"} bit-or* ([] (bit-arity 0)) ([a] (bit-arity 0)) ([a b] (bit2 0 a b)) ([a b x] (bit-arity 0)))
 (defn ^{:twin "core/bit-xor"} bit-xor* ([] (bit-arity 1)) ([a] (bit-arity 1)) ([a b] (bit2 1 a b)) ([a b x] (bit-arity 1)))
 (defn ^{:twin "core/bit-shift-left"} shl ([] (bit-arity 2)) ([a] (bit-arity 2)) ([a b] (bit2 2 a b)) ([a b x] (bit-arity 2)))

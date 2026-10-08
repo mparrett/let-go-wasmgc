@@ -558,6 +558,17 @@
 (defn keyword? [x] (sq/bool (= 20 (named-k x))))
 (defn symbol? [x] (sq/bool (if (= 21 (named-k x)) (= 0 (standin x)) false))) ; P5.9: not a Regex/Var stand-in
 (defn fn? [x] (sq/bool (= 16 (sq/kind x))))
+;; P10.6: (symbol x) of a var stand-in is its bare symbol, as native gives
+;; the Var's symbol (the IR passes name a :load-var's var so), and of a
+;; meta'd symbol is itself. str.lg's twin handles the plain kinds and cannot
+;; see MetaNamed; this one, claimed later in the load order, wins.
+(defn ^{:twin "core/symbol"} symbol*
+  ([x] (if (= 36 (ckind x))
+         (cond (= 2 (standin x)) (wasm/get MetaNamed 0 x)
+               (= 0 (standin x)) x
+               :else (s/symbol x))
+         (s/symbol x)))
+  ([ns nm] (s/symbol ns nm)))
 (defn ^{:twin "core/list?"} list? [x] (let [k (sq/kind x)] (sq/bool (if (= k 2) true (= k 3)))))
 (defn coll? [x]
   (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true
@@ -1372,6 +1383,11 @@
 (defn- foreign-equiv [self a b]                          ; identity: the transients and types; sorted colls as maps/sets
   (sq/bool (cond (= 38 (ckind a)) (so/smap-equiv? a b) (= 38 (ckind b)) (so/smap-equiv? b a)
                  (= 39 (ckind a)) (so/sset-equiv? a b) (= 39 (ckind b)) (so/sset-equiv? b a)
+                 ;; P10.6: two stand-ins of one var are that var (natively one
+                 ;; Var object): find-var and resolve make a fresh one per call.
+                 ;; Meta'd symbols stay identity, as native compares them.
+                 (if (= 2 (standin a)) (= 2 (standin b)) false)
+                 (sq/equiv? (wasm/get MetaNamed 0 a) (wasm/get MetaNamed 0 b))
                  :else (wasm/ref-eq a b))))
 ;; None of these is Hashable natively: FNV-1a of String() (hash.go:31), so a
 ;; meta'd keyword hashes as ":a" text, apart from the bare keyword, a type as

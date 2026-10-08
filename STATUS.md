@@ -147,6 +147,7 @@ TOTAL ≈ $1,227
 | P1.9 | done 2026-10-07 (D199) | runner | constants of plain data lowered without analysis; corpus/consts MATCH; warm legmacs -4.6% wall |
 | P9.2 | done 2026-10-07 (D200) | opus | rtlib restore replays the build's gensyms (104); legmacs and checks/fixtures/warm-gensym cold = warm-from-own-cache (differed before) |
 | P9.3 | done 2026-10-07 (D201) | opus | rtlib cache keyed on the rooted natives the runtime asks about; checks/fixtures/rtlib-rooted shared-cache = fresh (differed before: pmap skipped the altered future* root) |
+| P10.6 | done 2026-10-07 (D204) | runner | let-go's IR pipeline carried as a program: library deftype/defrecord/defprotocol, rt/wasm/ir.lg, LW_PROGRAM_TABLE=1; 199-line dump MATCH; module/native 1.08, 1.01, 1.02 under the baton; GC guard re-frozen (= on var stand-ins, symbol of one) |
 | D182 | done 2026-10-03 | runner | (println os/args) MATCH on the GC lane; regression corpus/scalar/os-args.lg under P1.1; run.mjs argv[0] = lg path |
 | REPL page | done 2026-10-02 | runner | host/repl.html, 285 KB opt / 77 KB brotli, 13 examples, :8262 in lw-play |
 | cost round 3 | estimate 2026-10-02 | runner | ~1.9 M subagent tokens (9 Opus + 1 Sonnet dispatches) + runner; list-price estimate ~$1.5k (round 2 ~$1.26k, round 1 ~$4.5k); session total 558 M in / 1.45 M out across rounds 2-3 |
