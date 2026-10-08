@@ -21,6 +21,8 @@
             [clojure.string :as str] [lw-rt]))
 
 (def ^:dynamic *target* :gc)
+;; --profile / LW_PROFILE for --target llvm (D200); read by lower_llvm.lg only
+(def ^:dynamic *llvm-profile-arg* nil)
 (def ^:dynamic *f* nil)
 ;; per-*f* memo of src-of (an atom, rebound wherever *f* is): src-of walks
 ;; block-arg chains and runs for every value many times; unmemoised, a
@@ -2368,7 +2370,20 @@
               (src-of (first (ir/refs i f)))))
        (set (for [i insts :when (= :try (ir/op i f)) r (ir/refs i f) n (chain r)] n))])))
 
+(declare lower-fn-wasm)
+
+(defn ensure-llvm-target! []
+  (require 'lower-llvm))
+
 (defn lower-fn
+  "One lowered function: a wasm func, or under --target llvm the LLVM text
+   of src/lower_llvm.lg (loaded on demand, as lower_linear.lg is)."
+  [info]
+  (if (= *target* :llvm)
+    (do (ensure-llvm-target!) ((resolve 'lower-wasm/llvm-fn) info))
+    (lower-fn-wasm info)))
+
+(defn lower-fn-wasm
   "One wasm function. `code` (an arity) makes it closure code of type
    $Code<code>: the closure arrives as $self, its captures are read from the
    env struct `env` (field kinds `env-kinds`). `caps` are a try region's
@@ -3857,7 +3872,7 @@
    compiles every runtime defn and keeps every helper (size measurement)."
   ([sigs var-globals] (new-session sigs var-globals {}))
   ([sigs var-globals opts]
-   {:target (or (:target opts) :gc) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+   {:target (or (:target opts) :gc) :profile (:profile opts) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
     :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
@@ -3870,7 +3885,7 @@
 
 
 (defn with-session* [ss thunk]
-  (binding [*target* (or (:target ss) :gc) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
+  (binding [*target* (or (:target ss) :gc) *llvm-profile-arg* (:profile ss) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
@@ -4289,6 +4304,8 @@
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
   [ss fns]
+  (if (= :llvm (:target ss))
+    (with-session* ss (fn [] ((resolve 'lower-wasm/llvm-module) fns)))
   (binding [*top-forms-cache* (atom {})]
     (with-session* ss
       (fn []
@@ -4310,7 +4327,7 @@
                (str/join "\n" (ordered "(func")) "\n"
                program "\n"
                (rt-init-wat live items)
-               ")\n")))))))
+               ")\n"))))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.

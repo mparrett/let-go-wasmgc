@@ -730,21 +730,28 @@
 
 (defn target-args
   "Validate the target before reading the program. The flag (`--target v` or
-   `--target=v`) wins over LW_TARGET."
+   `--target=v`) wins over LW_TARGET, and `--profile` over LW_PROFILE."
   [argv]
-  (loop [xs argv out [] target (or (not-empty (os/getenv "LW_TARGET")) "gc")]
+  (loop [xs argv out [] target (or (not-empty (os/getenv "LW_TARGET")) "gc")
+         profile (not-empty (os/getenv "LW_PROFILE"))]
     (if (empty? xs)
-      (if (contains? #{"gc" "linear"} target)
-        [out (keyword target)]
+      (if (contains? #{"gc" "linear" "llvm"} target)
+        [out (keyword target) profile]
         (throw (ex-info (str "lower-wasm: unsupported target " target) {})))
       (let [x (first xs)]
-        (if (= "--target" x)
+        (cond
+          (= "--target" x)
           (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
-            (recur (drop 2 xs) out (second xs))
-            (throw (ex-info "lower-wasm: --target needs gc or linear" {})))
-          (if (clojure.string/starts-with? x "--target=")
-            (recur (rest xs) out (subs x 9))
-            (recur (rest xs) (conj out x) target)))))))
+            (recur (drop 2 xs) out (second xs) profile)
+            (throw (ex-info "lower-wasm: --target needs gc, linear or llvm" {})))
+          (clojure.string/starts-with? x "--target=") (recur (rest xs) out (subs x 9) profile)
+          ;; --profile names a hardware profile for --target llvm (D200)
+          (= "--profile" x)
+          (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
+            (recur (drop 2 xs) out target (second xs))
+            (throw (ex-info "lower-wasm: --profile needs a profile name or path" {})))
+          (clojure.string/starts-with? x "--profile=") (recur (rest xs) out target (subs x 10))
+          :else (recur (rest xs) (conj out x) target profile))))))
 
 (defn -main [& argv]
   ;; plain bindings: a destructuring one takes a gensym when this file loads,
@@ -752,6 +759,7 @@
   (let [targeted (target-args argv)
         argv (first targeted)
         target (second targeted)
+        profile (nth targeted 2)
         sp-arg (second (drop-while #(not= "-source-paths" %) argv))
         _ (reset! source-paths (if sp-arg (vec (remove empty? (clojure.string/split sp-arg #":"))) []))
         argv (if sp-arg (remove #{"-source-paths" sp-arg} argv) argv)
@@ -760,7 +768,7 @@
         argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
         flags (set (filter #(clojure.string/starts-with? % "--") argv))
         [in out] (remove flags argv)
-        opts {:target target :rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
+        opts {:target target :profile profile :rt (not (or (= target :llvm) (flags "--no-rt"))) :shake (not (flags "--no-shake"))}
         rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))

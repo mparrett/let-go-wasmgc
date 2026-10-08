@@ -100,3 +100,8 @@ P11.4	11	checks/linear-gc.sh P11.4	2026-10-06 (D197): not built yet (exit 2). ga
 P11.5	11	checks/linear-gc.sh P11.5	2026-10-06 (D197): not built yet (exit 2). corpus/linear-gc/alloc-loop.lg peak RSS at 10x iterations under 2x its peak at 1x
 P11.6	11	checks/linear-gc.sh P11.6	2026-10-06 (D197): not built yet (exit 2). legmacs boots under the linear runner; deftest count matches the GC lane
 P11.7	11	checks/linear-gc.sh P11.7	2026-10-06 (D197): not built yet (exit 2). gate-8 corpus directories and corpus/linear-gc/ MATCH under LW_GC_STRESS=1 and LW_GC_POISON=1 after narrowed frames and spills
+P12.1	12	env WASM_RUN=checks/native-run.sh checks/run-corpus.sh corpus/llvm-scalar	2026-10-07: scalar programs MATCH native lg on the host profile (D199)
+P12.2	12	checks/llvm-profile-check.sh	2026-10-07: hardware profiles load and validate; malformed and unimplemented profiles are refused by name; --profile beats LW_PROFILE (D200)
+P12.3	12	env WASM_RUN=checks/native-run.sh checks/run-corpus.sh corpus/llvm-scalar corpus/llvm && env LW_PROFILE=host-aarch64-darwin-fix31 WASM_RUN=checks/native-run.sh checks/run-corpus.sh corpus/llvm-scalar corpus/llvm && checks/llvm-word-check.sh	2026-10-07: llvm corpora MATCH on the host profile and its 31-bit-fixnum variant; a 32-bit-word module (i686 test profile) has its triple and data layout, compiles with llc and uses i32 boxed words (spec decision 6)
+P12.20	12	checks/llvm-armv7-check.sh	2026-10-07: 32-bit early check (D202): the fixnum edges and the scalar programs that fit without a collector MATCH on armv7-virt under qemu, built with LLVM only
+P12.21	12	checks/llvm-oom-check.sh	2026-10-07: on a bare profile, heap exhaustion prints error: out of memory and exits 1 (plan review focus 5)

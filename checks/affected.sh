@@ -109,6 +109,11 @@ P8.12	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/linear-runner-abi-c
 P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P8.13	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric/
 P11.0	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
+P12.1	oracle src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/profile-field.lg corpus/llvm-scalar/
+P12.2	src/driver.lg src/lower_wasm.lg src/lower_llvm.lg src/lower_llvm_profile.lg targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh checks/profile-field.lg
+P12.3	oracle src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh checks/profile-field.lg corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/
+P12.20	oracle checks/llvm-armv7-check.sh src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/profile-field.lg corpus/llvm/ corpus/llvm-scalar/
+P12.21	src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P11.3	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh

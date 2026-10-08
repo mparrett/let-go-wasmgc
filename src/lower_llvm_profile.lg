@@ -1,0 +1,71 @@
+;; lower-llvm-profile: hardware profiles for --target llvm (D200, spec
+;; decision 2). A profile is EDN data in targets/<name>.edn: read, never
+;; evaluated. Required by lower_llvm.lg and by checks/profile-field.lg, so a
+;; GC build never loads it.
+(ns lower-llvm-profile
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]))
+
+(def targets-dir
+  (let [f *file*
+        src (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")]
+    (str src "/../targets")))
+
+(defn host-name
+  "The host profile's name for the machine lg runs on: host-<arch>-<os>."
+  []
+  (let [arch (os/arch)]
+    (str "host-" (get {"arm64" "aarch64" "amd64" "x86_64"} arch arch) "-" (os/os-name))))
+
+(defn profile-path
+  "A profile argument is a path when it names an .edn file or contains a
+   slash, else a name under targets/; nil or \"host\" is the host profile."
+  [arg]
+  (cond (or (nil? arg) (= "" arg) (= "host" arg)) (str targets-dir "/" (host-name) ".edn")
+        (or (str/ends-with? arg ".edn") (str/includes? arg "/")) arg
+        :else (str targets-dir "/" arg ".edn")))
+
+(defn- refuse [n field reason]
+  (throw (ex-info (str "lower-wasm: profile " n ": " field " " reason) {:profile n :field field})))
+
+(defn validate
+  "The profile p with defaults filled in, or a named error for the first bad
+   field. Fields the emitter does not implement yet pass here; the emitter
+   refuses them (refuse-unimplemented)."
+  [n p]
+  (let [w (:word-bits p)
+        fx (if (contains? p :fixnum-bits) (:fixnum-bits p) (when (int? w) (dec w)))]
+    (when-not (string? (:triple p)) (refuse n ":triple" "is required"))
+    (when-not (contains? #{32 64} w) (refuse n ":word-bits" (str "must be 32 or 64, got " (pr-str w))))
+    (when-not (and (int? fx) (<= 2 fx (dec w)))
+      (refuse n ":fixnum-bits" (str "must be an integer from 2 to " (dec w) ", got " (pr-str fx))))
+    (when-not (contains? #{:tailcc :uniform} (:tail-calls p))
+      (refuse n ":tail-calls" (str "must be :tailcc or :uniform, got " (pr-str (:tail-calls p)))))
+    (when-not (contains? #{:hard :soft} (get p :float :hard))
+      (refuse n ":float" (str "must be :hard or :soft, got " (pr-str (:float p)))))
+    (when-not (contains? #{:posix :bare} (get p :host :posix))
+      (refuse n ":host" (str "must be :posix or :bare, got " (pr-str (:host p)))))
+    (when (and (= :bare (:host p)) (not (pos-int? (get-in p [:heap :bytes]))))
+      (refuse n ":heap" "needs a positive :bytes when :host is :bare"))
+    (when (and (= :bare (:host p)) (not (string? (:board p))))
+      (refuse n ":board" "is required when :host is :bare"))
+    (assoc p :name n :fixnum-bits fx :float (get p :float :hard) :host (get p :host :posix))))
+
+(defn refuse-unimplemented
+  "Refuse profile fields the emitter does not implement yet (spec decision 3):
+   :uniform tail calls are M6."
+  [p]
+  (when (= :uniform (:tail-calls p)) (refuse (:name p) ":tail-calls" ":uniform is not implemented before M6"))
+  p)
+
+(defn load-profile
+  "Read and validate the profile named or located by arg."
+  [arg]
+  (let [path (profile-path arg)
+        text (try (slurp path)
+                  (catch e (throw (ex-info (str "lower-wasm: profile " (or arg "host") ": not found at " path) {:path path}))))
+        p (edn/read-string text)
+        n (or (:name p) (let [b (subs path (inc (or (str/last-index-of path "/") -1)))]
+                          (if (str/ends-with? b ".edn") (subs b 0 (- (count b) 4)) b)))]
+    (when-not (map? p) (refuse n "" "is not an EDN map"))
+    (validate n p)))
