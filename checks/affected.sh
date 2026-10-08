@@ -37,6 +37,7 @@ P1.5	src/ checks/census.sh checks/census.lg checks/census-summary.py xsofy legma
 P1.6	src/ checks/census.sh checks/census.lg checks/census-summary.py xsofy legmacs oracle corpus/census/switch/
 P1.7	oracle corpus/review/ checks/run-corpus.sh checks/refuse.sh
 P1.8	oracle checks/env.sh checks/sem.sh checks/macro-error-determinism.sh checks/native-msg-check.lg checks/fixtures/macro-error-bare.lg
+P1.9	oracle corpus/consts/ checks/run-corpus.sh
 P1.GATE	src/ checks/bench-fib.sh checks/bench-fib.mjs checks/bench-fib-probe.lg corpus/scalar/fib.clj
 P2.1	oracle corpus/wasm/ checks/run-corpus.sh
 P2.2	oracle corpus/hash/ checks/hash-parity.sh checks/wasm-hash.sh
@@ -125,10 +126,13 @@ P11.6	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh legmac
 P11.7	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P9.0	src/ rt/ checks/rtlib-cold-warm.sh corpus/eval/program/apply-update-warm-cache.lg
 P9.1	src/ rt/ checks/gensym-load.sh checks/fixtures/gensym-probe.lg checks/env.sh
-P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
+P9.2	src/ rt/ checks/rtlib-cold-warm.sh checks/fixtures/warm-gensym/
+P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/fixtures/warm-gensym/ legmacs checks/wasmbin-roundtrip.sh checks/sem.sh checks/env.sh
 P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh
 P10.2	src/ rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ host/node-host.mjs host/lg-wasm-host.js checks/emit-linked.sh checks/oracle.sh checks/env.sh
 P10.3	src/ rt/ corpus/emit/host/ host/explorer.html host/build-explorer-serve.sh host/lg-wasm-host.js checks/explorer-page-check.mjs checks/sem.sh checks/env.sh
+P7.11	oracle corpus/eval/program/multi/ checks/run-corpus.sh
+P10.6	oracle checks/ir-pipeline.sh checks/fixtures/ir-pipeline/ checks/env.sh
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

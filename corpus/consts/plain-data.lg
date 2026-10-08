@@ -1,0 +1,21 @@
+;; P1b (D199): constants of plain data are lowered straight from the value.
+;; Each literal here prints, iterates and compares as native: leaf kinds,
+;; nesting, empty collections, Ints at the i31 boundary and past it, Floats,
+;; maps on both sides of the 8-entry array-map/hash-map boundary, booleans,
+;; and regex literals (a symbol whose metadata is the compiled program).
+(ns plain-data)
+(def leaves [nil "s" "ünï 😀" :k :ns/k 'sym 'ns/sym 0 -1 1073741823 1073741824 -1073741824 -1073741825
+             9223372036854775807 -9223372036854775808 1.5 -0.0 1e300])
+(def nested {:a [1 2 {:b #{:c "d"}}] "e" {:f nil} 'g #{[1 2] [3 4]} 7 [] :empty-map {} :empty-set #{}})
+(def small {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8})
+(def big {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10 :k 11 :l 12 :m 13 :n 14 :o 15 :p 16 :q 17})
+(def kws #{:if :do :let :loop :recur :fn :def :quote :var :try :catch :finally :throw :new :set! :ns/x})
+(def bools [true false nil {:t true :f false} #{true false}])
+(def res [#"[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*" #"^(#{1,6})\s+(.*)$" #"a|b"])
+(def strs ["" "a" "a\nb" "tab\there" "quote\"q" "back\\slash"])
+(prn bools) (prn (map #(re-matches % "  ---  ") res) (re-find (second res) "## Title here") (re-find (nth res 2) "xbx"))
+(prn leaves) (prn nested) (prn small) (prn big) (prn kws) (prn strs)
+(prn (map type [nil "s" :k 'sym 0 1073741824 1.5]))
+(prn (keys small) (vals small) (keys big) (seq kws))
+(prn (= small (into {} (seq small))) (= big (zipmap (keys big) (vals big))) (contains? kws :recur) (get nested 7) (get-in nested [:a 2 :b]))
+(prn (count leaves) (count nested) (hash small) (hash big) (hash kws) (hash leaves))

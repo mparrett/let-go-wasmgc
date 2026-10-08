@@ -1,0 +1,75 @@
+;; P9.2 (D200) library namespace. A required namespace's defns are
+;; macroexpanded again when the program is analysed, so the destructuring
+;; below takes gensyms after the runtime library is built or restored. With
+;; the counter at a different value on a cold and a warm compile, the local
+;; numbering of paren-match-spans-for-row differed (2026-10-07, a6f4ce5).
+;; Which function moves depends on the exact counter values, so the
+;; namespace keeps several destructuring shapes rather than one.
+(ns gr.edit)
+(defn innermost-open [s off]
+  (loop [i (dec off) depth 0]
+    (if (neg? i) nil
+      (let [c (nth s i)]
+        (cond (contains? #{\) \] \}} c) (recur (dec i) (inc depth))
+              (contains? #{\( \[ \{} c) (if (zero? depth) [c i] (recur (dec i) (dec depth)))
+              :else (recur (dec i) depth))))))
+
+(defn row-col [lines off]
+  (loop [r 0 o off]
+    (let [n (inc (count (nth lines r)))]
+      (if (< o n) [r o] (recur (inc r) (- o n))))))
+
+(defn token-at [line col]
+  (let [n (count line)]
+    (when (< col n)
+      (loop [e col] (if (and (< e n) (not= \space (nth line e))) (recur (inc e)) (when (> e col) [col e]))))))
+
+(defn indent-column-for [state row]
+  (let [lines (:lines state)
+        chars (apply str (interpose "\n" lines))
+        offset (reduce + (map #(inc (count %)) (take row lines)))]
+    (if-let [[open-ch open-offset] (innermost-open chars offset)]
+      (let [[open-row open-col] (row-col lines open-offset)
+            line (nth lines open-row)]
+        (if (contains? #{\[ \{} open-ch)
+          (inc open-col)
+          (if-let [[head-start head-end] (token-at line (inc open-col))]
+            (if (#{"defn" "let" "fn"} (subs line head-start head-end))
+              (+ open-col 2)
+              (if-let [[arg-start _] (token-at line (inc head-end))]
+                arg-start
+                (+ open-col 2)))
+            (inc open-col))))
+      0)))
+
+(defn paren-match-spans-for-row [state buf-row]
+  (if-let [[[r1 c1] [r2 c2]] (:paren-match state)]
+    (cond-> []
+      (= buf-row r1) (conj {:style :paren-match :start c1 :end (inc c1)})
+      (= buf-row r2) (conj {:style :paren-match :start c2 :end (inc c2)}))
+    []))
+
+(defn split-lines* [text]
+  (loop [i 0 start 0 acc []]
+    (cond (= i (count text)) (conj acc (subs text start))
+          (= \newline (nth text i)) (recur (inc i) (inc i) (conj acc (subs text start i)))
+          :else (recur (inc i) start acc))))
+
+(defn insert-string [state text]
+  (let [{:keys [lines cursor-row cursor-col]} state
+        line (nth lines cursor-row)
+        before (subs line 0 cursor-col)
+        after (subs line cursor-col)
+        pieces (split-lines* text)
+        n (count pieces)]
+    (if (= n 1)
+      (-> state (assoc :lines (assoc lines cursor-row (str before text after)))
+          (assoc :cursor-col (+ cursor-col (count text))))
+      (let [first-piece (nth pieces 0)
+            last-piece (nth pieces (dec n))
+            new-lines (-> [(str before first-piece)] (into (subvec pieces 1 (dec n))) (conj (str last-piece after)))]
+        (-> state
+            (assoc :lines (vec (concat (subvec lines 0 cursor-row) new-lines (subvec lines (inc cursor-row)))))
+            (assoc :cursor-row (+ cursor-row (dec n)))
+            (assoc :cursor-col (count last-piece)))))))
+

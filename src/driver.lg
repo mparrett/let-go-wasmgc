@@ -105,6 +105,7 @@
 ;; produces is missed (named limit).
 (def eval-reached (atom false))
 (def ns-read (atom false))
+(def table-asked? (= "1" (os/getenv "LW_PROGRAM_TABLE")))
 
 (defn note-registry-refs! [form]
   (cond (symbol? form)
@@ -519,6 +520,88 @@
 
 (declare expand-top)
 
+;; P10.6: deftype, defrecord and defprotocol in a library namespace. The
+;; backend has no type kind (D122), so a field-less type is its tag, the
+;; Keyword :<ns>/<Name>; a type with fields is a map {:lw/type tag :field
+;; value ..}; the type's var holds the tag, so (instance? T x) is
+;; wasm.natives' instance? over tags. A protocol method is one library defn
+;; dispatching on the tag of its first argument over every deftype and
+;; defrecord that implements it, registered once the require that reached
+;; them is loaded. Named limits: extend-type, extend-protocol, reify and
+;; Object methods are not seen; an implementation compiles in the protocol's
+;; namespace, so one outside it must use qualified names. Written without
+;; destructuring, for or doseq (P9.1).
+(def protocol-methods (atom {}))   ; method var -> {:var :ns :name :params :impls {tag {:params :body :fields}}}
+
+(defn type-tag [ns-sym nm] (keyword (str ns-sym) (str nm)))
+
+(defn note-protocol! [ns-sym form]
+  (reduce (fn [_ sig]
+            (when (seq? sig)
+              (let [m (first sig)
+                    params (first (filter vector? (rest sig)))
+                    v (lw-rt/ns-var ns-sym m)]
+                (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" m " did not load") {})))
+                (swap! protocol-methods assoc v {:var v :ns ns-sym :name m :params (vec (rest params)) :impls {}}))))
+          nil (drop 2 form)))
+
+(defn deftype-forms
+  "The def and defn forms a deftype or defrecord form stands for (above);
+   its method implementations are noted on their protocol methods."
+  [ns-sym form]
+  (let [head (nth form 0)
+        nm (nth form 1)
+        fields (vec (nth form 2))
+        tag (type-tag ns-sym nm)
+        ctor (list 'defn (symbol (str "->" nm)) fields
+                   (if (seq fields)
+                     (into {:lw/type tag} (map (fn [f] [(keyword (str f)) f]) fields))
+                     tag))
+        ;; defrecord's map->Name: the record's fields from the map (nil
+        ;; when absent), other keys kept, as native's
+        mctor (when (= 'defrecord head)
+                (list 'defn (symbol (str "map->" nm)) '[__lw_m]
+                      (list 'clojure.core/assoc
+                            (list 'clojure.core/merge (into {} (map (fn [f] [(keyword (str f)) nil]) fields)) '__lw_m)
+                            :lw/type tag)))]
+    (reduce (fn [_ x]
+              (when (seq? x)
+                (let [m (first x)
+                      mv (binding [*ns* (the-ns ns-sym)] (resolve m))]
+                  (when-not (contains? @protocol-methods mv)
+                    (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
+                  (swap! protocol-methods assoc-in [mv :impls tag]
+                         {:params (vec (nth x 1)) :body (drop 2 x) :fields fields}))))
+            nil (drop 3 form))
+    (if mctor [(list 'def nm tag) ctor mctor] [(list 'def nm tag) ctor])))
+
+(defn protocol-dispatch-form
+  "The defn for protocol method e over its noted implementations."
+  [e]
+  (let [args (vec (map (fn [i] (symbol (str "__a" i))) (range (count (:params e)))))
+        arms (mapcat (fn [kv]
+                       (let [tag (key kv) impl (val kv)
+                             binds (vec (concat (interleave (:params impl) (cons '__this args))
+                                                (mapcat (fn [f] [f (list (keyword (str f)) '__this)]) (:fields impl))))]
+                         [(if (seq (:fields impl))
+                            (list 'identical? tag (list :lw/type '__this))
+                            (list 'identical? tag '__this))
+                          (apply list 'let binds (:body impl))]))
+                     (:impls e))]
+    (apply list 'defn (:name e) (into ['__this] args)
+           [(apply list 'cond (concat arms [:else (list 'throw (list 'ex-info (str "No implementation of method: " (:name e)) {}))]))])))
+
+(defn register-protocol-dispatch!
+  "Register (again) the dispatch defn of every protocol method with an
+   implementation, so a later-loaded type joins it."
+  []
+  (reduce (fn [_ e]
+            (when (seq (:impls e))
+              (let [form (protocol-dispatch-form e) v (:var e)]
+                (swap! lw-rt/lib-defns assoc v {:var v :ns (:ns e) :name (:name e) :lib true
+                                                :arities (lw-rt/arities (drop 2 form))}))))
+          nil (vals @protocol-methods)))
+
 (defn index-lib-ns!
   "Index one loaded library namespace (see above). Returns the init var's
    symbol. var-globals collects the namespace's def vars."
@@ -559,7 +642,9 @@
                     (doseq [nm (thunk-def-syms e)]
                       (swap! thunk-vars conj (lw-rt/ns-var ns-sym (first (lw-rt/strip-meta-name nm)))))
                     (swap! init-forms conj e)))
-                (#{'defmulti 'deftype 'defprotocol 'defrecord} head)
+                (= 'defprotocol head) (note-protocol! ns-sym form)
+                (#{'deftype 'defrecord} head) (reduce (fn [_ f] (index! f)) nil (deftype-forms ns-sym form))
+                (= 'defmulti head)
                 (throw (ex-info (str "lower-wasm: unsupported top-level form " head " in " ns-sym) {:head head}))
                 ;; P6.1: defcommand-style macros, subform by subform
                 (macro-do-expansion form) (doseq [f (rest (macro-do-expansion form))] (index! f))
@@ -583,6 +668,7 @@
     (eval form)
     (let [inits (doall (for [[n path] order]
                          (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
+      (register-protocol-dispatch!)
       (when (seq inits) (apply list 'do (map list inits))))))
 
 ;; ---------------------------------------------------------------------------
@@ -715,23 +801,48 @@
                           (list 'try form' (list 'catch '__lw_ce (list 'lw-ext/calling-throw (str h) '__lw_ce)))
                           form'))))))
 
+(defn core-names-entry
+  "P10.6: a names-only program-table entry for core, under LW_PROGRAM_TABLE=1:
+   resolve and ns-resolve of a core name (`<`, `str`: the IR builder
+   resolves every symbol) answer its stand-in, as natively its Var, and a
+   name core lacks stays nil. No getter, so the value is not reachable from
+   the stand-in (wasm.core/var-value's named limit): evaluated code reaches
+   core through the evaluator's own table."
+  []
+  (let [names (vec (sort (map str (keys (ns-publics 'core)))))]
+    (list 'let* ['__lw_nsy (list 'clojure.core/symbol "<ns core>") '__lw_names names]
+          {:aliases {} :refers {} :macros {}
+           :vars (list 'loop* ['__lw_k 0 '__lw_m {}]
+                       (list 'if (list 'clojure.core/< '__lw_k (count names))
+                             (list 'let* ['__lw_n (list 'clojure.core/nth '__lw_names '__lw_k)]
+                                   (list 'recur (list 'clojure.core/inc '__lw_k)
+                                         (list 'clojure.core/assoc '__lw_m '__lw_n
+                                               (list 'clojure.core/with-meta
+                                                     (list 'clojure.core/symbol (list 'clojure.core/str "#'core/" '__lw_n))
+                                                     {:name (list 'clojure.core/symbol '__lw_n) :ns '__lw_nsy}))))
+                             '__lw_m))})))
+
 (defn registry-boot-forms
   "The forms _main starts with (P7): the in-ns native's ns form leaves
    behind, and the program table when eval is reached and the runtime has
    install-program-table!."
   [main-ns nss var-globals main-defn-vars]
   (concat
-   (when (or @eval-reached @ns-read)
+   (when (or @eval-reached @ns-read table-asked?)
      [(list 'clojure.core/in-ns (list 'quote main-ns))])
    ;; LW_NO_PROGRAM_TABLE=1: diagnostic, leaves the table out (P7.4 sizes
    ;; the evaluator and the table separately)
    ;; P7.6: LW_NO_EVAL=1 (lw-rt/no-eval?) leaves the evaluator out, and so
    ;; the table and its hidden __lw_* defns
-   (when (and @eval-reached (lw-rt/ns-var (lw-rt/rt-ns 'eval) 'install-program-table!)
+   ;; P10.6: LW_PROGRAM_TABLE=1 emits the table for a program that reaches
+   ;; the registry without eval (a library init that resolves or interns
+   ;; its vars: let-go's ir.data); the trigger stays syntactic eval
+   (when (and (or @eval-reached table-asked?) (lw-rt/ns-var (lw-rt/rt-ns 'eval) 'install-program-table!)
               (not lw-rt/no-eval?)
               (not= "1" (os/getenv "LW_NO_PROGRAM_TABLE")))
      [(list (lw-rt/rt-sym 'eval 'install-program-table!)
-            (into {} (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
+            (into (if table-asked? {"core" (core-names-entry)} {})
+                  (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
 
 (defn target-args
   "Validate the target before reading the program. The flag (`--target v` or

@@ -1,0 +1,7 @@
+;; P9.2 (D200): cold and warm-from-own-cache compiles must give the same bytes.
+(ns gr.main (:require [gr.edit :as e]))
+(def st {:lines ["(defn f [x]" "  (let [a 1" "b 2]" "foo bar baz)"] :cursor-row 1 :cursor-col 3
+         :paren-match [[0 0] [1 7]]})
+(println (map #(e/indent-column-for st %) (range 4)))
+(println (e/paren-match-spans-for-row st 1))
+(println (:lines (e/insert-string st "xy\nzw")))

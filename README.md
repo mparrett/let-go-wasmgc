@@ -54,7 +54,11 @@ GC references in locals (`wasm-opt --asyncify` asserts on them).
 Named limits, as of 2026-10-02: Ratio and BigInt results are named errors
 (D15); `go` blocks and channels are not supported, and `future` runs its
 body at the call (D162); the evaluator has no interop, `deftype`,
-`defprotocol` or `defmulti` (D160). [FINDINGS.md](FINDINGS.md) lists native
+`defprotocol` or `defmulti` (D160). As of 2026-10-07 a library namespace
+(one under `-source-paths`) may define `deftype`, `defrecord` and
+`defprotocol`: a type is a keyword tag or a map carrying one, a protocol
+method one dispatching defn (D204); `extend-type`, `reify` and `defmulti`
+are not seen. [FINDINGS.md](FINDINGS.md) lists native
 let-go behaviours we met along the way.
 
 As of 2026-10-03, `--target linear` (or `LW_TARGET=linear`) selects an
@@ -111,6 +115,7 @@ Environment variables that matter:
 | `LG` | native lg used by the driver and as the oracle's reference |
 | `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |
 | `LW_NO_EVAL=1` | build without the evaluator and the program table (D163) |
+| `LW_PROGRAM_TABLE=1` | install the program table for a program that reaches the registry without `eval` (a library init that resolves or interns its own vars: let-go's `ir.data`), D204 |
 | `LW_EXPORT_RT=1` | export every runtime function as `lw rt <id>` and the var slots, for code compiled at run time (D193) |
 | `LW_RUNTIME_COMPILE=1` | load the emitter into the runtime; with `LW_EXPORT_RT=1` the module exports `lw compile` and `lw eval` (D193) |
 | `LW_NO_OPT=1` | skip wasm-opt in the module build scripts in `host/` |
@@ -244,7 +249,9 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   the program's namespace and installs a program table of its namespaces,
   vars and macros, so evaluated code resolves the program's own vars (D161).
   `LW_NO_EVAL=1` leaves out the evaluator and the table; modules that never
-  reach `eval` are byte-identical either way (D163).
+  reach `eval` are byte-identical either way (D163). `LW_PROGRAM_TABLE=1`
+  installs the table without `eval`, for a program whose library inits
+  resolve or intern their own vars (D204).
 - **Compiling at run time** (docs/SELF-HOST-SPEC.md, stages 3a and 3b-i):
   `rt/wasm/emit.lg` is a second output of the evaluator's front end, a
   baseline emitter of wasm bytes. Built with `LW_EXPORT_RT=1
@@ -314,3 +321,8 @@ mirror of that workspace. In practice:
   their last green run on this machine (`checks/attest.sh`, keyed by the
   input table in `checks/affected.sh`). Gate decisions are taken with
   `LW_ATTEST=0`, which reruns everything.
+
+## License
+
+MIT; see [LICENSE](LICENSE). [NOTICE](NOTICE) lists the material taken from
+let-go, xsofy and legmacs.

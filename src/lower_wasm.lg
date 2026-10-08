@@ -1133,24 +1133,35 @@
     bs))
 
 (defn binding-call-wat [nid v args]
-  (let [bound-global
+  (let [bound-var
+        (fn []
+          (let [k (const-val (first args))]
+            (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))))
+        bound-global
         (fn []
           (let [k (const-val (first args))
-                vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
+                vr (bound-var)
                 g (when vr (bound-var-global vr))]
             (or g (fail (str "lower-wasm: binding of " (namespace k) "/" (name k)
-                             " is not supported (not a var-table var)") {:var vr :fn *fname*}))))]
+                             " is not supported (not a var-table var)") {:var vr :fn *fname*}))))
+        ;; P10.6: (binding [*ns* x] ..) pushes and pops the runtime registry's
+        ;; current namespace (wasm.natives/push-ns!, pop-ns!), which *ns*
+        ;; reads, so the binding is seen by in-ns, resolve and intern
+        ns-binding? (fn [] (and *rt* (= #'*ns* (bound-var)) (lw-rt/ns-var (lw-rt/rt-ns 'natives) 'push-ns!)))
+        ns-call (fn [nm box-exprs] (str "(drop " (rt-call-expr (lw-rt/ns-var (lw-rt/rt-ns 'natives) nm) box-exprs) ")"))]
     (str (condp = v
            #'push-out! (str "(call $rt_push_out " (arg-as (first args) :box) ")")
            #'pop-out! "(call $rt_pop_out)"
            #'push-err! (str "(call $rt_push_err " (arg-as (first args) :box) ")")
            #'pop-err! "(call $rt_pop_err)"
-           #'push-var! (let [g (bound-global) bs (bind-stack-global g)]
-                         (str "(global.set " bs " (struct.new $List (global.get " g ") (global.get " bs ") (i64.const 1) (ref.null none)))"
-                              " (global.set " g " " (arg-as (second args) :box) ")"))
-           #'pop-var! (let [g (bound-global) bs (bind-stack-global g)]
+           #'push-var! (if (ns-binding?)
+                         (ns-call 'push-ns! [(arg-as (second args) :box)])
+                         (let [g (bound-global) bs (bind-stack-global g)]
+                           (str "(global.set " bs " (struct.new $List (global.get " g ") (global.get " bs ") (i64.const 1) (ref.null none)))"
+                                " (global.set " g " " (arg-as (second args) :box) ")")))
+           #'pop-var! (if (ns-binding?) (ns-call 'pop-ns! []) (let [g (bound-global) bs (bind-stack-global g)]
                         (str "(global.set " g " (struct.get $List 0 (ref.cast (ref $List) (global.get " bs "))))"
-                             " (global.set " bs " (struct.get $List 1 (ref.cast (ref $List) (global.get " bs "))))")))
+                             " (global.set " bs " (struct.get $List 1 (ref.cast (ref $List) (global.get " bs "))))"))))
          " (local.set $v" nid " (ref.null none)" (coerce :box (ty nid)) ")")))
 
 (defn set-var-wat
@@ -1740,7 +1751,12 @@
 ;; a direct call and a value read consult first, as native lg's var does.
 ;; Every other native keeps its static twin call.
 (def ^:dynamic *rooted-natives* #{})
-(defn rooted? [v] (and *rt* (contains? *rooted-natives* v)))
+;; D201: while the runtime library is built, the vars its lowering asks
+;; about, so the library is keyed on just the rooted natives that change it
+(def natives-asked (atom nil))
+(defn rooted? [v]
+  (when @natives-asked (swap! natives-asked conj v))
+  (and *rt* (contains? *rooted-natives* v)))
 ;; native lg's compiler emits these (unqualified, by arity) as opcodes
 ;; (compiler.go tryFastOpcode), so a direct call never reads the var and an
 ;; altered root does not reach it; only the var's other uses do
@@ -1792,9 +1808,9 @@
         ;; file loads; here the whole run is the load)
         (and *rt* (= v #'*file*) *program-file*) (str-wat *program-file*)
         ;; P7 (Phase 7 seam): *ns* is the runtime registry's current
-        ;; namespace, so it follows in-ns and evaluated ns forms. Guarded
-        ;; while the runtime lacks current-ns. Named limit: a read inside
-        ;; (binding [*ns* ..]) still sees the registry, not the binding.
+        ;; namespace, so it follows in-ns, evaluated ns forms and (since
+        ;; P10.6, binding-call-wat) a (binding [*ns* ..]). Guarded while the
+        ;; runtime lacks current-ns.
         (and *rt* (= v #'*ns*) (lw-rt/ns-var (lw-rt/rt-ns 'natives) 'current-ns))
         (rt-call-expr (lw-rt/ns-var (lw-rt/rt-ns 'natives) 'current-ns) [])
         ;; P2.14: a native var holding a scalar constant (math/PI, math/E):
@@ -3392,6 +3408,7 @@
           (contains? lw-rt/ext-defns v) v
           (contains? @lw-rt/lib-defns v) v
           ;; P2.14: lg-defined stdlib namespaces, loaded on demand
+          (lw-rt/stdlib-alias v) (lw-rt/stdlib-alias v)
           (lw-rt/stdlib-twin v) (lw-rt/stdlib-twin v)
           (lw-rt/stdlib-defn v) v
           :else nil)))
@@ -3678,6 +3695,91 @@
     (keyword? v) (list (lw-rt/rt-sym 'str 'kw-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (named-text v)))
     :else v))
 
+;; P1b (D199): a constant of plain data -- nil, booleans, strings, keywords,
+;; plain symbols, Ints, Floats, and vectors, maps and sets of them, with no
+;; metadata anywhere, or a regex stand-in whose compiled program is such data
+;; -- is lowered here straight from the value: the runtime
+;; constructor calls const-form would make, in the same order, without
+;; analysing a generated init fn. That analysis cost about 5 ms per constant
+;; plus 1-2 ms per call node (legmacs: 580 constants, ~10 s of a warm build).
+;; Anything else keeps the analysed path. No destructuring, #() or for here:
+;; each takes a gensym when this file loads (D188, P9.1).
+
+(defn- direct-const? [v]
+  (cond (or (vector? v) (set? v)) (every? direct-const? v)
+        (map? v) (every? (fn [e] (and (direct-const? (key e)) (direct-const? (val e)))) v)
+        (symbol? v) (or (nil? (meta v)) (and (:lw/regex (meta v)) (direct-const? (meta v))))
+        :else (or (nil? v) (boolean? v) (string? v) (keyword? v) (int? v) (float? v))))
+
+(defn- direct-call
+  "A call to runtime fn ns/f with WAT args, by its registered sig; nil when
+   that arity is not a plain boxed-in, boxed-out fn."
+  [ns f args]
+  (let [v (lw-rt/ns-var ns f)]
+    (rt-analyze! v)
+    (let [a (get-in @*sigs* [v :arities (count args)])]
+      (when (and a (every? (fn [k] (= :box k)) (:params a)) (= :box (:ret a)))
+        (str "(call $" (:name a) (apply str (map (fn [x] (str " " x)) args)) ")")))))
+
+(defn- direct-need [x] (or x (throw (ex-info "direct constant: no plain sig" {}))))
+
+(defn- direct-expr
+  "WAT building v. A collection builds in its own local; the statements that
+   fill it go onto stmts (an atom) ahead of the expression that reads it."
+  [v stmts nloc]
+  (cond
+    (nil? v) "(ref.null none)"
+    (true? v) "(global.get $true)"
+    (false? v) "(global.get $false)"
+    (string? v) (str "(struct.new $Str " (bytes-wat v) " (i64.const -1))")
+    (keyword? v) (direct-need (direct-call 'wasm.str 'kw-of-bytes [(bytes-wat (named-text v))]))
+    ;; const-form*'s regex stand-in: (str v), as natively `namespace` refuses
+    ;; a meta'd symbol, under its compiled program as metadata
+    (symbol? v) (if (meta v)
+                  (direct-need (direct-call 'wasm.core 'with-meta
+                                            [(direct-need (direct-call 'wasm.str 'sym-of-bytes [(bytes-wat (str v))]))
+                                             (direct-expr (meta v) stmts nloc)]))
+                  (direct-need (direct-call 'wasm.str 'sym-of-bytes [(bytes-wat (named-text v))])))
+    (float? v) (float-wat v)
+    (int? v) (if (and (>= v -1073741824) (< v 1073741824))
+               (str "(ref.i31 (i32.const " v "))")
+               (str "(struct.new $Int (i64.const " v "))"))
+    :else
+    (let [l (str "$c" (swap! nloc inc))
+          get-l (str "(local.get " l ")")
+          put! (fn [x] (swap! stmts conj (str "(local.set " l " " x ")")))]
+      (cond
+        (vector? v) (do (put! (direct-need (direct-call 'wasm.pvec 'empty-vec [])))
+                        (run! (fn [x] (put! (direct-need (direct-call 'wasm.pvec 'vconj [get-l (direct-expr x stmts nloc)])))) v)
+                        (direct-need (direct-call 'wasm.pvec 'varray [get-l])))
+        (map? v) (do (put! (direct-need (direct-call 'wasm.phm 'empty-map [])))
+                     (run! (fn [e]
+                             (let [k (direct-expr (key e) stmts nloc)
+                                   x (direct-expr (val e) stmts nloc)]
+                               (put! (direct-need (direct-call 'wasm.core 'assoc [get-l k x])))))
+                           v)
+                     get-l)
+        :else (do (put! (direct-need (direct-call 'wasm.phs 'empty-set [])))
+                  (run! (fn [x] (put! (direct-need (direct-call 'wasm.phs 'sconj [get-l (direct-expr x stmts nloc)])))) v)
+                  get-l)))))
+
+(defn- direct-const!
+  "Lower constant v's init fn wname directly into :lowered; false when v is
+   not plain data or a constructor's sig is not plain (the analysed path)."
+  [wname v]
+  (if (direct-const? v)
+    (try
+      (let [stmts (atom []) nloc (atom 0)
+            e (direct-expr v stmts nloc)]
+        (swap! *rt* assoc-in [:lowered (str "$" wname)]
+               (str "(func $" wname " (result (ref null eq))\n"
+                    (apply str (map (fn [i] (str "  (local $c" (inc i) " (ref null eq))\n")) (range @nloc)))
+                    (apply str (map (fn [x] (str "  " x "\n")) @stmts))
+                    "  " e ")"))
+        true)
+      (catch e false))
+    false))
+
 (defn const-global!
   "A runtime-built constant (keyword, symbol, vector, map, set, list): one
    global, built once by _rt_init (D63's placeholders made real)."
@@ -3688,7 +3790,8 @@
     (or (get-in @*rt* [:consts k])
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
-          (rt-init-fn! (str "const_" i "__init") (lw-rt/rt-ns 'core) (const-form v))
+          (when-not (and (nil? mk) (direct-const! (str "const_" i "__init") v))
+            (rt-init-fn! (str "const_" i "__init") (lw-rt/rt-ns 'core) (const-form v)))
           (swap! *rt* update :const-order conj g)
           g))))
 
@@ -3938,6 +4041,20 @@
 
 (def wat-id #"\$[A-Za-z0-9!#%&'*+./:<=>?@^_`|~-]+")
 (defn refs-of [t] (set (re-seq wat-id t)))
+;; name -> [text refs], bound per session-module: the shake walks every live
+;; item once per fixpoint round, and an item's text rarely changes between
+;; rounds. Checked by identity of the text, since the helpers generated with
+;; and without runtime paths share names.
+(def ^:dynamic *refs-memo* nil)
+(defn item-refs
+  "refs-of the text t of item nm, read once per build while it is unchanged."
+  [nm t]
+  (if *refs-memo*
+    (let [hit (get @*refs-memo* nm)]
+      (if (and hit (identical? (first hit) t))
+        (second hit)
+        (let [r (refs-of t)] (swap! *refs-memo* assoc nm [t r]) r)))
+    (refs-of t)))
 
 (defn field-wt [tn i f]
   (let [t (if-let [c (get-in funcref-fields [tn i])] (str "(ref null " c ")") (slot-wt (:type f)))]
@@ -4117,7 +4234,7 @@
       (let [nm (peek todo) todo (pop todo)]
         (if (contains? live nm)
           (recur todo live)
-          (recur (into todo (filter items (concat (refs-of (items nm)) (get deps nm)))) (conj live nm)))))))
+          (recur (into todo (filter items (concat (item-refs nm (items nm)) (get deps nm)))) (conj live nm)))))))
 
 (defn rt-global-items
   "name -> decl text and name -> deps for the runtime's globals and constants."
@@ -4136,7 +4253,16 @@
    (D64: module size is a perf input) even though the runtime library is
    loaded."
   [items rt-names program]
-  (boolean (some rt-names (live-set items {} (refs-of program)))))
+  ;; the same walk as live-set, stopped at the first runtime name: only the
+  ;; answer is used, and a program that reaches the runtime usually names it
+  ;; within a few steps, where the full walk visits every live item
+  (loop [todo (vec (filter items (refs-of program))) seen #{}]
+    (if (empty? todo)
+      false
+      (let [nm (peek todo) todo (pop todo)]
+        (cond (contains? rt-names nm) true
+              (contains? seen nm) (recur todo seen)
+              :else (recur (into todo (filter items (item-refs nm (items nm)))) (conj seen nm)))))))
 
 (defn by-name [texts] (into {} (map (fn [t] [(form-name t) t]) texts)))
 
@@ -4216,7 +4342,8 @@
 
 (defn rt-fixpoint!
   "Lower pending runtime fns, then compile what the live helpers and globals
-   ask for (boxed wrappers, install!), until nothing new appears."
+   ask for (boxed wrappers, install!), until nothing new appears. Returns the
+   last round's module-parts: nothing changed after it, so it is the module's."
   [fns]
   (loop [n 0]
     (when (> n 50) (fail "runtime fixpoint did not converge" {}))
@@ -4224,7 +4351,8 @@
       (let [info (first (:pending @*rt*))]
         (swap! *rt* update :pending (comp vec rest))
         (lower-pending! info)))
-    (let [{:keys [items live]} (module-parts fns)
+    (let [parts (module-parts fns)
+          {:keys [items live]} parts
           live-text (apply str (map items live))
           wants (distinct (for [[_ q argc] (re-seq box-ref live-text)
                                 :let [nm (str "$" q "#" argc "__box")]
@@ -4235,8 +4363,9 @@
         (when-not v (fail "box wrapper for an unknown runtime var" {:name nm}))
         (swap! *rt* assoc-in [:lowered nm] (box-wrapper v argc)))
       (when need-install (rt-analyze! (lw-rt/rt-var 'core 'install!)))
-      (when (or (seq wants) need-install (seq (:pending @*rt*)))
-        (recur (inc n))))))
+      (if (or (seq wants) need-install (seq (:pending @*rt*)))
+        (recur (inc n))
+        parts))))
 
 (defn const-init-order
   "Constant globals in an order where each one's init runs after the
@@ -4311,11 +4440,12 @@
   [ss fns]
   (if (= :llvm (:target ss))
     (with-session* ss (fn [] ((resolve 'lower-wasm/llvm-module) fns)))
-  (binding [*top-forms-cache* (atom {})]
+  (binding [*top-forms-cache* (atom {}) *refs-memo* (atom {})]
     (with-session* ss
       (fn []
-        (when *rt* (rt-fixpoint! fns))
-        (let [{:keys [fixed items live program]} (module-parts fns)
+        ;; the fixpoint's last round already built the parts (the shake walks
+        ;; the whole program and runtime each time)
+        (let [{:keys [fixed items live program]} (if *rt* (rt-fixpoint! fns) (module-parts fns))
               ordered (fn [prefix] (for [[nm f] (sort-by key items) :when (and (live nm) (str/starts-with? f prefix))] f))
               ;; fn-value globals must come after the globals they read ($info_*)
               gl (let [gs (ordered "(global")
@@ -4361,15 +4491,28 @@
 ;; program's compile (most programs reach most of it through the dispatchers
 ;; and the printer), so the whole runtime is analysed and lowered once, the
 ;; session state that produced it saved under src/.rtlib/ keyed by a hash of
-;; the runtime sources and the backend's, and each compile starts from it.
+;; the runtime sources, the backend's and the lg binary's, and each compile
+;; starts from it.
 ;; Names are content-addressed, so a program's additions merge without
 ;; renumbering; the shake then keeps what the program reaches.
 
 (def rtlib-dir (let [d (os/getenv "LW_RTLIB_DIR")] (if (seq d) d (str lw-rt/src-dir "/.rtlib"))))
 
+;; The running lg's compiler and IR passes shape the cached runtime too, and
+;; two lg builds can share every source the key reads (the IR passes are not
+;; among them), so the key includes a hash of the lg binary itself. Without it
+;; a build under one lg silently reuses another lg's runtime. Falls back to
+;; the binary's path when it cannot be hashed.
+(def lg-binary-id
+  (delay (let [exe (first os/args)
+               r (try (os/sh "sh" "-c" "shasum -a 256 \"$(command -v \"$1\")\"" "sh" exe) (catch e nil))
+               out (str (:out r))]
+           (if (and r (= 0 (:exit r)) (>= (count out) 64)) (subs out 0 64) (str "path:" exe)))))
+
 (defn rtlib-key []
   (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
                             (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
+                            [(str "|lg=" @lg-binary-id)]
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
                              ;; D193: the emitter's rows of the load order
@@ -4432,23 +4575,71 @@
   ;; sym-var, not resolve: an extern may be private (core/special-symbols)
   (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g]))))
 
+(defn gensyms-taken
+  "Call f and return {:result its value :gensyms how many gensyms it took}.
+   gensym is wrapped rather than read before and after, since a read takes
+   one: the build must take exactly the gensyms it took before (D200)."
+  [f]
+  (let [n (atom 0) g gensym]
+    (alter-var-root #'gensym (fn [_] (fn ([] (swap! n inc) (g)) ([p] (swap! n inc) (g p)))))
+    (try (let [r (f)] {:result r :gensyms @n})
+         (finally (alter-var-root #'gensym (fn [_] g))))))
+
+(defn replay-gensyms!
+  "Take the gensyms the library's build took (D200). A required namespace is
+   macroexpanded after load-rtlib!, so its locals are numbered from the
+   counter there; restoring without the replay renumbered them, and a
+   compile from the saved library differed from the one that saved it."
+  [snap]
+  (loop [i (or (:gensyms snap) 0)]
+    (when (pos? i) (gensym) (recur (dec i)))))
+
+(defn rtlib-variant
+  "D201: the part of the library's file name for the program's rooted
+   natives that the runtime's lowering asks about (asked: their names, saved
+   beside the library when it was built). A runtime fn calling a rooted
+   native lowers through the var's root (core/pmap through future*), so a
+   library built without that root must not be restored for the program.
+   Empty when the program roots none of them, as almost every program."
+  [asked]
+  (let [hit (sort (filter (fn [s] (contains? asked s)) (map (fn [v] (str (var-sym v))) *rooted-natives*)))]
+    (if (seq hit) (str "-" (hex32 (apply str (interpose " " hit)))) "")))
+
+(defn- rtlib-exists? [f] (some? (try (os/stat f) (catch e nil))))
+
 (defn load-rtlib!
   "Start the current session from the cached runtime library, building and
-   saving it first if the runtime or the backend changed."
+   saving it first if the runtime or the backend changed, or if no library
+   was built for the rooted natives the program shares with it (D201)."
   []
   (let [prefix (str "rtlib-" (name *target*) "-")
-        f (str rtlib-dir "/" prefix (rtlib-key) ".edn")]
-    (if (some? (try (os/stat f) (catch e nil)))
-      (rtlib-restore! (read-string (slurp f)))
-      (let [fails (build-rtlib!)
-            tmp (str f ".tmp" (rand-int 1000000000))]
+        base (str prefix (rtlib-key))
+        asked-f (str rtlib-dir "/" base ".natives")
+        ;; every build saves its asked set, so none saved means no library
+        ;; for these sources yet, and the build below finds the name
+        asked (if (rtlib-exists? asked-f) (set (read-string (slurp asked-f))) nil)
+        f (str rtlib-dir "/" base (if asked (rtlib-variant asked) "") ".edn")]
+    (if (and asked (rtlib-exists? f))
+      (let [snap (read-string (slurp f))]
+        (rtlib-restore! snap)
+        (replay-gensyms! snap))
+      (let [built (try (reset! natives-asked #{})
+                       (assoc (gensyms-taken build-rtlib!) :asked @natives-asked)
+                       (finally (reset! natives-asked nil)))
+            asked (set (map (fn [v] (str (var-sym v))) (:asked built)))
+            f (str rtlib-dir "/" base (rtlib-variant asked) ".edn")
+            tmp (str ".tmp" (rand-int 1000000000))]
         (os/sh "mkdir" "-p" rtlib-dir)
-        (spit tmp (pr-str (rtlib-snapshot fails)))
-        (os/rename tmp f)
-        ;; a library for older sources is dead weight (~3.5 MB each)
+        (spit (str asked-f tmp) (pr-str (vec (sort asked))))
+        (os/rename (str asked-f tmp) asked-f)
+        (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
+        (os/rename (str f tmp) f)
+        ;; a library for older sources is dead weight (~3.5 MB each); the
+        ;; rooted variants of the current one stay (D201). Another lg's
+        ;; library goes too, so alternating two lg builds rebuilds on each switch
         (doseq [old (os/ls rtlib-dir)
-                :when (and (or (and (str/starts-with? old prefix) (str/ends-with? old ".edn"))
+                :when (and (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
+                                    (or (str/ends-with? old ".edn") (str/ends-with? old ".natives")))
                                ;; named before the target joined the key, so no prefix matches it
-                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old))
-                           (not= (str rtlib-dir "/" old) f))]
+                               (re-matches #"rtlib-[0-9a-f]{8}\.edn" old)))]
           (os/sh "rm" "-f" (str rtlib-dir "/" old)))))))

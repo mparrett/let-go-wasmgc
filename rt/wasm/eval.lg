@@ -66,7 +66,7 @@
 ;;   - gensym counters: native expansions call gensym a different number of
 ;;     times, so printed gensym names differ.
 (ns wasm.eval
-  (:refer-clojure :exclude [eval compile])
+  (:refer-clojure :exclude [eval compile macroexpand])
   (:require [clojure.string :as string]))
 
 ;; ---------------------------------------------------------------------------
@@ -794,6 +794,14 @@
          (reset! macro-form nil)
          (raise (str "CompileError: Executing macro #'" (macro-var-name h) " (<fn " (name h) ">) failed\n\tcaused by "
                      (ex-message e))))))
+
+;; P10.6: core/macroexpand, one level as native's (CoreMacroexpand), over
+;; the same expanders: a form whose head names no macro is itself.
+(defn ^{:twin "core/macroexpand"} macroexpand [form]
+  (if (and (seq? form) (symbol? (first form)))
+    (let [h (first form) mf (find-macro h)]
+      (if mf (expand mf h form) form))
+    form))
 
 ;; ---------------------------------------------------------------------------
 ;; Reader code forms that need the current ns (wasm.reader's code hook):

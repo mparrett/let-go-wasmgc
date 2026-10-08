@@ -97,7 +97,10 @@
         ;; reads the stand-in's own); a var taken before keeps the old
         ;; one fn arg: the module's swap! has fixed arities (7 extra args failed)
         nv (cell-var key nsn sym m)]
-    (swap! n/registry (fn [t] (update-in t [:cells key] (fn [cl] (assoc cl :meta m :var nv)))))
+    ;; dissoc first: two stand-ins of one var are equal (wasm.core's
+    ;; foreign-equiv, P10.6) and assoc keeps a map whose value equals the
+    ;; new one, which would leave the meta-less stand-in in place
+    (swap! n/registry (fn [t] (update-in t [:cells key] (fn [cl] (assoc (dissoc cl :var) :meta m :var nv)))))
     key))
 
 (defn- var-of [key] (:var (cell key)))
