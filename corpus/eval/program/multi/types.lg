@@ -1,0 +1,10 @@
+;; P10.6 review (PR #24): library deftype/defrecord/defprotocol, map->Name,
+;; instance? with nil, and (symbol var). Run with
+;; LG_ARGS="-source-paths corpus/eval/program/multi/lib".
+(ns eval.multi.types (:require [evlib.types :as t]))
+(println (t/area (t/->Unit)) (t/label (t/->Unit) 1))
+(println (t/area (t/->Rect 3 4)) (t/label (t/->Rect 3 4) 2))
+(println (:w (t/->Rect 3 4)) (:y (t/map->Point {:x 7})) (:z (t/map->Point {:x 1 :z 2})) (:x (t/map->Point {:x 1 :z 2})))
+(println (instance? t/Rect (t/->Rect 1 1)) (instance? t/Point (t/->Rect 1 1)) (instance? t/Unit (t/->Unit)) (instance? t/Unit (t/->Rect 1 1)))
+(println (instance? nil nil) (instance? nil {}) (instance? nil (t/->Unit)))
+(println (name (symbol #'t/area)) (name (symbol #'inc)) (= (symbol #'t/area) (symbol #'t/area)))

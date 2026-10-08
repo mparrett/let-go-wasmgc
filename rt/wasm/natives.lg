@@ -570,9 +570,11 @@
 ;; deftype or defrecord is the Keyword tag :<ns>/<Name>, or a map carrying it
 ;; as :lw/type when it has fields, and the type's var holds the tag). A
 ;; native class (String, java.util.regex.Pattern) is no value here, so t is
-;; nil for one and the answer is false.
+;; nil for one and the answer is false, as it is for (instance? nil x).
 (defn ^{:twin "core/instance?"} instance? [t x]
-  (or (identical? t x) (and (map? x) (identical? t (get x :lw/type)))))
+  (if (nil? t)
+    false
+    (or (identical? t x) (and (map? x) (identical? t (get x :lw/type))))))
 
 ;; record? is true of a map carrying a type tag (a defrecord's instance; a
 ;; deftype with fields is encoded the same way, so it answers true for one

@@ -544,13 +544,21 @@
   "The def and defn forms a deftype or defrecord form stands for (above);
    its method implementations are noted on their protocol methods."
   [ns-sym form]
-  (let [nm (nth form 1)
+  (let [head (nth form 0)
+        nm (nth form 1)
         fields (vec (nth form 2))
         tag (type-tag ns-sym nm)
         ctor (list 'defn (symbol (str "->" nm)) fields
                    (if (seq fields)
                      (into {:lw/type tag} (map (fn [f] [(keyword (str f)) f]) fields))
-                     tag))]
+                     tag))
+        ;; defrecord's map->Name: the record's fields from the map (nil
+        ;; when absent), other keys kept, as native's
+        mctor (when (= 'defrecord head)
+                (list 'defn (symbol (str "map->" nm)) '[__lw_m]
+                      (list 'clojure.core/assoc
+                            (list 'clojure.core/merge (into {} (map (fn [f] [(keyword (str f)) nil]) fields)) '__lw_m)
+                            :lw/type tag)))]
     (reduce (fn [_ x]
               (when (seq? x)
                 (let [m (first x)
@@ -560,7 +568,7 @@
                   (swap! protocol-methods assoc-in [mv :impls tag]
                          {:params (vec (nth x 1)) :body (drop 2 x) :fields fields}))))
             nil (drop 3 form))
-    [(list 'def nm tag) ctor]))
+    (if mctor [(list 'def nm tag) ctor mctor] [(list 'def nm tag) ctor])))
 
 (defn protocol-dispatch-form
   "The defn for protocol method e over its noted implementations."

@@ -558,13 +558,19 @@
 (defn keyword? [x] (sq/bool (= 20 (named-k x))))
 (defn symbol? [x] (sq/bool (if (= 21 (named-k x)) (= 0 (standin x)) false))) ; P5.9: not a Regex/Var stand-in
 (defn fn? [x] (sq/bool (= 16 (sq/kind x))))
-;; P10.6: (symbol x) of a var stand-in is its bare symbol, as native gives
-;; the Var's symbol (the IR passes name a :load-var's var so), and of a
-;; meta'd symbol is itself. str.lg's twin handles the plain kinds and cannot
-;; see MetaNamed; this one, claimed later in the load order, wins.
+;; P10.6: (symbol x) of a var stand-in is the Var's symbol ns/name (the
+;; stand-in's text without its #' prefix: native's prints the namespace as
+;; clojure.core where the stand-in says core, D122), as native gives (the IR
+;; passes name a :load-var's var so); of a meta'd symbol it is itself.
+;; str.lg's twin handles the plain kinds and cannot see MetaNamed; this
+;; one, claimed later in the load order, wins.
+(defn- var-bare-symbol [x]
+  (let [b (s/str-bytes (var-key x)) n (- (wasm/alen b) 2) out (wasm/bytes-new n)]
+    (wasm/array-copy wasm/Bytes out 0 b 2 n)
+    (s/sym-of-bytes out)))
 (defn ^{:twin "core/symbol"} symbol*
   ([x] (if (= 36 (ckind x))
-         (cond (= 2 (standin x)) (wasm/get MetaNamed 0 x)
+         (cond (= 2 (standin x)) (var-bare-symbol x)
                (= 0 (standin x)) x
                :else (s/symbol x))
          (s/symbol x)))

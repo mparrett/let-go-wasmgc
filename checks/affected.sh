@@ -124,6 +124,7 @@ P10.0	src/ rt/ corpus/scalar/ corpus/eval/ checks/fixtures/warm-gensym/ legmacs 
 P10.1	rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ checks/emit-native.sh checks/emit-run.mjs checks/oracle.sh checks/env.sh
 P10.2	src/ rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ host/node-host.mjs host/lg-wasm-host.js checks/emit-linked.sh checks/oracle.sh checks/env.sh
 P10.3	src/ rt/ corpus/emit/host/ host/explorer.html host/build-explorer-serve.sh host/lg-wasm-host.js checks/explorer-page-check.mjs checks/sem.sh checks/env.sh
+P7.11	oracle corpus/eval/program/multi/ checks/run-corpus.sh
 P10.6	oracle checks/ir-pipeline.sh checks/fixtures/ir-pipeline/ checks/env.sh
 EOF
 }
