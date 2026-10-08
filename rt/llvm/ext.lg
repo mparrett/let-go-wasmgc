@@ -29,14 +29,16 @@
   (cond (nil? kvs) {}
         ;; P5.7: native's own message (CoreHashMap), not assoc's arity error
         (odd? (count kvs)) (llvm.core/raise (llvm.str/str-bytes (str "hash-map requires an even number of arguments, got " (count kvs))))
-        :else (apply assoc {} kvs)))
+        ;; assoc-seq, not apply: apply spreads through invoke-args, which
+        ;; stops at 4 args
+        :else (llvm.core/assoc-seq {} kvs)))
 (defn array-map-v
   "core/array-map: hash-map's fill (D29: let-go's array-map is its
    insertion-ordered hash-map), with array-map's name in the odd-count error."
   [& kvs]
   (if (odd? (count kvs))
     (llvm.core/raise (llvm.str/str-bytes (str "array-map requires an even number of arguments, got " (count kvs))))
-    (apply hash-map-v kvs)))
+    (if (nil? kvs) {} (llvm.core/assoc-seq {} kvs))))
 (defn hash-set-v [& xs] (into #{} xs))
 ;; P7.9 (review5 bug-06): native's uncaught report puts a `calling <f>`
 ;; layer over a CompileError that escapes a call made from top-level code

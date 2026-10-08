@@ -1,0 +1,13 @@
+;; apply past 4 args: fixed arities up to 8, variadic fns (the rest as a
+;; seq, nil when nothing is left), runtime fns over long argument lists.
+(defn f5 [a b c d e] [a b c d e])
+(defn f8 [a b c d e f g h] (+ a b c d e f g h))
+(defn v2 [a b & r] [a b r])
+(defn v0 [& r] (count r))
+(println (apply f5 [1 2 3 4 5]) (apply f5 1 2 [3 4 5]) (apply f8 (range 8)))
+(println (apply v2 (range 10)) (apply v2 [1 2]) (apply v0 (range 100)) (apply v0 []))
+(println (apply + (range 20)) (apply str (range 12)) (apply max 3 1 4 1 5 9 2 6 [5 3]))
+(println (apply vector (range 6)) (apply hash-map (range 10)) (apply list 1 2 3 4 5 [6]))
+(println (apply (fn [& xs] (reduce * xs)) (range 1 11)))
+;; a fn's address differs between runs: printed as 0x
+(println (try (apply f5 [1 2 3 4 5 6]) (catch Exception e (clojure.string/replace (ex-message e) #"0x[0-9a-f]+" "0x"))))

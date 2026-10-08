@@ -217,16 +217,27 @@
     (cond (= i 0) (arch/get sq/Fn 0 f) (= i 1) (arch/get sq/Fn 1 f) (= i 2) (arch/get sq/Fn 2 f)
           (= i 4) (arch/get sq/Fn 4 f) :else (arch/get sq/Fn 5 f))))
 
+(defn- raise-exec
+  "Raise message string st whose caught form carries native's
+   \"ExecutionError: \" prefix (a VM call's error, D31)."
+  [st]
+  (let [m (s/str-bytes st)]
+    (throw (arch/new sq/Err 1 m (s/str-bytes (s/str (lit (arch/bytes-of-string "ExecutionError: ")) st)) (arch/null) (arch/null)))))
+
 (defn- raise-fn-arity [f n]                               ; D56's messages, address fixed at 0x0
   (let [info (arch/get sq/Fn 6 f)
+        kind (if (arch/null? info) 0 (arch/get sq/FnInfo 0 info))
         nm (if (arch/null? info) (arch/null) (arch/get sq/FnInfo 2 info))
         head (if (arch/null? nm) (lit (arch/bytes-of-string "<fn 0x0>"))
                  (s/str (lit (arch/bytes-of-string "<fn ")) (lit nm) (lit (arch/bytes-of-string " 0x0>"))))]
-    (if (if (arch/null? info) false (= 1 (arch/get sq/FnInfo 0 info)))
-      (raise-str (s/str head (lit (arch/bytes-of-string " doesn't have a ")) (s/str (sq/box-int n) (lit (arch/bytes-of-string "-arity variant")))))
-      (raise-str (s/str (s/str (lit (arch/bytes-of-string "function ")) head (lit (arch/bytes-of-string " expected ")))
-                        (s/str (sq/box-int (if (arch/null? info) 0 (arch/get sq/FnInfo 1 info))) (lit (arch/bytes-of-string " args, got ")))
-                        (sq/box-int n))))))
+    (cond
+      (= kind 1)
+      (raise-exec (s/str head (lit (arch/bytes-of-string " doesn't have a ")) (s/str (sq/box-int n) (lit (arch/bytes-of-string "-arity variant")))))
+      :else
+      (raise-exec (s/str (s/str (lit (arch/bytes-of-string "function ")) head
+                                (if (= kind 3) (lit (arch/bytes-of-string " expected at least ")) (lit (arch/bytes-of-string " expected "))))
+                         (s/str (sq/box-int (if (arch/null? info) 0 (arch/get sq/FnInfo 1 info))) (lit (arch/bytes-of-string " args, got ")))
+                         (sq/box-int n))))))
 
 (declare get-nf)
 
@@ -283,12 +294,37 @@
               (= n 2) (sq/invoke2 f a b)
               (= n 3) (invoke3 f a b c)
               :else (invoke4 f a b c d))))
-    (if (= 2 (standin f)) (invoke-args (var-value f) n a b c d) (invoke-ifn f n a b))))
+    (cond (= 2 (standin f)) (invoke-args (var-value f) n a b c d)
+          (callable? f) (invoke-ifn f n a b)
+          ;; native's text, the same caught and uncaught (trailing space)
+          :else (raise-str (s/str (lit (arch/bytes-of-string "TypeError: "))
+                                  (if (arch/null? f) (lit (arch/bytes-of-string "nil")) (lit (type-name f)))
+                                  (lit (arch/bytes-of-string " is not a function ")))))))
 
 (defn- vec-arg [v i] (if (< i (pv/vcount v)) (pv/vnth v i) (arch/null)))
 
+(defn invoke-list
+  "Call f with the n (> 4) elements of List l as its arguments. The backend
+   lowers this as its own dispatch (lg_apply_list: fixed slots to 8, a
+   variadic arity's rest as l's tail); the reference has none past 4."
+  [f l n]
+  (arch/trap "llvm.core/invoke-list: a call with more than 4 arguments needs the backend's dispatch"))
+
+(defn call-fail
+  "The error of calling f with n args when nothing takes them: a fn's arity
+   error, an IFn's, or not a function (the backend's dispatch past 4 args)."
+  [f n]
+  (if (= 16 (sq/kind f)) (raise-fn-arity f n) (invoke-args f n (arch/null) (arch/null) (arch/null) (arch/null))))
+
+(defn- vec->list [v]
+  (loop [i (dec (pv/vcount v)) l (sq/empty-list)]
+    (if (< i 0) l (recur (dec i) (arch/new sq/List (pv/vnth v i) l (inc (arch/get sq/List 2 l)) (arch/null))))))
+
 (defn invoke-vec "Call f with the elements of pvec v as its arguments." [f v]
-  (invoke-args f (pv/vcount v) (vec-arg v 0) (vec-arg v 1) (vec-arg v 2) (vec-arg v 3)))
+  (let [n (pv/vcount v)]
+    (if (> n 4)
+      (invoke-list f (vec->list v) n)
+      (invoke-args f n (vec-arg v 0) (vec-arg v 1) (vec-arg v 2) (vec-arg v 3)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers (pkg/vm/numbers.go). Int and Float only (ratios and bigints are
@@ -369,6 +405,13 @@
 ;; "ExecutionError: " prefix once caught (unlike + as a value).
 (defn- op-overflow [] (throw (arch/new sq/Err 1 (arch/bytes-of-string "integer overflow")
                                        (arch/bytes-of-string "ExecutionError: integer overflow") (arch/null) (arch/null))))
+
+;; The backend's inline int ops raise these (an overflowing IR op, a quot or
+;; rem by zero), so the errors are catchable as natively.
+(defn overflow-error "An IR op's integer overflow." [] (op-overflow))
+(defn div-zero-error "quot, rem or mod by zero." [] (raise (arch/bytes-of-string "divide by zero")))
+(defn unbox-error "A non-Int value in an Int-typed slot (the GC lane's $rt_unbox_fail)." []
+  (raise (arch/bytes-of-string "a non-Int value reached an Int-typed slot")))
 (defn inc* [x]
   (if (= 1 (sq/kind x))
     (let [n (sq/unbox-int x)] (if (= n 9223372036854775807) (op-overflow) (sq/box-int (+ n 1))))

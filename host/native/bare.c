@@ -51,6 +51,31 @@ extern char __heap_start[];
 int lg_host_argc(void) { return 1; }
 const char *lg_host_argv(int i) { return i == 0 ? "lg" : ""; }
 
+/* host/ABI.md's imports on a board: no clock to sleep on or read (time
+ * stands still), no environment, no keyboard (end of input), an 80x24
+ * terminal; capture buffers come from a fixed arena. */
+void lg_host_sleep(int64_t ms) { (void)ms; }
+int64_t lg_host_nanotime(void) { return 0; }
+const char *lg_host_getenv_c(const char *name) { (void)name; return 0; }
+int lg_host_read_key(unsigned char *buf, int cap) { (void)buf; (void)cap; return 0; }
+int lg_host_key_ready(void) { return 0; }
+void lg_host_term_dims(int *cols, int *rows) { (void)cols; (void)rows; }
+
+static char capture_arena[1 << 16];
+static size_t capture_used;
+void *lg_host_grow(void *p, size_t old, size_t n) {
+  /* bump allocation: the old buffer is copied and abandoned */
+  if (capture_used + n > sizeof capture_arena) {
+    static const char msg[] = "error: out of memory\n";
+    lg_host_write(2, msg, sizeof msg - 1);
+    lg_host_exit(1);
+  }
+  char *q = capture_arena + capture_used;
+  capture_used += (n + 7) & ~(size_t)7;
+  for (size_t i = 0; p && i < old; i++) q[i] = ((char *)p)[i];
+  return q;
+}
+
 /* The heap (host/native/gc.c collects it): the profile's :heap bytes from
  * the linker's __heap_start; exhausting it is gc.c's "out of memory". */
 void *lg_host_heap(size_t *n) {

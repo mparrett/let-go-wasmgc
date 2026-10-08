@@ -1,0 +1,19 @@
+;; Values that are not fns but can be called (IFn): keywords, symbols, maps,
+;; sets, vectors and vars, directly and through higher-order fns; a call no
+;; arity takes and a call of a non-callable are catchable errors with
+;; native's texts.
+(def m {:a 1 :b 2 'c 3})
+(def v [10 20 30])
+(def s #{:x :y})
+(defn twice [f x] (f (f x)))
+(println (:a m) (:z m :none) (m :b) (m :q 9) ('c m) (v 1) (s :x) (s :w))
+(println (map :a [{:a 1} {:a 2} {}]) (filter s [:x :w :y]) (map v [0 2]) (map m [:a :b]))
+(println (#'twice inc 1) (twice {1 2 2 3} 1) (mapv #{1 2} [1 3 2]))
+;; a fn's address differs between runs: printed as 0x
+(defn err [f] (try (f) (catch Exception e (clojure.string/replace (ex-message e) #"0x[0-9a-f]+" "0x"))))
+(println (err #(v 7)))
+(println (err #((fn [a b] a) 1)))
+(println (err #(apply (fn [a] a) [1 2])))
+(println (err #(:a)))
+(println (err #(5 1)))
+(println (err #(nil 1)))

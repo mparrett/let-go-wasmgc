@@ -255,7 +255,7 @@
   "A constant Bytes object holding s's UTF-8 bytes; returns its word operand."
   [s]
   (let [bs (.getBytes (str s)) w (ll-word)
-        id (str "@\"bytes." (hex32 s) "." (count bs) "\"")]
+        id (ll-const-id "bytes" s)]
     (swap! *globals* conj
            (str id " = private constant { " w ", " w ", [" (count bs) " x i8] } { " w " " (ll-tid "$Bytes") ", " w " " (count bs)
                 ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }"))
@@ -280,11 +280,19 @@
       "new" (let [[tn d] (decl-arg (a 0) nm) fs (:fields d)]
               (when-not (= (count fs) (dec (count a)))
                 (ll-fail (str "wasm/new " (subs tn 1) ": " (count fs) " fields, got " (dec (count a))) {}))
+              (if (= tn "$Bool")
+                ;; a Bool is always one of the two singletons, so truth tests
+                ;; compare the word with @lg_false (the GC lane reads the field
+                ;; instead: its sq/bool makes Bools of its own)
+                (let [z (ll-fresh "%bz") r (ll-fresh "%bw")]
+                  (ll-emit! "  " z " = icmp ne i64 " (ll-arg (a 1) :int) ", 0")
+                  (ll-emit! "  " r " = select i1 " z ", " (ll-word) " " (ll-true) ", " (ll-word) " " (ll-false))
+                  [r :box])
               (let [p (ll-alloc! (ll-sty tn) (ll-tid tn))]
                 (doseq [[i f] (map-indexed vector fs)]
                   (let [[t v] (ll-store-arg (:type f) (a (inc i)))]
                     (ll-emit! "  store " t " " v ", ptr " (ll-field-ptr! (ll-sty tn) p (inc i)))))
-                [(ll-word-of! p) :box]))
+                [(ll-word-of! p) :box])))
       "get" (let [[tn d] (decl-arg (a 0) nm) i (const-int-arg (a 1) nm)
                   p (ll-cast! tn (ll-arg (a 2) :box) (str "wasm/get " (subs tn 1)))]
               (ll-load-slot (field-type d i) (ll-field-ptr! (ll-sty tn) p (inc i))))
@@ -503,7 +511,7 @@
   "The call plan of a :try: lift its regions (once per try) and generate its
    frame functions; the plan calls <fn>.try<nid> with every region's captures."
   [nid]
-  (or (get @*fn-values* [:llvm-try *fname* nid])
+  (or (get @*fn-values* [:llvm-try *fname* nid *abi-notes*])
       (let [{:keys [has-handler has-finally]} (ir/aux nid *f*)
             refs (ir/refs nid *f*) w (ll-word)
             region (fn [ref role params]
@@ -536,7 +544,6 @@
             rec (fn [code F] (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr " code ", ptr %r\n  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr " F ", ptr %r.1\n"))
             reify (get-in (callee-sig (lw-rt/rt-var 'core 'reify-caught)) [:arities 1])
-            _ (swap! *globals* conj (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck))))
             texts
             [(str ft " = type { ptr, ptr, ptr, " w (apply str (map #(str ", " (ll-type %)) all-ck)) " }")
              ;; enter: push F, run the body with a continuation that pops it
@@ -592,8 +599,9 @@
                                (call-fin "%F" "rethrow" "%exn") "}\n")))
             plan {:sig {:name tn :params all-ck :ret :box}
                   :args (vec (concat (:caps body) (:caps h) (:caps fin)))}]
-        (swap! *regions* conj {:text (str/join "\n" (rest texts)) :types [(first texts)]})
-        (swap! *fn-values* assoc [:llvm-try *fname* nid] plan)
+        (swap! *regions* conj {:name tn :text (str/join "\n" (rest texts))
+                               :types [(first texts) (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
+        (swap! *fn-values* assoc [:llvm-try *fname* nid *abi-notes*] plan)
         plan)))
 
 ;; every llvm.arch intrinsic has an emitter here: the GC lane's set, plus

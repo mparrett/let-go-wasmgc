@@ -65,6 +65,13 @@ int64_t lg_unbox_int(intptr_t w) {
   return 0;
 }
 
+/* The checks the backend emits before lg_unbox_int and lg_to_f64: on a
+ * miss it raises llvm.core/unbox-error (catchable) instead of calling them. */
+_Bool lg_is_int(intptr_t w) { return (w & 1) || lg_tid_of(w) == lg_tid_Int; }
+_Bool lg_is_num(intptr_t w) { return lg_is_int(w) || lg_tid_of(w) == lg_tid_Float; }
+/* the same miss without the runtime */
+void lg_unbox_fail(void) { lg_error("a non-Int value reached an Int-typed slot"); }
+
 /* An Int or a Float as a double; anything else is an error. */
 double lg_to_f64(intptr_t w) {
   if (w & 1) return (double)(int64_t)(w >> 1);
@@ -111,12 +118,105 @@ intptr_t lg_bytes_new(int64_t n) {
   return (intptr_t)b;
 }
 
+/* arch/bytes-of-string on a Str that is not a constant: a fresh copy of
+ * its UTF-8 Bytes. */
+typedef struct { intptr_t tid; intptr_t bytes; int64_t hash; } lg_str;
+intptr_t lg_str_bytes_copy(intptr_t w) {
+  const lg_bytes *src = (const lg_bytes *)((const lg_str *)w)->bytes;
+  lg_bytes *b = lg_alloc(sizeof *b + (size_t)src->len, &lg_desc_noscan);
+  b->tid = lg_tid_Bytes;
+  b->len = src->len;
+  for (intptr_t i = 0; i < src->len; i++) b->data[i] = src->data[i];
+  return (intptr_t)b;
+}
+
+/* A fresh Bytes holding [p, p+n). */
+static intptr_t lg_bytes_of(const void *p, size_t n) {
+  lg_bytes *b = lg_alloc(sizeof *b + n, &lg_desc_noscan);
+  b->tid = lg_tid_Bytes;
+  b->len = (intptr_t)n;
+  for (size_t i = 0; i < n; i++) b->data[i] = ((const unsigned char *)p)[i];
+  return (intptr_t)b;
+}
+
+/* with-out-str (arch/capture-begin, capture-end): while a capture is open,
+ * fd 1 appends to the innermost buffer, as the GC lane's fd -2 does. The
+ * buffers are the host's memory (lg_host_grow), not the collected heap. */
+void *lg_host_grow(void *p, size_t old, size_t n);
+#define LG_MAX_CAPTURES 64
+static struct { unsigned char *p; size_t n, cap; } captures[LG_MAX_CAPTURES];
+static int ncaptures;
+
+void lg_capture_begin(void) {
+  if (ncaptures == LG_MAX_CAPTURES) lg_error("with-out-str nested too deeply");
+  captures[ncaptures++].n = 0;
+}
+
+intptr_t lg_capture_end(void) {
+  if (!ncaptures) lg_error("capture-end without capture-begin");
+  ncaptures--;
+  return lg_bytes_of(captures[ncaptures].p, captures[ncaptures].n);
+}
+
+static void lg_capture_append(const unsigned char *d, size_t n) {
+  int i = ncaptures - 1;
+  if (captures[i].n + n > captures[i].cap) {
+    size_t c = captures[i].cap ? captures[i].cap : 256;
+    while (c < captures[i].n + n) c *= 2;
+    captures[i].p = lg_host_grow(captures[i].p, captures[i].n, c);
+    captures[i].cap = c;
+  }
+  for (size_t j = 0; j < n; j++) captures[i].p[captures[i].n + j] = d[j];
+  captures[i].n += n;
+}
+
 /* arch/host-write: a Bytes to fd; the count written. */
 int64_t lg_host_write_bytes(int64_t fd, intptr_t w) {
   const lg_bytes *b = (const lg_bytes *)w;
-  lg_host_write((int)fd, (const char *)b->data, (size_t)b->len);
+  if (fd == 1 && ncaptures) lg_capture_append(b->data, (size_t)b->len);
+  else lg_host_write((int)fd, (const char *)b->data, (size_t)b->len);
   return b->len;
 }
+
+/* The rest of host/ABI.md's imports over the host's primitives (posix.c,
+ * bare.c): getenv and url-param are Bytes -> Bytes or nil; read-key's 0
+ * bytes is end of input (nil); size is cols << 32 | rows. */
+const char *lg_host_getenv_c(const char *name);
+int lg_host_read_key(unsigned char *buf, int cap);
+int lg_host_key_ready(void);
+void lg_host_term_dims(int *cols, int *rows);
+
+intptr_t lg_host_getenv(intptr_t w) {
+  const lg_bytes *nm = (const lg_bytes *)w;
+  char name[256];
+  if (nm->len >= (intptr_t)sizeof name) return 0;
+  for (intptr_t i = 0; i < nm->len; i++) name[i] = (char)nm->data[i];
+  name[nm->len] = 0;
+  const char *v = lg_host_getenv_c(name);
+  if (!v) return 0;
+  size_t n = 0;
+  while (v[n]) n++;
+  return lg_bytes_of(v, n);
+}
+
+intptr_t lg_term_read_key(void) {
+  unsigned char buf[16];
+  int n = lg_host_read_key(buf, sizeof buf);
+  return n <= 0 ? 0 : lg_bytes_of(buf, (size_t)n);
+}
+
+int32_t lg_term_key_pending(void) { return lg_host_key_ready(); }
+
+int64_t lg_term_size(void) {
+  int c = 80, r = 24;
+  lg_host_term_dims(&c, &r);
+  return ((int64_t)c << 32) | (uint32_t)r;
+}
+
+/* js/emit and js/url-param off a browser: native emits nothing and finds
+ * no parameter. */
+void lg_host_emit(intptr_t name, intptr_t json) { (void)name; (void)json; }
+intptr_t lg_host_url_param(intptr_t name) { (void)name; return 0; }
 
 /* arch/host-argc and arch/host-arg (os/args): the host's argv, each a Bytes. */
 int lg_host_argc(void);

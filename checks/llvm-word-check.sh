@@ -18,7 +18,7 @@ fi
 grep -q '^target triple = "i686-unknown-linux-gnu"' "$t/p.ll" && echo "ok   target triple" || { echo "FAIL target triple"; fail=1; }
 grep -q '^target datalayout = ' "$t/p.ll" && echo "ok   target datalayout" || { echo "FAIL target datalayout"; fail=1; }
 if "$llvm/llc" -O2 -mtriple=i686-unknown-linux-gnu "$t/p.ll" -o /dev/null 2> "$t/llc.log"; then echo "ok   llc i686"; else echo "FAIL llc i686: $(head -1 "$t/llc.log")"; fail=1; fi
-for d in 'declare i32 @lg_box_int(i64)' 'declare i64 @lg_unbox_int(i32)' 'declare i32 @lg_truthy(i32)' 'declare void @lg_print_box(i32)'; do
+for d in 'declare i32 @lg_box_int(i64)' 'declare i64 @lg_unbox_int(i32)' 'declare double @lg_to_f64(i32)' 'declare void @lg_print_box(i32)'; do
   grep -qF "$d" "$t/p.ll" && echo "ok   $d" || { echo "FAIL missing: $d"; fail=1; }
 done
 exit $fail
