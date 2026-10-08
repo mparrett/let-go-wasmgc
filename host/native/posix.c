@@ -17,8 +17,13 @@ void lg_host_write(int fd, const char *buf, size_t n) {
 
 void lg_host_exit(int status) { _exit(status); }
 
-void *lg_host_chunk(size_t n) {
-  void *p = malloc(n);
+/* The heap (host/native/gc.c collects it): one region of LG_HEAP_BYTES
+ * (environment; default 1 GiB), as a board's is its profile's :heap. The
+ * pages are committed as the allocator first touches them. */
+void *lg_host_heap(size_t *n) {
+  const char *e = getenv("LG_HEAP_BYTES");
+  *n = e && *e ? (size_t)strtoull(e, 0, 10) : (size_t)1 << 30;
+  void *p = malloc(*n);
   if (!p) {
     static const char msg[] = "error: out of memory\n";
     lg_host_write(2, msg, sizeof msg - 1);

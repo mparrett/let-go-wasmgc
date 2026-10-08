@@ -106,7 +106,7 @@
         (ll-fail "block-arg with no binding" {:nid nid})
         (str "%v" nid))))
 
-(declare ll-emit! ll-fresh ll-double-lit ll-float-const! ll-char-const! ll-i64-of-word!)
+(declare ll-emit! ll-fresh ll-double-lit ll-float-const! ll-char-const! ll-i64-of-word! ll-alloc-call ll-desc-def ll-kind-fields ll-type-descs)
 
 (defn ll-coerce! [have want x]
   (let [t (fn [] (ll-fresh "%w")) w (ll-word)]
@@ -281,6 +281,20 @@
             {:sig sig :pre (mapv ll-pre-operand pre) :args (vec (take k args))
              :rest (vec (drop k args)) :empty-rest :list}))))))
 
+(def ll-float-binops {:add "fadd" :sub "fsub" :mul "fmul" :div "fdiv"})
+(def ll-float-cmps {:lt "olt" :lte "ole" :gt "ogt" :gte "oge"})
+
+(defn ll-float-op?
+  "True when op over operands of these kinds lowers as f64 (prim-wat's
+   rule): a float operand and only numbers (int, float, box) beside it, or
+   = on two floats, or a one-operand op on a float."
+  [op kinds]
+  (let [some-float? (some #{:float} kinds) numeric? (every? #{:int :float :box} kinds) n (count kinds)]
+    (boolean
+     (or (and some-float? numeric? (= 2 n) (or (ll-float-binops op) (ll-float-cmps op)))
+         (and (= op :eq) (= 2 n) (every? #{:float} kinds))
+         (and (= 1 n) (= :float (first kinds)) (#{:zero? :pos? :neg? :inc :dec} op))))))
+
 (defn ll-call-plan*
   [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*)
@@ -296,6 +310,9 @@
       ;; and arithmetic on a boxed or float operand is the core fn's twin
       (and *rt* (= prim :eq) (= 2 (count args)) (not-every? #{:int} kinds) (not-every? #{:bool} kinds))
       (to (lw-rt/rt-var 'seq 'equiv?))
+      ;; a float operand makes the op an inline f64 one (ll-prim!), as the GC
+      ;; lane's prim-wat does: only a boxed operand without one is generic
+      (ll-float-op? prim kinds) nil
       (and *rt* (= prim :div)) (to (lw-rt/rt-var 'math 'div))
       (and *rt* (ll-op-vars prim) (some #{:box :float} kinds)) (to (ll-op-vars prim))
       (= op :try) (ll-try-plan nid)
@@ -468,6 +485,19 @@
 (defn ll-prim! [nid op refs]
   (let [n (count refs)]
     (cond
+      ;; f64, Go float semantics, no checks (prim-wat)
+      (ll-float-op? op (map ll-arg-kind refs))
+      (let [xs (doall (map #(ll-arg % :float) refs)) v (str "%v" nid)]
+        (cond
+          (ll-float-binops op) (do (ll-emit! "  " v " = " (ll-float-binops op) " double " (first xs) ", " (second xs))
+                                   (ll-def! nid :float v))
+          (ll-float-cmps op) (do (ll-emit! "  " v " = fcmp " (ll-float-cmps op) " double " (first xs) ", " (second xs))
+                                 (ll-def! nid :bool v))
+          (= op :eq) (do (ll-emit! "  " v " = fcmp oeq double " (first xs) ", " (second xs)) (ll-def! nid :bool v))
+          (#{:inc :dec} op) (do (ll-emit! "  " v " = " (if (= op :inc) "fadd" "fsub") " double " (first xs) ", 1.0")
+                                (ll-def! nid :float v))
+          :else (do (ll-emit! "  " v " = fcmp " ({:zero? "oeq" :pos? "ogt" :neg? "olt"} op) " double " (first xs) ", 0.0")
+                    (ll-def! nid :bool v))))
       (and (ll-checked-op op) (= 2 n)) (let [[a b] (map ll-int-arg refs)] (ll-checked! nid (ll-checked-op op) a b))
       (and (#{:inc :dec} op) (= 1 n)) (ll-checked! nid (if (= op :inc) "sadd" "ssub") (ll-int-arg (first refs)) "1")
       (and (ll-cmp op) (= 2 n) (not (and (= op :eq) (not-every? #(= :int (ty %)) refs))))
@@ -624,14 +654,25 @@
   (let [c (last (nth (get (:cuts *ll*) b) (dec n)))]
     (vec (remove #{c} (ll-live-in cont)))))
 
+(defn ll-implicit-kinds
+  "The kinds of ll-implicit's values: the closure is a box, a region's
+   captures have theirs."
+  []
+  (cond (:self-type *ll*) [:box]
+        (seq (:region-caps *ll*)) (vec (:region-caps *ll*))
+        :else []))
+
 (defn ll-record-type
   "The named struct type of continuation piece cont's record,
-   {code, k, saved...}; its definition is collected for the module."
+   {code, k, saved...}; its definition, and its collector descriptor (k,
+   then the boxed implicit and saved values), are collected for the module."
   [cont]
-  (let [nm (str "%\"k." (ll-fn-name cont) "\"")]
+  (let [nm (str "%\"k." (ll-fn-name cont) "\"")
+        kinds (concat (ll-implicit-kinds) (map ty (ll-saved cont)))]
     (swap! (:types *ll*) conj
            (str nm " = type { ptr, ptr" (apply str (map #(str ", " (first %)) (ll-implicit)))
                 (apply str (map #(str ", " (ll-type (ty %))) (ll-saved cont))) " }"))
+    (swap! *globals* conj (ll-desc-def nm (cons 1 (ll-kind-fields 2 kinds))))
     nm))
 
 (defn ll-slot0
@@ -725,7 +766,7 @@
       (ll-tail! callee (cons "ptr %k" argv))
       (let [cont [b (inc n)] saved (ll-saved cont) rt (ll-record-type cont)
             r (ll-fresh "%r") w (ll-word)]
-        (ll-emit! "  " r " = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" rt ", ptr null, i32 1) to " w "))")
+        (ll-emit! "  " r " = " (ll-alloc-call rt))
         (ll-emit! "  store ptr " (ll-q (ll-fn-name cont)) ", ptr " r)
         (ll-emit! "  " r ".1 = getelementptr " rt ", ptr " r ", i32 0, i32 1")
         (ll-emit! "  store ptr %k, ptr " r ".1")
@@ -766,6 +807,29 @@
             (ll-label! tl) (ll-edge! (ir/cond-target-true a))
             (ll-label! fl) (ll-edge! (ir/cond-target-false a)))
           (ll-fail (str "unsupported terminator " (ir/op t *f*)) {:block b}))))))
+
+(defn ll-gc-check
+  "The entry check of a CPS function (spec decision 7): when the allocator
+   has asked for a collection, collect with the function's roots, its
+   [type name] params that may hold heap words (records, frames, boxes);
+   nothing else is live, since every call is a tail call."
+  [roots]
+  (let [n (count roots) w (ll-word)]
+    (str "  %gc.r = alloca [" (max n 1) " x ptr]\n"
+         "  %gc.p = load i8, ptr @lg_gc_pending\n  %gc.c = icmp ne i8 %gc.p, 0\n"
+         "  br i1 %gc.c, label %lg.gc, label %lg.body\nlg.gc:\n"
+         (apply str (map-indexed (fn [i [t x]]
+                                   (str "  %gc.s" i " = getelementptr [" n " x ptr], ptr %gc.r, i32 0, i32 " i "\n"
+                                        (if (= t "ptr")
+                                          (str "  store ptr " x ", ptr %gc.s" i "\n")
+                                          (str "  %gc.v" i " = inttoptr " w " " x " to ptr\n  store ptr %gc.v" i ", ptr %gc.s" i "\n"))))
+                                 roots))
+         "  call void @lg_gc(ptr %gc.r, i32 " n ")\n  br label %lg.body\nlg.body:\n")))
+
+(defn ll-boxed-roots
+  "[type name] of the :box values among [kind name] pairs."
+  [pairs]
+  (for [[k x] pairs :when (= k :box)] [(ll-word) x]))
 
 (defn ll-function!
   "One LLVM function for entry point p."
@@ -812,7 +876,21 @@
           jparams (when fast?
                     (concat ["ptr %k"] (ll-implicit-args)
                             (map #(str (ll-type (ty %)) " %a" %) (ll-saved p)) [(str rty " %res")]))
+          ret-k (when prev-call (:ret (ll-sig prev-call)))
+          implicit (map vector (ll-implicit-kinds) (map second (ll-implicit)))
+          roots (cond
+                  fast? (concat [["ptr" "%k"]] (ll-boxed-roots implicit)
+                                (ll-boxed-roots (map (fn [s] [(ty s) (str "%a" s)]) (ll-saved p)))
+                                (ll-boxed-roots [[ret-k "%res"]]))
+                  (pos? n) (concat [["ptr" "%rec"]] (ll-boxed-roots [[ret-k "%res"]]))
+                  (= b (ir/entry-block *f*))
+                  (concat [["ptr" "%k"]] (when (:self-type *ll*) [[(ll-word) "%self"]])
+                          (ll-boxed-roots (map-indexed (fn [i k] [k (str "%p" i)]) *param-kinds*))
+                          (when-not (:self-type *ll*) (ll-boxed-roots implicit)))
+                  :else (concat [["ptr" "%k"]] (ll-boxed-roots implicit)
+                                (ll-boxed-roots (map (fn [s] [(ty s) (str "%a" s)]) (concat live (ll-params b))))))
           body (str "(" (str/join ", " (if fast? jparams params)) ") {\nentry:\n"
+                    (ll-gc-check roots)
                     (str/join "\n" @(:lines *ll*))
                     (when @(:ovf *ll*) "\novf:\n  call void @lg_overflow()\n  unreachable")
                     "\n}\n")]
@@ -932,7 +1010,7 @@
     (str "define internal tailcc void " (ll-q cname) "(ptr %k, " w " %self"
          (apply str (map #(str ", " w " %a" %) ps)) ") {\nentry:\n"
          (str/join "\n" (mapcat #(ll-unbox-lines (nth (:params sig) %) (str "%a" %) (str "%u" %)) ps)) "\n"
-         (if (= :box ret) "" (str "  %r = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (%kbox, ptr null, i32 1) to " w "))\n"
+         (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr @lg_kbox_" (name ret) ", ptr %r\n"
                                   "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
          "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
@@ -1065,7 +1143,7 @@
                          (let [l (str "%l" j "_" i)]
                            (recur (dec i) (str "%w" j "_" i)
                                   (conj out
-                                        (str "  " l " = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" lty ", ptr null, i32 1) to " w "))\n"
+                                        (str "  " l " = " (ll-alloc-call lty) "\n"
                                              "  store " w " " (ll-tid "$List") ", ptr " l "\n"
                                              "  " l ".1 = getelementptr " lty ", ptr " l ", i32 0, i32 1\n  store " w " %a" i ", ptr " l ".1\n"
                                              "  " l ".2 = getelementptr " lty ", ptr " l ", i32 0, i32 2\n  store " w " " acc ", ptr " l ".2\n"
@@ -1100,7 +1178,10 @@
         fn-ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
     (str "target datalayout = \"" (llvm-datalayout (:triple p)) "\"\n"
          "target triple = \"" (:triple p) "\"\n\n"
-         "declare ptr @lg_alloc(" w ")\n"
+         "declare ptr @lg_alloc(" w ", ptr)\n"
+         ;; the collector (host/native/gc.c): the entry check's flag and call
+         "@lg_gc_pending = external global i8\n"
+         "declare void @lg_gc(ptr, i32)\n"
          "declare void @lg_overflow() noreturn cold\n"
          "declare void @lg_print_i64(i64)\n"
          "declare void @lg_print_bool(i32)\n"
@@ -1124,10 +1205,12 @@
          "  br i1 %none, label %unc, label %h\nunc:\n  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
          "  %pp = getelementptr %tryf, ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr %pp\n  store ptr %prior, ptr @lg_handler\n"
          "  %code = load ptr, ptr %F\n  musttail call tailcc void %code(ptr %F, " w " %exn)\n  ret void\n}\n"
-         "%kinit = type { ptr, ptr }\n\n"
+         "%kinit = type { ptr, ptr }\n"
+         (ll-desc-def "%kbox" [1]) "\n" (ll-desc-def "%kfin" [1 2]) "\n"
+         (ll-desc-def "%tryf" [1 2]) "\n" (ll-desc-def "%kinit" [1]) "\n\n"
          (apply str (for [[k t box] [[:int "i64" (str "  %b = call " w " @lg_box_int(i64 %v)\n")]
                                      [:bool "i1" (str "  %b = select i1 %v, " w " " (ll-true) ", " w " " (ll-false) "\n")]
-                                     [:float "double" (str "  %fo = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" (ll-sty "$Float") ", ptr null, i32 1) to " w "))\n"
+                                     [:float "double" (str "  %fo = " (ll-alloc-call (ll-sty "$Float")) "\n"
                                                            "  store " w " " (ll-tid "$Float") ", ptr %fo\n"
                                                            "  %fv = getelementptr " (ll-sty "$Float") ", ptr %fo, i32 0, i32 1\n  store double %v, ptr %fv\n"
                                                            "  %b = ptrtoint ptr %fo to " w "\n")]]]
@@ -1194,7 +1277,7 @@
               (concat
                (for [[i st] (map-indexed vector steps)]
                  (str "define internal tailcc void @lg_init." i "(ptr %k) {\n"
-                      "  %r = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (%kinit, ptr null, i32 1) to " w "))\n"
+                      "  %r = " (ll-alloc-call "%kinit") "\n"
                       "  store ptr @lg_init." i ".done, ptr %r\n  %r.1 = getelementptr %kinit, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"
                       "  musttail call tailcc void " (ll-q (or (:init st) (:call st))) "(ptr %r)\n  ret void\n}\n"
                       "define internal tailcc void @lg_init." i ".done(ptr %rec, " w " %v) {\n"
@@ -1229,6 +1312,11 @@
          (str/join "\n" (sort (distinct (mapcat :types all)))) "\n\n"
          (str/join "\n" (ll-object-globals)) "\n"
          (str/join "\n" (for [g (sort gvars)] (str "@\"var" g "\" = internal global " w " 0"))) "\n"
+         ;; the collector's global roots: every var global, and the handler chain
+         (let [roots (concat (for [g (sort gvars)] (str "ptr @\"var" g "\"")) ["ptr @lg_handler"])]
+           (str "@lg_gc_globals = constant [" (count roots) " x ptr] [" (str/join ", " roots) "]\n"
+                "@lg_gc_nglobals = constant i32 " (count roots) "\n"))
+         (str/join "\n" (ll-type-descs)) "\n"
          (str/join "\n" (distinct @*globals*)) "\n\n"
          inits "\n"
          (str/join "\n" (map :text all)))))

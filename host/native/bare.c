@@ -46,21 +46,16 @@ void lg_host_exit(int status) {
 #endif
 
 extern char __heap_start[];
-static char *heap_next = __heap_start;
 
 /* os/args on a board: no program path to report, only the lg name. */
 int lg_host_argc(void) { return 1; }
 const char *lg_host_argv(int i) { return i == 0 ? "lg" : ""; }
 
-void *lg_host_chunk(size_t n) {
-  if ((size_t)(__heap_start + LG_HEAP_BYTES - heap_next) < n) {
-    static const char msg[] = "error: out of memory\n";
-    lg_host_write(2, msg, sizeof msg - 1);
-    lg_host_exit(1);
-  }
-  void *p = heap_next;
-  heap_next += n;
-  return p;
+/* The heap (host/native/gc.c collects it): the profile's :heap bytes from
+ * the linker's __heap_start; exhausting it is gc.c's "out of memory". */
+void *lg_host_heap(size_t *n) {
+  *n = LG_HEAP_BYTES;
+  return __heap_start;
 }
 
 void lg_bare_main(void) {

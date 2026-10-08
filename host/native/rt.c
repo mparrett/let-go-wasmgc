@@ -3,9 +3,9 @@
  * value points at an object whose first word is its type id (the module's
  * lg_tid_* constants, from rt/llvm's declarations); false and true are the
  * module's Bool objects lg_false and lg_true. The fixnum width is the profile's :fixnum-bits, a signed width,
- * passed as -DLG_FIXNUM_BITS by checks/native-run.sh. Allocation never frees
- * (M1); the collector is M2. Numbers are formatted here, so a host only
- * has to write bytes (host/native/posix.c). */
+ * passed as -DLG_FIXNUM_BITS by checks/native-run.sh. Allocation and the
+ * collector are host/native/gc.c. Numbers are formatted here, so a host
+ * only has to write bytes (host/native/posix.c). */
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,7 +15,9 @@
 
 void lg_host_write(int fd, const char *buf, size_t n);
 void lg_host_exit(int status) __attribute__((noreturn));
-void *lg_host_chunk(size_t n);
+typedef struct lg_desc lg_desc;
+extern const lg_desc lg_desc_noscan;
+void *lg_alloc(size_t n, const lg_desc *d);
 
 extern const intptr_t lg_tid_Int, lg_tid_Float, lg_tid_Bool, lg_tid_Bytes, lg_tid_Err,
     lg_tid_Fn, lg_tid_FnV, lg_tid_FnX;
@@ -29,20 +31,6 @@ typedef struct { intptr_t tid; intptr_t len; unsigned char data[]; } lg_bytes;
 
 static intptr_t lg_tid_of(intptr_t w) { return (w & 1) || w == 0 ? 0 : *(const intptr_t *)w; }
 
-static char *heap_top, *heap_end;
-
-void *lg_alloc(size_t n) {
-  size_t a = sizeof(int64_t) > sizeof(void *) ? sizeof(int64_t) : sizeof(void *);
-  n = (n + a - 1) & ~(a - 1);
-  if (heap_top == 0 || (size_t)(heap_end - heap_top) < n) {
-    size_t chunk = n > ((size_t)1 << 20) ? n : ((size_t)1 << 20);
-    heap_top = lg_host_chunk(chunk);
-    heap_end = heap_top + chunk;
-  }
-  void *p = heap_top;
-  heap_top += n;
-  return p;
-}
 
 static void lg_puts(int fd, const char *s) {
   size_t n = 0;
@@ -64,7 +52,7 @@ static const int64_t fix_max = ((int64_t)1 << (LG_FIXNUM_BITS - 1)) - 1;
 
 intptr_t lg_box_int(int64_t v) {
   if (v >= fix_min && v <= fix_max) return (intptr_t)(((uintptr_t)(intptr_t)v << 1) | 1);
-  lg_int_box *b = lg_alloc(sizeof *b);
+  lg_int_box *b = lg_alloc(sizeof *b, &lg_desc_noscan);
   b->tid = lg_tid_Int;
   b->value = v;
   return (intptr_t)b;
@@ -116,7 +104,7 @@ void lg_array_copy(unsigned char *dst, intptr_t dn, int64_t di, const unsigned c
 
 /* arch/bytes-new: n zero bytes. */
 intptr_t lg_bytes_new(int64_t n) {
-  lg_bytes *b = lg_alloc(sizeof *b + (size_t)n);
+  lg_bytes *b = lg_alloc(sizeof *b + (size_t)n, &lg_desc_noscan);
   b->tid = lg_tid_Bytes;
   b->len = (intptr_t)n;
   for (int64_t i = 0; i < n; i++) b->data[i] = 0;
@@ -138,7 +126,7 @@ intptr_t lg_host_arg(int64_t i) {
   const char *a = lg_host_argv((int)i);
   size_t n = 0;
   while (a[n]) n++;
-  lg_bytes *b = lg_alloc(sizeof *b + n);
+  lg_bytes *b = lg_alloc(sizeof *b + n, &lg_desc_noscan);
   b->tid = lg_tid_Bytes;
   b->len = (intptr_t)n;
   for (size_t j = 0; j < n; j++) b->data[j] = (unsigned char)a[j];

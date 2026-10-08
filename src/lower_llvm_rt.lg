@@ -72,6 +72,55 @@
      (for [[kinds _] (get @*fn-values* [:llvm :envs])]
        (str (ll-env-sty kinds) " = type { " w (apply str (map #(str ", " (ll-type %)) kinds)) " }")))))
 
+;; --- collector descriptors (spec decision 7, host/native/gc.c) ------------
+;; Every block's header points at its type's descriptor {kind, len offset,
+;; element offset, n, offsets of the n word fields to trace}; an array of
+;; refs (kind 1) also traces each element. A type with no ref field gets a
+;; descriptor with n = 0, which the collector never scans.
+
+(defn ll-desc-name
+  "The descriptor global of LLVM struct type sty (%\"T.Int\" -> @\"gcd.T.Int\",
+   %kbox -> @\"gcd.kbox\")."
+  [sty]
+  (str "@\"gcd." (str/replace (str/replace sty #"^%\"?" "") #"\"$" "") "\""))
+
+(defn ll-desc-def
+  "The descriptor global of sty: LLVM field indices fields hold words to
+   trace; with an array elem index, the length at len and each element of
+   the array at elem are traced too."
+  ([sty fields] (ll-desc-def sty fields nil nil))
+  ([sty fields len elem]
+   (let [off (fn [i] (str "i32 ptrtoint (ptr getelementptr (" sty ", ptr null, i32 0, i32 " i ") to i32)"))
+         n (count fields)]
+     (str (ll-desc-name sty) " = internal constant { i32, i32, i32, i32, [" n " x i32] } { "
+          "i32 " (if elem 1 0) ", " (if len (off len) "i32 0") ", " (if elem (off elem) "i32 0") ", i32 " n ", "
+          "[" n " x i32] " (if (zero? n) "zeroinitializer" (str "[" (str/join ", " (map off fields)) "]")) " }"))))
+
+(defn ll-alloc-call
+  "The text of a call allocating one sty, with its descriptor."
+  [sty]
+  (let [w (ll-word)]
+    (str "call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" sty ", ptr null, i32 1) to " w "), ptr " (ll-desc-name sty) ")")))
+
+(defn ll-kind-fields
+  "LLVM field indices, from first, of the :box kinds in kinds."
+  [first kinds]
+  (keep-indexed (fn [i k] (when (= k :box) (+ first i))) kinds))
+
+(defn ll-type-descs
+  "Descriptors of every registered type: runtime and program structs (their
+   :ref fields), arrays (of refs: every element), closure environments."
+  []
+  (concat
+   (for [{:keys [tn decl]} (ll-static-types)
+         :let [k (lw-rt/decl-kind decl)]
+         :when (#{:struct :array} k)]
+     (if (= :array k)
+       (if (= :ref (:elem decl)) (ll-desc-def (ll-sty tn) [] 1 2) (ll-desc-def (ll-sty tn) []))
+       (ll-desc-def (ll-sty tn) (keep-indexed (fn [i f] (when (= :ref (:type f)) (inc i))) (:fields decl)))))
+   (for [[kinds _] (get @*fn-values* [:llvm :envs])]
+     (ll-desc-def (ll-env-sty kinds) (ll-kind-fields 1 kinds)))))
+
 ;; type ids and the boolean objects the C host reads (host/native/rt.c)
 (def ll-host-types ["$Int" "$Err" "$Bool" "$Float" "$Str" "$Bytes" "$Fn" "$FnV" "$FnX" "$FnInfo" "$Kw" "$Sym" "$Char"])
 
@@ -157,7 +206,7 @@
   "A fresh object of struct type sty with id tid; returns its ptr."
   [sty tid]
   (let [w (ll-word) r (ll-fresh "%new")]
-    (ll-emit! "  " r " = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" sty ", ptr null, i32 1) to " w "))")
+    (ll-emit! "  " r " = " (ll-alloc-call sty))
     (ll-emit! "  store " w " " tid ", ptr " r)
     r))
 
@@ -252,7 +301,7 @@
                         [t v] (ll-store-arg (:elem d) (a 2)) p (ll-fresh "%arr")]
                     (ll-emit! "  " p ".end = getelementptr " (ll-sty tn) ", ptr null, i32 0, i32 2, " w " " n)
                     (ll-emit! "  " p ".n = ptrtoint ptr " p ".end to " w)
-                    (ll-emit! "  " p " = call ptr @lg_alloc(" w " " p ".n)")
+                    (ll-emit! "  " p " = call ptr @lg_alloc(" w " " p ".n, ptr " (ll-desc-name (ll-sty tn)) ")")
                     (ll-emit! "  store " w " " (ll-tid tn) ", ptr " p)
                     (ll-emit! "  store " w " " n ", ptr " (ll-field-ptr! (ll-sty tn) p 1))
                     (ll-emit! "  call void @lg_fill_" (if (= t w) "word" t) "(ptr " (ll-field-ptr! (ll-sty tn) p 2) ", " w " " n ", " t " " v ")")
@@ -400,7 +449,7 @@
                  {:text (str "define internal tailcc void " (ll-q cname) "(ptr %k"
                              (apply str (map #(str ", " (ll-slot-type (nth (:params d) %)) " %a" %) ps)) ") {\nentry:\n"
                              (str/join "\n" (mapcat conv ps)) "\n"
-                             (if (= :box ret) "" (str "  %r = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (%kbox, ptr null, i32 1) to " w "))\n"
+                             (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                                       "  store ptr @lg_kbox_" (name ret) ", ptr %r\n"
                                                       "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
                              "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
@@ -444,7 +493,7 @@
       :box [(str "  " r " = add " w " " x ", 0")]
       :int [(str "  " r " = call " w " @lg_box_int(i64 " x ")")]
       :bool [(str "  " r " = select i1 " x ", " w " " (ll-true) ", " w " " (ll-false))]
-      :float [(str "  " r ".p = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" (ll-sty "$Float") ", ptr null, i32 1) to " w "))")
+      :float [(str "  " r ".p = " (ll-alloc-call (ll-sty "$Float")))
               (str "  store " w " " (ll-tid "$Float") ", ptr " r ".p")
               (str "  " r ".f = getelementptr " (ll-sty "$Float") ", ptr " r ".p, i32 0, i32 1")
               (str "  store double " x ", ptr " r ".f")
@@ -476,7 +525,7 @@
                                        [(apply concat ls) (map-indexed (fn [i k] (str ", " (ll-type k) " %cv" i)) ck)]))
             call-fin (fn [F after v]
                        (let [[ls as] (caps-from F off-f (:ck fin))]
-                         (str "  %r2 = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (%kfin, ptr null, i32 1) to " w "))\n"
+                         (str "  %r2 = " (ll-alloc-call "%kfin") "\n"
                               "  store ptr " (q after) ", ptr %r2\n  %r2.1 = getelementptr %kfin, ptr %r2, i32 0, i32 1\n  store ptr " F ", ptr %r2.1\n"
                               "  %r2.2 = getelementptr %kfin, ptr %r2, i32 0, i32 2\n  store " w " " v ", ptr %r2.2\n"
                               (str/join "\n" ls) "\n"
@@ -484,14 +533,15 @@
             to-k (fn [F b] (str "  %kp = getelementptr " ft ", ptr " F ", i32 0, i32 1\n  %kk = load ptr, ptr %kp\n"
                                 "  %kc = load ptr, ptr %kk\n  musttail call tailcc void %kc(ptr %kk, " w " " b ")\n  ret void\n"))
             pop (fn [F] (str "  %pp = getelementptr " ft ", ptr " F ", i32 0, i32 2\n  %pr = load ptr, ptr %pp\n  store ptr %pr, ptr @lg_handler\n"))
-            rec (fn [code F] (str "  %r = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (%kbox, ptr null, i32 1) to " w "))\n"
+            rec (fn [code F] (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr " code ", ptr %r\n  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr " F ", ptr %r.1\n"))
             reify (get-in (callee-sig (lw-rt/rt-var 'core 'reify-caught)) [:arities 1])
+            _ (swap! *globals* conj (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck))))
             texts
             [(str ft " = type { ptr, ptr, ptr, " w (apply str (map #(str ", " (ll-type %)) all-ck)) " }")
              ;; enter: push F, run the body with a continuation that pops it
              (str "define internal tailcc void " (ll-q tn) "(ptr %k" (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %a" i)) all-ck)) ") {\nentry:\n"
-                  "  %F = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" ft ", ptr null, i32 1) to " w "))\n"
+                  "  %F = " (ll-alloc-call ft) "\n"
                   "  store ptr " (q "catch") ", ptr %F\n"
                   "  %F1 = getelementptr " ft ", ptr %F, i32 0, i32 1\n  store ptr %k, ptr %F1\n"
                   "  %F2 = getelementptr " ft ", ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr @lg_handler\n  store ptr %prior, ptr %F2\n"
@@ -509,7 +559,7 @@
              ;; a throw reached F (lg_throw popped it)
              (str "define internal tailcc void " (q "catch") "(ptr %F, " w " %exn) {\nentry:\n"
                   (cond
-                    h (str (when fin (str "  %G = call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (%tryf, ptr null, i32 1) to " w "))\n"
+                    h (str (when fin (str "  %G = " (ll-alloc-call "%tryf") "\n"
                                           "  store ptr " (q "hthrow") ", ptr %G\n  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  store ptr %F, ptr %G1\n"
                                           "  %G2 = getelementptr %tryf, ptr %G, i32 0, i32 2\n  %gp = load ptr, ptr @lg_handler\n  store ptr %gp, ptr %G2\n"
                                           "  store ptr %G, ptr @lg_handler\n"))
