@@ -126,6 +126,12 @@ P10.2	src/ rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ host/n
 P10.3	src/ rt/ corpus/emit/host/ host/explorer.html host/build-explorer-serve.sh host/lg-wasm-host.js checks/explorer-page-check.mjs checks/sem.sh checks/env.sh
 P7.11	oracle corpus/eval/program/multi/ checks/run-corpus.sh
 P10.6	oracle checks/ir-pipeline.sh checks/fixtures/ir-pipeline/ checks/env.sh
+P12.0	oracle checks/self-compile.sh checks/fixtures/self-compile/ checks/env.sh
+P12.1	src/ checks/backend-census.sh checks/census.lg checks/env.sh
+P12.2	src/ checks/backend-census.sh checks/census.lg checks/env.sh
+P12.3	oracle corpus/eval/registry/ checks/run-corpus.sh
+P12.4	oracle checks/self-compile-assemble.sh checks/env.sh
+P12.5	oracle checks/self-compiled-run.sh checks/self-compile-assemble.sh checks/fixtures/self-compile/ corpus/scalar/ref.lg corpus/eval/ checks/env.sh
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

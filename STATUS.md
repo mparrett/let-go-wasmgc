@@ -182,3 +182,20 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 - 2026-10-03: existing GC runtime-cache restore variance and the bare os/args printer-reachability issue remain reported in the PR; their GC behavior is preserved. Neither blocked the required final gates.
 - 2026-10-03: GC legmacs boot/size rerun: lower-wasm module alone: 2,265,456 B as emitted, 686,520 B after `wasm-opt -O3` (served), 170,576 B brotli, 206,572 B gzip. Bundle raw/brotli/gzip: 707 KB, 178 KB, 215 KB; median title-or-boot / first frame: 128 ms / 128 ms. Full dated runs: corpus/legmacs/size-boot.md.
 - 2026-10-03: GC xsofy boot/size rerun: Lane 5 module alone: 1,920,368 B as emitted, 430,783 B after `wasm-opt -O3` (served), 115,153 B brotli, 137,162 B gzip. Bundle raw/brotli/gzip: 521 KB, 147 KB, 174 KB; median title-or-boot / first frame: 4060 ms / 5144 ms. Full dated runs: corpus/xsofy/size-boot.md.
+
+## Stage 2, the self-compiling backend (D205/D206), rows added 2026-10-08
+
+Plan, stage-0 census and the stage-2 measurements are in the maintainers' notes (D205, D206 record
+the decisions). Byte rule for this phase: byte-neutral by default; a row that moves
+the guard says so in its PR with one program's WAT diff, re-freezes in its own commit, merges with
+`--merge`; a move nobody explained is red.
+
+| item | state | by | note |
+|---|---|---|---|
+| P12.0 | queued | | self-compile.sh built 2026-10-08; red at the rooted-var driver crash (first task) |
+| P12.1 | queued | | 9 `binding [*ns* ...]` units; backend-census.sh built 2026-10-08, reports 13 |
+| P12.2 | queued | | 3 dynamic vars + f64-to-i64-sat |
+| P12.3 | queued | | corpus/eval/registry/ built 2026-10-08; 3 of 17 lines mismatch (:macro meta, bound?, ns-resolve privacy) |
+| P12.4 | queued | | check not built (exit 2) |
+| P12.5 | queued | | check not built (exit 2) |
+| P12.GATE | | | |

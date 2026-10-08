@@ -1,0 +1,7 @@
+;; P12.0: the backend carried as a program. checks/self-compile.sh copies src/
+;; with its namespaces renamed under lwx. (so the driver's own lower-wasm
+;; stays loaded beside the copy) and compiles this program against the copy.
+;; driver.lg is left out (it calls -main at load). The counts must equal
+;; native's; the real test is that the whole tree lowers at all.
+(ns self-compile (:require [lwx.lower-wasm :as lw] [lwx.lw-rt :as rt]))
+(println (count rt/core-defns) (count rt/twins) (count rt/ext-twins))
