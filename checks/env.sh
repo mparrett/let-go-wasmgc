@@ -29,5 +29,8 @@ LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 lw_brew=/opt/homebrew/opt/binaryen/bin
 WASM_OPT=${WASM_OPT:-$( [ -x "$lw_brew/wasm-opt" ] && echo "$lw_brew/wasm-opt" || command -v wasm-opt || echo wasm-opt)}
 WASM_MERGE=${WASM_MERGE:-$( [ -x "$lw_brew/wasm-merge" ] && echo "$lw_brew/wasm-merge" || command -v wasm-merge || echo wasm-merge)}
-export LW_ROOT LG LETGO XSOFY LEGMACS WASM_OPT WASM_MERGE
+# One slot pool for every agent and session (checks/sem.sh); not under $TMPDIR,
+# which differs per session and gave each agent its own set of slots.
+LW_SEM=${LW_SEM:-/tmp/lw-sem-$(id -u)}
+export LW_ROOT LG LETGO XSOFY LEGMACS WASM_OPT WASM_MERGE LW_SEM
 unset lw_env_here lw_env_src lw_c lw_brew

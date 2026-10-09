@@ -7,9 +7,16 @@
 # from 8 s to 30 s. Three agents each running a serial gate already
 # oversubscribe the machine; a parallel gate per agent would make it worse.
 # So parallelism is granted by ONE pool shared by every agent and every
-# script, not per script: LW_SLOTS (default 4) tokens in $LW_SEM
-# (default ${TMPDIR:-/tmp}/lw-sem: per-user on macOS, outside any watched or
-# per-session tree; set LW_SEM to one path if agents' TMPDIRs differ).
+# script, not per script: LW_SLOTS (default 4) tokens in $LW_SEM. The default,
+# /tmp/lw-sem-<uid>, is the same path in every shell, session and TMPDIR, so
+# the pool is machine-wide by construction (it used to sit under $TMPDIR,
+# which is per session: on 2026-10-08 three agents each had their own four
+# slots and the load reached 50). checks/env.sh exports the same default.
+# checks/slots.sh lists who holds the slots.
+# The held command runs under `nice -n ${LW_NICE:-10}` (an increment on the
+# caller's niceness, so 5 becomes 15): builds yield to the
+# user's interactive work. It does not change throughput among builds; the
+# slot count does.
 #
 # mkdir is the atomic primitive (no flock on macOS bash 3). A slot is a
 # directory holding the holder's pid; a slot whose pid is dead is reclaimed
@@ -26,7 +33,7 @@
 # costs oversubscription, not a deadlock.
 set -uo pipefail
 if [ -n "${LW_SEM_HELD:-}" ]; then exec "$@"; fi
-n=${LW_SLOTS:-4}; d=${LW_SEM:-${TMPDIR:-/tmp}/lw-sem}; d=${d%/}; mkdir -p "$d"
+n=${LW_SLOTS:-4}; d=${LW_SEM:-/tmp/lw-sem-$(id -u)}; d=${d%/}; mkdir -p "$d"
 deadline=$(( $(date +%s) + ${LW_SEM_WAIT:-1800} ))
 got=""
 # a slot whose holder died, or that never recorded a pid (killed between
@@ -55,5 +62,5 @@ while :; do
 done
 trap '[ -n "$got" ] && rm -rf "$got"' EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM HUP
-LW_SEM_HELD=1 "$@"
+LW_SEM_HELD=1 nice -n "${LW_NICE:-10}" "$@"
 exit $?
