@@ -130,7 +130,7 @@ TOTAL ≈ $1,227
 | P7.5 | green 2026-10-02 09:00 (on B's in-flight src) | runner | eval-hosts.sh PASS: node, Chromium, legmacs C-x C-e => 42; playground legmacs.wasm + :8261 refreshed for our test drive |
 | P7.0 | done 2026-10-02 (D160) | opus A | corpus/eval 10/10, native tier 122 tests, P2.1/P4.2 green; program/ waits for B |
 | C: legmacs wiring | running | opus | P7.2 script 6, P7.1 ledger + bar, P7.3 prep, evaluator gaps in rt |
-| P7.1 | done 2026-10-02 (D162) | opus C | 28/30 (repl 7/7, letgo 21/23); whole suite 316/373, bar raised |
+| P7.1 | done 2026-10-02 (D162) | opus C | 28/30 (repl 7/7, letgo 21/23); whole suite 316/373, bar raised. 2026-10-08: each legmacs eval test file compiles in ~365 s alone (700+ s under load), past run-tests.sh's 300 s per-file cap, so the row times out on this machine whatever the code; gate runs set `LW_TEST_TIMEOUT` (seconds, default 300). Bar unchanged |
 | P7.2 | done 2026-10-02 (D162) | opus C | script 6 byte-identical |
 | P7.3 | done 2026-10-02 (D162) | opus C | comment.lg loaded by eval defines comment-dwim; defcommand expands in-module |
 | B: program table | done 2026-10-02 (D161) | opus B | table +24 KB brotli, eval.lg +23 KB; xsofy byte-identical |

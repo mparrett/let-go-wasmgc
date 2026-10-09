@@ -27,7 +27,7 @@
 #
 # --corpus <list>: lines `file<TAB>deftests` (# comments), files relative to
 # LETGO_TEST, else to the list's dir, else to the cwd. Runs every file (P at
-# a time, each under checks/sem.sh with a 300 s timeout), regenerates
+# a time, each under checks/sem.sh with an LW_TEST_TIMEOUT s timeout), regenerates
 # corpus/core-tests-results.tsv (for corpus/core-tests.txt only; other lists
 # write a scratch table), and prints `files MATCH M/F` and `deftests N/T
 # (skipped S, bar B)`. A deftest passes only where the backend agrees with
@@ -47,11 +47,16 @@
 # with test/ as cwd (quality_cost reads ../scripts/quality). Other files get
 # their own dir.
 # Env: LG, KEEP=1 (keep the scratch dir), SRC_PATHS (override the source
-# paths), LETGO_TEST (default $LW_ROOT/let-go/test), P (default 3).
+# paths), LETGO_TEST (default $LW_ROOT/let-go/test), P (default 3),
+# LW_TEST_TIMEOUT (default 300: the per-file cap of --corpus, in seconds; a
+# legmacs eval test file compiles in ~365 s alone on 2026-10-08, 700+ s under
+# load, so a gate run on a loaded machine raises it; the bar does not move).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
 LETGO_TEST=${LETGO_TEST:-$LW_ROOT/let-go/test}
+# exported: the --corpus workers read it inside their own bash -c
+export LW_TEST_TIMEOUT=${LW_TEST_TIMEOUT:-300}
 filter=""; files=(); corpus=""; one=""; bar_arg=""
 while [ $# -gt 0 ]; do
   case $1 in
@@ -87,7 +92,7 @@ if [ -n "$corpus" ]; then
   src_of() { if [ -f "$LETGO_TEST/$1" ]; then echo "$LETGO_TEST/$1"; elif [ -f "$cdir/$1" ]; then echo "$cdir/$1"; else echo "$1"; fi; }
   while IFS=$'\t' read -r f n; do printf '%s\t%s\n' "$t/$(printf '%s' "$f" | tr / _).res" "$(src_of "$f")"; done <"$t/list" \
     | tr '\n' '\0' | xargs -0 -P "${P:-3}" -I{} bash -c 'IFS=$'"'"'\t'"'"' read -r res src <<<"$1"
-        exec "$2/checks/sem.sh" timeout -k 5 300 env KEEP= "$2/checks/run-tests.sh" --one "$res" "$src" >/dev/null 2>&1' _ {} "$here"
+        exec "$2/checks/sem.sh" timeout -k 5 "$LW_TEST_TIMEOUT" env KEEP= "$2/checks/run-tests.sh" --one "$res" "$src" >/dev/null 2>&1' _ {} "$here"
   # only the core-test corpus owns the committed results table
   tsv=$t/results.tsv
   [ -z "$filter" ] && [ "$(basename "$corpus")" = core-tests.txt ] && tsv=$here/corpus/core-tests-results.tsv
