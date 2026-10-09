@@ -998,9 +998,22 @@
   ;; evaluator's builtin macros, so in-module macroexpand of core forms
   ;; expanded nothing (core/map's (fn [rf] ..): unresolved symbol rf)
   (let [names (vec (sort (map (fn [e] (str (key e))) (remove (fn [e] (:macro (meta (val e)))) (ns-interns (symbol nsn))))))
-        prefix (str "#'" nsn "/")]
+        prefix (str "#'" nsn "/")
+        ;; Refers into a namespace other than core itself, by target name:
+        ;; core takes bigint? from let-go.types, so inside core (where the
+        ;; carried compiler analyses core's defns) the module's resolve-global
+        ;; finds it through :refers, as native does. Refers to core are left
+        ;; out, as ns-table-entry! leaves them: core's names resolve already.
+        ;; No ns-refers twin in a module, so none there (its named limit).
+        refers (into {} (sort (remove nil? (map (fn [e]
+                                                  (let [v (val e)
+                                                        found (when (var? v) (find-ns (symbol (var-ns-name v))))
+                                                        tn (when found (str (ns-name found)))]
+                                                    (when (and tn (not= tn nsn) (not (#{"core" "clojure.core" "let-go.core"} tn)))
+                                                      [(str (key e)) tn])))
+                                                (if *in-wasm* {} (ns-refers (symbol nsn)))))))]
     (list 'let* ['__lw_nsy (list 'clojure.core/symbol (str "<ns " nsn ">")) '__lw_names names]
-          {:aliases {} :refers {} :macros {}
+          {:aliases {} :refers refers :macros {}
            :vars (list 'loop* ['__lw_k 0 '__lw_m {}]
                        (list 'if (list 'clojure.core/< '__lw_k (count names))
                              (list 'let* ['__lw_n (list 'clojure.core/nth '__lw_names '__lw_k)]
