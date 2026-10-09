@@ -1068,8 +1068,12 @@
           ;; table's stand-ins read their vars only when eval derefs them
           boot (registry-boot-forms (ns-name *ns*) (conj (vec (sort @lib-loaded)) (ns-name *ns*))
                                     var-globals (keep defn-var @defns))
-          ;; P7.9: top-level calls of eval and of program fns, when eval is reached
-          wrap-calls (if @eval-reached
+          ;; P7.9: top-level calls of eval and of program fns, when eval is reached.
+          ;; Not under LW_TRACE=1: the layer is an ex-info, and the runtime's
+          ;; ex-info keeps only an ex-info cause (native keeps any), so the
+          ;; wrapped error's own chain, which the evaluator writes into its
+          ;; message as native's "caused by" lines, would be lost.
+          wrap-calls (if (and @eval-reached (not (= "1" (os/getenv "LW_TRACE"))))
                        (let [fns (into (set (keep defn-var @defns)) (keys @lw-rt/lib-defns))
                              wrap? #(or (= % #'eval) (contains? fns %))]
                          #(calling-wrap % wrap?))

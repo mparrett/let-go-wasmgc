@@ -16,7 +16,8 @@
 # module cannot run, so both runs read them from a git archive of the pinned
 # commit instead (LW_LETGO_CORE, the same text `git show` gives).
 # The module's output must equal native lg's. Prints MATCH or MISMATCH, the
-# module size and the wall time. Exit 0 iff MATCH.
+# module size and the wall time. Exit 0 iff MATCH. With LW_TRACE=1 a failure
+# shows the evaluator's cause chain in place of `calling <ns-init>` (driver.lg).
 #
 # Rename trap: the sed must also match a name at end of line ((ns lw-rt with
 # nothing after it) or the file defines into the old ns and its in-ns switches
@@ -57,7 +58,7 @@ size=""
 [ -n "$kept" ] && command rm -rf "$kept"
 secs=$(( $(date +%s) - start ))
 if [ $rc -ne 0 ]; then
-  echo "MISMATCH self-compile: module build/run exited $rc (${secs}s):"
+  echo "MISMATCH self-compile: module build/run exited $rc (module ${size:-?} bytes; ${secs}s):"
   grep -v '^kept ' "$t/module.err" | grep -v '^\s*at ' | grep -v '^\s*$' | head -8; exit 1
 fi
 if cmp -s "$t/native.txt" "$t/module.txt"; then
