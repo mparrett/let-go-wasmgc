@@ -19,12 +19,13 @@
 (in-ns 'lower-wasm)
 (require '[lower-llvm-profile :as llvm-prof])
 (require '[lower-llvm-poly :as llvm-poly])
+(require '[hash])
 
 (def ^:dynamic *ll* nil)
 (declare llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declare-text ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
-         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan)
+         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
 
 (defn ll-fail [msg data]
   ;; values print with str: a var's value (os/args) may not survive pr-str
@@ -186,14 +187,17 @@
 
 (defn ll-const-id
   "The global name for constant text s of a kind (\"str\", \"bytes\",
-   \"cstr\"): one per distinct s, numbered in first-use order (a hash in the
-   name collided: \"s6rja\" and \"snpfo\" share hex32)."
+   \"cstr\"): its kind and the xxh3-64 of its text, so the name does not
+   depend on what was lowered before it and cached runtime text can hold it
+   (D221). hex32 collided (\"s6rja\" and \"snpfo\"), so two texts with one
+   64-bit name fail the compile instead of sharing a global."
   [kind s]
-  (let [k [:llvm :cids kind] m (get @*fn-values* k {}) s (str s)]
-    (or (get m s)
-        (let [id (str "@\"" kind "." (count m) "\"")]
-          (swap! *fn-values* assoc k (assoc m s id))
-          id))))
+  (let [s (str s) id (str "@\"" kind "." (format "%016x" (hash/xxh3-64-str s)) "\"")
+        k [:llvm :cid-text id] seen (get @*fn-values* k)]
+    (when (and seen (not= seen s))
+      (ll-fail "constant name collision" {:name id :texts [seen s]}))
+    (when-not seen (swap! *fn-values* assoc k s))
+    id))
 
 (defn ll-str-const!
   "A string literal: a Str object over a constant Bytes object (its hash
@@ -1572,7 +1576,10 @@
                                 (when *rt* (:const-order @*rt*))))
         ;; named types come first: a constant GEP needs its type sized when parsed
         type-line? #(re-find #"^%[^ ]+ = type " %)
-        plines (str/split-lines prelude)]
+        plines (str/split-lines prelude)
+        ;; the type table, fresh for this module's types (D221); before
+        ;; *globals* is read, since its names are Bytes constants
+        tinfo (when (some #(str/includes? (str (:text %)) "@lg_tinfo_") all) (ll-tinfo-globals))]
     (str (str/join "\n" (filter #(str/starts-with? % "target ") plines)) "\n"
          (str/join "\n" (filter type-line? plines)) "\n"
          (str/join "\n" (ll-type-defs)) "\n"
@@ -1585,6 +1592,7 @@
            (str "@lg_gc_globals = constant [" (count roots) " x ptr] [" (str/join ", " roots) "]\n"
                 "@lg_gc_nglobals = constant i32 " (count roots) "\n"))
          (str/join "\n" (ll-type-descs)) "\n"
+         (str/join "\n" tinfo) "\n"
          (str/join "\n" (distinct @*globals*)) "\n\n"
          inits "\n"
          (str/join "\n" (map :text all)))))

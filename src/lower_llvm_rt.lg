@@ -18,7 +18,9 @@
   (:decl (first (filter #(= "$Fn" (lw-rt/type-name (:var %))) lw-rt/decls))))
 
 (defn ll-static-types
-  "[{:tn :decl}] in id order (id = index + 1): runtime, program, FnV, FnX."
+  "[{:tn :decl}] in id order (id = index + 1): the runtime's declarations,
+   then FnV and FnX. No program type is among them, so these ids are the
+   same in every compile and cached runtime text can hold them (D221)."
   []
   (or (get @*fn-values* [:llvm :types])
       (let [fnd (ll-fn-decl)
@@ -27,27 +29,52 @@
             fnx (assoc fnd :fields (into (into (:fields fnd) extra)
                                          (repeat (- max-arity-x max-arity) {:type :funcref :mut false})))
             ts (vec (concat (for [d lw-rt/decls] {:tn (lw-rt/type-name (:var d)) :decl (:decl d)})
-                            (for [[_ d] (sort-by (comp :order val) @*prog-decls*)] {:tn (:name d) :decl (:decl d)})
                             [{:tn "$FnV" :decl fnv} {:tn "$FnX" :decl fnx}]))]
         (swap! *fn-values* assoc [:llvm :types] ts)
         ts)))
 
+(defn ll-next-id!
+  "The next free type id: program types and closure environments take ids
+   from one counter that starts after the static types, so neither shifts
+   the other's, nor a static one."
+  []
+  (let [id (get @*fn-values* [:llvm :next-id] (inc (count (ll-static-types))))]
+    (swap! *fn-values* assoc [:llvm :next-id] (inc id))
+    id))
+
+(defn ll-prog-types
+  "[{:tn :decl :id}] for the program's declarations, in declaration order,
+   each with its id from ll-next-id! (assigned on first use)."
+  []
+  (vec (for [[_ d] (sort-by (comp :order val) @*prog-decls*)]
+         (let [k [:llvm :prog-tid (:name d)]
+               id (or (get @*fn-values* k) (let [i (ll-next-id!)] (swap! *fn-values* assoc k i) i))]
+           {:tn (:name d) :decl (:decl d) :id id}))))
+
+(defn ll-registered-types
+  "Every struct and array type of the module: the static types, then the
+   program's."
+  []
+  (concat (ll-static-types) (ll-prog-types)))
+
 (defn ll-tid
-  "The id of runtime type tn ($Int, $Fn ...)."
+  "The id of runtime or program type tn ($Int, $Fn ...)."
   [tn]
   (let [m (or (get @*fn-values* [:llvm :tids])
               (let [m (into {} (map-indexed (fn [i t] [(:tn t) (inc i)]) (ll-static-types)))]
                 (swap! *fn-values* assoc [:llvm :tids] m)
                 m))]
-    (or (get m tn) (ll-fail "unknown runtime type" {:type tn}))))
+    (or (get m tn)
+        (:id (first (filter #(= tn (:tn %)) (ll-prog-types))))
+        (ll-fail "unknown runtime type" {:type tn}))))
 
 (defn ll-env-tid!
   "The id of the closure environment for capture kinds (one type per kind
-   vector, as the WasmGC lane keeps them), registered after the static types."
+   vector, as the WasmGC lane keeps them), from ll-next-id!."
   [kinds]
   (let [m (get @*fn-values* [:llvm :envs] {})]
     (or (get m kinds)
-        (let [id (+ 1 (count (ll-static-types)) (count m))]
+        (let [id (ll-next-id!)]
           (swap! *fn-values* assoc [:llvm :envs] (assoc m kinds id))
           id))))
 
@@ -62,7 +89,7 @@
   []
   (let [w (ll-word)]
     (concat
-     (for [{:keys [tn decl]} (ll-static-types)
+     (for [{:keys [tn decl]} (ll-registered-types)
            :when (#{:struct :array} (lw-rt/decl-kind decl))]
        (str (ll-sty tn) " = type { " w
             (if (= :array (lw-rt/decl-kind decl))
@@ -112,7 +139,7 @@
    :ref fields), arrays (of refs: every element), closure environments."
   []
   (concat
-   (for [{:keys [tn decl]} (ll-static-types)
+   (for [{:keys [tn decl]} (ll-registered-types)
          :let [k (lw-rt/decl-kind decl)]
          :when (#{:struct :array} k)]
      (if (= :array k)
@@ -263,42 +290,47 @@
 
 ;; --- the type table (arch/type-*; spec §1) -----------------------------------
 
-(defn ll-tinfo!
-  "Emits the type table as constants once: each id's name Bytes (0 for a
-   hole), each id's ancestry offset, and the ancestry ids."
+;; The intrinsics read the table by name only, with no length or count in
+;; their text, so a cached runtime fn stays valid when a program adds types;
+;; llvm-module emits the table for each module (D221).
+
+(defn ll-tinfo-globals
+  "The type table's globals: each Type as a static object (spec §1: name,
+   id, ancestry as a static Node of Types, method table, epoch; the
+   collector skips pointers outside its heap), @lg_tinfo_types (the Types
+   by id, 0 for a hole), @lg_tinfo_names (name Bytes), @lg_tinfo_off and
+   @lg_tinfo_anc (each id's ancestry ids), @lg_tinfo_count."
   []
   (let [t (llvm-poly/ll-type-table) w (ll-word)
         offs (reductions + 0 (map #(count (:anc %)) t))
-        anc (mapcat :anc t)]
-    ;; each Type is a static object (spec §1): name, id, ancestry (a static
-    ;; Node of Types), method table (null), epoch; the collector skips
-    ;; pointers outside its heap
-    (let [tv (lw-rt/type-name (resolve 'llvm.core/TypeVal)) nd (lw-rt/type-name (resolve 'llvm.pvec/Node))
-          tref #(str "ptrtoint (ptr @\"lg_type." % "\" to " w ")")]
-      (doseq [[id r] (map-indexed vector t) :when r :let [k (count (:anc r))]]
-        (swap! *globals* conj
-               (str "@\"lg_tanc." id "\" = private constant { " w ", " w ", [" k " x " w "] } { "
-                    w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }")
-               (str "@\"lg_type." id "\" = internal global " (ll-sty tv) " { " w " " (ll-tid tv) ", "
-                    w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
-                    w " ptrtoint (ptr @\"lg_tanc." id "\" to " w "), " w " 0, i64 0 }")))
-      (swap! *globals* conj
-             (str "@lg_tinfo_types = private constant [" (count t) " x " w "] ["
-                  (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]")))
-    (swap! *globals* conj
-           (str "@lg_tinfo_names = private constant [" (count t) " x " w "] ["
-                (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]")
-           (str "@lg_tinfo_off = private constant [" (count offs) " x i64] ["
-                (str/join ", " (for [o offs] (str "i64 " o))) "]")
-           (str "@lg_tinfo_anc = private constant [" (count anc) " x i64] ["
-                (str/join ", " (for [a anc] (str "i64 " a))) "]"))
-    t))
+        anc (mapcat :anc t)
+        tv (lw-rt/type-name (resolve 'llvm.core/TypeVal)) nd (lw-rt/type-name (resolve 'llvm.pvec/Node))
+        tref #(str "ptrtoint (ptr @\"lg_type." % "\" to " w ")")]
+    (concat
+     (mapcat (fn [[id r]]
+               (when r
+                 (let [k (count (:anc r))]
+                   [(str "@\"lg_tanc." id "\" = private constant { " w ", " w ", [" k " x " w "] } { "
+                         w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }")
+                    (str "@\"lg_type." id "\" = internal global " (ll-sty tv) " { " w " " (ll-tid tv) ", "
+                         w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
+                         w " ptrtoint (ptr @\"lg_tanc." id "\" to " w "), " w " 0, i64 0 }")])))
+             (map-indexed vector t))
+     [(str "@lg_tinfo_types = internal constant [" (count t) " x " w "] ["
+           (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]")
+      (str "@lg_tinfo_names = internal constant [" (count t) " x " w "] ["
+           (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]")
+      (str "@lg_tinfo_off = internal constant [" (count offs) " x i64] ["
+           (str/join ", " (for [o offs] (str "i64 " o))) "]")
+      (str "@lg_tinfo_anc = internal constant [" (max 1 (count anc)) " x i64] ["
+           (if (seq anc) (str/join ", " (for [a anc] (str "i64 " a))) "i64 0") "]")
+      (str "@lg_tinfo_count = internal constant i64 " (count t))])))
 
 (defn- ll-tinfo-load!
-  "Loads element i (an i64 operand) of a type table constant."
-  [g n ty i]
+  "Loads element i (an i64 operand) of type table global g, elements ty."
+  [g ty i]
   (let [p (ll-fresh "%tip") r (ll-fresh "%tiv")]
-    (ll-emit! "  " p " = getelementptr [" n " x " ty "], ptr " g ", i64 0, i64 " i)
+    (ll-emit! "  " p " = getelementptr " ty ", ptr " g ", i64 " i)
     (ll-emit! "  " r " = load " ty ", ptr " p)
     r))
 
@@ -432,17 +464,17 @@
                           (ll-emit! "  store " w " " (ll-arg (a 0) :box) ", ptr " (ll-field-ptr! (ll-sty "$Str") p 1))
                           (ll-emit! "  store i64 -1, ptr " (ll-field-ptr! (ll-sty "$Str") p 2))
                           [(ll-word-of! p) :box])
-      "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = add i64 0, " (count (ll-tinfo!))) [r :int])
-      "type-static" [(ll-tinfo-load! "@lg_tinfo_types" (count (ll-tinfo!)) w (ll-arg (a 0) :int)) :box]
-      "type-name-bytes" [(ll-tinfo-load! "@lg_tinfo_names" (count (ll-tinfo!)) w (ll-arg (a 0) :int)) :box]
-      "type-anc-count" (let [n (inc (count (ll-tinfo!))) i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
+      "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr @lg_tinfo_count") [r :int])
+      "type-static" [(ll-tinfo-load! "@lg_tinfo_types" w (ll-arg (a 0) :int)) :box]
+      "type-name-bytes" [(ll-tinfo-load! "@lg_tinfo_names" w (ll-arg (a 0) :int)) :box]
+      "type-anc-count" (let [i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
                          (ll-emit! "  " j " = add i64 " i ", 1")
-                         (ll-emit! "  " r " = sub i64 " (ll-tinfo-load! "@lg_tinfo_off" n "i64" j) ", "
-                                   (ll-tinfo-load! "@lg_tinfo_off" n "i64" i))
+                         (ll-emit! "  " r " = sub i64 " (ll-tinfo-load! "@lg_tinfo_off" "i64" j) ", "
+                                   (ll-tinfo-load! "@lg_tinfo_off" "i64" i))
                          [r :int])
-      "type-anc" (let [t (ll-tinfo!) n (inc (count t)) m (reduce + (map #(count (:anc %)) t)) k (ll-fresh "%i")]
-                   (ll-emit! "  " k " = add i64 " (ll-tinfo-load! "@lg_tinfo_off" n "i64" (ll-arg (a 0) :int)) ", " (ll-arg (a 1) :int))
-                   [(ll-tinfo-load! "@lg_tinfo_anc" m "i64" k) :int])
+      "type-anc" (let [k (ll-fresh "%i")]
+                   (ll-emit! "  " k " = add i64 " (ll-tinfo-load! "@lg_tinfo_off" "i64" (ll-arg (a 0) :int)) ", " (ll-arg (a 1) :int))
+                   [(ll-tinfo-load! "@lg_tinfo_anc" "i64" k) :int])
       "host-write" [(call "i64" "lg_host_write_bytes" (str "i64 " (ll-arg (a 0) :int)) (str w " " (ll-arg (a 1) :box))) :int]
       "host-sleep" (do (ll-emit! "  call void @lg_host_sleep(i64 " (ll-arg (a 0) :int) ")") [nil :void])
       "host-nanotime" [(call "i64" "lg_host_nanotime") :int]
