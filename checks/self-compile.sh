@@ -15,6 +15,9 @@
 # files. lw_rt reads let-go's core.lg/string.lg with `git show`, which a
 # module cannot run, so both runs read them from a git archive of the pinned
 # commit instead (LW_LETGO_CORE, the same text `git show` gives).
+# D209 (step 1): the copy also writes lw-rt's load-time snapshot, and the
+# native run is repeated restored from it (LW_RT_SNAPSHOT, no runtime source
+# read) and must print the same; the module build still reads the sources.
 # The module's output must equal native lg's. Prints MATCH or MISMATCH, the
 # module size and the wall time. Exit 0 iff MATCH. With LW_TRACE=1 a failure
 # shows the evaluator's cause chain in place of `calling <ns-init>` (driver.lg).
@@ -48,6 +51,16 @@ export LW_HOST_FS=1 LW_LETGO_CORE=$t/letgo/pkg/rt/core
 if ! "$LG" -source-paths "$t/src" "$prog" >"$t/native.txt" 2>&1; then
   echo "native run failed (the renamed copy does not load natively):"; tail -5 "$t/native.txt"; exit 1
 fi
+if ! LW_RT_SNAPSHOT_WRITE=$t/rt-snapshot.edn "$LG" -source-paths "$t/src" -e "(require 'lwx.lw-rt)" >"$t/snapshot.log" 2>&1; then
+  echo "snapshot write failed:"; tail -5 "$t/snapshot.log"; exit 1
+fi
+if ! LW_RT_SNAPSHOT=$t/rt-snapshot.edn "$LG" -source-paths "$t/src" "$prog" >"$t/native-restored.txt" 2>&1; then
+  echo "native run restored from the snapshot failed:"; tail -5 "$t/native-restored.txt"; exit 1
+fi
+if ! cmp -s "$t/native.txt" "$t/native-restored.txt"; then
+  echo "MISMATCH self-compile: the native run restored from the snapshot differs:"; diff "$t/native.txt" "$t/native-restored.txt" | head -20; exit 1
+fi
+echo "native restored from the snapshot ($(wc -c <"$t/rt-snapshot.edn" | tr -d ' ') bytes) prints: $(head -1 "$t/native-restored.txt")"
 start=$(date +%s)
 LW_PROGRAM_TABLE=1 LG_ARGS="-source-paths $t/src" KEEP=1 \
   bash "$root/checks/wasm-run.sh" "$prog" >"$t/module.txt" 2>"$t/module.err"

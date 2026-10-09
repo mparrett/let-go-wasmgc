@@ -29,6 +29,156 @@
 (def host-fs? (= "1" (os/getenv "LW_HOST_FS")))
 (defn- host-fs-row? [l] (str/includes? l "LW_HOST_FS"))
 
+;; ---------------------------------------------------------------------------
+;; D209: lw-rt's load-time state as a snapshot. LW_RT_SNAPSHOT_WRITE=<file>
+;; writes it at the end of this file's load (write-snapshot!, below);
+;; LW_RT_SNAPSHOT=<file> restores it in place of reading README.md,
+;; rt/wasm/*.lg, core.lg, string.lg and lw_ext.lg and loading the runtime,
+;; so the backend carried as a program (stage 2) needs no runtime source.
+;; A restored driver compiles every program byte-identically to one that
+;; read the sources (the GC byte guard with LW_RT_SNAPSHOT set).
+;;
+;; Inventory: every load-time value here (and what lower_wasm.lg/driver.lg
+;; read from lw-rt) that depends on a file read or an evaluated namespace.
+;;   files                  README.md rows       data (:files)
+;;   file-forms             rt/wasm/*.lg read    data (:file-forms)
+;;   runtime namespaces     rt/wasm/*.lg loaded  vars (:nss): create-ns; ns-unmap of the
+;;                                               core names a file shadows or excludes;
+;;                                               intern with the saved meta; alias; refer
+;;   runtime var values     the same             plain data (decls, tables) as data;
+;;                                               fns not restored (nil: the backend
+;;                                               lowers their forms, never calls them);
+;;                                               5 macros rebuilt by eval of their
+;;                                               defmacro form; atoms of data as atoms;
+;;                                               Go arrays and types dropped (nil)
+;;   rt-nss decls type-names decl-by-name defns defn-by-var globals
+;;   global-by-var twins extra-twins
+;;                          derived              rebuilt by the code below from the
+;;                                               forms and the restored vars
+;;   twins-by-value         native fn values     rebuilt from twins (natives are live)
+;;   core-forms             core.lg (git show)   data (:core-forms)
+;;   core-defns             + string.lg          data (:string-forms); rebuilt
+;;   lw-ext namespace       lw_ext.lg loaded     fns: lower_wasm calls lw-ext/regex-*
+;;                                               natively, so :ext-forms are evaluated
+;;                                               (natively; stage 2 compiles them in);
+;;                                               var meta from :nss
+;;   ext-defns ext-twins    lw_ext.lg read       rebuilt from :ext-forms
+;;   gensym counter         every load above     replayed (:gensyms, as D200 does for
+;;                                               the rtlib): a program's locals are
+;;                                               numbered from the same value
+;;   lower-wasm/rtlib-key   slurped the sources  hashes the snapshot text instead
+;; Not load-time state, so not in the snapshot: stdlib-index and the other
+;; atoms below (filled at compile time; stdlib-ns! reads <ns>.lg then), and
+;; lower-wasm's rec-group-constant, which loads wasmbin.lg/watread.lg under
+;; LW_RUNTIME_COMPILE when it runs.
+
+(def snapshot-in (not-empty (os/getenv "LW_RT_SNAPSHOT")))
+(def snapshot-out (not-empty (os/getenv "LW_RT_SNAPSHOT_WRITE")))
+(when (and snapshot-in snapshot-out)
+  (throw (ex-info "lw-rt: LW_RT_SNAPSHOT and LW_RT_SNAPSHOT_WRITE together (a snapshot is written by a driver that read the sources)" {})))
+
+(defn gensym-take
+  "Take one gensym and return its number. Only the snapshot paths call it:
+   the default load takes none here, so its counter does not move."
+  [] (parse-long (subs (str (gensym "lwrt")) 4)))
+
+;; the counter where this file's runtime loading starts (snapshot paths only)
+(def gensym-start (when (or snapshot-in snapshot-out) (gensym-take)))
+
+(defn- snap-fail [msg]
+  (throw (ex-info (str "lw-rt snapshot " snapshot-in ": " msg) {:snapshot snapshot-in})))
+
+;; The writer's tags: a var by name, a regex by its pattern text (pr-str of
+;; a Regex does not read back), a value with metadata pr-str leaves out
+;; (the forms keep ^:private and type hints), an atom of data.
+(def snap-readers
+  {'lw/var (fn [s] {:lw-rt/var-ref s})
+   'lw/re (fn [s] (re-pattern s))
+   'lw/meta (fn [p] (with-meta (nth p 1) (nth p 0)))
+   'lw/atom (fn [x] (atom x))})
+
+(defn- snap-var
+  "The var a #lw/var names, in a namespace the snapshot created or one
+   native lg has loaded."
+  [ref]
+  (let [s (:lw-rt/var-ref ref) n (symbol (namespace s))]
+    (when-not (find-ns n) (snap-fail (str "namespace " n " (of " s ") is neither in the snapshot nor loaded")))
+    (or (get (ns-interns n) (symbol (name s))) (snap-fail (str "no var " s)))))
+
+(defn- set-snap-meta! [n ve]
+  (let [v (get (ns-interns n) (nth ve 0))]
+    (when-not v (snap-fail (str "no var " n "/" (nth ve 0) " after restoring " n)))
+    (alter-meta! v (fn [_] (assoc (nth ve 1) :ns (the-ns n))))))
+
+(defn- restore-vars!
+  "Create a runtime namespace's vars: the core names its file shadows or
+   excludes are unmapped first (as its ns form did; intern would warn)."
+  [e]
+  (let [n (:ns e)]
+    (create-ns n)
+    (run! (fn [s] (ns-unmap n s)) (:unmap e))
+    (run! (fn [ve]
+            (if (= :data (nth ve 2)) (intern n (nth ve 0) (nth ve 3)) (intern n (nth ve 0)))
+            (set-snap-meta! n ve))
+          (:vars e))))
+
+(defn- restore-links!
+  "A restored namespace's aliases and refers, once every namespace exists."
+  [e]
+  (let [n (:ns e)]
+    (binding [*ns* (the-ns n)]
+      (run! (fn [a]
+              (when-not (find-ns (val a))
+                (snap-fail (str "namespace " (val a) " (aliased as " (key a) " in " n ") is neither in the snapshot nor loaded")))
+              (alias (key a) (val a)))
+            (:aliases e))
+      (run! (fn [r] (let [v (snap-var (val r))] (refer (ns-name (:ns (meta v))) :only [(key r)])))
+            (:refers e)))))
+
+(defn- restore-macros!
+  "Macros are fn values the backend's own expansion calls, so each is
+   rebuilt from its defmacro form, then given its saved meta."
+  [e]
+  (run! (fn [ve]
+          (when (= :macro (nth ve 2))
+            (binding [*ns* (the-ns (:ns e))] (eval (nth ve 3)))
+            (set-snap-meta! (:ns e) ve)))
+        (:vars e)))
+
+(defn restore-snapshot!
+  "Rebuild the runtime namespaces from the snapshot at path; no runtime,
+   core or lw_ext source is read or loaded. Returns its tables."
+  [path]
+  (let [text (try (slurp path) (catch e (snap-fail (str "cannot read it: " (ex-message e)))))
+        snap (binding [*data-readers* snap-readers] (read-string text))
+        flags {:runtime-compile runtime-compile? :host-fs host-fs?}]
+    (when-not (= 1 (:lw-rt-snapshot snap)) (snap-fail "not an lw-rt snapshot (version 1)"))
+    (when-not (= flags (:flags snap))
+      (snap-fail (str "written with " (pr-str (:flags snap)) ", this driver runs with " (pr-str flags))))
+    ;; a namespace the runtime's files define must have an entry, so a
+    ;; truncated snapshot fails here and not as a nil var later
+    (let [have (set (map :ns (:nss snap)))]
+      (run! (fn [n] (when-not (contains? have n)
+                      (snap-fail (str "namespace " n " is defined by the runtime's files but has no entry"))))
+            (conj (set (keep (fn [ff] (nth ff 1)) (:file-forms snap))) 'lw-ext)))
+    (let [rt (remove :evaluated (:nss snap))]
+      (run! restore-vars! rt)
+      (run! restore-links! rt)
+      (run! restore-macros! rt))
+    (assoc snap :text text)))
+
+(defn- restore-ext!
+  "lw-ext's fns, evaluated from the snapshot's forms (lower_wasm calls its
+   regex fns natively), then its vars' saved meta (the load-string's :file)."
+  [snap]
+  (binding [*ns* (the-ns 'lw-rt)] (run! eval (:ext-forms snap)))
+  (let [e (first (filter (fn [e] (= 'lw-ext (:ns e))) (:nss snap)))]
+    (run! (fn [ve] (set-snap-meta! 'lw-ext ve)) (:vars e))))
+
+(def snapshot (when snapshot-in (restore-snapshot! snapshot-in)))
+;; eval of a def under (binding [*ns* ..]) leaves *ns* there (see stdlib-ns!)
+(in-ns 'lw-rt)
+
 (defn readme-order
   "Files from README.md's load-order table (`| n | `file.lg` | ...`). Every
    numbered row naming a file must parse (P2.11, D87: a name with a digit
@@ -43,7 +193,7 @@
       (throw (ex-info (str "lw-rt: unreadable load-order rows in rt/wasm/README.md: " (vec bad)) {})))
     (vec (for [l rows] (second (re-find row-file l))))))
 
-(def files (readme-order))
+(def files (if snapshot (:files snapshot) (readme-order)))
 
 (defn read-forms [path] (read-string (str "[" (slurp path) "\n]")))
 
@@ -52,7 +202,8 @@
   ;; ns-sym is the LAST ns form's: a file that names its own ns and then
   ;; re-enters another (D187's shape, rt/wasm/emit.lg) defines into the
   ;; second, which is where its defns and defs must be looked up (D193)
-  (do
+  (if snapshot
+    (:file-forms snapshot)
     (vec (for [f files]
            (let [path (str rt-dir "/" f)
                  text (slurp path)
@@ -243,7 +394,7 @@
                            " from " letgo-dir " (set LETGO, or LW_ROOT with let-go/ under it; see checks/env.sh)")
                       {:file file :dir letgo-dir})))))
 
-(def core-forms (embedded-forms "core.lg" 'core))
+(def core-forms (if snapshot (:core-forms snapshot) (embedded-forms "core.lg" 'core)))
 
 (defn lg-defined?
   ([v] (lg-defined? v 'core))
@@ -262,17 +413,17 @@
   ;; var -> {:var :ns 'core :name :arities [...]}; P3.2: let-go's embedded
   ;; string.lg too (string/join, string/ends-with?: clojure.string's lg fns)
   (merge (embedded-defns 'core core-forms)
-         (embedded-defns 'string (embedded-forms "string.lg" 'string))))
+         (embedded-defns 'string (if snapshot (:string-forms snapshot) (embedded-forms "string.lg" 'string)))))
 
 ;; P2.12: lg defns the backend adds where rt/ has no form for a native's
 ;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
 ;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
 (def ext-path (str src-dir "/lw_ext.lg"))
-(load-string (slurp ext-path))
+(if snapshot (restore-ext! snapshot) (load-string (slurp ext-path)))
 (in-ns 'lw-rt)
 
 (def ext-defns
-  (into {} (for [form (read-forms ext-path)
+  (into {} (for [form (if snapshot (:ext-forms snapshot) (read-forms ext-path))
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
                        v (ns-var 'lw-ext nm)]
@@ -452,3 +603,157 @@
    core fn, one of src/lw_ext.lg's, a stdlib defn, or a program library defn."
   [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v) (get @lib-defns v)
           (stdlib-defn v)))
+
+;; ---------------------------------------------------------------------------
+;; D209: writing the snapshot (the inventory is at snapshot-in, above).
+
+(defn- snap-user-meta
+  "The metadata the writer keeps: a list's reader position is left out (the
+   restore's own read gives it one; nothing compares positions)."
+  [x]
+  (when (or (seq? x) (symbol? x) (vector? x) (map? x) (set? x))
+    (not-empty (if (seq? x) (dissoc (meta x) :line :column) (meta x)))))
+
+(declare emit-snap)
+
+(defn- emit-items [xs]
+  (loop [xs (seq xs) first? true]
+    (when xs
+      (when-not first? (print " "))
+      (emit-snap (first xs))
+      (recur (next xs) false))))
+
+(defn- emit-snap
+  "Print x as text snap-readers reads back equal, metadata included."
+  [x]
+  (let [m (snap-user-meta x)]
+    (if m
+      (do (print "#lw/meta [") (emit-snap m) (print " ") (emit-snap (with-meta x nil)) (print "]"))
+      (cond
+        (var? x) (print (str "#lw/var " (subs (str x) 2)))
+        (= "let-go.lang.Regex" (str (type x))) (do (print "#lw/re ") (print (pr-str (read-string (subs (str x) 1)))))
+        (= "let-go.lang.Atom" (str (type x))) (do (print "#lw/atom ") (emit-snap @x))
+        (seq? x) (do (print "(") (emit-items x) (print ")"))
+        (vector? x) (do (print "[") (emit-items x) (print "]"))
+        (map? x) (do (print "{") (emit-items (mapcat identity x)) (print "}"))
+        (set? x) (do (print "#{") (emit-items x) (print "}"))
+        ;; lg prints these NaN, +Inf, -Inf (symbols when read back)
+        (and (float? x) (= "NaN" (str x))) (print "##NaN")
+        (and (float? x) (= "+Inf" (str x))) (print "##Inf")
+        (and (float? x) (= "-Inf" (str x))) (print "##-Inf")
+        :else (print (pr-str x))))))
+
+(defn- snap-data?
+  "A value the snapshot carries as data: it reads back equal."
+  [x]
+  (cond (or (nil? x) (boolean? x) (number? x) (string? x) (keyword? x) (symbol? x) (char? x)) true
+        (= "let-go.lang.Regex" (str (type x))) true
+        (= "let-go.lang.Atom" (str (type x))) (snap-data? @x)
+        (map? x) (and (every? snap-data? (keys x)) (every? snap-data? (vals x)))
+        (coll? x) (every? snap-data? x)
+        :else false))
+
+(defn- var-entry
+  "[name meta kind value]: kind :data (value restored), :macro (value its
+   defmacro form), :fn (a fn the backend never calls natively) or :dropped
+   (a host value, named in the writer's report)."
+  [forms nm v]
+  (let [m (into {} (filter (fn [kv] (snap-data? (val kv))) (dissoc (meta v) :ns)))
+        x (try @v (catch e nil))]
+    (cond
+      (:macro (meta v))
+      [nm m :macro (or (first (filter (fn [f] (and (seq? f) (= 'defmacro (first f)) (= nm (first (strip-meta-name (second f)))))) forms))
+                       (throw (ex-info (str "lw-rt snapshot: no defmacro form for " v) {})))]
+      (or (fn? x) (= "let-go.lang.NativeFn" (str (type x)))) [nm m :fn]
+      (snap-data? x) [nm m :data x]
+      :else [nm m :dropped (str (type x))])))
+
+(defn- ns-entry [fresh n]
+  (let [own (ns-interns n)
+        nmap (ns-map n)
+        forms (mapcat (fn [ff] (when (= n (nth ff 1)) (nth ff 2))) file-forms)
+        refers (into {} (filter (fn [kv] (let [v (val kv)]
+                                           (and (var? v) (not (contains? own (key kv)))
+                                                (not (identical? v (get fresh (key kv)))))))
+                                nmap))]
+    (run! (fn [kv] (when-not (= (key kv) (:name (meta (val kv))))
+                     (throw (ex-info (str "lw-rt snapshot: " n " refers " (val kv) " as " (key kv) " (a renamed refer)") {}))))
+          refers)
+    {:ns n
+     :evaluated (= n 'lw-ext)
+     ;; sorted: a map's print order follows its build, and the rtlib key
+     ;; hashes this text, so two writes of the same sources must agree
+     :aliases (into (sorted-map) (map (fn [kv] [(key kv) (ns-name (val kv))]) (ns-aliases n)))
+     :unmap (vec (sort (filter (fn [s] (not (identical? (get nmap s) (get fresh s)))) (keys fresh))))
+     :refers (into (sorted-map) refers)
+     :vars (vec (map (fn [s] (var-entry forms s (get own s))) (sort (keys own))))}))
+
+(defn- snap-diff
+  "The first path at which y (x written and read back) differs from x,
+   types and metadata included, or nil. A var reads back as its #lw/var
+   placeholder; a regex compares by pattern."
+  [x y path]
+  (let [rx? (fn [v] (= "let-go.lang.Regex" (str (type v))))
+        pairs (fn [xs ys] (loop [xs (seq xs) ys (seq ys) i 0]
+                            (if (or xs ys)
+                              (or (snap-diff (first xs) (first ys) (conj path i)) (recur (next xs) (next ys) (inc i)))
+                              nil)))]
+    (cond
+      (not= (snap-user-meta x) (snap-user-meta y)) (conj path :meta)
+      (var? x) (when-not (= (subs (str x) 2) (str (:lw-rt/var-ref y))) path)
+      (rx? x) (when-not (and (rx? y) (= (str x) (str y))) path)
+      (= "let-go.lang.Atom" (str (type x))) (if (= "let-go.lang.Atom" (str (type y))) (snap-diff @x @y (conj path :atom)) path)
+      (and (float? x) (= "NaN" (str x))) (when-not (and (float? y) (= "NaN" (str y))) path)
+      (seq? x) (if (and (seq? y) (= (count x) (count y))) (pairs x y) path)
+      (vector? x) (if (and (vector? y) (= (count x) (count y))) (pairs x y) path)
+      (map? x) (if (and (map? y) (= (count x) (count y)))
+                 (some (fn [kv] (if (contains? y (key kv)) (snap-diff (val kv) (get y (key kv)) (conj path (key kv))) (conj path (key kv))))
+                       x)
+                 path)
+      (set? x) (when-not (and (set? y) (= x y)) path)
+      :else (when-not (and (= x y) (= (type x) (type y))) path))))
+
+(declare gensyms-loaded)
+
+(defn write-snapshot!
+  "Write lw-rt's load-time state to path as one EDN text (see the inventory
+   at snapshot-in) and check that it reads back equal. Needs the gensym
+   count of the load, so it runs in a driver started with
+   LW_RT_SNAPSHOT_WRITE=<file>, which calls it at the end of this file."
+  [path]
+  (when-not gensyms-loaded
+    (throw (ex-info "lw-rt: write-snapshot! needs LW_RT_SNAPSHOT_WRITE set when lw-rt loads (the load's gensym count)" {})))
+  (let [fresh (ns-map (create-ns 'lw-rt.snapshot-fresh))]
+    (remove-ns 'lw-rt.snapshot-fresh)
+    (let [nss (sort (conj (set (keep (fn [ff] (nth ff 1)) file-forms)) 'lw-ext))
+          snap {:lw-rt-snapshot 1
+                :flags {:runtime-compile runtime-compile? :host-fs host-fs?}
+                :gensyms gensyms-loaded
+                :files files
+                :file-forms file-forms
+                :core-forms core-forms
+                :string-forms (embedded-forms "string.lg" 'string)
+                :ext-forms (read-forms ext-path)
+                :nss (vec (map (fn [n] (ns-entry fresh n)) nss))}
+          text (with-out-str (emit-snap snap))
+          back (binding [*data-readers* snap-readers] (read-string text))
+          diff (snap-diff snap back [])]
+      (when diff (throw (ex-info (str "lw-rt snapshot: does not read back equal at " (pr-str diff)) {:path diff})))
+      (spit path text)
+      {:bytes (count text)
+       :vars (frequencies (mapcat (fn [e] (map (fn [ve] (nth ve 2)) (:vars e))) (:nss snap)))
+       :dropped (vec (mapcat (fn [e] (keep (fn [ve] (when (= :dropped (nth ve 2)) (str (:ns e) "/" (nth ve 0) " " (nth ve 3))))
+                                           (:vars e)))
+                             (:nss snap)))})))
+
+;; The end of the load. The writer counts the gensyms taken since
+;; gensym-start; a restored driver, which took fewer, takes the rest, so
+;; both continue from the counter value a source-reading driver has here.
+(def gensyms-loaded (when snapshot-out (- (gensym-take) gensym-start 1)))
+(when snapshot
+  (let [k (- (+ gensym-start (:gensyms snapshot)) (gensym-take) 1)]
+    (when (neg? k) (snap-fail (str "the restore took " (- k) " more gensyms than the load it replaces")))
+    (loop [k k] (when (pos? k) (gensym) (recur (dec k))))))
+(when snapshot-out
+  (let [r (write-snapshot! snapshot-out)]
+    (binding [*out* *err*] (println "lw-rt: wrote snapshot" snapshot-out (pr-str r)))))

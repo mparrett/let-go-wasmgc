@@ -4147,13 +4147,18 @@
 (defn- data-hex [bs]
   (apply str (map (fn [b] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b)))) bs)))
 
+(def ^:private rt-files-loaded (atom #{}))
+
 (defn- load-rt-file
-  "Load rt/wasm/<f> (a stock-lg namespace the driver does not load) once."
+  "Load rt/wasm/<f> (a stock-lg namespace the driver does not load) once.
+   A driver restored from a snapshot (D209) has the namespace but not its
+   fns, so it loads the file all the same."
   [ns-sym f]
-  (when-not (find-ns ns-sym)
+  (when-not (or (contains? @rt-files-loaded ns-sym) (and (find-ns ns-sym) (not lw-rt/snapshot)))
     (let [cur (ns-name *ns*)]
       (load-string (slurp (str lw-rt/rt-dir "/" f)))
-      (in-ns cur))))
+      (in-ns cur))
+    (swap! rt-files-loaded conj ns-sym)))
 
 (defn rec-group-constant
   "[bytes names]: the payload of the type section of (module <rec group>)
@@ -4534,8 +4539,10 @@
            (if (and r (= 0 (:exit r)) (>= (count out) 64)) (subs out 0 64) (str "path:" exe)))))
 
 (defn rtlib-key []
-  (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
-                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
+  ;; D209: a restored driver read no runtime source; its snapshot holds them
+  (hex32 (apply str (concat (if lw-rt/snapshot [(:text lw-rt/snapshot)] (map #(slurp (first %)) lw-rt/file-forms))
+                            (map #(slurp (str lw-rt/src-dir "/" %))
+                                 (if lw-rt/snapshot ["lower_wasm.lg" "lw_rt.lg"] ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"]))
                             [(str "|lg=" @lg-binary-id)]
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
