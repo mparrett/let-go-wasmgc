@@ -88,17 +88,52 @@
 (defn- snap-fail [msg]
   (throw (ex-info (str "lw-rt snapshot " snapshot-in ": " msg) {:snapshot snapshot-in})))
 
-;; The writer's tags: a var by name, a regex by its pattern text (pr-str of
-;; a Regex does not read back), a value with metadata pr-str leaves out
-;; (the forms keep ^:private and type hints), an atom of data.
-(def snap-readers
-  {'lw/var (fn [s] {:lw-rt/var-ref s})
-   'lw/re (fn [s] (re-pattern s))
-   'lw/meta (fn [p] (with-meta (nth p 1) (nth p 0)))
-   'lw/atom (fn [x] (atom x))})
+;; The writer's wrappers, plain data so that the module's reader (which
+;; raises on a tagged literal, rt/wasm/reader.lg read-hash) reads the text
+;; too: [:lw-rt.snap/var ns/name] a var by name, [:lw-rt.snap/re "src"] a
+;; regex by its pattern text (pr-str of a Regex does not read back),
+;; [:lw-rt.snap/meta m x] a value with metadata pr-str leaves out (the forms
+;; keep ^:private and type hints), [:lw-rt.snap/atom x] an atom of data.
+;; The writer refuses data holding a vector that starts with one of these.
+(def snap-tags #{:lw-rt.snap/var :lw-rt.snap/re :lw-rt.snap/meta :lw-rt.snap/atom})
+
+(declare snap-decode)
+
+(defn- decode-items
+  "The items of xs decoded, as a vector, or nil when none changed (the
+   caller then keeps xs itself, so an untouched form keeps its type, meta
+   and order exactly as read)."
+  [xs]
+  (loop [xs (seq xs) acc [] changed false]
+    (if xs
+      (let [x (first xs) y (snap-decode x)]
+        (recur (next xs) (conj acc y) (or changed (not (identical? x y)))))
+      (when changed acc))))
+
+(defn- snap-decode
+  "x as read from snapshot text with the writer's wrappers replaced by the
+   values they stand for; a collection is rebuilt only when an item changed
+   (with its own meta: a list's reader position stays)."
+  [x]
+  (cond
+    (vector? x)
+    (let [h (when (seq x) (nth x 0))]
+      (cond (= h :lw-rt.snap/var) {:lw-rt/var-ref (nth x 1)}
+            (= h :lw-rt.snap/re) (re-pattern (nth x 1))
+            (= h :lw-rt.snap/atom) (atom (snap-decode (nth x 1)))
+            (= h :lw-rt.snap/meta) (with-meta (snap-decode (nth x 2)) (snap-decode (nth x 1)))
+            :else (let [ys (decode-items x)] (if ys (with-meta ys (meta x)) x))))
+    (seq? x) (let [ys (decode-items x)] (if ys (with-meta (apply list ys) (meta x)) x))
+    ;; rebuilt by assoc in x's own order, as the reader built it
+    (map? x) (let [kvs (decode-items (mapcat identity x))]
+               (if kvs
+                 (with-meta (reduce (fn [m i] (assoc m (nth kvs i) (nth kvs (inc i)))) {} (range 0 (count kvs) 2)) (meta x))
+                 x))
+    (set? x) (let [ys (decode-items x)] (if ys (with-meta (set ys) (meta x)) x))
+    :else x))
 
 (defn- snap-var
-  "The var a #lw/var names, in a namespace the snapshot created or one
+  "The var a [:lw-rt.snap/var ..] names, in a namespace the snapshot created or one
    native lg has loaded."
   [ref]
   (let [s (:lw-rt/var-ref ref) n (symbol (namespace s))]
@@ -116,7 +151,10 @@
   [e]
   (let [n (:ns e)]
     (create-ns n)
-    (run! (fn [s] (ns-unmap n s)) (:unmap e))
+    ;; Not in the module: its registry has no ns-unmap, and needs none,
+    ;; since resolve finds a namespace's own cell before core's name
+    ;; (rt/wasm/natives.lg resolve: lookup cur, then let-go.core and core)
+    (when-not *in-wasm* (run! (fn [s] (ns-unmap n s)) (:unmap e)))
     (run! (fn [ve]
             (if (= :data (nth ve 2)) (intern n (nth ve 0) (nth ve 3)) (intern n (nth ve 0)))
             (set-snap-meta! n ve))
@@ -150,9 +188,10 @@
    core or lw_ext source is read or loaded. Returns its tables."
   [path]
   (let [text (try (slurp path) (catch e (snap-fail (str "cannot read it: " (ex-message e)))))
-        snap (binding [*data-readers* snap-readers] (read-string text))
+        snap (snap-decode (read-string text))
         flags {:runtime-compile runtime-compile? :host-fs host-fs?}]
     (when-not (= 1 (:lw-rt-snapshot snap)) (snap-fail "not an lw-rt snapshot (version 1)"))
+    (when-not (vector? (:lg-defined snap)) (snap-fail "no :lg-defined (written before the module restore)"))
     (when-not (= flags (:flags snap))
       (snap-fail (str "written with " (pr-str (:flags snap)) ", this driver runs with " (pr-str flags))))
     ;; a namespace the runtime's files define must have an entry, so a
@@ -169,15 +208,32 @@
 
 (defn- restore-ext!
   "lw-ext's fns, evaluated from the snapshot's forms (lower_wasm calls its
-   regex fns natively), then its vars' saved meta (the load-string's :file)."
+   regex fns natively), then its vars' saved meta (the load-string's :file).
+   Carried as a module, lw-ext is one of the program's own namespaces,
+   compiled in with its def meta, so its vars resolve through the program
+   table and nothing is evaluated or set."
   [snap]
-  (binding [*ns* (the-ns 'lw-rt)] (run! eval (:ext-forms snap)))
-  (let [e (first (filter (fn [e] (= 'lw-ext (:ns e))) (:nss snap)))]
-    (run! (fn [ve] (set-snap-meta! 'lw-ext ve)) (:vars e))))
+  (when-not *in-wasm*
+    (binding [*ns* (the-ns 'lw-rt)] (run! eval (:ext-forms snap)))
+    (let [e (first (filter (fn [e] (= 'lw-ext (:ns e))) (:nss snap)))]
+      (run! (fn [ve] (set-snap-meta! 'lw-ext ve)) (:vars e)))))
 
 (def snapshot (when snapshot-in (restore-snapshot! snapshot-in)))
+
 ;; eval of a def under (binding [*ns* ..]) leaves *ns* there (see stdlib-ns!)
 (in-ns 'lw-rt)
+
+;; "core/inc" for each lg-defined core/string fn core-defns holds: native
+;; lg knows it from the var's :file meta (lg-defined?), which the module's
+;; core stand-ins do not carry, so a restore takes the writer's answer.
+(def snapshot-lg-defined (when snapshot (set (:lg-defined snapshot))))
+
+(defn- native-var
+  "The var the qualified symbol s names in a builtin namespace: resolve
+   natively; find-var in the module, where resolve sees only cells and the
+   program table and find-var makes a builtin namespace's stand-in
+   (rt/wasm/natives.lg builtin-stand-in; its named limit: any name answers)."
+  [s] (if *in-wasm* (find-var s) (resolve s)))
 
 (defn readme-order
   "Files from README.md's load-order table (`| n | `file.lg` | ...`). Every
@@ -230,8 +286,11 @@
   [v] (let [m (meta v)] (and (:intrinsic m) (string? (:wasm m)))))
 
 (defn ns-var
-  "The var nm names in ns, private ones included (ns-resolve skips those)."
-  [ns-sym nm] (get (ns-interns ns-sym) nm))
+  "The var nm names in ns, private ones included (ns-resolve skips those).
+   In the module, find-var: ns-interns there knows only the registry's
+   namespaces, not the program's own (lw-ext, carried in, is in the program
+   table), and find-var reads both (rt/wasm/natives.lg lookup)."
+  [ns-sym nm] (if *in-wasm* (find-var (symbol (str ns-sym) (str nm))) (get (ns-interns ns-sym) nm)))
 
 (defn decl? [v] (and (map? v) (contains? #{:struct :array :func} (:wasm.intrinsics/kind v))))
 
@@ -338,7 +397,7 @@
                  :let [t (:twin (meta (:var d)))]
                  :when (and t (not (and no-eval? (= 'wasm.eval (:ns d)))))
                  tw (if (string? t) [t] t)
-                 :let [nv (resolve (symbol tw))]
+                 :let [nv (native-var (symbol tw))]
                  :when nv]
              [nv (:var d)])))
 
@@ -349,14 +408,17 @@
                         ['core/ex-cause 'wasm.core/ex-cause]
                         ;; P2.14 (D112): defined in wasm.core, never marked
                         ['core/meta 'wasm.core/meta] ['core/dissoc! 'wasm.core/dissoc!]]
-                 :let [nv (resolve n) rv (resolve r)]
+                 :let [nv (native-var n) rv (native-var r)]
                  :when (and nv rv)]
              [nv rv])))
 
 ;; D58: a twin covers every var bound to the same NativeFn (string/trim is
 ;; core/trim's NativeFn), so a native var is also looked up by its value.
+;; Not in the module: a native's value is not reachable from its stand-in
+;; there (wasm.core/var-value's named limit), so twin-of finds a twin by
+;; the var only and a native var sharing another's fn is not matched.
 (def twins-by-value
-  (into {} (for [[nv rv] twins] [@nv rv])))
+  (if *in-wasm* {} (into {} (for [[nv rv] twins] [@nv rv]))))
 
 (defn twin-of [v]
   (or (get twins v) (get extra-twins v)
@@ -404,9 +466,13 @@
   (into {} (for [form forms
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
-                       v (ns-var ns-sym nm)
+                       ;; the module has no string entry in its program table
+                       v (or (ns-var ns-sym nm) (when *in-wasm* (find-var (symbol (str ns-sym) (str nm)))))
                        ars (arities (drop 2 form))]
-                 :when (and v (lg-defined? v ns-sym) (seq ars))]
+                 :when (and v (seq ars)
+                            (if (and snapshot-lg-defined (#{'core 'string} ns-sym))
+                              (contains? snapshot-lg-defined (str ns-sym "/" nm))
+                              (lg-defined? v ns-sym)))]
              [v {:var v :ns ns-sym :name nm :arities ars :core-lg true}])))
 
 (def core-defns
@@ -441,18 +507,18 @@
   (merge
   {#'core/long #'lw-ext/long-v #'core/ints #'lw-ext/ints-v #'core/longs #'lw-ext/ints-v
    #'core/re-find #'lw-ext/re-find-v
-   (resolve 'let-go.core/now) #'lw-ext/now-v
+   (native-var 'let-go.core/now) #'lw-ext/now-v
    #'term/size #'lw-ext/term-size-v
    ;; P4.1: the real entry's host seams
    #'os/os-name #'lw-ext/os-name-v #'core/char? #'lw-ext/char-v
-   (resolve 'core/.) #'lw-ext/dot-v
+   (native-var 'core/.) #'lw-ext/dot-v
    ;; P2.14: natives let-go's core tests reach (lw_ext.lg says why each)
    #'core/disj #'lw-ext/disj-v #'core/disj! #'lw-ext/disj!-v
    ;; P2.4: array-map = hash-map in let-go (insertion-ordered up to 8, D29); the map-order corpus builds by both
    #'core/array-map #'lw-ext/array-map-v #'core/hash-map #'lw-ext/hash-map-v #'core/dissoc! #'lw-ext/dissoc!-v
    #'core/map-entry? #'lw-ext/map-entry?-v #'core/lazy-seq? #'lw-ext/lazy-seq?-v
    #'core/shutdown-agents #'lw-ext/shutdown-agents-v
-   (resolve 'let-go.core/str-replace-first) #'lw-ext/str-replace-first-rx-v
+   (native-var 'let-go.core/str-replace-first) #'lw-ext/str-replace-first-rx-v
    ;; P2.14: regexes (lw_ext.lg's engine); a String separator/match still
    ;; reaches the runtime's split / str-replace
    #'core/re-matches #'lw-ext/re-matches-v #'core/re-seq #'lw-ext/re-seq-v
@@ -462,7 +528,7 @@
    #'clojure.math/floor #'lw-ext/floor-v #'clojure.math/ceil #'lw-ext/ceil-v
    #'clojure.math/floor-div #'lw-ext/floor-div-v
    ;; P6.8: review4 bug-10's static interop call (strconv.ParseInt(s, 10, 32))
-   (resolve 'Integer/parseInt) #'lw-ext/parse-int-v
+   (native-var 'Integer/parseInt) #'lw-ext/parse-int-v
    #'clojure.math/sqrt #'wasm.math/sqrt #'clojure.math/pow #'wasm.math/pow
    #'clojure.math/exp #'wasm.math/exp #'clojure.math/abs #'wasm.math/abs
    #'core/with-out-str* #'lw-ext/with-out-str-v #'core/read-all-string #'lw-ext/read-all-string-v
@@ -628,13 +694,15 @@
   [x]
   (let [m (snap-user-meta x)]
     (if m
-      (do (print "#lw/meta [") (emit-snap m) (print " ") (emit-snap (with-meta x nil)) (print "]"))
+      (do (print "[:lw-rt.snap/meta ") (emit-snap m) (print " ") (emit-snap (with-meta x nil)) (print "]"))
       (cond
-        (var? x) (print (str "#lw/var " (subs (str x) 2)))
-        (= "let-go.lang.Regex" (str (type x))) (do (print "#lw/re ") (print (pr-str (read-string (subs (str x) 1)))))
-        (= "let-go.lang.Atom" (str (type x))) (do (print "#lw/atom ") (emit-snap @x))
+        (var? x) (print (str "[:lw-rt.snap/var " (subs (str x) 2) "]"))
+        (= "let-go.lang.Regex" (str (type x))) (do (print "[:lw-rt.snap/re ") (print (pr-str (read-string (subs (str x) 1)))) (print "]"))
+        (= "let-go.lang.Atom" (str (type x))) (do (print "[:lw-rt.snap/atom ") (emit-snap @x) (print "]"))
         (seq? x) (do (print "(") (emit-items x) (print ")"))
-        (vector? x) (do (print "[") (emit-items x) (print "]"))
+        (vector? x) (do (when (contains? snap-tags (when (seq x) (nth x 0)))
+                          (throw (ex-info (str "lw-rt snapshot: data holds a vector that reads as a wrapper: " (pr-str x)) {})))
+                        (print "[") (emit-items x) (print "]"))
         (map? x) (do (print "{") (emit-items (mapcat identity x)) (print "}"))
         (set? x) (do (print "#{") (emit-items x) (print "}"))
         ;; lg prints these NaN, +Inf, -Inf (symbols when read back)
@@ -690,7 +758,7 @@
 
 (defn- snap-diff
   "The first path at which y (x written and read back) differs from x,
-   types and metadata included, or nil. A var reads back as its #lw/var
+   types and metadata included, or nil. A var reads back as its [:lw-rt.snap/var ..]
    placeholder; a regex compares by pattern."
   [x y path]
   (let [rx? (fn [v] (= "let-go.lang.Regex" (str (type v))))
@@ -734,9 +802,10 @@
                 :core-forms core-forms
                 :string-forms (embedded-forms "string.lg" 'string)
                 :ext-forms (read-forms ext-path)
+                :lg-defined (vec (sort (map (fn [d] (str (:ns d) "/" (:name d))) (vals core-defns))))
                 :nss (vec (map (fn [n] (ns-entry fresh n)) nss))}
           text (with-out-str (emit-snap snap))
-          back (binding [*data-readers* snap-readers] (read-string text))
+          back (snap-decode (read-string text))
           diff (snap-diff snap back [])]
       (when diff (throw (ex-info (str "lw-rt snapshot: does not read back equal at " (pr-str diff)) {:path diff})))
       (spit path text)

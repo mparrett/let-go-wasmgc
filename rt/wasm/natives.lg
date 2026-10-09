@@ -45,7 +45,7 @@
 ;; spit and slurp fail as native does on a path whose directory does not exist, and
 ;; os/stat answers nil (native's not-found).
 (ns wasm.natives
-  (:refer-clojure :exclude [format fn? identical? instance? record? boolean? decimal? ratio? uuid? ns-aliases rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
+  (:refer-clojure :exclude [format fn? identical? instance? record? boolean? decimal? ratio? uuid? ns-aliases rseq alias find-ns all-ns intern create-ns ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
                             spit slurp make-array complement bound-fn* ns-resolve future*])
   (:require [clojure.string :as string]
@@ -285,6 +285,15 @@
            (raise-lit "alias expected Symbol")))
   ([a n x & more] (raise-arity (+ 3 (count more)))))
 
+;; A cell's var: the stand-in #'ns/name with meta m (native's var meta:
+;; intern gives {:ns :name}, lang.go:9262 via Namespace.Intern) and the
+;; :lw/var getter wasm.core's deref and var-value call, so deref and meta of
+;; an interned var read the cell, as wasm.eval's cell-var does for a def.
+(declare cell-value)
+
+(defn- cell-stand-in [key m]
+  (with-meta (symbol (str "#'" key)) (assoc m (keyword "lw" "var") (fn [] (cell-value (cell key))))))
+
 (defn ^{:twin "core/intern"} intern [& args]              ; CoreInternf (lang.go:9262)
   (let [n (count args)]
     (if (or (< n 2) (> n 3))
@@ -295,8 +304,9 @@
                                             (if (ns-exists? nm) nm (raise-lit "namespace not found")))
                      :else (raise-lit "intern expects a namespace or symbol"))]
         (when-not (= 21 (sq/kind sym)) (raise-lit "intern expects a symbol name"))
-        (let [key (str nm "/" sym) v (symbol (str "#'" key)) old (cell key)]
-          (cond (nil? old) (swap! registry assoc-in [:cells key] {:var v :ns nm :name sym :val (when (= n 3) (nth args 2)) :meta nil :stack ()})
+        (let [key (str nm "/" sym) v (cell-stand-in key {:ns (ns-of nm) :name sym}) old (cell key)]
+          (cond (nil? old) (swap! registry assoc-in [:cells key] {:var v :ns nm :name sym :val (when (= n 3) (nth args 2))
+                                                                   :meta {:ns (ns-of nm) :name sym} :interned true :stack ()})
                 (= n 3) (swap! registry assoc-in [:cells key :val] (nth args 2)))
           (:var (cell key)))))))
 
@@ -328,6 +338,15 @@
   ([] (raise-arity 0))
   ([x] (ns-of (ns-arg "the-ns: " x)))
   ([x y & more] (raise-arity (+ 2 (count more)))))
+
+;; CoreCreateNsf (lang.go:9313): NS() registers the namespace under its
+;; canonical name (lang.go:506, resolveNSAlias) and leaves the current one
+;; as it is, unlike in-ns. lw-rt's snapshot restore (D209) creates the
+;; runtime namespaces this way before interning their vars.
+(defn ^{:twin "core/create-ns"} create-ns [& args]
+  (cond (not= 1 (count args)) (raise-lit "create-ns expects 1 arg")
+        (not= 21 (sq/kind (first args))) (raise-lit "create-ns expects a symbol")
+        :else (ns-of (add-ns! (canon (str (first args)))))))
 
 (defn- lookup
   "The var named nm in namespace nsn (canonical): one intern (or a def in
@@ -435,7 +454,14 @@
                 (let [old (if (cell key) (:meta (cell key)) (meta r))
                       nm (apply f old more)]
                   (if (cell key)
-                    (swap! registry assoc-in [:cells key :meta] nm)
+                    ;; an interned var's stand-in carries its meta (above),
+                    ;; so it is replaced; one taken before keeps the old
+                    ;; meta (wasm.eval's def-var! has the same limit). A
+                    ;; cell wasm.eval made keeps its own stand-in.
+                    (swap! registry (fn [t] (update-in t [:cells key]
+                                                       (fn [cl] (if (:interned cl)
+                                                                  (assoc (dissoc cl :var) :meta nm :var (cell-stand-in key nm))
+                                                                  (assoc cl :meta nm))))))
                     ;; a program var: a cell for its meta only (no :val, so
                     ;; var-get still names the limit)
                     (swap! registry assoc-in [:cells key] {:var r :meta nm :stack ()}))

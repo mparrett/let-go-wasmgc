@@ -15,9 +15,12 @@
 # files. lw_rt reads let-go's core.lg/string.lg with `git show`, which a
 # module cannot run, so both runs read them from a git archive of the pinned
 # commit instead (LW_LETGO_CORE, the same text `git show` gives).
-# D209 (step 1): the copy also writes lw-rt's load-time snapshot, and the
-# native run is repeated restored from it (LW_RT_SNAPSHOT, no runtime source
-# read) and must print the same; the module build still reads the sources.
+# D209: the copy also writes lw-rt's load-time snapshot, and the native run
+# is repeated restored from it (LW_RT_SNAPSHOT, no runtime source read) and
+# must print the same. The module restores from it too (step 2): the driver
+# compiles the program WITHOUT LW_RT_SNAPSHOT (the driver's own lw-rt would
+# restore from it, and that snapshot's lw-ext is lwx.lw-ext), and only the
+# node run gets it, through os/getenv, reading the file through the host fs.
 # The module's output must equal native lg's. Prints MATCH or MISMATCH, the
 # module size and the wall time. Exit 0 iff MATCH. With LW_TRACE=1 a failure
 # shows the evaluator's cause chain in place of `calling <ns-init>` (driver.lg).
@@ -62,17 +65,23 @@ if ! cmp -s "$t/native.txt" "$t/native-restored.txt"; then
 fi
 echo "native restored from the snapshot ($(wc -c <"$t/rt-snapshot.edn" | tr -d ' ') bytes) prints: $(head -1 "$t/native-restored.txt")"
 start=$(date +%s)
-LW_PROGRAM_TABLE=1 LG_ARGS="-source-paths $t/src" KEEP=1 \
-  bash "$root/checks/wasm-run.sh" "$prog" >"$t/module.txt" 2>"$t/module.err"
-rc=$?
-kept=$(sed -n 's/^kept //p' "$t/module.err" | tail -1)
+# wasm-run.sh's two steps, split so that only the run sees the snapshot
 size=""
-[ -n "$kept" ] && [ -f "$kept/m.wasm" ] && size=$(wc -c <"$kept/m.wasm" | tr -d ' ')
-[ -n "$kept" ] && command rm -rf "$kept"
+if ! LW_PROGRAM_TABLE=1 "$LG" -source-paths "$root/src:$t/src" "$root/src/driver.lg" -source-paths "$t/src" "$prog" "$t/m.wat" >"$t/module.err" 2>&1; then
+  rc=1
+elif ! wasm-tools parse "$t/m.wat" -o "$t/m.wasm" 2>>"$t/module.err"; then
+  rc=1
+else
+  size=$(wc -c <"$t/m.wasm" | tr -d ' ')
+  build=$(( $(date +%s) - start ))
+  echo "module built (${size} bytes; ${build}s)"
+  LW_RT_SNAPSHOT=$t/rt-snapshot.edn node "$root/src/run.mjs" "$t/m.wasm" "$prog" >"$t/module.txt" 2>"$t/module.err"
+  rc=$?
+fi
 secs=$(( $(date +%s) - start ))
 if [ $rc -ne 0 ]; then
   echo "MISMATCH self-compile: module build/run exited $rc (module ${size:-?} bytes; ${secs}s):"
-  grep -v '^kept ' "$t/module.err" | grep -v '^\s*at ' | grep -v '^\s*$' | head -8; exit 1
+  grep -v '^\s*at ' "$t/module.err" | grep -v '^\s*$' | head -8; exit 1
 fi
 if cmp -s "$t/native.txt" "$t/module.txt"; then
   echo "MATCH self-compile (module ${size:-?} bytes; ${secs}s)"
