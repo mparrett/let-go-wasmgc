@@ -1395,6 +1395,9 @@
       "host-getenv" [(str "(call $rt_host_getenv " (cast-ref "$Bytes" (a 0)) ")") :box]
       ;; D208: slurp's file read, called only by rt/wasm/host_fs.lg (LW_HOST_FS=1)
       "host-read-file" [(str "(call $rt_host_read_file " (cast-ref "$Bytes" (a 0)) ")") :box]
+      ;; D211: the module's text to the host's assembler, called only by
+      ;; rt/wasm/host_asm.lg (LW_HOST_ASM=1)
+      "host-assemble" [(str "(i64.extend_i32_s (call $rt_host_assemble " (cast-ref "$Bytes" (a 0)) "))") :int]
       ;; D97: the term host intrinsics (rt/wasm/term.lg, host/ABI.md)
       "term-read-key" ["(call $rt_term_read_key)" :box]
       "term-key-pending" ["(call $term.key_pending)" :bool]
@@ -1428,7 +1431,7 @@
     "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
     "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
-    "host-nanotime" "host-getenv" "host-read-file" "trap" "funcref" "call-ref"
+    "host-nanotime" "host-getenv" "host-read-file" "host-assemble" "trap" "funcref" "call-ref"
     "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"
     "capture-begin" "capture-end"})
 
@@ -2843,6 +2846,15 @@
     (br $l)))
   (local.get $r))")
 
+;; D211: host-assemble over env.assemble: the text is copied to address 32
+;; (rt_mem_put grows memory to fit it) and the host answers the binary's
+;; byte length, or -1 after printing the parse error. In the text only under
+;; LW_HOST_ASM=1, as its import is.
+(def host-asm-runtime "
+(func $rt_host_assemble (param $w (ref $Bytes)) (result i32)
+  (call $rt_mem_put (i32.const 32) (local.get $w))
+  (call $host_assemble (i32.const 32) (array.len (local.get $w))))")
+
 (defn exn-runtime []
   (str
    ";; a caught raw runtime error (kind 1) becomes an exception value (kind 2)
@@ -3199,6 +3211,8 @@
          ;; build's bytes move, LW_EXPORT_RT=1 ones included (they export
          ;; every helper the text holds)
          (when lw-rt/host-fs? "(import \"env\" \"read_file\" (func $host_read_file (param i32 i32 i32 i32) (result i32)))\n")
+         ;; D211: likewise only under LW_HOST_ASM=1
+         (when lw-rt/host-asm? "(import \"env\" \"assemble\" (func $host_assemble (param i32 i32) (result i32)))\n")
          ;; D88/D97: the term imports (read_key suspends under JSPI)
          "(import \"term\" \"read_key\" (func $term.read_key (param i32 i32) (result i32)))\n"
          "(import \"term\" \"key_pending\" (func $term.key_pending (result i32)))\n"
@@ -3264,7 +3278,7 @@
          "(func $rt_raise_overflow " (raise-wat) ")\n"
          (boxed :add) (boxed :sub) (boxed :mul)
          (apply str (map unbox (sort (keys op-names))))
-         (print-runtime) (when lw-rt/host-fs? host-fs-runtime) "\n" (exn-runtime) (fn-runtime)
+         (print-runtime) (when lw-rt/host-fs? host-fs-runtime) (when lw-rt/host-asm? host-asm-runtime) "\n" (exn-runtime) (fn-runtime)
          (when *rt* (bframe-runtime))))))
 
 ;; Shared with the P1.5 census, which must expand units exactly as the driver.
@@ -4567,7 +4581,7 @@
 ;; that can change the lowered runtime must be in it, or a warm entry built
 ;; under another setting is reused.
 ;;   in the key:  LW_TARGET (*target*), LW_NO_EVAL, LW_RUNTIME_COMPILE,
-;;     LW_HOST_FS, LW_RT_DIR and LW_RT_SNAPSHOT (by the text read: the
+;;     LW_HOST_FS, LW_HOST_ASM, LW_RT_DIR and LW_RT_SNAPSHOT (by the text read: the
 ;;     runtime files or the snapshot), LW_LETGO_CORE (below)
 ;;   cannot change the runtime library: LW_RTLIB_DIR (where it lives),
 ;;     LW_RT_SNAPSHOT_WRITE (writes a file), LETGO / LW_ROOT (the repository
@@ -4592,6 +4606,8 @@
                              (if lw-rt/runtime-compile? "|runtime-compile" "")
                              ;; D208: the host file system row
                              (if lw-rt/host-fs? "|host-fs" "")
+                             ;; D211: the host assembler row
+                             (if lw-rt/host-asm? "|host-asm" "")
                              (if (and lw-rt/letgo-core-dir (not lw-rt/snapshot))
                                (str "|letgo-core=" (slurp (str lw-rt/letgo-core-dir "/core.lg"))
                                     (slurp (str lw-rt/letgo-core-dir "/string.lg")))

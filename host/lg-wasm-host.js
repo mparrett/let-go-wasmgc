@@ -54,12 +54,18 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
 
 export class LgWasmHost {
   constructor({ onOutput = () => {}, env = {}, cols = 80, rows = 24, keyCapacity = KEY_CAPACITY, coalesceKeys = true,
-    onEmit = () => {}, urlParams = null, argv = ['lg'], wakeOnResize = false, readFile = null } = {}) {
+    onEmit = () => {}, urlParams = null, argv = ['lg'], wakeOnResize = false, readFile = null, assemble = null } = {}) {
     this.argv = argv;              // os/args (D115): env.argc / env.arg
     // D208: path -> Uint8Array, or null when there is no such file. A browser
     // has no file system, so the default answers -1 to every env.read_file
     // and slurp raises native's no-such-file error; node-host passes one.
     this.readFile = readFile;
+    // D211: WAT text (Uint8Array) -> the binary (Uint8Array), throwing with
+    // the parse error. A page has no assembler, so the default answers -1;
+    // node-host passes wasm-tools. The last binary is kept in `assembled`
+    // for the page to instantiate later (B2 will hand bytes, not text).
+    this.assemble = assemble;
+    this.assembled = null;
     this.wakeOnResize = wakeOnResize;
     this.onOutput = onOutput;
     this.onEmit = onEmit;          // (name, dataJson) for js/emit
@@ -170,6 +176,18 @@ export class LgWasmHost {
       read_file: (pptr, plen, buf, cap) => {
         const b = h.readFile ? h.readFile(h.str(pptr, plen)) : null;
         return b === null ? -1 : h.copyOut(b, buf, cap);
+      },
+      // D211: the module's own WAT text to the assembler; the binary's byte
+      // length, or -1 with the reason on stderr
+      assemble: (ptr, len) => {
+        if (!h.assemble) { h.emitText(2, 'assemble: this host has no assembler\n'); return -1; }
+        try {
+          h.assembled = h.assemble(h.bytes(ptr, len).slice());
+        } catch (e) {
+          h.emitText(2, `assemble: ${(e && e.message) || e}\n`);
+          return -1;
+        }
+        return h.assembled.length;
       },
       // js/emit and js/url-param (xsofy uses both: the shell's title/quest/
       // stats arrive as xsofy/* events; ?seed= etc. as URL params), imported

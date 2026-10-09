@@ -501,6 +501,14 @@
   (let [v (core/get *host-files* (string-of-bytes path-bytes))]
     (when v (bytes-of-string v))))
 
+;; D211: a module's text to the host's assembler (env.assemble), called only
+;; from rt/wasm/host_asm.lg, which loads under LW_HOST_ASM=1. The reference
+;; has no assembler, as a host without one answers: -1.
+(defn ^{:intrinsic true :wasm "call $env.assemble (binary length, -1 = not assembled; D211)" :type "[:any] -> :int"} host-assemble
+  "Bytes WAT text -> the assembled binary's byte length, or -1."
+  [wat-bytes]
+  -1)
+
 (defn ^{:intrinsic true :wasm "unreachable (message kept in a custom section for the host's error line)" :type "[:string] -> :bottom"} trap
   [msg]
   (trap! msg {}))

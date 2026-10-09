@@ -1046,7 +1046,9 @@
    a module has no spit. opts: :target (:gc or :linear), :rt, :shake,
    :rtlib (start from the cached runtime library), :test (compile deftests,
    the shim installed) and :skip (deftest symbols left out under :test).
-   The library search path is source-paths, which -main sets from its args."
+   The library search path is source-paths, which -main sets from its args.
+   Like -main it evaluates the program's forms in their namespace and leaves
+   *ns* there."
   [in opts]
   ;; plain bindings: a destructuring one takes a gensym when this file loads,
   ;; which renumbers IR values in every program compiled after it (D174)
