@@ -49,6 +49,11 @@
 # so every eval prints that error; `(println (list 1 2 3 4 5))` reproduces it
 # in the module, native prints (1 2 3 4 5). Its 137.8 s is a lower bound: the
 # stubs cut what the compile reaches (half native's text).
+# Later the same day (09:36-10:00, load 4-5, D212 follow-up): with list-n
+# and spread fixed, scalars MATCH as above (26.5/18.0/19.5/15.9/80.0 s) and
+# basic.lg compiles unstubbed in 586.1 s (native 59 s, 1.18 GB) but
+# MISMATCHes: core/map and core/keep fail in the module (`unresolved symbol
+# rf`), so each eval calls a nil slot.
 #
 # Env: LG, LETGO (env.sh), LW_SELF_COMPILE_CACHE (the module build's rtlib
 # dir), LW_SCR_TIMEOUT, KEEP=1, LW_SCR_REUSE=<a kept dir> (skip the module

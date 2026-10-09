@@ -990,7 +990,11 @@
    not reachable from the stand-in (wasm.core/var-value's named limit):
    evaluated code reaches core through the evaluator's own table."
   [nsn]
-  (let [names (vec (sort (map str (keys (ns-publics (symbol nsn))))))
+  ;; ns-interns, privates included: core's own defns name its private ones
+  ;; (apply and list* call spread), and the carried compiler resolves them
+  ;; from inside core. Named limit: a module answers a stand-in for another
+  ;; namespace's private name, where native's resolve refuses it
+  (let [names (vec (sort (map str (keys (ns-interns (symbol nsn))))))
         prefix (str "#'" nsn "/")]
     (list 'let* ['__lw_nsy (list 'clojure.core/symbol (str "<ns " nsn ">")) '__lw_names names]
           {:aliases {} :refers {} :macros {}
