@@ -489,6 +489,18 @@
   (let [v (core/get *host-env* (string-of-bytes name-bytes))]
     (when v (bytes-of-string v))))
 
+;; D208: slurp's file read (env.read_file), called only from rt/wasm/host_fs.lg,
+;; which loads under LW_HOST_FS=1. The reference reads *host-files* (path ->
+;; text), {} by default as *host-env* is, so a run under native lg does not
+;; depend on the machine's files (D27).
+(def ^:dynamic *host-files* {})
+
+(defn ^{:intrinsic true :wasm "call $env.read_file (getenv's contract, D208)" :type "[:any] -> :any"} host-read-file
+  "Bytes path -> Bytes contents, or null when the host has no such file."
+  [path-bytes]
+  (let [v (core/get *host-files* (string-of-bytes path-bytes))]
+    (when v (bytes-of-string v))))
+
 (defn ^{:intrinsic true :wasm "unreachable (message kept in a custom section for the host's error line)" :type "[:string] -> :bottom"} trap
   [msg]
   (trap! msg {}))

@@ -24,6 +24,10 @@
 ;; the module can compile forms at run time. Part of the rtlib cache key.
 (def runtime-compile? (= "1" (os/getenv "LW_RUNTIME_COMPILE")))
 (defn- flag-row? [l] (str/includes? l "LW_RUNTIME_COMPILE"))
+;; LW_HOST_FS=1 (D208): also load the rows whose text names that flag
+;; (host_fs.lg: slurp through the host's file system). Part of the rtlib key.
+(def host-fs? (= "1" (os/getenv "LW_HOST_FS")))
+(defn- host-fs-row? [l] (str/includes? l "LW_HOST_FS"))
 
 (defn readme-order
   "Files from README.md's load-order table (`| n | `file.lg` | ...`). Every
@@ -33,6 +37,7 @@
   (let [rows (filter #(re-find #"^\| [0-9]+ \| `[^`]+\.lg` \|" %)
                      (str/split-lines (slurp (str rt-dir "/README.md"))))
         rows (if runtime-compile? rows (remove flag-row? rows))
+        rows (if host-fs? rows (remove host-fs-row? rows))
         bad (remove #(re-find row-file %) rows)]
     (when (seq bad)
       (throw (ex-info (str "lw-rt: unreadable load-order rows in rt/wasm/README.md: " (vec bad)) {})))
@@ -218,11 +223,19 @@
 ;; the current directory; embedded-forms says so loudly when it cannot read it.
 (def letgo-dir (or (os/getenv "LETGO") (when-let [r (os/getenv "LW_ROOT")] (str r "/let-go")) "../let-go"))
 
+;; LW_LETGO_CORE (D208): a directory holding pkg/rt/core's files at
+;; letgo-commit, read with slurp in place of `git show`. The backend carried
+;; as a module (checks/self-compile.sh, which git-archives that directory) has
+;; no git to run, and its slurp reads files only.
+(def letgo-core-dir (not-empty (os/getenv "LW_LETGO_CORE")))
+
 (defn embedded-forms
   "The forms of let-go's embedded pkg/rt/core/<file> at letgo-commit, read in
    ns-sym (loaded first: string is loaded on demand natively)."
   [file ns-sym]
-  (let [r (try (os/sh "git" "-C" letgo-dir "show" (str letgo-commit ":pkg/rt/core/" file)) (catch e nil))]
+  (let [r (if letgo-core-dir
+            (try {:exit 0 :out (slurp (str letgo-core-dir "/" file))} (catch e nil))
+            (try (os/sh "git" "-C" letgo-dir "show" (str letgo-commit ":pkg/rt/core/" file)) (catch e nil)))]
     (if (and r (= 0 (:exit r)))
       (do (require ns-sym)
           (binding [*ns* (the-ns ns-sym)] (read-string (str "[" (:out r) "\n]"))))

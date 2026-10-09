@@ -46,11 +46,12 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `bytes-of-string` | 1 | array.new_data (literal only) | [:string] → :any | V IO |
 | `string-of-bytes` | 1 | none (identity) | [:any] → :string | reference/test boundary only |
 | `host-write` `host-sleep` `host-nanotime` `host-getenv` | 2/1/0/1 | call $env.* | | IO (D6, D11's `env.write`) |
+| `host-read-file` | 1 | call $env.read_file (getenv's contract) | [:any] → :any | IO (D208: `slurp` in rt/wasm/host_fs.lg, a row loaded only under `LW_HOST_FS=1`; the reference reads `*host-files*`) |
 | `trap` | 1 | unreachable | [:string] → :bottom | P V |
 | `funcref` / `call-ref` | 2 / 2–7 | ref.func / call_ref $Sig (7 = `$Code4`: closure + 4 args, P2.7) | | C |
 
-43 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-10-01 (`f64-neg` added
-by P2.13: `(* -1.0 x)` may return either NaN sign in wasm, Go's `-x` flips it; lg's own
+44 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-10-08 (`host-read-file`
+added by D208; `f64-neg` by P2.13: `(* -1.0 x)` may return either NaN sign in wasm, Go's `-x` flips it; lg's own
 unary `-` on a Float is Go's `-x`, so it is the reference, and native `hash` sees the bit).
 `new` gained its 7-field arity on 2026-10-01 for D52's `$Fn`.
 

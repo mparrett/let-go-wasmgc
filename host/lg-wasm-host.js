@@ -54,8 +54,12 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
 
 export class LgWasmHost {
   constructor({ onOutput = () => {}, env = {}, cols = 80, rows = 24, keyCapacity = KEY_CAPACITY, coalesceKeys = true,
-    onEmit = () => {}, urlParams = null, argv = ['lg'], wakeOnResize = false } = {}) {
+    onEmit = () => {}, urlParams = null, argv = ['lg'], wakeOnResize = false, readFile = null } = {}) {
     this.argv = argv;              // os/args (D115): env.argc / env.arg
+    // D208: path -> Uint8Array, or null when there is no such file. A browser
+    // has no file system, so the default answers -1 to every env.read_file
+    // and slurp raises native's no-such-file error; node-host passes one.
+    this.readFile = readFile;
     this.wakeOnResize = wakeOnResize;
     this.onOutput = onOutput;
     this.onEmit = onEmit;          // (name, dataJson) for js/emit
@@ -126,7 +130,7 @@ export class LgWasmHost {
   // copy a string into [buf, buf+cap); returns its byte length (> cap means
   // nothing was copied and the caller retries with a bigger buffer)
   copyOut(s, buf, cap) {
-    const v = enc.encode(s);
+    const v = typeof s === 'string' ? enc.encode(s) : s;
     if (v.length <= cap) this.bytes(buf, v.length).set(v);
     return v.length;
   }
@@ -158,6 +162,14 @@ export class LgWasmHost {
         const name = h.str(nptr, nlen);
         if (!Object.prototype.hasOwnProperty.call(h.envMap, name)) return -1;
         return h.copyOut(String(h.envMap[name]), buf, cap);
+      },
+      // D208: a file's bytes under getenv's contract; -1 = not found or not
+      // a file (no readFile: every read). The module asks again with a
+      // bigger buffer when the length exceeds cap, so the file is read twice
+      // then; the self-compile build's reads are a handful of files.
+      read_file: (pptr, plen, buf, cap) => {
+        const b = h.readFile ? h.readFile(h.str(pptr, plen)) : null;
+        return b === null ? -1 : h.copyOut(b, buf, cap);
       },
       // js/emit and js/url-param (xsofy uses both: the shell's title/quest/
       // stats arrive as xsofy/* events; ?seed= etc. as URL params), imported
