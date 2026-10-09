@@ -11,8 +11,37 @@
 (ns driver
   (:require [lower-wasm :as lw] [lw-rt] [ir.passes.pipeline :as p] [clojure.string]))
 
-(defn read-program [path]
-  (read-string (str "[" (slurp path) "\n]")))
+(defn- read-all [text] (read-string (str "[" text "\n]")))
+
+(defn- switch-ns
+  "The namespace a top-level (ns x ..) or (in-ns 'x) form moves to, or nil."
+  [form]
+  (when (seq? form)
+    (cond (and (= 'ns (first form)) (symbol? (second form))) (second form)
+          (and (= 'in-ns (first form)) (seq? (second form)) (= 'quote (first (second form)))) (second (second form)))))
+
+(defn read-program
+  "A source file's top-level forms, each read in the namespace it sits in,
+   as native's load reads them: the current *ns* until a top-level ns or
+   in-ns form, then that namespace, so ::k is the file's own keyword. A
+   file that switches namespace is re-read from each switch (padded so
+   :line and :column stay the file's)."
+  [path]
+  (let [text (slurp path) forms (read-all text)
+        cuts (keep #(when-let [n (switch-ns %)] (when-let [l (:line (meta %))] [l (:column (meta %)) n])) forms)]
+    (if (empty? cuts)
+      forms
+      (let [starts (vec (reductions + 0 (map #(inc (count %)) (clojure.string/split text #"\n" -1))))
+            ;; read-all's "[" sits before line 1, one column to the left
+            off (fn [[l c]] (+ (starts (dec l)) (dec c) (if (= 1 l) -1 0)))
+            pad (fn [[l c]] (str (apply str (repeat (dec l) "\n")) (apply str (repeat (dec c) " "))))
+            ends (concat (map off (rest cuts)) [(count text)])
+            head (take-while #(not (and (switch-ns %) (:line (meta %)))) forms)]
+        (vec (concat head
+                     (mapcat (fn [[l c n] e]
+                               (binding [*ns* (create-ns n)]
+                                 (read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e)))))
+                             cuts ends)))))))
 
 (defn splice-do
   "A top-level (do a b ..) as the top-level forms a b .. (P2.14): native
@@ -891,7 +920,8 @@
         rtlib? (and (:rt opts) (not= target :llvm) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))
-        forms (mapcat splice-do (read-program in))
+        ;; read in user, as native loads a program (::k is :user/k)
+        forms (mapcat splice-do (binding [*ns* (create-ns 'user)] (read-program in)))
         tests (atom [])
         forms (if test?
                 (let [[pre post] (split-with #(not (and (seq? %) (= 'ns (first %)))) forms)

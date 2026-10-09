@@ -1,0 +1,9 @@
+;; each top-level ns/in-ns switches the namespace ::k reads in, and the
+;; forms keep their :line (D219)
+(ns foo.bar)
+(println ::k)
+  (in-ns (quote baz)) (clojure.core/println ::j)
+(in-ns (quote foo.bar))
+(println ::z)
+(defn f [] ::q)
+(println (:line (meta (var f))) (f))
