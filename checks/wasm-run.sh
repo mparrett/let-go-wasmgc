@@ -12,6 +12,9 @@
 # library roots a multi-namespace program requires from, P3.2),
 # LW_MODULE_CACHE=<dir> (reuse the compiled module of an unchanged program:
 # keyed by the program, its source roots, src/ and rt/; args are run-time).
+#
+# The compile holds one slot of the machine-wide pool (checks/sem.sh) for its
+# duration; the node run does not. Nesting under a caller's slot is harmless.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
@@ -33,7 +36,7 @@ fi
 if [ -n "$key" ] && [ -f "$LW_MODULE_CACHE/$key.wasm" ]; then
   cp "$LW_MODULE_CACHE/$key.wasm" "$t/m.wasm"
 else
-  if ! "${drv[@]}" "$prog" "$t/m.wat" >"$t/drv.log" 2>&1; then
+  if ! "$here/checks/sem.sh" "${drv[@]}" "$prog" "$t/m.wat" >"$t/drv.log" 2>&1; then
     cat "$t/drv.log" >&2; exit 1
   fi
   wasm-tools parse "$t/m.wat" -o "$t/m.wasm" || exit 1
