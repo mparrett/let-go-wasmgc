@@ -231,6 +231,27 @@
     (throw (first args))
     (raise (str "wrong number of arguments " (count args)))))
 
+;; load-string (let-go pkg/compiler/eval.go:335): the forms of s evaluated in
+;; order in the caller's namespace, the last value returned. Any argument
+;; list but one String gives nil, not an error (eval.go:337-343, a wrong
+;; count included). The current namespace is put back when the call returns
+;; or throws (eval.go:349, defer SetRoot), so an in-ns inside s holds for the
+;; rest of s only; the module keeps one current namespace for root and
+;; binding alike, so the restore is of what was current at entry. Native
+;; reads each form after the previous one ran; here every form is read
+;; first, so a ::kw or syntax-quote after an in-ns inside s reads in the
+;; caller's namespace (named limit). Native's per-call compiler keeps
+;; regex literals out of the process-wide constant pool (eval.go:351); the
+;; evaluator has no such pool (a constant lives in its closure), so nothing
+;; here grows.
+(defn ^{:twin "core/load-string"} load-string* [& args]
+  (when (and (= 1 (count args)) (string? (first args)))
+    (let [saved (cur-ns)]
+      (try
+        (loop [fs (seq (read-all-string (first args))) out nil]
+          (if fs (recur (next fs) (eval (first fs))) out))
+        (finally (n/set-cur! saved))))))
+
 (defn- type-name [x] (s/mk-str (c/type-name x)))   ; type-name is Bytes
 
 (defn- known-ns? [nm] (or (n/ns-exists*? nm) (some? (prog nm))))
@@ -305,7 +326,7 @@
    "wasm.eval/macro-form*" (fn [] @macro-form) "concat*" concat-star "concat-list" concat-list* "set-macro!" set-macro!* "bound-fn*" n/bound-fn*
    "seq-to-map-for-destructuring" seq-to-map-for-destructuring "with-redefs-fn" with-redefs-fn
    "->AssertionError" ->AssertionError "*assert*" true "*out*" *out* "*err*" *err*
-   "in-ns" in-ns* "require" require* "ns-name" ns-name "ns-resolve" n/ns-resolve "resolve" n/resolve
+   "in-ns" in-ns* "load-string" load-string* "require" require* "ns-name" ns-name "ns-resolve" n/ns-resolve "resolve" n/resolve
    "find-ns" n/find-ns "the-ns" n/the-ns "all-ns" n/all-ns "find-var" n/find-var "var-get" n/var-get
    "var?" n/var? "intern" n/intern "alter-var-root" n/alter-var-root "alter-meta!" n/alter-meta!
    "push-binding!" n/push-binding! "pop-binding!" n/pop-binding! "bound?" bound?* "ns-publics" n/ns-publics
