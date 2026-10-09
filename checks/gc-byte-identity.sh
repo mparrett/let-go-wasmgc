@@ -17,6 +17,7 @@
 # never read. Wait is bounded by LW_GC_LOCK_WAIT (default 3600 s), after which
 # the capture runs anyway with a warning: the atomic mv keeps that safe, it only
 # costs duplicate work. The lock is per program, so concurrent runs interleave.
+# Each compile holds one slot of the machine-wide pool (checks/sem.sh).
 # The cache is keyed by base SHA, but its bytes also depend on the lg binary and
 # the legmacs checkout. $cache/.meta records lg's md5 and legmacs' commit; a run
 # whose values differ refuses (never recaptures silently). A dir with baselines
@@ -82,7 +83,7 @@ compile() {
   local args=("$LG" -source-paths "$source/src${sp:+:$sp}" "$source/src/driver.lg")
   [ -z "$sp" ] || args+=(-source-paths "$sp")
   [ -z "$target" ] || args+=(--target "$target")
-  env -u LW_TARGET -u LW_RT_DIR LW_NO_EVAL=0 LW_NO_PROGRAM_TABLE=0 LW_RTLIB_DIR="$t/rtlib-$lane" "${args[@]}" "$f" "$t/m.wat" > "$t/compile.log" 2>&1 || { cat "$t/compile.log" >&2; return 1; }
+  env -u LW_TARGET -u LW_RT_DIR LW_NO_EVAL=0 LW_NO_PROGRAM_TABLE=0 LW_RTLIB_DIR="$t/rtlib-$lane" "$PWD/checks/sem.sh" "${args[@]}" "$f" "$t/m.wat" > "$t/compile.log" 2>&1 || { cat "$t/compile.log" >&2; return 1; }
   wasm-tools parse "$t/m.wat" -o "$out"
 }
 # bytes depend on the lg binary and the legmacs checkout, not only the base SHA
