@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-09 at
+# 0609395, the merge of main (#30) into P12.5: same tree both sides, base moves with it, the stage-2 final run re-verifies; before that 2026-10-09 at
+# d3aa439, D212: the evaluator's dotimes writes core/< and core/inc, so every program carrying the
+# evaluator moves and dotimes-hygiene.lg joins the corpus; on main 2026-10-09 at
 # 791c121, the merge of main (#28, #29) into P12.4: same tree both sides, base moves with it, the stage-2 final run re-verifies; before that 2026-10-09 at
 # 6782b56, D211's lw-ext \p{Lu}/\p{Ll}/\p{L} classes: every corpus/eval program and legmacs
 # grow ~4,982 bytes (they reach the regex engine), regex-uprops.lg joins the corpus; on main 2026-10-09 at
@@ -56,7 +59,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=791c121e665f8a0632c58a5a530746dfd0ddb484
+base=06093958378471190271bfb313925b0c8b075dd0
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)

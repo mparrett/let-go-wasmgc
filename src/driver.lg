@@ -925,7 +925,11 @@
         rooted (filter rooted? all-names)
         ns-obj (the-ns ns-sym)
         aliases (into {} (sort (for [[a n] (ns-aliases ns-obj)] [(str a) (str (ns-name n))])))
-        refers (into {} (sort (for [[s v] (ns-refers ns-obj)
+        ;; In a module (the backend carried, P12.5) ns-refers has no twin, so
+        ;; the table gets no refers there: named limit, a program compiled in
+        ;; a module whose evaluated code names a var it :refers from a
+        ;; non-core namespace by its bare name does not find it
+        refers (into {} (sort (for [[s v] (if *in-wasm* {} (ns-refers ns-obj))
                                     :let [tn (when (var? v) (some-> (var-ns-name v) symbol find-ns ns-name str))]
                                     :when (and tn (not (core-nss tn)))]
                                 [(str s) tn])))
@@ -978,26 +982,64 @@
                           (list 'try form' (list 'catch '__lw_ce (list 'lw-ext/calling-throw (str h) '__lw_ce)))
                           form'))))))
 
-(defn core-names-entry
-  "P10.6: a names-only program-table entry for core, under LW_PROGRAM_TABLE=1:
-   resolve and ns-resolve of a core name (`<`, `str`: the IR builder
-   resolves every symbol) answer its stand-in, as natively its Var, and a
-   name core lacks stays nil. No getter, so the value is not reachable from
-   the stand-in (wasm.core/var-value's named limit): evaluated code reaches
-   core through the evaluator's own table."
-  []
-  (let [names (vec (sort (map str (keys (ns-publics 'core)))))]
-    (list 'let* ['__lw_nsy (list 'clojure.core/symbol "<ns core>") '__lw_names names]
-          {:aliases {} :refers {} :macros {}
+(defn names-entry
+  "P10.6: a names-only program-table entry for builtin namespace nsn, under
+   LW_PROGRAM_TABLE=1: resolve and ns-resolve of its name (`<`, `str`: the
+   IR builder resolves every symbol) answer its stand-in, as natively its
+   Var, and a name the namespace lacks stays nil. No getter, so the value is
+   not reachable from the stand-in (wasm.core/var-value's named limit):
+   evaluated code reaches core through the evaluator's own table."
+  [nsn]
+  ;; ns-interns, privates included: core's own defns name its private ones
+  ;; (apply and list* call spread), and the carried compiler resolves them
+  ;; from inside core. Named limit: a module answers a stand-in for another
+  ;; namespace's private name, where native's resolve refuses it
+  ;; Macros left out: inside core a stand-in without :macro shadowed the
+  ;; evaluator's builtin macros, so in-module macroexpand of core forms
+  ;; expanded nothing (core/map's (fn [rf] ..): unresolved symbol rf)
+  (let [names (vec (sort (map (fn [e] (str (key e))) (remove (fn [e] (:macro (meta (val e)))) (ns-interns (symbol nsn))))))
+        prefix (str "#'" nsn "/")
+        ;; Refers into a namespace other than core itself, by target name:
+        ;; core takes bigint? from let-go.types, so inside core (where the
+        ;; carried compiler analyses core's defns) the module's resolve-global
+        ;; finds it through :refers, as native does. Refers to core are left
+        ;; out, as ns-table-entry! leaves them: core's names resolve already.
+        ;; No ns-refers twin in a module, so none there (its named limit).
+        refers (into {} (sort (remove nil? (map (fn [e]
+                                                  (let [v (val e)
+                                                        found (when (var? v) (find-ns (symbol (var-ns-name v))))
+                                                        tn (when found (str (ns-name found)))]
+                                                    (when (and tn (not= tn nsn) (not (#{"core" "clojure.core" "let-go.core"} tn)))
+                                                      [(str (key e)) tn])))
+                                                (if *in-wasm* {} (ns-refers (symbol nsn)))))))]
+    (list 'let* ['__lw_nsy (list 'clojure.core/symbol (str "<ns " nsn ">")) '__lw_names names]
+          {:aliases {} :refers refers :macros {}
            :vars (list 'loop* ['__lw_k 0 '__lw_m {}]
                        (list 'if (list 'clojure.core/< '__lw_k (count names))
                              (list 'let* ['__lw_n (list 'clojure.core/nth '__lw_names '__lw_k)]
                                    (list 'recur (list 'clojure.core/inc '__lw_k)
                                          (list 'clojure.core/assoc '__lw_m '__lw_n
                                                (list 'clojure.core/with-meta
-                                                     (list 'clojure.core/symbol (list 'clojure.core/str "#'core/" '__lw_n))
+                                                     (list 'clojure.core/symbol (list 'clojure.core/str prefix '__lw_n))
                                                      {:name (list 'clojure.core/symbol '__lw_n) :ns '__lw_nsy}))))
                              '__lw_m))})))
+
+(defn builtin-names-entries
+  "P12.5: names-only entries for core and every other builtin namespace the
+   module's find-var treats as builtin (wasm.natives' builtin-nss, read from
+   its form so both sides name the same set) that exists natively. Without
+   them a module's resolve of a qualified builtin name (os/args,
+   string/join) answers nil, since only an intern or the program table
+   reaches it there, and the carried compiler sent os/args to the
+   evaluator, which cannot resolve it either. \"user\" holds the program's
+   own vars."
+  []
+  (let [v (lw-rt/ns-var 'wasm.natives 'builtin-nss)
+        listed (second (first (:arities (get lw-rt/defn-by-var v))))]
+    ;; map/filter, not for: a for here takes gensyms when this file loads (P9.1)
+    (into {} (map (fn [nsn] [nsn (names-entry nsn)])
+                  (filter (fn [nsn] (and (not= nsn "user") (find-ns (symbol nsn))))
+                          (if (vector? listed) listed ["core"]))))))
 
 (defn registry-boot-forms
   "The forms _main starts with (P7): the in-ns native's ns form leaves
@@ -1018,7 +1060,7 @@
               (not lw-rt/no-eval?)
               (not= "1" (os/getenv "LW_NO_PROGRAM_TABLE")))
      [(list 'wasm.eval/install-program-table!
-            (into (if table-asked? {"core" (core-names-entry)} {})
+            (into (if table-asked? (builtin-names-entries) {})
                   (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
 
 (defn target-args

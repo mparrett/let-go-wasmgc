@@ -109,7 +109,15 @@
    left *ns* at n afterwards (D124), which no caller relied on."
   [n f]
   (let [cur (ns-name *ns*)
-        nn (ns-name (the-ns n))]
+        ;; in a module the-ns knows only the registry's namespaces, not a
+        ;; program's own (lw-ext, carried in, is in the program table; the
+        ;; module's find-ns answers for it, its the-ns raises), so analysing
+        ;; an ext defn there threw "no namespace" (P12.5). Only that raise
+        ;; falls back to the name: the-ns canonicalises (clojure.core is
+        ;; core), and in-ns of an uncanonical name broke every program defn
+        nn (if *in-wasm*
+             (try (ns-name (the-ns n)) (catch e (if (symbol? n) n (throw e))))
+             (ns-name (the-ns n)))]
     (in-ns nn)
     (try (f) (finally (in-ns cur)))))
 
