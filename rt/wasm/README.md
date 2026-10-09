@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Seventeen namespaces that load together under native lg as one runtime (P2.9, P3.1),
+Twenty namespaces (nineteen by default) that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -30,10 +30,11 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 19 | `wasmbin.lg` | `wasm.wasmbin` | | only under `LW_RUNTIME_COMPILE=1` (D193): the binary encoder (P10.0), plain lg over clojure.core, that the emitter writes modules with |
 | 20 | `emit.lg` | `wasm.eval` | 17 18 19 | only under `LW_RUNTIME_COMPILE=1` (D193): the evaluator's second output (stage 3 of docs/SELF-HOST-SPEC.md). Its first ns form is `wasm.emit` (what `(require 'wasm.emit)` loads under stock lg); the second re-enters `wasm.eval`, and `src/lw_rt.lg` takes a file's LAST ns form, so its defns are found there |
 | 21 | `ir.lg` | `wasm.ir` | | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
+| 22 | `poly.lg` | `wasm.poly` | 4 9 | in PLAIN lg like natives.lg: placeholders for the natives deftype, defrecord, reify, defprotocol, extend-type, defmulti and defmethod expand to in a program; each raises "<form> is not supported on the WasmGC target" (the llvm lane implements them) |
 
 Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
-default build loads the other nineteen namespaces and its bytes do not
+default build loads the other twenty namespaces and its bytes do not
 change (`checks/gc-byte-identity.sh`).
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model

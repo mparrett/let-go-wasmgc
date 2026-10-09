@@ -1,0 +1,11 @@
+;; The WasmGC lane compiles the polymorphism forms and raises a catchable
+;; placeholder error when one runs (the llvm lane implements them).
+(try (deftype Point [x y]) (catch Exception e (println (ex-message e))))
+(try (defrecord Pair [a b]) (catch Exception e (println (ex-message e))))
+(try (defprotocol Shape (area [s])) (catch Exception e (println (ex-message e))))
+(def not-a-protocol nil)
+(try (extend-type nil not-a-protocol (area [s] 0)) (catch Exception e (println (ex-message e))))
+(try (defmulti speak :kind) (catch Exception e (println (ex-message e))))
+(def not-a-multi nil)
+(try (defmethod not-a-multi :dog [x] "woof") (catch Exception e (println (ex-message e))))
+(println "alive")

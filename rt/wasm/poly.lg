@@ -1,0 +1,27 @@
+;; wasm.poly — the WasmGC lane's placeholders for the natives that deftype,
+;; defrecord, reify, defprotocol, extend-type/extend-protocol, defmulti and
+;; defmethod expand to in a program (the llvm lane implements them in
+;; llvm.poly). Each raises "<form> is not supported on the WasmGC target",
+;; catchable, when it runs, so a program using them compiles and fails at
+;; the form. Library namespaces keep the driver's static lowering of
+;; deftype, defrecord and defprotocol (driver.lg deftype-forms).
+;;
+;; DIALECT: plain lg like natives.lg.
+(ns wasm.poly
+  (:refer-clojure :exclude [satisfies?])
+  (:require [wasm.str :as s]
+            [wasm.core :as c]))
+
+(defn- unsupported [form] (c/raise (s/str-bytes (str form " is not supported on the WasmGC target"))))
+
+(defn ^{:twin "core/make-deftype"} make-deftype [& args] (unsupported "deftype"))
+(defn ^{:twin "core/make-deftype-instance"} make-deftype-instance [& args] (unsupported "deftype"))
+(defn ^{:twin "core/register-type-parent!"} register-type-parent! [& args] (unsupported "deftype"))
+(defn ^{:twin "core/make-record-type"} make-record-type [& args] (unsupported "defrecord"))
+(defn ^{:twin "core/make-record"} make-record [& args] (unsupported "defrecord"))
+(defn ^{:twin "core/defprotocol*"} defprotocol* [& args] (unsupported "defprotocol"))
+(defn ^{:twin "core/make-protocol-fn"} make-protocol-fn [& args] (unsupported "defprotocol"))
+(defn ^{:twin "core/satisfies?"} satisfies? [& args] (unsupported "defprotocol"))
+(defn ^{:twin "core/extend-type*"} extend-type* [& args] (unsupported "extend-type"))
+(defn ^{:twin "core/defmulti*"} defmulti* [& args] (unsupported "defmulti"))
+(defn ^{:twin "core/defmethod*"} defmethod* [& args] (unsupported "defmethod"))

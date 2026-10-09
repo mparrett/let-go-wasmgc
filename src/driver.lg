@@ -644,8 +644,6 @@
                     (swap! init-forms conj e)))
                 (= 'defprotocol head) (note-protocol! ns-sym form)
                 (#{'deftype 'defrecord} head) (reduce (fn [_ f] (index! f)) nil (deftype-forms ns-sym form))
-                (= 'defmulti head)
-                (throw (ex-info (str "lower-wasm: unsupported top-level form " head " in " ns-sym) {:head head}))
                 ;; P6.1: defcommand-style macros, subform by subform
                 (macro-do-expansion form) (doseq [f (rest (macro-do-expansion form))] (index! f))
                 :else (let [e (expand-top form)]
@@ -960,8 +958,6 @@
                                    (swap! body conj form))
               ;; a macro only matters at expansion time, in this process
               (and (seq? form) (= 'defmacro (first form))) (do (native! form) (note-macro! (ns-name *ns*) form))
-              (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
-              (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               ;; P6.1: a def below the top of the form (in a let/when/if)
               ;; is a var-table var, set where the def runs
               :else (do (compile-check! form)

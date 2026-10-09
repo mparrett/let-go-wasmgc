@@ -115,6 +115,7 @@ P12.2	src/driver.lg src/lower_wasm.lg src/lower_llvm.lg src/lower_llvm_profile.l
 P12.3	oracle src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh checks/profile-field.lg corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/
 P12.4	oracle src/driver.lg checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg checks/native-test-runner.lg corpus/jank-harness/
 P12.23	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg
+P12.30	rt/wasm/poly.lg src/driver.lg corpus/poly-wasm/ checks/run-expected.sh
 P12.20	oracle checks/llvm-armv7-check.sh src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/profile-field.lg corpus/llvm/ corpus/llvm-scalar/
 P12.21	src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
