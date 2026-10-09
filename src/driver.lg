@@ -360,10 +360,11 @@
 ;; Every program defn and the _main body are analysed inside the session,
 ;; each after the runtime defns it reaches (P2.1: typeinfer then sees their
 ;; return types), and its signature is registered before the next one.
-;; --test only: a defn that does not compile becomes a stub that throws
-;; when called (lower-wasm/stub-fn), so the file's other tests still run and
-;; the failure is reported as that test's ERROR rather than hiding the file.
-(def ^:dynamic *stub-failures* false)
+;; --test only (analyze-program!'s stub?, -main's lower-one): a defn that
+;; does not compile becomes a stub that throws when called
+;; (lower-wasm/stub-fn), so the file's other tests still run and the failure
+;; is reported as that test's ERROR rather than hiding the file. A parameter,
+;; not a dynamic var: the backend binds only var-table vars (P12.2).
 
 (defn arity-key
   "A defn arity's key: its param count, or \"v\" for the variadic one
@@ -400,15 +401,16 @@
 (defn defn-var [src] (lw-rt/call-in-ns (src-ns src) (fn [] (resolve (second src)))))
 
 (defn analyze-program!
-  "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint)."
-  [defns main-src boxed]
+  "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint).
+   stub?: --test, a failing defn becomes a stub (above)."
+  [defns main-src boxed stub?]
   (doall
    (for [src (conj defns main-src)]
      (lw-rt/call-in-ns (src-ns src)
       (fn []
        ;; P2.14: in --test a library defn the test reaches that fails
          ;; to compile stubs the test (below) instead of the whole file
-         (if *stub-failures*
+         (if stub?
            (try (lw/analyze-deps! src) (catch e nil))
            (lw/analyze-deps! src))
          (let [main? (= main-src src)
@@ -419,7 +421,7 @@
                info (try (binding [lw/*box-params* (contains? boxed [v argc])]
                            (assoc (lw/analyze-fn src wname (boolean multi?)) :export-name ename))
                          ;; P1.4's refusals compare the error's first line: rethrow as is
-                         (catch e (if (and *stub-failures* (not main?))
+                         (catch e (if (and stub? (not main?))
                                     (stub-info src e)
                                     (throw e))))]
            (when v
@@ -1201,7 +1203,7 @@
       (lw/with-session*
        ss
        (fn []
-        (binding [*stub-failures* (boolean test?) lw/*stub-libs* (boolean test?) lw/*program-file* in
+        (binding [lw/*stub-libs* (boolean test?) lw/*program-file* in
                   lw/*thunk-def-vars* @thunk-vars
                   ;; natives only: the program's and its libraries' own vars
                   ;; are var-table vars or direct-call defns. D207: the vars
@@ -1227,12 +1229,12 @@
                ;; a stub keeps the analysed name and signature: callers were
                ;; lowered against them
                lower-one #(cond (:stub %) (:stub %)
-                                *stub-failures* (try (lw/lower-fn %)
+                                test? (try (lw/lower-fn %)
                                                      (catch e (lw/stub-fn (select-keys % [:name :params :ret])
                                                                           (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))))
                                 :else (lw/lower-fn %))
                fns (loop [boxed #{}]
-                     (let [infos (analyze-program! @defns main-src boxed)
+                     (let [infos (analyze-program! @defns main-src boxed (boolean test?))
                            notes (atom {})
                            fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
                            more (remove boxed (boxing-needed @notes prog-vars))]
