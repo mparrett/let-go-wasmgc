@@ -261,6 +261,47 @@
                 ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }"))
     (str "ptrtoint (ptr " id " to " w ")")))
 
+;; --- the type table (arch/type-*; spec §1) -----------------------------------
+
+(defn ll-tinfo!
+  "Emits the type table as constants once: each id's name Bytes (0 for a
+   hole), each id's ancestry offset, and the ancestry ids."
+  []
+  (let [t (llvm-poly/ll-type-table) w (ll-word)
+        offs (reductions + 0 (map #(count (:anc %)) t))
+        anc (mapcat :anc t)]
+    ;; each Type is a static object (spec §1): name, id, ancestry (a static
+    ;; Node of Types), method table (null), epoch; the collector skips
+    ;; pointers outside its heap
+    (let [tv (lw-rt/type-name (resolve 'llvm.core/TypeVal)) nd (lw-rt/type-name (resolve 'llvm.pvec/Node))
+          tref #(str "ptrtoint (ptr @\"lg_type." % "\" to " w ")")]
+      (doseq [[id r] (map-indexed vector t) :when r :let [k (count (:anc r))]]
+        (swap! *globals* conj
+               (str "@\"lg_tanc." id "\" = private constant { " w ", " w ", [" k " x " w "] } { "
+                    w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }")
+               (str "@\"lg_type." id "\" = internal global " (ll-sty tv) " { " w " " (ll-tid tv) ", "
+                    w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
+                    w " ptrtoint (ptr @\"lg_tanc." id "\" to " w "), " w " 0, i64 0 }")))
+      (swap! *globals* conj
+             (str "@lg_tinfo_types = private constant [" (count t) " x " w "] ["
+                  (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]")))
+    (swap! *globals* conj
+           (str "@lg_tinfo_names = private constant [" (count t) " x " w "] ["
+                (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]")
+           (str "@lg_tinfo_off = private constant [" (count offs) " x i64] ["
+                (str/join ", " (for [o offs] (str "i64 " o))) "]")
+           (str "@lg_tinfo_anc = private constant [" (count anc) " x i64] ["
+                (str/join ", " (for [a anc] (str "i64 " a))) "]"))
+    t))
+
+(defn- ll-tinfo-load!
+  "Loads element i (an i64 operand) of a type table constant."
+  [g n ty i]
+  (let [p (ll-fresh "%tip") r (ll-fresh "%tiv")]
+    (ll-emit! "  " p " = getelementptr [" n " x " ty "], ptr " g ", i64 0, i64 " i)
+    (ll-emit! "  " r " = load " ty ", ptr " p)
+    r))
+
 ;; --- intrinsics (rt/wasm/intrinsics.lg's :wasm metadata is the reference) ----
 
 (defn ll-intrinsic!
@@ -391,6 +432,17 @@
                           (ll-emit! "  store " w " " (ll-arg (a 0) :box) ", ptr " (ll-field-ptr! (ll-sty "$Str") p 1))
                           (ll-emit! "  store i64 -1, ptr " (ll-field-ptr! (ll-sty "$Str") p 2))
                           [(ll-word-of! p) :box])
+      "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = add i64 0, " (count (ll-tinfo!))) [r :int])
+      "type-static" [(ll-tinfo-load! "@lg_tinfo_types" (count (ll-tinfo!)) w (ll-arg (a 0) :int)) :box]
+      "type-name-bytes" [(ll-tinfo-load! "@lg_tinfo_names" (count (ll-tinfo!)) w (ll-arg (a 0) :int)) :box]
+      "type-anc-count" (let [n (inc (count (ll-tinfo!))) i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
+                         (ll-emit! "  " j " = add i64 " i ", 1")
+                         (ll-emit! "  " r " = sub i64 " (ll-tinfo-load! "@lg_tinfo_off" n "i64" j) ", "
+                                   (ll-tinfo-load! "@lg_tinfo_off" n "i64" i))
+                         [r :int])
+      "type-anc" (let [t (ll-tinfo!) n (inc (count t)) m (reduce + (map #(count (:anc %)) t)) k (ll-fresh "%i")]
+                   (ll-emit! "  " k " = add i64 " (ll-tinfo-load! "@lg_tinfo_off" n "i64" (ll-arg (a 0) :int)) ", " (ll-arg (a 1) :int))
+                   [(ll-tinfo-load! "@lg_tinfo_anc" m "i64" k) :int])
       "host-write" [(call "i64" "lg_host_write_bytes" (str "i64 " (ll-arg (a 0) :int)) (str w " " (ll-arg (a 1) :box))) :int]
       "host-sleep" (do (ll-emit! "  call void @lg_host_sleep(i64 " (ll-arg (a 0) :int) ")") [nil :void])
       "host-nanotime" [(call "i64" "lg_host_nanotime") :int]
@@ -605,8 +657,9 @@
         plan)))
 
 ;; every llvm.arch intrinsic has an emitter here: the GC lane's set, plus
-;; os/args's host-argc and host-arg
-(def ll-emitted-intrinsics (into emitted-intrinsics #{"host-argc" "host-arg"}))
+;; os/args's host-argc and host-arg and the type table's readers
+(def ll-emitted-intrinsics
+  (into emitted-intrinsics #{"host-argc" "host-arg" "type-count" "type-static" "type-name-bytes" "type-anc-count" "type-anc"}))
 
 (when lw-rt/llvm-target?
   (let [missing (for [v (lw-rt/intrinsic-vars)

@@ -57,7 +57,7 @@ backend (why the XXH3 file is `xxhash.lg`).
 Runtime globals (D39), one per namespace that has state: `llvm.seq/hooks`
 (three Handler slots, the hashing printer, the seqable and ifn hooks, the type namer), `llvm.str/globals` (intern
 table, its count, the print hook), `llvm.core/globals` (gensym counter,
-interned types), `llvm.arrays/globals` (the type-name hook), `llvm.sorted/globals` (the comparator hook),
+the Types made on first use under native lg; the llvm build emits them static, D218), `llvm.arrays/globals` (the type-name hook), `llvm.sorted/globals` (the comparator hook),
 `llvm.math/globals` (rand-int's xorshift state), `llvm.natives/registry` (the ns/var table, P6.0) and llvm.eval's atoms (the recur sentinel, its table caches, P7.0; llvm.reader has none: the reader's code hook is the llvm.core var root of `#'llvm.reader/code-hook`), `llvm.xxhash/globals` (the
 default secret, built on first use) and `llvm.host/globals` (the stdout and
 stderr handles).

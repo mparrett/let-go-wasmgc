@@ -517,6 +517,36 @@
   (trap! msg {}))
 
 ;; ---------------------------------------------------------------------------
+;; The type table (spec §1): each type id's printed name and C3 ancestry,
+;; which the llvm backend emits as module constants. Natively it is the
+;; built-in table of src/lower_llvm_poly.lg (src on the source path).
+
+(def ^:private type-table
+  (delay (require 'lower-llvm-poly) ((resolve 'lower-llvm-poly/ll-type-table))))
+(defn- type-row [who id] (check-int! who id) (nth @type-table id))
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[] -> :int"} type-count
+  "The number of type ids."
+  [] (count @type-table))
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int] -> :any"} type-static
+  "Type id's static Type object, which the llvm backend emits; natively null,
+   so llvm.core makes the Type on first use."
+  [id] (type-row "arch/type-static" id) nil)
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int] -> :any"} type-name-bytes
+  "Type id's printed name as Bytes, or null for an id no type has."
+  [id] (when-let [r (type-row "arch/type-name-bytes" id)] (bytes-of-string (:name r))))
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int] -> :int"} type-anc-count
+  "The length of type id's ancestry."
+  [id] (count (:anc (type-row "arch/type-anc-count" id))))
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int :int] -> :int"} type-anc
+  "The id of type id's j-th ancestor, nearest first."
+  [id j] (nth (:anc (type-row "arch/type-anc" id)) j))
+
+;; ---------------------------------------------------------------------------
 ;; Function references, for arity dispatch through closures (P1.3).
 
 (defn ^{:intrinsic true :wasm "ref.func $f (f: a top-level defn; elem declare)" :type "[decl var] -> funcref"} funcref

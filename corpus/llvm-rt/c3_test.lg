@@ -1,0 +1,28 @@
+;; The llvm target's C3 linearization (src/lower_llvm_poly.lg), under native
+;; lg: the fixed ancestry each Type stores, nearest first (spec §3).
+(ns c3-test
+  (:require [test :refer [deftest is]]
+            [lower-llvm-poly :as poly]))
+
+(defn- msg [f] (try (f) nil (catch Exception e (ex-message e))))
+
+(deftest c3-diamond
+  (is (= [:A :B :C :D] (poly/c3 :A {:A [:B :C] :B [:D] :C [:D] :D []}))))
+
+(deftest c3-python-classic
+  (let [s {:O [] :A [:O] :B [:O] :C [:O] :D [:O] :E [:O]
+           :K1 [:A :B :C] :K2 [:D :B :E] :K3 [:D :A] :Z [:K1 :K2 :K3]}]
+    (is (= [:Z :K1 :K2 :K3 :D :A :B :C :E :O] (poly/c3 :Z s)))
+    (is (= [:K1 :A :B :C :O] (poly/c3 :K1 s)))))
+
+(deftest c3-conflict
+  (is (= "lower-llvm: no C3 order for :Z: conflicting supertypes :A, :B"
+         (msg #(poly/c3 :Z {:X [:A :B] :Y [:B :A] :Z [:X :Y] :A [] :B []})))))
+
+(deftest builtin-ancestry
+  (let [t (poly/ll-type-table) nm #(:name (t %))]
+    (is (= ["Vector" "Associative" "Coll" "Seqable" "Indexed" "Counted" "Sequential" "Fn" "Object"]
+           (mapv nm (:anc (t 11)))))
+    (is (= [] (:anc (t 0))))
+    (is (= ["Number" "Object"] (mapv nm (:anc (t 22)))))
+    (is (every? #(or (nil? %) (#{"Object" "nil"} (:name %)) (= "Object" (nm (peek (:anc %))))) t))))

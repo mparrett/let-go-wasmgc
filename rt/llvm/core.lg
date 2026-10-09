@@ -43,7 +43,10 @@
 ;; its count/equiv/hash through the generic hook slot (2) installed below.
 (arch/defstruct TVec [[:mut :ref] [:mut :i32]])   ; TransientVector: the vector so far, editable (1/0)
 (arch/defstruct TSet [:ref])                      ; TransientSet: wraps phm's HTransient (transient.go:451)
-(arch/defstruct TypeVal [:ref :i64])              ; a let-go ValueType: name bytes, id (interned)
+;; A Type (spec §1): a let-go ValueType, interned per type id. Fields: name
+;; bytes, id, ancestry (a pv/Node of Types, nearest first, by C3 at build
+;; time), method table (null until a protocol is extended to it), table epoch.
+(arch/defstruct TypeVal [:ref :i64 :ref [:mut :ref] [:mut :i64]])
 (arch/defstruct MetaEnv [:ref :ref])              ; a with-meta'd fn's env: inner fn, meta (vm.NewMetaFn)
 ;; A keyword or symbol with meta: let-go's is a distinct value that is still
 ;; keyword?/symbol? and prints as the name, but is = only to itself and
@@ -54,12 +57,13 @@
 ;; forced then its value, state (0 pending, 1 value, 2 threw, 3 running), the error.
 (arch/defstruct Promise [[:mut :ref] [:mut :i32]])
 (arch/defstruct Delay [[:mut :ref] [:mut :i32] [:mut :ref]])
-;; The one runtime global (D39): the gensym counter, the interned types and
+;; The one runtime global (D39): the gensym counter, the interned Types (by
+;; type id, as many as the build's type table has: arch/type-count) and
 ;; (P6.7) the roots alter-var-root gave vars the module does not hold (a
 ;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
 ;; stand-in's "#'ns/name" text to the root, which var-value reads first.
 (arch/defstruct Globals [[:mut :i64] :ref [:mut :ref]])
-(def globals (arch/new Globals 0 (arch/array-new pv/Node 42 (arch/null)) (arch/null)))
+(def globals (arch/new Globals 0 (arch/array-new pv/Node (arch/type-count) (arch/null)) (arch/null)))
 
 ;; Kinds as this namespace sees them: llvm.seq/kind, with its foreign kind 18
 ;; refined into the collections seq.lg cannot name.
@@ -179,30 +183,50 @@
 ;; type (lang.go:2511): nil for nil, else the interned ValueType, which prints
 ;; as its name and is = only to itself.
 
-(defn- type-id [x]
+;; The dispatch id (spec §1): (type x)'s id in the build's type table
+;; (src/lower_llvm_poly.lg), 0 for nil.
+(defn dispatch-id [x]
   (let [rx (= 1 (standin x))
         x (if (= 36 (ckind x)) (arch/get MetaNamed 0 x) x)
         k (ckind x)]
     (cond rx 36                                          ; Regex (a MetaNamed is typed as its Symbol, so 36 is free)
-          (= k 11) (if (= 0 (pv/vpkind x)) 23 39)       ; ArrayVector shares MapEntry's id
+          (= k 11) (if (= 0 (pv/vpkind x)) 23 11)       ; ArrayVector shares MapEntry's id
           (= k 10) (if (= 0 (pv/vpkind (arch/get sq/PVecSeq 0 x))) 2 10) ; Sequence: id 10
           (= k 35) (if (repeat-type? x) 9 35)
-          (= k 26) (if (= 0 (arch/get sq/Err 0 x)) 26 38)
+          (= k 26) (if (= 0 (arch/get sq/Err 0 x)) 26 12)
           (= k 8) 7
           (= k 27) 2                                     ; MapSeq/SetSeq: ListType
           ;; ArrayChunk and ChunkBuffer are ListType natively ((type (chunk-first (range 5))))
           (if (>= k 2) (<= k 13) false) (if (= k 7) 7 (if (= k 9) 9 (if (= k 11) 11 2)))
           :else k)))
 
+(defn type-of-id
+  "The Type for type id id: the build's static Type (arch/type-static), or
+   natively one made on first use with its ancestry."
+  [id]
+  (let [st (arch/type-static id) tab (arch/get Globals 1 globals) t (if (arch/null? st) (arch/aget pv/Node tab id) st)]
+    (if (arch/null? t)
+      (let [n (arch/type-anc-count id) anc (arch/array-new pv/Node n (arch/null))]
+        (loop [j 0] (when (< j n) (arch/aset! pv/Node anc j (type-of-id (arch/type-anc id j))) (recur (inc j))))
+        (let [nt (arch/new TypeVal (arch/type-name-bytes id) id anc (arch/null) 0)]
+          (arch/aset! pv/Node tab id nt)
+          nt))
+      t)))
+
 (defn ^{:twin "core/type"} type-of [x]
   (cond
     (arch/null? x) (arch/null)
     (= 2 (standin x)) (type-of (var-value x))             ; native: a Var's type is its value's
-    :else
-    (let [tab (arch/get Globals 1 globals) id (type-id x) t (arch/aget pv/Node tab id)]
-      (if (arch/null? t)
-        (let [nt (arch/new TypeVal (type-name x) id)] (arch/aset! pv/Node tab id nt) nt)
-        t))))
+    :else (type-of-id (dispatch-id x))))
+
+(defn ^{:twin "core/instance?"} instance-of? [t x]
+  (if (arch/null? x)
+    false
+    (let [xt (type-of x)]
+      (if (arch/ref-eq xt t)
+        true
+        (let [anc (arch/get TypeVal 2 xt) n (arch/alen anc)]
+          (loop [j 0] (cond (>= j n) false (arch/ref-eq t (arch/aget pv/Node anc j)) true :else (recur (inc j)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Calling values. A Fn goes through its code slot for the arity (D52); the

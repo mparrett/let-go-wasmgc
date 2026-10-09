@@ -1,0 +1,18 @@
+;; Type objects on the llvm target (spec §1): (type x) for each kind of value,
+;; its printed name, instance? on matching and non-matching pairs, and the
+;; identity of two values' types.
+(def xs [nil 1 1.5 "s" \c :k 'k '(1 2) [1 2] {:a 1} #{1}
+           (map inc [1 2]) inc (atom 0)])
+
+(doseq [x xs]
+  (println (type x) (str (type x))))
+(println (type (type 1)) (str (type (type 1))))
+
+(println (instance? (type 1) 2) (instance? (type 1) "s")
+         (instance? (type "s") "t") (instance? (type [1]) [2 3])
+         (instance? (type [1]) '(2 3)) (instance? (type {:a 1}) {})
+         (instance? (type :k) :j) (instance? (type :k) 'j))
+(println (= (type 1) (type 2)) (= (type 1) (type "s")) (= (type [1]) (type [])))
+;; a sorted set's and sorted map's types are their own
+(println (type (into [] (range 40))) (type (sorted-set 1)) (type (sorted-map 1 2))
+         (= (type (into [] (range 40))) (type (sorted-set 1))))

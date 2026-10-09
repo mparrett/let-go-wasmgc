@@ -1,0 +1,93 @@
+;; lower-llvm-poly: the llvm target's type facts at build time (spec §1, §3).
+;; Plain data and functions, so they run under native lg as well as in the
+;; compiler: C3 linearization of a type's declared supertypes.
+(ns lower-llvm-poly)
+
+(defn- c3-merge [t seqs]
+  (loop [seqs (remove empty? seqs) out []]
+    (if (empty? seqs)
+      out
+      (let [tails (mapcat rest seqs)
+            h (some (fn [s] (let [h (first s)] (when-not (some #{h} tails) h))) seqs)]
+        (when (nil? h)
+          (throw (ex-info (str "lower-llvm: no C3 order for " t ": conflicting supertypes "
+                               (apply str (interpose ", " (distinct (map first seqs)))))
+                          {:type t})))
+        (recur (remove empty? (map (fn [s] (if (= h (first s)) (rest s) s)) seqs))
+               (conj out h))))))
+
+(defn c3
+  "The C3 linearization of type t: t, then its ancestors nearest first.
+  supers-of maps a type to its ordered direct supertypes."
+  [t supers-of]
+  (let [ss (get supers-of t [])]
+    (into [t] (c3-merge t (concat (map #(c3 % supers-of) ss) [ss])))))
+
+;; --- the type table -------------------------------------------------------
+;; The one record of the llvm target's type ids, their printed names and
+;; their direct supertypes (spec §1). Native ids are (type x)'s numbering in
+;; rt/llvm/core.lg's type-id (holes are ids no value has); the abstract
+;; Types follow from 42, with no instances. A type's ancestry is its C3
+;; linearization without itself. Supertypes are keyed by type, not by
+;; runtime struct, since $PVec, $Err and $TypeVal each carry two types.
+
+(def ll-abstract-supers
+  [["Object" []] ["Seqable" ["Object"]] ["Counted" ["Object"]] ["Coll" ["Seqable" "Object"]]
+   ["Sequential" ["Object"]] ["Seq" ["Coll" "Sequential"]] ["Associative" ["Coll"]]
+   ["Indexed" ["Counted"]] ["Map" ["Associative" "Counted"]] ["Set" ["Coll" "Counted"]]
+   ["Vector" ["Associative" "Indexed" "Sequential"]] ["List" ["Seq" "Counted"]]
+   ["Fn" ["Object"]] ["Named" ["Object"]] ["Number" ["Object"]]])
+
+(def ll-native-types
+  [[0 "nil" []]
+   [1 "let-go.lang.Int" ["Number"]]
+   [2 "let-go.lang.PersistentList" ["List"]]
+   [7 "let-go.lang.Range" ["Seq" "Counted"]]
+   [9 "let-go.lang.Repeat" ["Seq"]]
+   [10 "let-go.lang.Sequence" ["Seq"]]
+   [11 "let-go.lang.PersistentVector" ["Vector" "Fn"]]
+   [12 "java.lang.Exception" ["Object"]]
+   [14 "let-go.lang.Reduced" ["Object"]]
+   [15 "let-go.lang.Boolean" ["Object"]]
+   [16 "let-go.lang.Fn" ["Fn"]]
+   [17 "let-go.lang.String" ["Object"]]
+   [18 "let-go.lang.Unknown" ["Object"]]
+   [19 "let-go.lang.Character" ["Object"]]
+   [20 "let-go.lang.Keyword" ["Named" "Fn"]]
+   [21 "let-go.lang.Symbol" ["Named" "Fn"]]
+   [22 "let-go.lang.Float" ["Number"]]
+   [23 "let-go.lang.ArrayVector" ["Vector" "Fn"]]
+   [24 "let-go.lang.Atom" ["Object"]]
+   [25 "let-go.lang.Volatile" ["Object"]]
+   [26 "let-go.lang.ExceptionInfo" ["Object"]]
+   [30 "let-go.lang.Map" ["Map" "Fn"]]
+   [31 "let-go.lang.Set" ["Set" "Fn"]]
+   [32 "let-go.lang.TransientMap" ["Object"]]
+   [33 "let-go.lang.TransientSet" ["Object"]]
+   [34 "let-go.lang.TransientVector" ["Object"]]
+   [35 "let-go.lang.Type" ["Object"]]
+   [36 "let-go.lang.Regex" ["Object"]]
+   [37 "let-go.lang.Array" ["Object"]]
+   [38 "let-go.lang.PersistentTreeMap" ["Map" "Fn"]]
+   [39 "let-go.lang.PersistentTreeSet" ["Set" "Fn"]]
+   [40 "let-go.lang.Promise" ["Object"]]
+   [41 "let-go.lang.Delay" ["Object"]]])
+
+(def ll-native-count 42)
+
+(defn ll-builtin-supers
+  "Type name -> its ordered direct supertypes, for every built-in type."
+  []
+  (into (into {} ll-abstract-supers) (map (fn [[_ n ss]] [n ss]) ll-native-types)))
+
+(defn ll-type-table
+  "A vector indexed by type id: {:name :anc [ancestor ids, nearest first]},
+   or nil for an id no type has."
+  []
+  (let [ids (into (into {} (map (fn [[id n]] [n id]) ll-native-types))
+                  (map-indexed (fn [i [n]] [n (+ ll-native-count i)]) ll-abstract-supers))
+        supers (ll-builtin-supers)
+        row (fn [n] {:name n :anc (mapv ids (rest (c3 n supers)))})
+        t (vec (repeat (+ ll-native-count (count ll-abstract-supers)) nil))
+        t (reduce (fn [t [id n]] (assoc t id (row n))) t ll-native-types)]
+    (reduce (fn [t [n]] (assoc t (ids n) (row n))) t ll-abstract-supers)))
