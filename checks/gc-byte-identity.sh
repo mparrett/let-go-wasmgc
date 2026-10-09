@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-09 at
+# 400afd6, the merge of main (#26, #27) into P12.0: the same tree compiles on both sides, so the base moves with it and the stage-2 final run re-verifies; before that 2026-10-09 at
 # 90da78e, D210 with the P12.0 fixes: alter-own-defn.lg joins the corpus; on main 2026-10-08 at
 # f6c3a3e, P12.3 registry fixes; before that 2026-10-08 at
 # 1c5ff7c, D209 step 2: wasm.natives' create-ns twin and interned vars carrying meta; before that 2026-10-08 at
@@ -52,7 +53,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=90da78e7541e5edac0822231dee7d8e99c97cd17
+base=400afd687ab102a2159a44558b298fe73330fb68
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
