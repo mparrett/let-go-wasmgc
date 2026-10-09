@@ -283,7 +283,7 @@
   [s]
   (let [bs (.getBytes (str s)) w (ll-word)
         id (ll-const-id "bytes" s)]
-    (swap! *globals* conj
+    (ll-global!
            (str id " = private constant { " w ", " w ", [" (count bs) " x i8] } { " w " " (ll-tid "$Bytes") ", " w " " (count bs)
                 ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }"))
     (str "ptrtoint (ptr " id " to " w ")")))
@@ -537,7 +537,7 @@
                                :i64 (if (= k :int) [(str "  " r " = add i64 " x ", 0")]
                                         (ll-fail "wasm/funcref param kind mismatch" {:sig tn :param i}))
                                (ll-fail "wasm/funcref param slot type unsupported" {:sig tn :type t}))))]
-          (swap! *regions* conj
+          (ll-region!
                  {:text (str "define internal tailcc void " (ll-q cname) "(ptr %k"
                              (apply str (map #(str ", " (ll-slot-type (nth (:params d) %)) " %a" %) ps)) ") {\nentry:\n"
                              (str/join "\n" (mapcat conv ps)) "\n"
@@ -602,7 +602,7 @@
                      (let [{:keys [tfn caps]} (region-of ref)
                            ck (mapv ty caps) nm (str *fname* "__try" nid "_" role)
                            info (assoc (binding [*box-params* true] (analyze-ir nm tfn)) :caps ck :params params :export? false)]
-                       (swap! *regions* conj (llvm-fn info))
+                       (ll-region! (llvm-fn info))
                        {:name nm :caps caps :ck ck :ret (:ret info)}))
             body (region (nth refs 0) "body" [])
             h (when has-handler (region (nth refs 1) "catch" [:box]))
@@ -683,7 +683,7 @@
                                (call-fin "%F" "rethrow" "%exn") "}\n")))
             plan {:sig {:name tn :params all-ck :ret :box}
                   :args (vec (concat (:caps body) (:caps h) (:caps fin)))}]
-        (swap! *regions* conj {:name tn :text (str/join "\n" (rest texts))
+        (ll-region! {:name tn :text (str/join "\n" (rest texts))
                                :types [(first texts) (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
         (swap! *fn-values* assoc [:llvm-try *fname* nid *abi-notes*] plan)
         plan)))

@@ -915,9 +915,8 @@
         _ (when (flags "--read-clj") (set-read-clj! true))
         [in out] (remove flags argv)
         opts {:target target :profile profile :rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
-        ;; --target llvm compiles the runtime it reaches on demand: the cached
-        ;; runtime library holds lowered WAT (D208)
-        rtlib? (and (:rt opts) (not= target :llvm) (not (flags "--no-rtlib")))
+        ;; the cached runtime library, on every target (llvm since D221)
+        rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
         test? (flags "--test")
         opts (assoc opts :trap-throws (boolean test?))
         ;; read in user, as native loads a program (::k is :user/k)

@@ -4317,10 +4317,12 @@
 (defn stub-fn
   "A runtime fn that failed to lower: same signature, throws a named error,
    so callers already lowered against its sig still validate."
-  [{:keys [name params ret]} msg]
+  [{:keys [name params ret] :as info} msg]
+  (if (= *target* :llvm)
+    ((resolve 'lower-wasm/ll-stub-fn) info msg)
   (let [m (str "lower-wasm: " name " did not compile (" msg ")")]
     (str "(func $" name (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
-         " (result " (wt ret) ")\n  (throw $lgex " (rt-error-wat m m) "))")))
+         " (result " (wt ret) ")\n  (throw $lgex " (rt-error-wat m m) "))"))))
 
 ;; P2.14: the driver's --test mode binds this, so a library fn (a test's
 ;; helper namespace) that does not lower becomes a stub like a runtime fn:
@@ -4516,7 +4518,9 @@
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
                              ;; D193: the emitter's rows of the load order
-                             (if lw-rt/runtime-compile? "|runtime-compile" "")]))))
+                             (if lw-rt/runtime-compile? "|runtime-compile" "")]
+                            ;; D221: the llvm lowering's own sources and profile
+                            (when (= *target* :llvm) (ensure-llvm-target!) [((resolve 'lower-wasm/ll-rtlib-key-extra))])))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
@@ -4556,7 +4560,9 @@
      ;; program's own lowering raises them again after a restore
      :var-k-max (when *var-k-max* @*var-k-max*)
      :invoke-max (when *invoke-max* @*invoke-max*)
-     :failures (into fails (:failures st))}))
+     :failures (into fails (:failures st))
+     ;; D221: the llvm lowering's session state
+     :llvm (when (= *target* :llvm) ((resolve 'lower-wasm/ll-rtlib-snapshot)))}))
 
 (defn rtlib-restore! [snap]
   (swap! *sigs* merge (into {} (for [[s e] (:sigs snap)] [(sym-var s) (assoc e :var (sym-var s))])))
@@ -4573,7 +4579,8 @@
   (swap! *elem* into (:elem snap))
   (swap! *env-types* merge (:env-types snap))
   ;; sym-var, not resolve: an extern may be private (core/special-symbols)
-  (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g]))))
+  (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g])))
+  (when (:llvm snap) ((resolve 'lower-wasm/ll-rtlib-restore!) (:llvm snap))))
 
 (defn gensyms-taken
   "Call f and return {:result its value :gensyms how many gensyms it took}.

@@ -20,12 +20,29 @@
 (require '[lower-llvm-profile :as llvm-prof])
 (require '[lower-llvm-poly :as llvm-poly])
 (require '[hash])
+(require '[clojure.walk])
 
 (def ^:dynamic *ll* nil)
-(declare llvm-dump llvm-profile llvm-fn
+(declare ll-q llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declare-text ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
          ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
+
+;; A module unit (a lowered fn's text, a region, a global line) carries the
+;; symbols it defines and names, found once when it is made, so the shake
+;; (llvm-module, D221) walks them without rescanning the cached runtime's text.
+(def ^:private ll-sym-re "@(\"[^\"]+\"|[-A-Za-z$._][-A-Za-z$._0-9]*)")
+(defn- ll-unq [x] (str/replace x "\"" ""))
+(defn ll-sym "The symbol global name s is emitted as (ll-q's, unquoted)." [s] (ll-unq (subs (ll-q s) 1)))
+(defn ll-sym-refs [text] (set (map (comp ll-unq second) (re-seq (re-pattern ll-sym-re) text))))
+(defn ll-sym-defs [text]
+  (set (map (comp ll-unq second)
+            (concat (re-seq (re-pattern (str "(?m)^define [^@\n]*" ll-sym-re "\\(")) text)
+                    (re-seq (re-pattern (str "(?m)^" ll-sym-re " = ")) text)))))
+(defn ll-unit "m with its :defs and :refs." [m]
+  (let [t (str (:text m))] (assoc m :defs (ll-sym-defs t) :refs (ll-sym-refs t))))
+(defn ll-global! "Add one global line to the module." [line] (swap! *globals* conj (ll-unit {:text line})))
+(defn ll-region! "Add a lifted region (closure code, a wrapper, a try region)." [m] (swap! *regions* conj (ll-unit m)))
 
 (defn ll-fail [msg data]
   ;; values print with str: a var's value (os/args) may not survive pr-str
@@ -204,7 +221,7 @@
    field is cached at run time, so the Str is a mutable global)."
   [s]
   (let [w (ll-word) g (ll-const-id "str" s)]
-    (swap! *globals* conj (str g " = internal global " (ll-sty "$Str") " { " w " " (ll-tid "$Str") ", " w " "
+    (ll-global! (str g " = internal global " (ll-sty "$Str") " { " w " " (ll-tid "$Str") ", " w " "
                                (ll-bytes-const! s) ", i64 -1 }"))
     (str "ptrtoint (ptr " g " to " w ")")))
 
@@ -243,14 +260,14 @@
   "A boxed float constant: a constant Float object."
   [x]
   (let [w (ll-word) [hi lo] (ll-double-bits x) g (str "@\"flt." (format "%08X%08X" hi lo) "\"")]
-    (swap! *globals* conj (str g " = internal constant " (ll-sty "$Float") " { " w " " (ll-tid "$Float") ", double " (ll-hex64 hi lo) " }"))
+    (ll-global! (str g " = internal constant " (ll-sty "$Float") " { " w " " (ll-tid "$Float") ", double " (ll-hex64 hi lo) " }"))
     (str "ptrtoint (ptr " g " to " w ")")))
 
 (defn ll-char-const!
   "A char constant: a constant Char object."
   [c]
   (let [w (ll-word) g (str "@\"chr." (int c) "\"")]
-    (swap! *globals* conj (str g " = internal constant " (ll-sty "$Char") " { " w " " (ll-tid "$Char") ", i32 " (int c) " }"))
+    (ll-global! (str g " = internal constant " (ll-sty "$Char") " { " w " " (ll-tid "$Char") ", i32 " (int c) " }"))
     (str "ptrtoint (ptr " g " to " w ")")))
 
 (defn ll-typed
@@ -346,7 +363,7 @@
       (let [w (ll-word) real (:name (get-in (callee-sig (lw-rt/rt-var 'core 'invoke-args)) [:arities 6]))
             ids (map ll-tid ["$Fn" "$FnV" "$FnX"]) as ["%a" "%b" "%c" "%d"]]
         (swap! *fn-values* assoc [:llvm :invoke-args] "lg_invoke_args")
-        (swap! *regions* conj
+        (ll-region!
                {:text (str "define internal tailcc void @lg_invoke_args(ptr %k, " w " %f, i64 %n"
                            (apply str (map #(str ", " w " " %) as)) ") {\nentry:\n"
                            "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
@@ -386,7 +403,7 @@
             es (fn [tag j] (apply str (map #(str ", " w " %e" tag "_" %) (range j))))
             ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
         (swap! *fn-values* assoc [:llvm :apply-list] "lg_apply_list")
-        (swap! *regions* conj
+        (ll-region!
                {:text (str "define internal tailcc void @lg_apply_list(ptr %k, " w " %f, " w " %l, i64 %n) {\nentry:\n"
                            "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
                            "  %no = or i1 %fx, %nl\n  br i1 %no, label %fixed, label %obj\nobj:\n"
@@ -1106,7 +1123,7 @@
   "A private constant C string global for s; returns its name."
   [s]
   (let [bs (.getBytes (str s)) id (ll-const-id "cstr" s)]
-    (swap! *globals* conj (str id " = private unnamed_addr constant [" (inc (count bs)) " x i8] c\""
+    (ll-global! (str id " = private unnamed_addr constant [" (inc (count bs)) " x i8] c\""
                                (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\\00\""))
     id))
 
@@ -1115,7 +1132,7 @@
    bytes, or nil for an anonymous fn): its word operand."
   [id kind arity nm]
   (let [g (str "@\"info." id "\"") w (ll-word)]
-    (swap! *globals* conj (str g " = internal global " (ll-sty "$FnInfo") " { " w " " (ll-tid "$FnInfo") ", i32 " kind
+    (ll-global! (str g " = internal global " (ll-sty "$FnInfo") " { " w " " (ll-tid "$FnInfo") ", i32 " kind
                                ", i32 " arity ", " w " " (if nm (ll-bytes-const! nm) "0") " }"))
     (str "ptrtoint (ptr " g " to " w ")")))
 
@@ -1147,7 +1164,7 @@
    word operand. Its hash is cached at run time, so it is not constant."
   [id codes info]
   (let [g (str "@\"fnval." id "\"") w (ll-word) tn (ll-fn-type codes)]
-    (swap! *globals* conj (str g " = internal global " (ll-sty tn) " { " w " " (ll-tid tn)
+    (ll-global! (str g " = internal global " (ll-sty tn) " { " w " " (ll-tid tn)
                                (apply str (map (fn [[t v]] (str ", " t " " v)) (ll-fn-fields codes "0" info))) " }"))
     (str "ptrtoint (ptr " g " to " w ")")))
 
@@ -1173,7 +1190,7 @@
                                    info (assoc (binding [*box-params* true] (analyze-ir cname tfn))
                                                :params (vec (repeat arity :box)) :ret :box
                                                :closure? true :env-kinds cap-kinds)]
-                               (swap! *regions* conj (llvm-fn info))
+                               (ll-region! (llvm-fn info))
                                (if variadic? [:v [(dec arity) cname]] [arity cname])))))
         v1 (when-not multi? (:variadic? (first tpls)))
         info (ll-fn-info! base (cond multi? 1 v1 3 :else 0)
@@ -1284,22 +1301,22 @@
             codes (cond
                     e (into (if-let [vs (:variadic e)]
                               (let [c (str "fnval." id ".v") k (:fixed vs)]
-                                (swap! *regions* conj {:name c :text (ll-defn-wrapper c vs (inc k))})
+                                (ll-region! {:name c :text (ll-defn-wrapper c vs (inc k))})
                                 {:v [k c]})
                               ;; a native past its fixed arities, through its -seq
                               ;; form (defn-fn-global's adapter): (apply + xs)
                               (if-let [[sv k pre] (seq-adapter e)]
                                 (let [c (str "fnval." id ".seq")]
-                                  (swap! *regions* conj {:name c :text (ll-seq-wrapper c sv k pre)})
+                                  (ll-region! {:name c :text (ll-seq-wrapper c sv k pre)})
                                   {:v [k c]})
                                 {}))
                             (for [[n sig] (:arities e) :when (<= n ll-max-invoke)]
                               (let [c (str "fnval." id "." n)]
-                                (swap! *regions* conj {:name c :text (ll-defn-wrapper c sig n)})
+                                (ll-region! {:name c :text (ll-defn-wrapper c sig n)})
                                 [n c])))
                     op (into {} (for [n (cond (ll-core-unary op) [1] (ll-core-binary op) [2] :else [])]
                                   (let [c (str "fnval." id "." n)]
-                                    (swap! *regions* conj {:name c :text (ll-core-wrapper c op n)})
+                                    (ll-region! {:name c :text (ll-core-wrapper c op n)})
                                     [n c])))
                     :else (ll-fail "a var used as a value" {:var v}))
             v1 (and (:v codes) (= 1 (count codes)))
@@ -1343,7 +1360,7 @@
           (binding [*ll* (assoc *ll* :live live)]
             (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))]
               (let [text (str/join "\n" (doall (map #(ll-function! % (count params)) entries)))]
-                {:name name :types @(:types *ll*) :text text}))))))))))
+                (ll-unit {:name name :types @(:types *ll*) :text text})))))))))))
 
 (defn llvm-dump [{:keys [name f params ret]}]
   (binding [*f* f *memo* (atom {})]
@@ -1502,14 +1519,16 @@
   "What runs before _main, as rt-init-wat orders it: each runtime global in
    file order, after the constants its init reads; the link step (install!)
    when the hooks global is live; then the remaining constants, each after
-   the constants it reads. Reads are found in the lowered init fns' text."
-  [texts]
+   the constants it reads. Reads are found in the lowered init fns' text.
+   live? keeps a global (by name) the shake found live (D221)."
+  ([texts] (ll-init-steps texts (constantly true)))
+  ([texts live?]
   (if-not *rt*
     []
     (let [st @*rt*
           order (into {} (map-indexed (fn [i g] [(:var g) i]) lw-rt/globals))
-          gs (sort-by #(order (key %)) (:globals st))
-          consts (:const-order st)
+          gs (sort-by #(order (key %)) (filter #(live? (:name (val %))) (:globals st)))
+          consts (filter live? (:const-order st))
           init-of (fn [g] (str (subs g 1) "__init"))
           reads (fn [init] (set (map second (re-seq #"@\"var(\$const_[0-9a-f]+)\"" (get texts init "")))))
           const-step (fn [g] {:global g :init (init-of g)})
@@ -1531,7 +1550,7 @@
                   (conj steps {:call (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))})
                   steps)
           [steps _] (reduce add-const [steps done] consts)]
-      steps)))
+      steps))))
 
 (defn ll-init-chain
   "lg_init.0 .. lg_init.N: each step runs one init fn (CPS, with a
@@ -1553,10 +1572,45 @@
                [(str "define internal tailcc void @lg_init." n "(ptr %k) {\n"
                      "  musttail call tailcc void @\"_main\"(ptr %k)\n  ret void\n}\n")]))))
 
+;; --- the shake (D221): with the cached library every runtime fn is lowered,
+;; so the module keeps only what _main reaches. A unit is a lowered fn's text
+;; (its entry and continuation defines) or one global line; a symbol is live
+;; when a live unit names it; a live runtime global brings its init fn, and
+;; the hooks global the link step (install!).
+
+(def ^:private ll-sym-re "@(\"[^\"]+\"|[-A-Za-z$._][-A-Za-z$._0-9]*)")
+(defn- ll-unq [x] (str/replace x "\"" ""))
+(defn ll-sym "The symbol global name s is emitted as (ll-q's, unquoted)." [s] (ll-unq (subs (ll-q s) 1)))
+(defn- ll-sym-refs [text] (set (map (comp ll-unq second) (re-seq (re-pattern ll-sym-re) text))))
+(defn- ll-sym-defs [text]
+  (set (map (comp ll-unq second)
+            (concat (re-seq (re-pattern (str "(?m)^define [^@\n]*" ll-sym-re "\\(")) text)
+                    (re-seq (re-pattern (str "(?m)^" ll-sym-re " = ")) text)))))
+
+(defn ll-live
+  "The live symbols: from roots, through the units' references, adding the
+   init fn of each live runtime global (init-of: var symbol -> init symbol)."
+  [units roots init-of]
+  (let [by-def (reduce (fn [m u] (reduce #(assoc %1 %2 u) m (:defs u))) {} units)]
+    (loop [live #{} todo (vec roots)]
+      (if (empty? todo)
+        live
+        (let [x (peek todo) todo (pop todo)]
+          (if (contains? live x)
+            (recur live todo)
+            (let [u (by-def x)
+                  more (concat (when u (concat (:defs u) (:refs u))) (init-of x))]
+              (recur (conj live x) (into todo (remove live more))))))))))
+
 (defn llvm-module [fns]
   (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail)))
         rt-fns (when *rt*
-                 (let [a (ll-rt-fns!)]
+                 (let [a (ll-rt-fns!)
+                       ;; D221: the cached library's lowered runtime, with what
+                       ;; this compile lowered (a runtime fn is in one or the other)
+                       a (into (vec (sort-by :name (for [[nm l] (:lowered @*rt*)]
+                                                     (if (map? l) l (ll-fail "a runtime fn did not lower" {:fn nm :stub l})))))
+                               a)]
                    ;; the link step needs install!, reached once the hooks global is
                    (if (some #(= (lw-rt/rt-var 'seq 'hooks) %) (keys (:globals @*rt*)))
                      (do (callee-sig (lw-rt/rt-var 'core 'install!)) (into a (ll-rt-fns!)))
@@ -1570,21 +1624,41 @@
         w (ll-word)
         prelude (llvm-prelude)
         texts (into {} (map (juxt :name :text) all))
-        inits (ll-init-chain (ll-init-steps texts))
+        ;; the type table, fresh for this module's types (D221); before
+        ;; *globals* is read, since its names are Bytes constants; the shake
+        ;; drops it when no live fn reads it
+        tinfo (when *rt* (ll-tinfo-globals))
+        ;; the shake (D221)
+        unit (fn [it] (let [u (if (:defs it) it (ll-unit it))] {:item it :defs (:defs u) :refs (:refs u)}))
+        fn-units (map unit all)
+        g-units (map unit (concat (map #(hash-map :text %) tinfo) (distinct @*globals*)))
+        rt-gs (when *rt* (vals (:globals @*rt*)))
+        hooks (when *rt* (:name (get (:globals @*rt*) (lw-rt/rt-var 'seq 'hooks))))
+        install (when hooks (ll-sym (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))))
+        init-of (merge (into {} (for [g rt-gs] [(str "var" (:name g))
+                                                (cond-> [(ll-sym (:init g))] (= hooks (:name g)) (conj install))]))
+                       (into {} (for [g (when *rt* (:const-order @*rt*))] [(str "var" g) [(ll-sym (str (subs g 1) "__init"))]])))
+        live (ll-live (concat fn-units g-units)
+                      (concat ["_main"] (mapcat :defs (map unit fns)) (ll-sym-refs prelude))
+                      #(get init-of % []))
+        live? #(contains? live (str "var" %))
+        kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
+        kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))
+        inits (ll-init-chain (ll-init-steps texts live?))
         gvars (distinct (concat (vals *var-globals*)
-                                (when *rt* (map :name (vals (:globals @*rt*))))
-                                (when *rt* (:const-order @*rt*))))
+                                (when *rt* (filter live? (map :name rt-gs)))
+                                (when *rt* (filter live? (:const-order @*rt*)))))
         ;; named types come first: a constant GEP needs its type sized when parsed
         type-line? #(re-find #"^%[^ ]+ = type " %)
-        plines (str/split-lines prelude)
-        ;; the type table, fresh for this module's types (D221); before
-        ;; *globals* is read, since its names are Bytes constants
-        tinfo (when (some #(str/includes? (str (:text %)) "@lg_tinfo_") all) (ll-tinfo-globals))]
+        plines (str/split-lines prelude)]
+    (when (= "1" (os/getenv "LW_RTLIB_STATS"))
+      (binding [*out* *err*] (println (str "llvm-module: " (count kept) " of " (count fn-units) " fn units, "
+                                           (count kept-globals) " of " (count g-units) " globals"))))
     (str (str/join "\n" (filter #(str/starts-with? % "target ") plines)) "\n"
          (str/join "\n" (filter type-line? plines)) "\n"
          (str/join "\n" (ll-type-defs)) "\n"
          (str/join "\n" (remove #(or (type-line? %) (str/starts-with? % "target ")) plines)) "\n"
-         (str/join "\n" (sort (distinct (mapcat :types all)))) "\n\n"
+         (str/join "\n" (sort (distinct (mapcat :types kept)))) "\n\n"
          (str/join "\n" (ll-object-globals)) "\n"
          (str/join "\n" (for [g (sort gvars)] (str "@\"var" g "\" = internal global " w " 0"))) "\n"
          ;; the collector's global roots: every var global, and the handler chain
@@ -1592,9 +1666,51 @@
            (str "@lg_gc_globals = constant [" (count roots) " x ptr] [" (str/join ", " roots) "]\n"
                 "@lg_gc_nglobals = constant i32 " (count roots) "\n"))
          (str/join "\n" (ll-type-descs)) "\n"
-         (str/join "\n" tinfo) "\n"
-         (str/join "\n" (distinct @*globals*)) "\n\n"
+         (str/join "\n" (map :text kept-globals)) "\n\n"
          inits "\n"
-         (str/join "\n" (map :text all)))))
+         (str/join "\n" (map :text kept)))))
+
+(defn ll-stub-fn
+  "lower-wasm/stub-fn under --target llvm: a runtime fn that failed to lower
+   keeps its name and signature and raises the named error when called."
+  [{:keys [name params]} msg]
+  (let [w (ll-word) m (str "lower-wasm: " name " did not compile (" msg ")")
+        raise (:name (get-in (callee-sig (lw-rt/rt-var 'core 'raise)) [:arities 1]))]
+    (ll-unit
+    {:name name :types []
+     :text (str "define tailcc void " (ll-q name) "(ptr %k"
+                (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %p" i)) params)) ") {\n"
+                "  musttail call tailcc void " (ll-q raise) "(ptr %k, " w " " (ll-bytes-const! m) ")\n  ret void\n}")})))
+
+;; --- the runtime library cache (D221) ----------------------------------------
+;; The GC lane's (D181): the whole runtime analysed and lowered once, the
+;; session saved under LW_RTLIB_DIR and restored by each compile. These are
+;; the llvm lane's parts of its key, snapshot and restore.
+
+(defn ll-rtlib-key-extra
+  "The llvm compiler's sources and the resolved profile: both shape every
+   lowered line (the lg binary and lower_wasm.lg are in the shared key)."
+  []
+  (str (apply str (map #(slurp (str lw-rt/src-dir "/" %))
+                       ["lower_llvm.lg" "lower_llvm_rt.lg" "lower_llvm_profile.lg" "lower_llvm_poly.lg"]))
+       "|profile=" (pr-str (llvm-profile))))
+
+(defn- ll-snap-key? [k]
+  ;; the derived type lists are recomputed; :llvm-try memos hold an atom
+  (and (vector? k) (#{:llvm :llvm-ref} (first k))
+       (not (contains? #{[:llvm :types] [:llvm :tids]} k))))
+
+(defn- ll-encode [x] (clojure.walk/postwalk #(if (var? %) [::var (str (var-sym %))] %) x))
+(defn- ll-decode [x]
+  (clojure.walk/postwalk #(if (and (vector? %) (= 2 (count %)) (= ::var (first %))) (sym-var (symbol (second %))) %) x))
+
+(defn ll-rtlib-snapshot
+  "The llvm session state the cached runtime text names: environment and
+   program type ids, constant names, the fn-value wrappers and helpers."
+  []
+  {:ll-fn-values (ll-encode (into {} (filter (comp ll-snap-key? key) @*fn-values*)))})
+
+(defn ll-rtlib-restore! [snap]
+  (swap! *fn-values* merge (ll-decode (:ll-fn-values snap))))
 
 (require 'lower-llvm-rt)
