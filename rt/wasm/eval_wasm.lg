@@ -211,10 +211,16 @@
 ;; Natives the core table adds (a let-go native without a value here, or
 ;; evaluated-code plumbing)
 
+;; CoreSetMacro (lang.go:5556) sets the var's macro flag and puts :macro
+;; true in its meta as well (lang.go:5567), which (:macro (meta v)) reads.
+;; wasm.core's meta reads the stand-in's own, so the meta goes on a fresh
+;; stand-in through def-var!, as a def's does; the cell's :macro is the flag.
 (defn- set-macro!* [v]
-  (let [t (str v) key (when (string/starts-with? t "#'") (subs t 2))]
-    (if (and key (cell key))
-      (do (swap! n/registry assoc-in [:cells key :macro] true) v)
+  (let [t (str v) key (when (string/starts-with? t "#'") (subs t 2)) cl (when key (cell key))]
+    (if cl
+      (do (def-var! (:ns cl) (:name cl) (assoc (or (:meta cl) {}) :macro true))
+          (swap! n/registry assoc-in [:cells key :macro] true)
+          (var-of key))
       (limit (str "set-macro! of " v ": not a var evaluated code defined")))))
 
 (defn- in-ns* [& args]
@@ -270,14 +276,6 @@
                 (doseq [r (:refer opts)] (swap! n/registry assoc-in [:refers cur (str r)] libn)))))))
   nil)
 
-;; bound? (lang.go:9190): a cell is bound once a def gave it a value (def
-;; interns at compile time, so defonce's resolve already sees the cell)
-(defn- bound?* [& args]
-  (let [v (first args) t (str v) key (when (string/starts-with? t "#'") (subs t 2))]
-    (if (and (= 1 (count args)) key (cell key))
-      (contains? (cell key) :val)
-      (apply n/bound? args))))
-
 ;; ---------------------------------------------------------------------------
 ;; The core table: name -> fn value (the seam: "A's, in eval.lg"). Written as
 ;; plain lg values so the backend links each twin because this file names
@@ -329,7 +327,7 @@
    "in-ns" in-ns* "load-string" load-string* "require" require* "ns-name" ns-name "ns-resolve" n/ns-resolve "resolve" n/resolve
    "find-ns" n/find-ns "the-ns" n/the-ns "all-ns" n/all-ns "find-var" n/find-var "var-get" n/var-get
    "var?" n/var? "intern" n/intern "alter-var-root" n/alter-var-root "alter-meta!" n/alter-meta!
-   "push-binding!" n/push-binding! "pop-binding!" n/pop-binding! "bound?" bound?* "ns-publics" n/ns-publics
+   "push-binding!" n/push-binding! "pop-binding!" n/pop-binding! "bound?" n/bound? "ns-publics" n/ns-publics
    "string/join" string/join "string/split" string/split "string/upper-case" string/upper-case
    "string/lower-case" string/lower-case "string/trim" string/trim "string/blank?" string/blank?
    "string/includes?" string/includes? "string/starts-with?" string/starts-with?
