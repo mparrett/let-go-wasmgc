@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-09 at
+# d3aa439, D212: the evaluator's dotimes writes core/< and core/inc, so every program carrying the
+# evaluator moves and dotimes-hygiene.lg joins the corpus; before that 2026-10-09 at
 # 6782b56, D211's lw-ext \p{Lu}/\p{Ll}/\p{L} classes: every corpus/eval program and legmacs
 # grow ~4,982 bytes (they reach the regex engine), regex-uprops.lg joins the corpus; before that
 # 2026-10-09 at 90da78e, D210 with the P12.0 fixes: alter-own-defn.lg joins the corpus; before that 2026-10-08 at
@@ -17,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
-base=6782b56eba7ba5f629615e4b48542eee4d2b8aa9
+base=d3aa4398f57653fbb0fcc0e07392ef3f6dff0a85
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
