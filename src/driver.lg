@@ -220,12 +220,28 @@
         :else (let [r (when (= :root (alter-head form)) (literal-var-ref (second form)))]
                 (concat (if r [r] []) (mapcat alter-root-refs (rest form))))))
 
+(defn site-var
+  "The var a [:var s] / [:find s] alter-root-refs entry names, from the
+   current ns. resolve answers nil for another namespace's private var
+   (#'ir.passes.typeinfer/call-declared-type, a defn-), which (var ..)
+   still names natively, so a qualified s falls back to find-var through
+   the current ns's alias or the namespace itself."
+  [r]
+  (let [s (second r)]
+    (if (= :find (first r))
+      (find-var s)
+      (or (resolve s)
+          (when (namespace s)
+            (let [a (get (ns-aliases *ns*) (symbol (namespace s)))
+                  n (if a (ns-name a) (symbol (namespace s)))]
+              (find-var (symbol (str n) (name s)))))))))
+
 (defn note-root-alters!
   "Resolve each alter-root-refs entry of forms, in the current ns, into
    root-altered."
   [forms]
   (run! (fn [r]
-          (let [v (try (if (= :var (first r)) (resolve (second r)) (find-var (second r))) (catch e nil))]
+          (let [v (try (site-var r) (catch e nil))]
             (when (var? v) (swap! root-altered conj v))))
         (mapcat alter-root-refs forms)))
 
