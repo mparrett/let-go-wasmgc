@@ -30,42 +30,13 @@ export LG
 prog=$root/checks/fixtures/self-compile-assemble/main.lg
 ref=$root/corpus/scalar/ref.lg
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
-mkdir -p "$t/src/lwx"
-# the rename of checks/self-compile.sh, plus the driver's own namespace
-for f in lw_rt.lg lw_ext.lg lower_wasm.lg lower_linear.lg testshim.lg driver.lg; do
-  sed -E \
-    -e 's/(^|[^a-zA-Z0-9.-])lower-wasm([^a-zA-Z0-9:-]|$)/\1lwx.lower-wasm\2/g' \
-    -e 's/(^|[^a-zA-Z0-9.-])lw-rt([^a-zA-Z0-9-]|$)/\1lwx.lw-rt\2/g' \
-    -e 's/(^|[^a-zA-Z0-9.-])lw-ext([^a-zA-Z0-9-]|$)/\1lwx.lw-ext\2/g' \
-    -e 's/^\(ns driver$/(ns lwx.driver/' \
-    "$root/src/$f" > "$t/src/lwx/$f"
-done
-grep -q '^(ns lwx.driver$' "$t/src/lwx/driver.lg" || { echo "rename failed: driver.lg's ns form moved"; exit 1; }
-export LW_RT_DIR=$root/rt/wasm
-letgo_commit=$(sed -n 's/^(def letgo-commit "\([0-9a-f]*\)")$/\1/p' "$root/src/lw_rt.lg")
-mkdir -p "$t/letgo" "$t/ir"
-if ! git -C "$LETGO" archive "$letgo_commit" pkg/rt/core 2>"$t/git.err" | tar -x -C "$t/letgo" ||
-   ! git -C "$LETGO" archive "$letgo_commit" pkg/rt/core/ir 2>"$t/git.err" | tar -x -C "$t/ir"; then
-  echo "cannot archive pkg/rt/core at let-go ${letgo_commit:-?} from $LETGO:"; cat "$t/git.err"; exit 1
-fi
-export LW_HOST_FS=1 LW_HOST_ASM=1 LW_LETGO_CORE=$t/letgo/pkg/rt/core
-lib=$t/src:$t/ir/pkg/rt/core
-export LW_RTLIB_DIR=${LW_SELF_COMPILE_CACHE:-${TMPDIR:-/tmp}/lw-self-compile-rtlib}
-mkdir -p "$LW_RTLIB_DIR"
+# the module build is shared with self-compiled-run.sh (P12.5)
+. "$root/checks/self-compile-module.sh"
+sc_setup || exit 1
 if ! "$LG" -source-paths "$root/src" "$root/src/driver.lg" --no-rtlib "$ref" "$t/native.wat" >"$t/native.log" 2>&1; then
   echo "native compile of ref.lg failed:"; tail -5 "$t/native.log"; exit 1
 fi
-if ! LW_RT_SNAPSHOT_WRITE=$t/rt-snapshot.edn "$LG" -source-paths "$lib" -e "(require 'lwx.lw-rt)" >"$t/snapshot.log" 2>&1; then
-  echo "snapshot write failed:"; tail -5 "$t/snapshot.log"; exit 1
-fi
-start=$(date +%s)
-if ! LW_PROGRAM_TABLE=1 "$LG" -source-paths "$root/src:$lib" "$root/src/driver.lg" -source-paths "$lib" "$prog" "$t/m.wat" >"$t/module.err" 2>&1 ||
-   ! wasm-tools parse "$t/m.wat" -o "$t/m.wasm" 2>>"$t/module.err"; then
-  echo "MISMATCH self-compile-assemble: module build failed ($(( $(date +%s) - start ))s):"
-  grep -v '^\s*at ' "$t/module.err" | grep -v '^\s*$' | head -8; exit 1
-fi
-size=$(wc -c <"$t/m.wasm" | tr -d ' ')
-build=$(( $(date +%s) - start ))
+sc_build "$prog" || { echo "MISMATCH self-compile-assemble: the module did not build"; exit 1; }
 echo "module built (${size} bytes; ${build}s)"
 start=$(date +%s)
 LW_RT_SNAPSHOT=$t/rt-snapshot.edn LW_ASSEMBLE_IN=$ref LW_ASSEMBLE_OUT=$t/ref.wasm \
