@@ -675,8 +675,11 @@
     {(hash lit) "nan:0x8000000000001" (hash (- lit)) "-nan:0x8000000000001"
      (hash canon) "nan" (hash (- canon)) "-nan"}))
 
+;; NaN as no ordering holds, not core/NaN?: the runtime has no twin for
+;; NaN?, so the backend carried as a program (P12.5) lowered this test to a
+;; throw and every float constant it printed stubbed its defn out
 (defn f64-lit [x]
-  (str "(f64.const " (cond (NaN? x) (get nan-spellings (hash x) "nan") (= x ##Inf) "inf" (= x ##-Inf) "-inf" :else (str x)) ")"))
+  (str "(f64.const " (cond (if (< x 0.0) false (if (>= x 0.0) false true)) (get nan-spellings (hash x) "nan") (= x ##Inf) "inf" (= x ##-Inf) "-inf" :else (str x)) ")"))
 
 (defn float-wat [x] (str "(struct.new $Float " (f64-lit x) ")"))
 
@@ -3650,6 +3653,19 @@
                                               :depth (count (:locals @ctx))
                                               :headers (inc (count (:loop-headers @ctx)))}]
                         (orig form ctx))))))
+
+;; P12.5: build-form takes a regex literal as a const through
+;; (instance? java.util.regex.Pattern form), which a module answers false
+;; for (a native class is no value there, rt/wasm/natives.lg instance?), so
+;; the carried IR builder rejected a runtime file's #"0+$" as an
+;; unrecognized form. In a module a regex goes through build-quote, the
+;; same :const; natively build-form is unchanged.
+(alter-var-root #'ir.build/build-form
+                (fn [orig]
+                  (fn [form ctx]
+                    (if (and *in-wasm* (some? (lw-ext/regex-source form)))
+                      (ir.build/build-quote (list 'quote form) ctx)
+                      (orig form ctx)))))
 
 (alter-var-root #'ir.build/bind-local!
                 (fn [orig]
