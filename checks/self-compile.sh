@@ -34,7 +34,10 @@
 # it is the same text, since both come from the pinned commit.
 #
 # rtlib cache: the runtime library is keyed on its sources, the snapshot and
-# the flags (D201, D209), so a stale entry is never reused; a fresh temp dir
+# every setting that changes it (D201, D209; the getenv audit at
+# lower-wasm/rtlib-key, which since P12.0j keys LW_LETGO_CORE's text, so
+# this check's archive never shares an entry with a git-show build whose
+# text differs), so a stale entry is never reused; a fresh temp dir
 # per run would make every run pay the cold rebuild (526 s on 2026-10-08),
 # so it lives in LW_SELF_COMPILE_CACHE (default $TMPDIR/lw-self-compile-rtlib).
 #
