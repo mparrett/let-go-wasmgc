@@ -28,6 +28,17 @@
 ;; (host_fs.lg: slurp through the host's file system). Part of the rtlib key.
 (def host-fs? (= "1" (os/getenv "LW_HOST_FS")))
 (defn- host-fs-row? [l] (str/includes? l "LW_HOST_FS"))
+;; LW_HOST_ASM=1 (D211): also load the rows whose text names that flag
+;; (host_asm.lg: module text to the host's assembler). Part of the rtlib key.
+(def host-asm? (= "1" (os/getenv "LW_HOST_ASM")))
+(defn- host-asm-row? [l] (str/includes? l "LW_HOST_ASM"))
+
+;; The load flags a snapshot records (D209): each changes which files load.
+;; :host-asm is present only when set, so a snapshot written without it is
+;; the same text as before D211 (its rtlib key and its restore unchanged).
+(defn- snapshot-flags []
+  (let [f {:runtime-compile runtime-compile? :host-fs host-fs?}]
+    (if host-asm? (assoc f :host-asm true) f)))
 
 ;; ---------------------------------------------------------------------------
 ;; D209: lw-rt's load-time state as a snapshot. LW_RT_SNAPSHOT_WRITE=<file>
@@ -207,7 +218,7 @@
   [path]
   (let [text (try (slurp path) (catch e (snap-fail (str "cannot read it: " (ex-message e)))))
         snap (snap-decode (read-string text))
-        flags {:runtime-compile runtime-compile? :host-fs host-fs?}]
+        flags (snapshot-flags)]
     (when-not (= 1 (:lw-rt-snapshot snap)) (snap-fail "not an lw-rt snapshot (version 1)"))
     (when-not (vector? (:lg-defined snap)) (snap-fail "no :lg-defined (written before the module restore)"))
     (when-not (= flags (:flags snap))
@@ -262,6 +273,7 @@
                      (str/split-lines (slurp (str rt-dir "/README.md"))))
         rows (if runtime-compile? rows (remove flag-row? rows))
         rows (if host-fs? rows (remove host-fs-row? rows))
+        rows (if host-asm? rows (remove host-asm-row? rows))
         bad (remove #(re-find row-file %) rows)]
     (when (seq bad)
       (throw (ex-info (str "lw-rt: unreadable load-order rows in rt/wasm/README.md: " (vec bad)) {})))
@@ -812,7 +824,7 @@
     (remove-ns 'lw-rt.snapshot-fresh)
     (let [nss (sort (conj (set (keep (fn [ff] (nth ff 1)) file-forms)) 'lw-ext))
           snap {:lw-rt-snapshot 1
-                :flags {:runtime-compile runtime-compile? :host-fs host-fs?}
+                :flags (snapshot-flags)
                 :gensyms gensyms-loaded
                 :files files
                 :file-forms file-forms

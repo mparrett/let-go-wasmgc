@@ -31,6 +31,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 20 | `emit.lg` | `wasm.eval` | 17 18 19 | only under `LW_RUNTIME_COMPILE=1` (D193): the evaluator's second output (stage 3 of docs/SELF-HOST-SPEC.md). Its first ns form is `wasm.emit` (what `(require 'wasm.emit)` loads under stock lg); the second re-enters `wasm.eval`, and `src/lw_rt.lg` takes a file's LAST ns form, so its defns are found there |
 | 21 | `ir.lg` | `wasm.ir` | | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
 | 22 | `host_fs.lg` | `wasm.host-fs` | 1 4 9 | only under `LW_HOST_FS=1` (D208): `slurp` through the host's file system (`env.read_file`, host/ABI.md), plain lg like natives.lg; it claims `core/slurp` after natives.lg's no-file-system twin, so it replaces it. `spit`, `os/*` and directory reads stay natives.lg's |
+| 23 | `host_asm.lg` | `wasm.host-asm` | 1 4 9 | only under `LW_HOST_ASM=1` (D211): `assemble`, a module's own WAT text to the host's assembler (`env.assemble`, host/ABI.md), which keeps the binary and answers its length; plain lg like natives.lg, no twin (a program calls `wasm.host-asm/assemble`) |
 
 Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
@@ -38,7 +39,8 @@ default build loads the other nineteen namespaces and its bytes do not
 change (`checks/gc-byte-identity.sh`).
 Row 22 is the same mechanism for `LW_HOST_FS` (D208): only a build with
 that flag loads it, and the backend's `env.read_file` import and helper are
-in its text only then.
+in its text only then. Row 23 is the same for `LW_HOST_ASM` (D211), with
+`env.assemble`.
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the

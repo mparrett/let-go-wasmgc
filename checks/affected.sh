@@ -130,7 +130,7 @@ P12.0	oracle checks/self-compile.sh checks/fixtures/self-compile/ checks/env.sh
 P12.1	src/ checks/backend-census.sh checks/census.lg checks/env.sh
 P12.2	src/ checks/backend-census.sh checks/census.lg checks/env.sh
 P12.3	oracle corpus/eval/registry/ checks/run-corpus.sh
-P12.4	oracle checks/self-compile-assemble.sh checks/env.sh
+P12.4	oracle checks/self-compile-assemble.sh checks/fixtures/self-compile-assemble/ corpus/scalar/ref.lg checks/env.sh
 P12.5	oracle checks/self-compiled-run.sh checks/self-compile-assemble.sh checks/fixtures/self-compile/ corpus/scalar/ref.lg corpus/eval/ checks/env.sh
 EOF
 }

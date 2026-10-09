@@ -1,0 +1,28 @@
+;; wasm.host-asm — D211: a module's own WAT text to the host's assembler, for
+;; a module built with LW_HOST_ASM=1 (the backend carried as a program, which
+;; emits module text and has no spit). src/lw_rt.lg loads this row of
+;; README.md only under that flag, so a build without it never reads this
+;; file and its bytes do not change. The import is env.assemble
+;; (host/ABI.md): node's hosts parse the text with wasm-tools and keep the
+;; binary; the host's side already has B2's shape, bytes in and nothing to
+;; read back, so B2 replaces the text with an encoded binary and the host
+;; only stores it.
+;;
+;; DIALECT: plain lg like natives.lg, without destructuring, for or doseq
+;; (the runtime files take gensyms at load, P9.1).
+(ns wasm.host-asm
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.str :as s]
+            [wasm.core :as c]))
+
+(defn- raise-lit [msg] (c/raise (s/str-bytes msg)))
+
+;; No :twin: no native does this. A program names it as
+;; wasm.host-asm/assemble, which the backend lowers as the runtime defn.
+(defn assemble
+  "WAT text -> the byte length of the binary the host assembled and kept, or
+   -1 when it could not (the host printed why on stderr)."
+  [text]
+  (if (string? text)
+    (wasm/host-assemble (s/str-bytes text))
+    (raise-lit "assemble expected String")))
