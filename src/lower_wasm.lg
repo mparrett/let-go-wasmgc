@@ -793,6 +793,8 @@
     :bool (str "(call $rt_print_bool " (lget nid) ")")
     (str "(call $rt_print " (arg-as nid :box) ")")))
 
+(declare rooted?)
+
 (defn atom-call-wat
   "The minimal atom: the `fn` macro expands (fn name [..] ..) to an atom
    holding the fn (letfn style), so named fns need atom/deref/reset!; swap!
@@ -803,7 +805,15 @@
         bx (fn [] (str/join " " (map #(arg-as % :box) args)))]
     (condp = v
       #'atom (when (= n 1) (set (str "(struct.new $Atom " (bx) " (i64.const 0))")))
-      #'deref (when (= n 1) (set (str "(call $rt_deref " (bx) ")")))
+      #'deref (when (= n 1)
+                (let [dv (when (var-const? (first args)) (const-val (first args)))]
+                  ;; P12.4: @#'f of a defn that calls bind directly (not a
+                  ;; var-table var, not a rooted native) is its fn value, as
+                  ;; native's root is; the var's stand-in has no root to read
+                  ;; in the module (a private library defn has no table entry)
+                  (if (and dv (not (table-var? dv)) (not (rooted? dv)) (callee-sig dv))
+                    (set (var-value-wat dv))
+                    (set (str "(call $rt_deref " (bx) ")")))))
       #'reset! (when (= n 2) (set (str "(call $rt_reset " (bx) ")")))
       #'swap! (when (<= 2 n 4) (set (str "(call $rt_swap" (- n 2) " " (bx) ")")))
       nil)))
@@ -2127,7 +2137,9 @@
       :loop (let [[_ _ body cont] node
                   frame {:id bid :exit (when cont (second cont))}]
               (concat [(str "(block $exit" bid " (loop $head" bid)]
-                      (binding [*loop* (conj (or *loop* ()) frame)] (doall (walk body)))
+                      ;; '(), not (): an empty list reaching ir.build through
+                      ;; or's expansion lowers as a call of nil (P12.4)
+                      (binding [*loop* (conj (or *loop* '()) frame)] (doall (walk body)))
                       ["unreachable))"] (when cont (walk cont))))
       :continue (concat (edge-wat (nth node 2)) [(str "(br $head" bid ")")])
       :break (let [fr (first (filter #(= bid (:exit %)) *loop*))]
@@ -4031,11 +4043,13 @@
               s))
           state (ir/block-insts (ir/entry-block f) f)))
 
-(let [infer-one (get (ns-interns 'ir.passes.infer-arg-types) 'infer-one-load-arg)]
+;; the private fn taken once, here: a deref of the var constant is the fn
+;; value in the module too (atom-call-wat), a deref of a captured var is not
+(let [infer-one (deref (get (ns-interns 'ir.passes.infer-arg-types) 'infer-one-load-arg))]
   (alter-var-root #'ir.passes.infer-arg-types/infer-arg-types
                   (fn [orig] (fn ([f] (orig f))
                                ([f state] (cond *box-params* state
-                                                (seq *box-param-idx*) (infer-arg-types-skipping @infer-one f state)
+                                                (seq *box-param-idx*) (infer-arg-types-skipping infer-one f state)
                                                 :else (orig f state)))))))
 
 (defn new-session

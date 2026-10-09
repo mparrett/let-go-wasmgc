@@ -7,7 +7,13 @@
 ;; are -main's for `driver.lg --no-rtlib <in> <out>`: the cached runtime
 ;; library is keyed on the lg binary's hash, which a module cannot take, so
 ;; it would miss and its build would need spit.
-(ns self-compile-assemble (:require [lwx.driver :as d] [lwx.lower-wasm :as lw]))
+;; lwx.lw-ext is required here, first, because lw-rt loads it with
+;; load-string, not a require: the driver indexes (and the program table
+;; holds) only namespaces an ns form reaches, so without this the module's
+;; find-var answers nil for every lw-ext var, the carried ext-defns is empty
+;; and rt-analyze*! finds no source for an ext-twin (the-ns of nil). Natively
+;; the driver's own lw-rt has loaded the runtime namespaces lw_ext.lg names.
+(ns self-compile-assemble (:require [lwx.lw-ext] [lwx.driver :as d] [lwx.lower-wasm :as lw]))
 
 (def in (let [p (os/getenv "LW_ASSEMBLE_IN")] (if (seq p) p "corpus/scalar/ref.lg")))
 ;; one form: compile-text evaluates the program's forms in their own
