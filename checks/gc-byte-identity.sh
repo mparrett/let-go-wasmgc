@@ -11,12 +11,16 @@
 # --capture and --default-only together are rejected: capture compares nothing.
 # The baseline cache is shared: one dir per base SHA is the intended use, so
 # several agents reuse one capture instead of each paying ~30 min for its own.
-# Private dirs (LW_GC_BASELINE_DIR) are only for experiments. A missing baseline
-# is captured under a mkdir lock ($cache/.lock, holder pid inside; a dead holder
-# is reclaimed) and moved into place atomically, so a half-written baseline is
-# never read. Wait is bounded by LW_GC_LOCK_WAIT (default 3600 s), after which
-# the capture runs anyway with a warning: the atomic mv keeps that safe, it only
-# costs duplicate work. The lock is per program, so concurrent runs interleave.
+# Private dirs (LW_GC_BASELINE_DIR) are only for experiments. A cache dir is valid
+# only with a $cache/.complete marker, written after EVERY program has been
+# captured in one pass, in corpus order, through one rtlib dir; a dir without it
+# (a partial or older capture) is recaptured in full, never filled in one
+# program at a time. The pass holds a mkdir lock ($cache/.lock, holder pid
+# inside; a dead holder is reclaimed) from start to marker, so a concurrent run
+# waits and then finds the marker. Each baseline is moved into place atomically
+# and nothing is read before the marker exists. Wait is bounded by LW_GC_LOCK_WAIT
+# (default 7200 s), after which the pass runs anyway with a warning: it only
+# costs duplicate work.
 # Each compile holds one slot of the machine-wide pool (checks/sem.sh).
 # The cache is keyed by base SHA, but its bytes also depend on the lg binary and
 # the legmacs checkout. $cache/.meta records lg's md5 and legmacs' commit; a run
@@ -24,10 +28,15 @@
 # but no .meta (captured before this check) gets one written, with a warning.
 # The lg path is recorded for the reader only: a copied binary with the same md5
 # is the same lg.
-# Covers the default option set from a fresh rtlib only (no --no-rt, --test,
-# --no-shake, LW_NO_EVAL or warm cache). legmacs is here because load-time
-# compiler state (D174) shifted its IR numbering while every small program
-# stayed identical.
+# Covers the default option set (no --no-rt, --test, --no-shake or LW_NO_EVAL).
+# Baseline and compare both compile in corpus order through ONE warm rtlib dir
+# per lane, and the output of some programs depends on that order: on 2026-10-08
+# registry-probe came out with one local $v64 vs $v65 in a wasm.natives fn when
+# compared warm against a baseline captured alone from a fresh rtlib. That is a
+# backend determinism defect, recorded in STATUS.md (P8.0 notes) as a named
+# finding; the guard's answer is to capture and compare in the same order, not
+# to hide it. legmacs is here because load-time compiler state (D174) shifted
+# its IR numbering while every small program stayed identical.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 capture=0 default_only=0
@@ -49,7 +58,7 @@ unlock() { if [ -n "$held" ]; then rm -rf "$held"; held=""; fi; }
 trap 'unlock; rm -rf "$t"' EXIT
 # mkdir is the atomic primitive (no flock on macOS bash 3); see checks/sem.sh
 lock() {
-  local l=$cache/.lock deadline=$(( $(date +%s) + ${LW_GC_LOCK_WAIT:-3600} )) p dead
+  local l=$cache/.lock deadline=$(( $(date +%s) + ${LW_GC_LOCK_WAIT:-7200} )) p dead
   while ! mkdir "$l" 2>/dev/null; do
     p=$(cat "$l/pid" 2>/dev/null || true)
     # no pid yet and older than 5 s: the holder died between mkdir and the write
@@ -77,8 +86,8 @@ n=$(wc -l < "$t/programs" | tr -d ' ')
 compile() {
   local source=$1 f=$2 out=$3 target=${4:-} sp="" lane=baseline
   if [ "$source" = "$PWD" ]; then lane=${target:-default}; fi
-  # legmacs builds its own rtlib in every lane: its baseline may be captured in a
-  # later run than the corpus, and a restored rtlib differs from a fresh one (D173)
+  # legmacs builds its own rtlib in every lane: a restored rtlib differs from a
+  # fresh one (D173)
   case "$f" in */multi/*) sp="$PWD/corpus/eval/program/multi/lib" ;; "$LEGMACS"/*) sp=$LEGMACS lane=$lane-legmacs ;; esac
   local args=("$LG" -source-paths "$source/src${sp:+:$sp}" "$source/src/driver.lg")
   [ -z "$sp" ] || args+=(-source-paths "$sp")
@@ -89,41 +98,41 @@ compile() {
 # bytes depend on the lg binary and the legmacs checkout, not only the base SHA
 meta_now="lg_md5=$(md5 -q "$LG")
 legmacs=$(git -C "$LEGMACS" rev-parse HEAD 2>/dev/null || echo none)"
+write_meta() { { echo "lg=$LG"; echo "$meta_now"; } > "$cache/.meta.tmp$$"; mv "$cache/.meta.tmp$$" "$cache/.meta"; }
 meta_check() {
   local m=$cache/.meta field have want
-  if [ -f "$m" ]; then
-    for field in lg_md5 legmacs; do
-      have=$(sed -n "s/^$field=//p" "$m"); want=$(printf '%s\n' "$meta_now" | sed -n "s/^$field=//p")
-      [ "$have" = "$want" ] || { echo "GC baseline cache $cache was captured with $field=$have, this run has $field=$want: use another LW_GC_BASELINE_DIR (or delete the cache) rather than compare across them" >&2; exit 1; }
-    done
-    return
-  fi
-  lock
   if [ ! -f "$m" ]; then
-    if [ -n "$(find "$cache" -name '*.wasm' -print -quit)" ]; then
-      echo "warning: $cache holds baselines but no .meta; recording the current lg and legmacs, assuming they match" >&2
-    fi
-    { echo "lg=$LG"; echo "$meta_now"; } > "$m.tmp$$"
-    mv "$m.tmp$$" "$m"
+    echo "warning: $cache is complete but has no .meta; recording the current lg and legmacs, assuming they match" >&2
+    write_meta; return
+  fi
+  for field in lg_md5 legmacs; do
+    have=$(sed -n "s/^$field=//p" "$m"); want=$(printf '%s\n' "$meta_now" | sed -n "s/^$field=//p")
+    [ "$have" = "$want" ] || { echo "GC baseline cache $cache was captured with $field=$have, this run has $field=$want: use another LW_GC_BASELINE_DIR (or delete the cache) rather than compare across them" >&2; exit 1; }
+  done
+}
+# One pass over every program, in the order the compare loop uses, so the
+# baseline sees the same rtlib warm-up as the compare (see the header).
+capture_all() {
+  lock
+  # another run may have finished the pass while this one waited
+  if [ ! -f "$cache/.complete" ]; then
+    rm -f "$cache/.meta"
+    write_meta
+    while IFS= read -r f; do
+      mkdir -p "$(dirname "$cache/$f.wasm")"
+      echo "capturing $f"
+      compile "$t" "$f" "$cache/$f.wasm.tmp$$" || { rm -f "$cache/$f.wasm.tmp$$"; exit 1; }
+      mv "$cache/$f.wasm.tmp$$" "$cache/$f.wasm"
+    done < "$t/programs"
+    : > "$cache/.complete"
   fi
   unlock
-  meta_check
 }
+[ -f "$cache/.complete" ] || capture_all
 meta_check
-while IFS= read -r f; do
-  bin="$cache/$f.wasm"
-  if [ ! -f "$bin" ]; then
-    mkdir -p "$(dirname "$bin")"
-    lock
-    # another run may have captured it while this one waited
-    if [ ! -f "$bin" ]; then
-      echo "capturing $f"
-      compile "$t" "$f" "$bin.tmp$$" || { rm -f "$bin.tmp$$"; exit 1; }
-      mv "$bin.tmp$$" "$bin"
-    fi
-    unlock
-  fi
-  if [ "$capture" = 0 ]; then
+if [ "$capture" = 0 ]; then
+  while IFS= read -r f; do
+    bin="$cache/$f.wasm"
     compile "$PWD" "$f" "$t/default.wasm"
     cmp "$bin" "$t/default.wasm" || { wasm-tools print "$bin" -o "$cache/baseline-failure.wat"; wasm-tools print "$t/default.wasm" -o "$cache/current-failure.wat"; echo "GC BYTE MISMATCH $f (diagnostics retained in baseline cache)" >&2; exit 1; }
     if [ "$default_only" = 0 ]; then
@@ -131,10 +140,8 @@ while IFS= read -r f; do
       cmp "$bin" "$t/explicit.wasm" || { echo "EXPLICIT GC BYTE MISMATCH $f" >&2; exit 1; }
     fi
     echo "IDENTICAL $f"
-  else
-    echo "CAPTURED $f"
-  fi
-done < "$t/programs"
+  done < "$t/programs"
+fi
 if [ "$capture" = 1 ]; then lanes="none (capture only)"
 elif [ "$default_only" = 1 ]; then lanes="default only"
 else lanes="default, explicit-gc"; fi

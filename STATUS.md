@@ -159,6 +159,7 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 | date | item | result | evidence |
 |---|---|---|---|
 | 2026-10-03 | P8.0 | PASS | All 18 frozen scalar/eval programs byte-identical with default and explicit GC after every emitter checkpoint. |
+| 2026-10-08 | P8.0 guard | FINDING | Backend determinism defect: corpus/eval/registry/registry-probe.lg compiles with one local `$v64` or `$v65` in a wasm.natives fn depending on whether the rtlib dir was warmed by earlier programs; the guard now captures and compares in the same corpus order (header of checks/gc-byte-identity.sh). |
 | 2026-10-03 | P8.1 | PASS | Target precedence, invalid targets, named refusals and target-separated caches. |
 | 2026-10-03 | P8.2 | PASS | Numeric types, memory, table, nominal headers and leaking allocator validate with GC disabled. |
 | 2026-10-03 | P8.3 | PASS | Completed census families, cast branches and stack operands validate and execute under GC-disabled wazero. |
