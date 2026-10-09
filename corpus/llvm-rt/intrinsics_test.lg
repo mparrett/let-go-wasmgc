@@ -270,7 +270,7 @@
   (is (nil? (arch/type-name-bytes 3)) "an id no type has")
   (is (nil? (arch/type-static 1)) "natively, llvm.core makes the Type")
   (let [anc (mapv #(arch/type-anc 22 %) (range (arch/type-anc-count 22)))]
-    (is (= ["Number" "Object"] (mapv #(arch/string-of-bytes (arch/type-name-bytes %)) anc)))))
+    (is (= ["Number" "java.lang.Object"] (mapv #(arch/string-of-bytes (arch/type-name-bytes %)) anc)))))
 
 (def ^:private this-file-source
   (delay (slurp "corpus/llvm-rt/intrinsics_test.lg")))

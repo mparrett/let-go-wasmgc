@@ -1,0 +1,182 @@
+;; llvm.poly — the llvm target's polymorphism (spec §3), in PLAIN lg like
+;; natives.lg: the hierarchy and the dispatch epoch.
+;;
+;; The global hierarchy is native's value, {:parents :ancestors :descendants}
+;; (hierarchy.go in let-go ff1e6dac), with :ancestors and :descendants rebuilt
+;; transitive on every derive and underive, and native's error texts. It
+;; differs in what a type is related to: a Type's ancestry (its C3
+;; linearization, D218) stands where native lists the Java interfaces of its
+;; Go type, so (isa? (type []) Object) holds through ancestry and a derive
+;; to an abstract Type reaches every type below it. isa? is Clojure's:
+;; equality, the Type ancestry, the hierarchy's ancestors (of the value and
+;; of each Type in its ancestry), and element-wise on vectors of equal
+;; length (native compares vectors by equality only).
+;;
+;; The epoch counts changes to dispatch: the global derive, underive and
+;; register-type-parent! bump it, so dispatch caches stamped with an older
+;; epoch are stale.
+(ns llvm.poly
+  (:refer-clojure :exclude [make-hierarchy derive underive isa? parents ancestors descendants])
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.str :as s]
+            [llvm.core :as c]))
+
+(defn- raise-lit [msg] (c/raise (s/str-bytes msg)))
+(defn- raise-arity [n] (raise-lit (str "wrong number of arguments " n)))
+
+;; ---------------------------------------------------------------------------
+;; The epoch
+
+(def ^:private epoch-cell (atom 0))
+(defn epoch "The dispatch epoch." [] @epoch-cell)
+(defn bump-epoch! "Marks every dispatch cache stale." [] (swap! epoch-cell inc))
+
+;; ---------------------------------------------------------------------------
+;; Types as nodes
+
+(defn type? "x is a Type." [x] (= 35 (c/ckind x)))
+
+(defn type-ancestry
+  "Type t's fixed ancestry, nearest first."
+  [t]
+  (let [anc (arch/get c/TypeVal 2 t)]
+    (map #(arch/aget pv/Node anc %) (range (arch/alen anc)))))
+
+(def object-type (c/type-of-id 42))                       ; core/Object's value
+
+;; register-type-parent!'s parents, by Type (native's registeredTypeParents)
+(def ^:private type-parents (atom {}))
+
+(defn- direct-type-parents [tag] (when (type? tag) (get @type-parents tag)))
+
+;; ---------------------------------------------------------------------------
+;; The hierarchy
+
+(defn- empty-hierarchy [] {:parents {} :ancestors {} :descendants {}})
+(def ^:private global (atom (empty-hierarchy)))
+
+(defn- hierarchy? [h]
+  (and (map? h) (map? (:parents h)) (map? (:ancestors h)) (map? (:descendants h))))
+
+(defn- as-hierarchy [h] (if (hierarchy? h) h (raise-lit "invalid hierarchy")))
+
+(defn- lookup-tag? [x] (or (keyword? x) (symbol? x) (type? x)))
+
+(defn- namespaced? [x] (and (or (keyword? x) (symbol? x)) (some? (namespace x))))
+
+(defn- collect-ancestors [ps tag seen]
+  (reduce (fn [[acc seen] p]
+            (if (contains? seen p)
+              [acc seen]
+              (let [[a2 s2] (collect-ancestors ps p (conj seen p))]
+                [(into (conj acc p) a2) s2])))
+          [#{} seen]
+          (get ps tag)))
+
+(defn- rebuild [ps]
+  (reduce (fn [h tag]
+            (let [ancs (first (collect-ancestors ps tag #{}))]
+              (if (empty? ancs)
+                h
+                (reduce (fn [h a] (update-in h [:descendants a] (fnil conj #{}) tag))
+                        (assoc-in h [:ancestors tag] ancs)
+                        ancs))))
+          {:parents ps :ancestors {} :descendants {}}
+          (keys ps)))
+
+(defn- isa-in? [h child parent]
+  (or (= child parent)
+      (let [tp (type? child)]
+        (or (and tp (type? parent) (boolean (some #(= parent %) (type-ancestry child))))
+            (contains? (get (:ancestors h) child) parent)
+            (and tp (boolean (some #(contains? (get (:ancestors h) %) parent) (type-ancestry child))))
+            (boolean (some #(or (= parent %) (isa-in? h % parent)) (direct-type-parents child)))
+            (and (vector? child) (vector? parent) (= (count child) (count parent))
+                 (every? true? (map #(isa-in? h %1 %2) child parent)))))))
+
+(defn- derive-in [h tag parent]
+  (when (or (= tag parent) (isa-in? h parent tag)) (raise-lit "cyclic derivation"))
+  (rebuild (update (:parents h) tag (fnil conj #{}) parent)))
+
+(defn- underive-in [h tag parent]
+  (let [ps (:parents h) cur (get ps tag)]
+    (if (and cur (contains? cur parent))
+      (let [cur (disj cur parent)]
+        (rebuild (if (empty? cur) (dissoc ps tag) (assoc ps tag cur))))
+      h)))
+
+(defn- nil-or-set [s empty-set?] (if (empty? s) (when empty-set? #{}) s))
+
+(defn- parents-for [h tag empty-set?]
+  (when (lookup-tag? tag)
+    (nil-or-set (into (or (get (:parents h) tag) #{}) (direct-type-parents tag)) empty-set?)))
+
+(defn- ancestors-for [h tag empty-set?]
+  (when (lookup-tag? tag)
+    (let [own (into (or (get (:ancestors h) tag) #{}) (when (type? tag) (type-ancestry tag)))
+          own (reduce (fn [acc p] (into (conj acc p) (when (type? p) (type-ancestry p))))
+                      own (direct-type-parents tag))]
+      (nil-or-set own empty-set?))))
+
+(defn- descendants-for [h tag empty-set?]
+  (when (= tag object-type) (raise-lit (str "descendants does not support root type " tag)))
+  (when (lookup-tag? tag) (nil-or-set (get (:descendants h) tag) empty-set?)))
+
+(defn ^{:twin "core/make-hierarchy"} make-hierarchy [& args]
+  (if (seq args) (raise-arity (count args)) (empty-hierarchy)))
+
+(defn ^{:twin "core/derive"} derive [& args]
+  (case (count args)
+    2 (let [[tag parent] args]
+        (when (or (nil? tag) (nil? parent)) (raise-lit "derive requires non-nil tag and parent"))
+        (when-not (or (type? tag) (namespaced? tag))
+          (raise-lit "derive tag must be a namespaced symbol/keyword or type"))
+        (when-not (namespaced? parent) (raise-lit "derive parent must be a namespaced symbol/keyword"))
+        (reset! global (derive-in @global tag parent))
+        (bump-epoch!)
+        nil)
+    3 (let [[h tag parent] args h (as-hierarchy h)]
+        (when (or (nil? tag) (nil? parent)) (raise-lit "derive requires non-nil tag and parent"))
+        (derive-in h tag parent))
+    (raise-arity (count args))))
+
+(defn ^{:twin "core/underive"} underive [& args]
+  (case (count args)
+    2 (do (reset! global (underive-in @global (first args) (second args))) (bump-epoch!) nil)
+    3 (underive-in (as-hierarchy (first args)) (second args) (nth args 2))
+    (raise-arity (count args))))
+
+(defn ^{:twin "core/isa?"} isa? [& args]
+  (case (count args)
+    2 (isa-in? @global (first args) (second args))
+    3 (if (hierarchy? (first args)) (isa-in? (first args) (second args) (nth args 2)) false)
+    (raise-arity (count args))))
+
+(defn ^{:twin "core/parents"} parents [& args]
+  (case (count args)
+    1 (parents-for @global (first args) false)
+    2 (when (hierarchy? (first args)) (parents-for (first args) (second args) true))
+    (raise-arity (count args))))
+
+(defn ^{:twin "core/ancestors"} ancestors [& args]
+  (case (count args)
+    1 (ancestors-for @global (first args) false)
+    2 (when (hierarchy? (first args)) (ancestors-for (first args) (second args) true))
+    (raise-arity (count args))))
+
+(defn ^{:twin "core/descendants"} descendants [& args]
+  (case (count args)
+    1 (descendants-for @global (first args) false)
+    2 (when (hierarchy? (first args)) (descendants-for (first args) (second args) false))
+    (raise-arity (count args))))
+
+(defn ^{:twin "core/register-type-parent!"} register-type-parent! [& args]
+  (if (not= 2 (count args))
+    (raise-arity (count args))
+    (let [[child p] args]
+      (when-not (type? child) (raise-lit "register-type-parent! expected child type"))
+      (when (some? p)
+        (swap! type-parents update child (fnil conj #{}) p)
+        (bump-epoch!))
+      nil)))

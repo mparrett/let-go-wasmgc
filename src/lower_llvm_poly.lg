@@ -27,16 +27,17 @@
 ;; The one record of the llvm target's type ids, their printed names and
 ;; their direct supertypes (spec §1). Native ids are (type x)'s numbering in
 ;; rt/llvm/core.lg's type-id (holes are ids no value has); the abstract
-;; Types follow from 42, with no instances. A type's ancestry is its C3
+;; Types follow from 42, with no instances; Object prints as native's
+;; java.lang.Object, the others by bare name. A type's ancestry is its C3
 ;; linearization without itself. Supertypes are keyed by type, not by
 ;; runtime struct, since $PVec, $Err and $TypeVal each carry two types.
 
 (def ll-abstract-supers
-  [["Object" []] ["Seqable" ["Object"]] ["Counted" ["Object"]] ["Coll" ["Seqable" "Object"]]
-   ["Sequential" ["Object"]] ["Seq" ["Coll" "Sequential"]] ["Associative" ["Coll"]]
+  [["java.lang.Object" []] ["Seqable" ["java.lang.Object"]] ["Counted" ["java.lang.Object"]] ["Coll" ["Seqable" "java.lang.Object"]]
+   ["Sequential" ["java.lang.Object"]] ["Seq" ["Coll" "Sequential"]] ["Associative" ["Coll"]]
    ["Indexed" ["Counted"]] ["Map" ["Associative" "Counted"]] ["Set" ["Coll" "Counted"]]
    ["Vector" ["Associative" "Indexed" "Sequential"]] ["List" ["Seq" "Counted"]]
-   ["Fn" ["Object"]] ["Named" ["Object"]] ["Number" ["Object"]]])
+   ["Fn" ["java.lang.Object"]] ["Named" ["java.lang.Object"]] ["Number" ["java.lang.Object"]]])
 
 (def ll-native-types
   [[0 "nil" []]
@@ -46,32 +47,32 @@
    [9 "let-go.lang.Repeat" ["Seq"]]
    [10 "let-go.lang.Sequence" ["Seq"]]
    [11 "let-go.lang.PersistentVector" ["Vector" "Fn"]]
-   [12 "java.lang.Exception" ["Object"]]
-   [14 "let-go.lang.Reduced" ["Object"]]
-   [15 "let-go.lang.Boolean" ["Object"]]
+   [12 "java.lang.Exception" ["java.lang.Object"]]
+   [14 "let-go.lang.Reduced" ["java.lang.Object"]]
+   [15 "let-go.lang.Boolean" ["java.lang.Object"]]
    [16 "let-go.lang.Fn" ["Fn"]]
-   [17 "let-go.lang.String" ["Object"]]
-   [18 "let-go.lang.Unknown" ["Object"]]
-   [19 "let-go.lang.Character" ["Object"]]
+   [17 "let-go.lang.String" ["java.lang.Object"]]
+   [18 "let-go.lang.Unknown" ["java.lang.Object"]]
+   [19 "let-go.lang.Character" ["java.lang.Object"]]
    [20 "let-go.lang.Keyword" ["Named" "Fn"]]
    [21 "let-go.lang.Symbol" ["Named" "Fn"]]
    [22 "let-go.lang.Float" ["Number"]]
    [23 "let-go.lang.ArrayVector" ["Vector" "Fn"]]
-   [24 "let-go.lang.Atom" ["Object"]]
-   [25 "let-go.lang.Volatile" ["Object"]]
-   [26 "let-go.lang.ExceptionInfo" ["Object"]]
+   [24 "let-go.lang.Atom" ["java.lang.Object"]]
+   [25 "let-go.lang.Volatile" ["java.lang.Object"]]
+   [26 "let-go.lang.ExceptionInfo" ["java.lang.Object"]]
    [30 "let-go.lang.Map" ["Map" "Fn"]]
    [31 "let-go.lang.Set" ["Set" "Fn"]]
-   [32 "let-go.lang.TransientMap" ["Object"]]
-   [33 "let-go.lang.TransientSet" ["Object"]]
-   [34 "let-go.lang.TransientVector" ["Object"]]
-   [35 "let-go.lang.Type" ["Object"]]
-   [36 "let-go.lang.Regex" ["Object"]]
-   [37 "let-go.lang.Array" ["Object"]]
+   [32 "let-go.lang.TransientMap" ["java.lang.Object"]]
+   [33 "let-go.lang.TransientSet" ["java.lang.Object"]]
+   [34 "let-go.lang.TransientVector" ["java.lang.Object"]]
+   [35 "let-go.lang.Type" ["java.lang.Object"]]
+   [36 "let-go.lang.Regex" ["java.lang.Object"]]
+   [37 "let-go.lang.Array" ["java.lang.Object"]]
    [38 "let-go.lang.PersistentTreeMap" ["Map" "Fn"]]
    [39 "let-go.lang.PersistentTreeSet" ["Set" "Fn"]]
-   [40 "let-go.lang.Promise" ["Object"]]
-   [41 "let-go.lang.Delay" ["Object"]]])
+   [40 "let-go.lang.Promise" ["java.lang.Object"]]
+   [41 "let-go.lang.Delay" ["java.lang.Object"]]])
 
 (def ll-native-count 42)
 

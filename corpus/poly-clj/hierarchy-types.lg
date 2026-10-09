@@ -1,0 +1,18 @@
+;; Types as hierarchy nodes and isa? on vectors (spec §3), where native
+;; let-go and Clojure differ; .out is JVM Clojure's output, with
+;; clojure.lang.PersistentVector for (type []) and PersistentArrayMap for
+;; (type {}).
+(derive (type []) ::coll-like)
+(println (isa? (type []) ::coll-like) (isa? (type {}) ::coll-like))
+(println (isa? (type []) Object) (isa? (type 1) Object) (isa? Object (type [])))
+(println (contains? (parents (type [])) ::coll-like) (contains? (ancestors (type [])) ::coll-like))
+(derive ::a ::p)
+(derive ::b ::q)
+(println (isa? [::a ::b] [::p ::q]) (isa? [::a ::b] [::p ::b])
+         (isa? [::a ::b] [::q ::p]) (isa? [::a ::b] [::p]))
+(println (isa? [(type []) ::a] [::coll-like ::p]))
+(underive (type []) ::coll-like)
+(println (isa? (type []) ::coll-like) (contains? (parents (type [])) ::coll-like))
+;; a derive of an abstract Type (Object) reaches every type below it
+(derive Object ::any)
+(println (isa? (type 1) ::any) (isa? (type []) ::any) (isa? ::a ::any))

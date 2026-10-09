@@ -21,8 +21,8 @@
 
 (deftest builtin-ancestry
   (let [t (poly/ll-type-table) nm #(:name (t %))]
-    (is (= ["Vector" "Associative" "Coll" "Seqable" "Indexed" "Counted" "Sequential" "Fn" "Object"]
+    (is (= ["Vector" "Associative" "Coll" "Seqable" "Indexed" "Counted" "Sequential" "Fn" "java.lang.Object"]
            (mapv nm (:anc (t 11)))))
     (is (= [] (:anc (t 0))))
-    (is (= ["Number" "Object"] (mapv nm (:anc (t 22)))))
-    (is (every? #(or (nil? %) (#{"Object" "nil"} (:name %)) (= "Object" (nm (peek (:anc %))))) t))))
+    (is (= ["Number" "java.lang.Object"] (mapv nm (:anc (t 22)))))
+    (is (every? #(or (nil? %) (#{"java.lang.Object" "nil"} (:name %)) (= "java.lang.Object" (nm (peek (:anc %))))) t))))

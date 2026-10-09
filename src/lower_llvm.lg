@@ -70,7 +70,9 @@
 
 ;; core vars the llvm runtime implements as one of its top-level defs
 (defn ll-var-alias [v]
-  (if (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args) v))
+  (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
+        (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
+        :else v))
 
 (defn ll-table-var? [v] (and v (table-var? (ll-var-alias v))))
 

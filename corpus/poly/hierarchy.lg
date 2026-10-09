@@ -1,0 +1,32 @@
+;; The global hierarchy over keywords (spec §3): a diamond, isa?, parents,
+;; ancestors and descendants, before and after underive, and an explicit
+;; hierarchy built with make-hierarchy.
+(derive ::b ::a)
+(derive ::c ::a)
+(derive ::d ::b)
+(derive ::d ::c)
+
+(println (isa? ::d ::a) (isa? ::b ::c) (isa? ::a ::a) (isa? ::a ::d))
+(println (sort (parents ::d)) (sort (ancestors ::d)) (sort (descendants ::a)))
+(println (parents ::a) (ancestors ::a) (descendants ::d))
+
+(underive ::d ::b)
+(println (isa? ::d ::b) (isa? ::d ::a) (sort (parents ::d)) (sort (ancestors ::d)) (sort (descendants ::a)))
+
+(def h (-> (make-hierarchy) (derive :x :y) (derive :y :z)))
+(println (isa? h :x :z) (isa? :x :z) (sort (ancestors h :x)) (sort (descendants h :z)) (parents h :x))
+(def h2 (underive h :x :y))
+(println (isa? h2 :x :z) (isa? h :x :z) (ancestors h2 :x))
+
+;; native's error texts, and a type parent registered by register-type-parent!
+(defn msg [f] (try (f) :no-error (catch Exception e (ex-message e))))
+(println (msg #(derive ::e ::e)))
+(println (msg #(derive :e ::f)))
+(println (msg #(derive ::e :f)))
+(println (msg #(derive nil ::f)))
+(println (msg #(derive {} :x :y)))
+(println (msg #(-> (make-hierarchy) (derive :x :y) (derive :y :x))))
+(println (isa? {} :x :x) (parents {} :x) (ancestors 1) (descendants "s"))
+(register-type-parent! (type (atom 0)) ::proto)
+(println (isa? (type (atom 1)) ::proto) (contains? (parents (type (atom 1))) ::proto))
+(println (msg #(register-type-parent! :k ::p)))
