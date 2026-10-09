@@ -259,26 +259,37 @@
 
 (declare ns-file)
 
+(defn own-var-sym
+  "q when it names an existing var of a program or library namespace (one
+   with a source file here, or the current one), else nil."
+  [q]
+  (let [nsn (namespace q)]
+    (when (and nsn (or (= nsn (str (ns-name *ns*))) (some? (ns-file (symbol nsn))))
+               (some? (try (find-var q) (catch e nil))))
+      q)))
+
 (defn alter-sites->var
-  "P12.0j: (alter-var-root (get (ns-interns 'n) 's) ..) as
-   (alter-var-root (var n/s) ..) when n is a program or library namespace
-   (it has a source file here, or is the current one), so lower-wasm sees
-   a var constant and can lower the alter onto the var's global. A
-   private var is reachable as (var n/s), as native's compiler allows.
-   An unchanged form is returned as is, its reader meta kept."
+  "P12.0j: a program or library var named by (get (ns-interns 'n) 's), the
+   spelling src/ uses for a private var, as (var n/s) anywhere (the
+   module's ns-interns knows only the registry's namespaces), and the
+   (find-var 'n/s) argument of an alter-var-root likewise, so lower-wasm
+   sees a var constant and can lower the alter onto the var's global.
+   Natively both name the same Var, and (var n/s) reaches a private one.
+   Only an existing var is rewritten (a missing one stays nil, as native's
+   lookup gives). An unchanged form is returned as is, its reader meta kept."
   [form]
   (let [new (cond (map? form) (into {} (map (fn [kv] [(alter-sites->var (key kv)) (alter-sites->var (val kv))]) form))
                   (vector? form) (mapv alter-sites->var form)
                   (not (seq? form)) form
                   (empty? form) form
                   (= 'quote (first form)) form
+                  (and (= 'get (first form)) (literal-var-ref form) (own-var-sym (second (literal-var-ref form))))
+                  (list 'var (second (literal-var-ref form)))
                   :else
                   (let [r (when (= :root (alter-head form)) (literal-var-ref (second form)))
-                        q (when (and r (= :find (first r))) (second r))
-                        nsn (when q (namespace q))
-                        own? (and nsn (or (= nsn (str (ns-name *ns*))) (some? (ns-file (symbol nsn)))))
+                        q (when (and r (= :find (first r))) (own-var-sym (second r)))
                         out (apply list (map alter-sites->var form))]
-                    (if own? (apply list (first out) (list 'var q) (drop 2 out)) out)))]
+                    (if q (apply list (first out) (list 'var q) (drop 2 out)) out)))]
     (cond (= new form) form
           (seq? new) (with-meta new (meta form))
           :else new)))
