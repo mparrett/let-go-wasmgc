@@ -62,6 +62,21 @@ if (isMainThread) {
       if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
       return b.length;
     },
+    // D208: slurp's file read, getenv's contract (-1 = not found or not a
+    // file), relative paths from the cwd as native lg; only a module built
+    // with LW_HOST_FS=1 imports it
+    read_file: (pptr, plen, buf, cap) => {
+      const path = Buffer.from(new Uint8Array(mem.buffer, pptr, plen)).toString('utf8');
+      let b;
+      try {
+        if (!fs.statSync(path).isFile()) return -1;
+        b = fs.readFileSync(path);
+      } catch {
+        return -1;
+      }
+      if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
+      return b.length;
+    },
   };
 
   // D97 term imports: node has no terminal input here, so this host reads as

@@ -729,7 +729,12 @@
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
   [v]
-  (cond (string? v) (str-wat v)
+  ;; P2.14: (var x) / #'x, see var-const-form. var? first: lg's value
+  ;; predicates see through a var to its root ((string? #'*file*) is true),
+  ;; so a var whose root is a string, char or float would otherwise be
+  ;; lowered as that root (P12.0)
+  (cond (var? v) (when *rt* (str "(global.get " (const-global! v) ")"))
+        (string? v) (str-wat v)
         (keyword? v) (kw-wat v)
         (char? v) (str "(struct.new $Char (i32.const " (int v) "))")
         (float? v) (float-wat v)
@@ -739,8 +744,6 @@
         (and *rt* (regex-standin v)) (str "(global.get " (const-global! (regex-standin v)) ")")
         (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
         (str "(global.get " (const-global! v) ")")
-        ;; P2.14: (var x) / #'x, see var-const-form
-        (and *rt* (var? v)) (str "(global.get " (const-global! v) ")")
         :else nil))
 
 (defn const-wat [nid aux]
@@ -1173,6 +1176,28 @@
     (str "(global.set " g " " (arg-as val :box) ")"
          (when-not (dead? nid) (str " (local.set $v" nid " " (arg-as vr (ty nid)) ")")))))
 
+(defn table-alter-var
+  "P12.0j (D210): the var of an (alter-var-root (var x) f ..) call whose x
+   is a program var-table var (a def, a library global, or a defn the
+   driver made one because a literal alter site names it), else nil.
+   wasm.natives' alter-var-root cannot reach such a var's value from its
+   stand-in, so the call is lowered onto the global itself."
+  [v args]
+  (when (and (= v #'alter-var-root) (>= (count args) 2) (var-const? (first args)))
+    (let [x (const-val (first args))]
+      (when (contains? *var-globals* x) x))))
+
+(defn table-alter-wat
+  "P12.0j: x's global set to (f old more..), the call's value the new root,
+   as native's alterVarRoot returns it. Not atomic: the module is single
+   threaded."
+  [nid x args]
+  (let [g (get *var-globals* x)
+        more (drop 2 args)]
+    (str "(global.set " g " (call $rt_invoke" (invoke-n! (inc (count more))) " " (arg-as (second args) :box)
+         " (global.get " g ")" (apply str (map (fn [a] (str " " (arg-as a :box))) more)) "))"
+         (when-not (no-local? nid) (str " (local.set $v" nid " (global.get " g ")" (coerce :box (ty nid)) ")")))))
+
 ;; review3 bug-07 (P5.8): a call to a native the runtime has no twin for
 ;; went through its nil var-table slot and raised `TypeError: nil is not a
 ;; function `, which reads as a native error and is swallowed by a
@@ -1368,6 +1393,8 @@
       ;; *host-env* is {} (D27) and the browser host's env is {} too, so a
       ;; program only sees an environment under node (process.env) and WASI
       "host-getenv" [(str "(call $rt_host_getenv " (cast-ref "$Bytes" (a 0)) ")") :box]
+      ;; D208: slurp's file read, called only by rt/wasm/host_fs.lg (LW_HOST_FS=1)
+      "host-read-file" [(str "(call $rt_host_read_file " (cast-ref "$Bytes" (a 0)) ")") :box]
       ;; D97: the term host intrinsics (rt/wasm/term.lg, host/ABI.md)
       "term-read-key" ["(call $rt_term_read_key)" :box]
       "term-key-pending" ["(call $term.key_pending)" :bool]
@@ -1401,7 +1428,7 @@
     "i31" "i31?" "i31-get" "i64-add" "i64-sub" "i64-mul" "i64-shl" "i64-shr-s" "i64-shr-u" "i64-lt-u"
     "i64-clz" "i64-ctz" "i64-popcnt" "i32-wrap" "i64-extend-i32-u" "i64-to-f64" "f64-to-i64" "f64-bits" "f64-neg"
     "bytes-new" "bget" "bset!" "bytes-of-string" "string-of-bytes" "host-write" "host-sleep"
-    "host-nanotime" "host-getenv" "trap" "funcref" "call-ref"
+    "host-nanotime" "host-getenv" "host-read-file" "trap" "funcref" "call-ref"
     "term-read-key" "term-key-pending" "term-size" "host-emit" "host-url-param"
     "capture-begin" "capture-end"})
 
@@ -1738,8 +1765,9 @@
 (defn scalar-const-wat [x]
   (if (int? x) (str "(i64.const " x ")" (coerce :int :box)) (const-box-wat x)))
 
-;; P6.8: natives whose var the program names (#'x, (var x), find-var of a
-;; quoted symbol; the driver's scan): alter-var-root may give one a root in
+;; P6.8, D207: natives the program alters (the literal var of an
+;; alter-var-root or with-redefs; every #'x when one is not literal; the
+;; driver's scan): alter-var-root may give one a root in
 ;; the runtime's var-roots table (wasm.core/var-root-set?, var-value), which
 ;; a direct call and a value read consult first, as native lg's var does.
 ;; Every other native keeps its static twin call.
@@ -1769,8 +1797,19 @@
   "A call of rooted native v (P6.8): through its altered root when it has
    one, else `normal` (the static lowering of the same call)."
   [nid v args normal]
-  (let [inv (str "(call $rt_invoke" (invoke-n! (count args)) " " (root-value-wat v)
-                 (apply str (map #(str " " (arg-as % :box)) args)) ")")]
+  ;; Past the positional cap (max-arity-x) the altered root is applied to the
+  ;; args as a vector through $rt_apply_vec, apply's own path, and invoke-n! is
+  ;; not told: rt/wasm/eval_wasm.lg's core table is a 295-entry map literal, a
+  ;; 590-arg hash-map call, and a program rooting #'hash-map raised
+  ;; *invoke-max* to 590, ~100 MB of $rt_invoke<n> helper text (P12.0b).
+  (let [inv (if (> (count args) max-arity-x)
+              (str "(call $rt_apply_vec " (root-value-wat v) " "
+                   (rt-call-expr #'wasm.pvec/varray
+                                 [(reduce (fn [acc a] (rt-call-expr #'wasm.pvec/vconj [acc (arg-as a :box)]))
+                                          (rt-call-expr #'wasm.pvec/empty-vec []) args)])
+                   ")")
+              (str "(call $rt_invoke" (invoke-n! (count args)) " " (root-value-wat v)
+                   (apply str (map #(str " " (arg-as % :box)) args)) ")"))]
     (str "(if " (root-test-wat v) " (then "
          (if (no-local? nid) (str "(drop " inv ")") (str "(local.set $v" nid " " inv (coerce :box (ty nid)) ")"))
          ") (else " normal "))")))
@@ -1932,6 +1971,8 @@
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
       (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
+      (and (= op :call) (table-alter-var (var-of (first refs)) (rest refs)))
+      (table-alter-wat nid (table-alter-var (var-of (first refs)) (rest refs)) (rest refs))
       (= op :call)
       (let [callee (first refs) v (var-of callee)]
         (if (and v (not (table-var? v)))
@@ -1967,6 +2008,7 @@
     (cond
       (not (and v (not (table-var? v)))) (inv (arg-as callee :box))
       (lw-rt/intrinsic? v) nil
+      (table-alter-var v args) nil
       (rooted-call? v argc) nil
       (core-var-ops v) nil
       (and *rt* (rt-overrides v)) nil
@@ -2778,6 +2820,29 @@
     (br $l)))
   (call $wasm.pvec/varray#1__box (local.get $v)))"))
 
+;; D208: host-read-file, getenv's contract over env.read_file (-1 = no such
+;; file: null; a length past the buffer grows memory and asks again). In the
+;; text only under LW_HOST_FS=1, as its import is.
+(def host-fs-runtime "
+(func $rt_host_read_file (param $nm (ref $Bytes)) (result (ref null eq))
+  (local $bo i32) (local $cap i32) (local $len i32) (local $i i32) (local $r (ref null $Bytes))
+  (local.set $bo (i32.add (i32.const 32) (array.len (local.get $nm))))
+  (call $rt_mem_put (i32.const 32) (local.get $nm))
+  (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+  (local.set $len (call $host_read_file (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))
+  (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (ref.null none))))
+  (if (i32.gt_u (local.get $len) (local.get $cap))
+    (then (drop (memory.grow (i32.add (i32.shr_u (i32.sub (local.get $len) (local.get $cap)) (i32.const 16)) (i32.const 1))))
+          (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+          (local.set $len (call $host_read_file (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))))
+  (local.set $r (array.new_default $Bytes (local.get $len)))
+  (block $done (loop $l
+    (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+    (array.set $Bytes (local.get $r) (local.get $i) (i32.load8_u (i32.add (local.get $bo) (local.get $i))))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $l)))
+  (local.get $r))")
+
 (defn exn-runtime []
   (str
    ";; a caught raw runtime error (kind 1) becomes an exception value (kind 2)
@@ -3130,6 +3195,10 @@
          "(import \"env\" \"emit\" (func $host_emit (param i32 i32 i32 i32)))\n"
          "(import \"env\" \"url_param\" (func $host_url_param (param i32 i32 i32 i32) (result i32)))\n"
          "(import \"env\" \"getenv\" (func $host_getenv (param i32 i32 i32 i32) (result i32)))\n"
+         ;; D208: only in the text of a LW_HOST_FS=1 build, so no other
+         ;; build's bytes move, LW_EXPORT_RT=1 ones included (they export
+         ;; every helper the text holds)
+         (when lw-rt/host-fs? "(import \"env\" \"read_file\" (func $host_read_file (param i32 i32 i32 i32) (result i32)))\n")
          ;; D88/D97: the term imports (read_key suspends under JSPI)
          "(import \"term\" \"read_key\" (func $term.read_key (param i32 i32) (result i32)))\n"
          "(import \"term\" \"key_pending\" (func $term.key_pending (result i32)))\n"
@@ -3195,7 +3264,7 @@
          "(func $rt_raise_overflow " (raise-wat) ")\n"
          (boxed :add) (boxed :sub) (boxed :mul)
          (apply str (map unbox (sort (keys op-names))))
-         (print-runtime) "\n" (exn-runtime) (fn-runtime)
+         (print-runtime) (when lw-rt/host-fs? host-fs-runtime) "\n" (exn-runtime) (fn-runtime)
          (when *rt* (bframe-runtime))))))
 
 ;; Shared with the P1.5 census, which must expand units exactly as the driver.
@@ -3593,7 +3662,7 @@
     (list 'fn* [] (symbol v))
     (list 'fn* [] (list 'wasm.core/raise
                         (list 'wasm.intrinsics/bytes-of-string
-                              (str "lower-wasm: the value of " (pr-str v) " is not reachable from its stand-in:"
+                              (str "lower-wasm: the value of " v " is not reachable from its stand-in:"
                                    " only a var the program defines has one (named limit)"))))))
 
 (defn var-const-form
@@ -3637,7 +3706,8 @@
    pool key (pr-str shows none of it), or nil when there is none, so a
    meta-free constant keeps its key and global name."
   [v]
-  (when (coll? v)
+  ;; not a var: coll? sees through it to its root (see const-box-wat)
+  (when (and (coll? v) (not (var? v)))
     (let [own (const-user-meta v)
           kids (if (map? v) (mapcat identity v) (seq v))
           sub (map const-meta-key kids)]
@@ -3686,7 +3756,9 @@
 ;; each takes a gensym when this file loads (D188, P9.1).
 
 (defn- direct-const? [v]
-  (cond (or (vector? v) (set? v)) (every? direct-const? v)
+  ;; a var is never plain data, whatever its root (see const-box-wat)
+  (cond (var? v) false
+        (or (vector? v) (set? v)) (every? direct-const? v)
         (map? v) (every? (fn [e] (and (direct-const? (key e)) (direct-const? (val e)))) v)
         (symbol? v) (or (nil? (meta v)) (and (:lw/regex (meta v)) (direct-const? (meta v))))
         :else (or (nil? v) (boolean? v) (string? v) (keyword? v) (int? v) (float? v))))
@@ -3766,7 +3838,10 @@
   [v]
   (let [mk (const-meta-key v)
         ;; P5.9: ^:a [1] and ^:b [1] print alike; the meta keeps them apart
-        k (cond-> [(const-kind v) (pr-str v)] mk (conj (pr-str mk)))]
+        ;; a var keys by str (#'ns/name, the text pr-str gives any var it
+        ;; can print): lg's pr-str sees through a var whose root is a
+        ;; collection and fails on it (seq expected Seqable)
+        k (cond-> [(const-kind v) (if (var? v) (str v) (pr-str v))] mk (conj (pr-str mk)))]
     (or (get-in @*rt* [:consts k])
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
@@ -3878,25 +3953,23 @@
 ;; the two vectors are distinct objects (no identity shortcut, NaN elements),
 ;; and merging them made it true. A :call's key carries its own id, so calls
 ;; are never merged. Upstream IR findings.
-(let [ik (get (ns-interns 'ir.passes.cse) 'inst-key)]
-  (alter-var-root ik (fn [orig] (fn [nid f]
-                                  (let [[op refs aux] (orig nid f)]
-                                    (case op
-                                      :const [op refs (strict-key aux)]
-                                      :call [op refs aux nid]
-                                      [op refs aux]))))))
+(alter-var-root (get (ns-interns 'ir.passes.cse) 'inst-key) (fn [orig] (fn [nid f]
+                                (let [[op refs aux] (orig nid f)]
+                                  (case op
+                                    :const [op refs (strict-key aux)]
+                                    :call [op refs aux nid]
+                                    [op refs aux])))))
 
 ;; P2.11 (F4 corpus nan-arith): constfold's algebraic identities ((+ x 0),
 ;; (* x 1), (* x 0) -> 0, (- x 0), the bit-op ones) hold only for an int x:
 ;; (* inf 0) is NaN, (+ -0.0 0) is 0.0, (+ nil 0) throws. They now fire only
 ;; when the non-constant operand is typed :int. Upstream finding (D94 noted
 ;; the non-number half).
-(let [ti (get (ns-interns 'ir.passes.constfold) 'try-identity)]
-  (alter-var-root ti (fn [orig] (fn [nid f]
-                                  (let [int-t? (fn [r] (let [t (ir/type-of r f)]
-                                                         (or (= :int t) (and (vector? t) (= :const (first t)) (= :int (second t))))))]
-                                    (when (every? #(or (= :const (ir/op % f)) (int-t? %)) (ir/refs nid f))
-                                      (orig nid f)))))))
+(alter-var-root (get (ns-interns 'ir.passes.constfold) 'try-identity) (fn [orig] (fn [nid f]
+                                (let [int-t? (fn [r] (let [t (ir/type-of r f)]
+                                                       (or (= :int t) (and (vector? t) (= :const (first t)) (= :int (second t))))))]
+                                  (when (every? #(or (= :const (ir/op % f)) (int-t? %)) (ir/refs nid f))
+                                    (orig nid f))))))
 
 ;; P1.7 (bug-01): infer-arg-types types a param :int from its uses (+ x 1),
 ;; which makes the wasm signature i64, so a caller holding nil or a string
@@ -3917,18 +3990,16 @@
 ;;     arity's capture can be another's param). Native: the param wins. The
 ;;     clashing capture keeps its slot under a name no form can spell.
 ;; Upstream IR finding (lower-go shares the builder).
-(let [fv (get (ns-interns 'ir.build) 'free-vars)]
-  (alter-var-root fv (fn [orig] (fn [form bound]
-                                  (let [r (orig form bound)]
-                                    (if (and (seq? form) (= 'fn* (first form)))
-                                      (into #{} (remove bound r))
-                                      r))))))
-(let [bt (get (ns-interns 'ir.build) 'build-inner-fn-template)]
-  (alter-var-root bt (fn [orig] (fn [name-sym args-vec body-forms capture-syms variadic?]
-                                  (let [params (set args-vec)]
-                                    (orig name-sym args-vec body-forms
-                                          (mapv #(if (contains? params %) (symbol (str "__lw_shadowed " %)) %) capture-syms)
-                                          variadic?))))))
+(alter-var-root (get (ns-interns 'ir.build) 'free-vars) (fn [orig] (fn [form bound]
+                                (let [r (orig form bound)]
+                                  (if (and (seq? form) (= 'fn* (first form)))
+                                    (into #{} (remove bound r))
+                                    r)))))
+(alter-var-root (get (ns-interns 'ir.build) 'build-inner-fn-template) (fn [orig] (fn [name-sym args-vec body-forms capture-syms variadic?]
+                                (let [params (set args-vec)]
+                                  (orig name-sym args-vec body-forms
+                                        (mapv #(if (contains? params %) (symbol (str "__lw_shadowed " %)) %) capture-syms)
+                                        variadic?)))))
 
 (defn- infer-arg-types-skipping
   "infer-arg-types' two-arity body, leaving the params in *box-param-idx*
@@ -4101,13 +4172,18 @@
 (defn- data-hex [bs]
   (apply str (map (fn [b] (str "\\" (if (< b 16) "0" "") (str/lower-case (format "%x" b)))) bs)))
 
+(def ^:private rt-files-loaded (atom #{}))
+
 (defn- load-rt-file
-  "Load rt/wasm/<f> (a stock-lg namespace the driver does not load) once."
+  "Load rt/wasm/<f> (a stock-lg namespace the driver does not load) once.
+   A driver restored from a snapshot (D209) has the namespace but not its
+   fns, so it loads the file all the same."
   [ns-sym f]
-  (when-not (find-ns ns-sym)
+  (when-not (or (contains? @rt-files-loaded ns-sym) (and (find-ns ns-sym) (not lw-rt/snapshot)))
     (let [cur (ns-name *ns*)]
       (load-string (slurp (str lw-rt/rt-dir "/" f)))
-      (in-ns cur))))
+      (in-ns cur))
+    (swap! rt-files-loaded conj ns-sym)))
 
 (defn rec-group-constant
   "[bytes names]: the payload of the type section of (module <rec group>)
@@ -4487,14 +4563,39 @@
                out (str (:out r))]
            (if (and r (= 0 (:exit r)) (>= (count out) 64)) (subs out 0 64) (str "path:" exe)))))
 
+;; Every os/getenv in src/ against this key (P12.0j, 2026-10-08): a setting
+;; that can change the lowered runtime must be in it, or a warm entry built
+;; under another setting is reused.
+;;   in the key:  LW_TARGET (*target*), LW_NO_EVAL, LW_RUNTIME_COMPILE,
+;;     LW_HOST_FS, LW_RT_DIR and LW_RT_SNAPSHOT (by the text read: the
+;;     runtime files or the snapshot), LW_LETGO_CORE (below)
+;;   cannot change the runtime library: LW_RTLIB_DIR (where it lives),
+;;     LW_RT_SNAPSHOT_WRITE (writes a file), LETGO / LW_ROOT (the repository
+;;     `git show` reads; the commit is letgo-commit, in lw_rt.lg's text),
+;;     LW_EXPORT_RT (exports added when a module's text is assembled),
+;;     LW_PROGRAM_TABLE, LW_NO_PROGRAM_TABLE and LW_TRACE (the program's
+;;     _main and the driver's messages, never a runtime defn)
+;; LW_NO_EVAL drops wasm.eval's twins when they are built, here or from a
+;; snapshot, so it is keyed (one snapshot serves both settings).
+;; LW_LETGO_CORE reads core.lg/string.lg from a directory, whose text need
+;; not be letgo-commit's, so that text is keyed when it is set and no
+;; snapshot holds it; unset, the key is what it was.
 (defn rtlib-key []
-  (hex32 (apply str (concat (map #(slurp (first %)) lw-rt/file-forms)
-                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"])
+  ;; D209: a restored driver read no runtime source; its snapshot holds them
+  (hex32 (apply str (concat (if lw-rt/snapshot [(:text lw-rt/snapshot)] (map #(slurp (first %)) lw-rt/file-forms))
+                            (map #(slurp (str lw-rt/src-dir "/" %))
+                                 (if lw-rt/snapshot ["lower_wasm.lg" "lw_rt.lg"] ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"]))
                             [(str "|lg=" @lg-binary-id)]
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
                              ;; D193: the emitter's rows of the load order
-                             (if lw-rt/runtime-compile? "|runtime-compile" "")]))))
+                             (if lw-rt/runtime-compile? "|runtime-compile" "")
+                             ;; D208: the host file system row
+                             (if lw-rt/host-fs? "|host-fs" "")
+                             (if (and lw-rt/letgo-core-dir (not lw-rt/snapshot))
+                               (str "|letgo-core=" (slurp (str lw-rt/letgo-core-dir "/core.lg"))
+                                    (slurp (str lw-rt/letgo-core-dir "/string.lg")))
+                               "")]))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))

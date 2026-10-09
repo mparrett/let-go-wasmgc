@@ -9,7 +9,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 
 | order | file | ns | requires | owns |
 |---|---|---|---|---|
-| 1 | `intrinsics.lg` | `wasm.intrinsics` | | the 43 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
+| 1 | `intrinsics.lg` | `wasm.intrinsics` | | the 44 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
 | 2 | `pvec.lg` | `wasm.pvec` | 1 | the persistent vector, `Node` arrays |
 | 3 | `seq.lg` | `wasm.seq` | 1 2 | the value model: every box struct, `Fn` (D52), `kind`, `equiv?`, `hash`; seq kinds, chunking, laziness, the seq natives; strings as collections; `float-bits`; the foreign-kind hook slots (SEQ.md) |
 | 4 | `str.lg` | `wasm.str` | 1 2 3 | building the scalar boxes, keyword/symbol interning, `str`/`pr-str`/`print-str`, float formatting, the string natives, `compare` (STR.md) |
@@ -30,11 +30,15 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 19 | `wasmbin.lg` | `wasm.wasmbin` | | only under `LW_RUNTIME_COMPILE=1` (D193): the binary encoder (P10.0), plain lg over clojure.core, that the emitter writes modules with |
 | 20 | `emit.lg` | `wasm.eval` | 17 18 19 | only under `LW_RUNTIME_COMPILE=1` (D193): the evaluator's second output (stage 3 of docs/SELF-HOST-SPEC.md). Its first ns form is `wasm.emit` (what `(require 'wasm.emit)` loads under stock lg); the second re-enters `wasm.eval`, and `src/lw_rt.lg` takes a file's LAST ns form, so its defns are found there |
 | 21 | `ir.lg` | `wasm.ir` | | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
+| 22 | `host_fs.lg` | `wasm.host-fs` | 1 4 9 | only under `LW_HOST_FS=1` (D208): `slurp` through the host's file system (`env.read_file`, host/ABI.md), plain lg like natives.lg; it claims `core/slurp` after natives.lg's no-file-system twin, so it replaces it. `spit`, `os/*` and directory reads stay natives.lg's |
 
 Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
 default build loads the other nineteen namespaces and its bytes do not
 change (`checks/gc-byte-identity.sh`).
+Row 22 is the same mechanism for `LW_HOST_FS` (D208): only a build with
+that flag loads it, and the backend's `env.read_file` import and helper are
+in its text only then.
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
 has no cycle: anything that must dispatch on a box lives in seq.lg, and the

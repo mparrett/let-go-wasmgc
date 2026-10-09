@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-08 at
-# f6c3a3e, P12.3 registry fixes; before that 2026-10-07 at
-# 4d6fbc2, D204 with its review fixes (symbol of a var without the #' prefix, instance? with nil); before that 2026-10-07 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-09 at
+# 400afd6, the merge of main (#26, #27) into P12.0: the same tree compiles on both sides, so the base moves with it and the stage-2 final run re-verifies; before that 2026-10-09 at
+# 90da78e, D210 with the P12.0 fixes: alter-own-defn.lg joins the corpus; on main 2026-10-08 at
+# f6c3a3e, P12.3 registry fixes; before that 2026-10-08 at
+# 1c5ff7c, D209 step 2: wasm.natives' create-ns twin and interned vars carrying meta; before that 2026-10-08 at
+# dcf502c, P12.0f load-string twin; before that 2026-10-08 at 8bdbf97, the D207 rooting rule; before that 2026-10-07 at 4d6fbc2, D204 with its review fixes (symbol of a var without the #' prefix, instance? with nil); before that 2026-10-07 at
 # d0693f3, D199's directly lowered constants; before that 167f95e, the let-go ff1e6dac pin with D198 and the deferred read-json conversion; before
 # that 6a8401b, the pin alone; before that 2026-10-05 at 138f341, after
 # D185-D187; 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).
@@ -50,7 +53,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=f6c3a3ea735f8161c78ba03d98933855a48d10d6
+base=400afd687ab102a2159a44558b298fe73330fb68
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)

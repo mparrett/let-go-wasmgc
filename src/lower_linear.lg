@@ -585,6 +585,7 @@
             (= nm "$rt_host_write")
             "(func $rt_host_write (param $fd i32) (param $b i32) (result i32) (local $n i32) (local.set $n (call $lin_array_len (local.get $b))) (if (i32.eq (local.get $fd) (i32.const -2)) (then (call $rt_capture_append (local.get $b)) (return (local.get $n)))) (call $host_write (local.get $fd) (i32.add (local.get $b) (i32.const 16)) (local.get $n)))"
             (= nm "$rt_host_getenv") (linear-host-copy-twin nm "$host_getenv" false)
+            (= nm "$rt_host_read_file") (linear-host-copy-twin nm "$host_read_file" false)
             (= nm "$rt_host_url_param") (linear-host-copy-twin nm "$host_url_param" false)
             (= nm "$rt_host_arg") (linear-host-copy-twin nm "$host_arg" true)
             :else nil)]

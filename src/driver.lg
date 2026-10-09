@@ -82,8 +82,14 @@
          (= 'def (first form)) (cons [(def-sym form) thunk?] (mapcat #(nested-defs % thunk?) (drop 2 form)))
          :else (mapcat #(nested-defs % thunk?) form))))
 
-;; every var named by #'x / find-var, program and libraries (lw/*rooted-natives*)
+;; every var named by #'x / find-var, program and libraries: the program
+;; table's var constants (ns-table-entry!), and the rooted natives when the
+;; D207 fallback is taken
 (def rooted-vars (atom #{}))
+;; D207: the vars an alter site names (lw/*rooted-natives*), and the first
+;; alter site whose var is not a literal var form (nil when none)
+(def altered-vars (atom #{}))
+(def alter-fallback (atom nil))
 (defn var-ref-syms
   "P6.8: [:var sym] for each (var sym) / #'sym in form, [:find sym] for
    each (find-var 'sym): the vars a program can alter-var-root."
@@ -118,13 +124,175 @@
         (and (seq? form) (= 'quote (first form))) nil
         (seq? form) (run! note-registry-refs! form)))
 
+(defn literal-var-ref
+  "[:var sym] for (var sym) / #'sym, [:find sym] for (find-var 'sym) and
+   (get (ns-interns 'ns) 'sym), else nil."
+  [x]
+  (cond (and (seq? x) (= 'var (first x)) (symbol? (second x))) [:var (second x)]
+        (and (seq? x) (= 'find-var (first x)) (seq? (second x)) (= 'quote (first (second x)))
+             (symbol? (second (second x))))
+        [:find (second (second x))]
+        ;; (get (ns-interns 'ns) 'sym): how src/ reaches a private var
+        (and (seq? x) (= 'get (first x)) (= 3 (count x))
+             (seq? (nth x 1)) (= 'ns-interns (first (nth x 1))) (seq? (second (nth x 1)))
+             (= 'quote (first (second (nth x 1)))) (symbol? (second (second (nth x 1))))
+             (seq? (nth x 2)) (= 'quote (first (nth x 2))) (symbol? (second (nth x 2))))
+        [:find (symbol (str (second (second (nth x 1)))) (str (second (nth x 2))))]
+        :else nil))
+
+(defn alter-head
+  "D207: :root, :redefs or :redefs-fn when form calls alter-var-root,
+   with-redefs or with-redefs-fn (resolved in the current ns), else nil."
+  [form]
+  (let [h (first form)]
+    (when (and (symbol? h) (contains? #{"alter-var-root" "with-redefs" "with-redefs-fn"} (name h)))
+      (let [v (try (resolve h) (catch e nil))]
+        (cond (= v #'alter-var-root) :root
+              (= v #'with-redefs) :redefs
+              (= v #'with-redefs-fn) :redefs-fn
+              :else nil)))))
+
+(defn alter-site-refs
+  "D207: the vars form alters, as var-ref-syms entries: the literal var
+   argument of alter-var-root, with-redefs' binding names, with-redefs-fn's
+   literal vars. [:fallback site] for an alter site whose var is not
+   literal. Syntactic, on the forms as read, like var-ref-syms."
+  [form]
+  (cond (map? form) (mapcat alter-site-refs (mapcat identity form))
+        (or (vector? form) (set? form)) (mapcat alter-site-refs form)
+        (not (seq? form)) []
+        (empty? form) []
+        (= 'quote (first form)) []
+        :else
+        (let [kind (alter-head form)
+              arg (second form)
+              lit (fn [x] (or (literal-var-ref x) [:fallback form]))
+              own (cond (= kind :root) [(lit arg)]
+                        (= kind :redefs) (if (vector? arg)
+                                           (map (fn [s] (if (symbol? s) [:var s] [:fallback form])) (take-nth 2 arg))
+                                           [[:fallback form]])
+                        (= kind :redefs-fn) (cond (vector? arg) (map lit arg)
+                                                  (map? arg) (map lit (keys arg))
+                                                  :else [[:fallback form]])
+                        :else [])]
+          (concat own (mapcat alter-site-refs (rest form))))))
+
+(defn note-alter-ref!
+  "Resolve one alter-site-refs entry into altered-vars or alter-fallback."
+  [r]
+  (if (= :fallback (first r))
+    (when-not @alter-fallback (reset! alter-fallback (second r)))
+    (let [v (try (if (= :var (first r)) (resolve (second r)) (find-var (second r))) (catch e nil))]
+      (when (var? v) (swap! altered-vars conj v)))))
+
 (defn note-var-refs!
-  "Resolve form's var-ref-syms in the current ns into rooted-vars."
+  "Resolve form's var-ref-syms in the current ns into rooted-vars, and its
+   alter sites into altered-vars (D207)."
   [form]
   (note-registry-refs! form)
   (doseq [[k s] (var-ref-syms form)]
     (when-let [v (try (if (= k :var) (resolve s) (find-var s)) (catch e nil))]
-      (when (var? v) (swap! rooted-vars conj v)))))
+      (when (var? v) (swap! rooted-vars conj v))))
+  (run! note-alter-ref! (alter-site-refs form)))
+
+;; P12.0j (D210): a program or library defn whose var a literal
+;; alter-var-root site names is a var-table var, as a defn defined twice is
+;; (bug-09): its fn is the var's value, every call (its own namespace's
+;; included) reads the var, and lower-wasm lowers that alter-var-root as a
+;; read-modify-write of the var's global. Every other defn stays a direct
+;; call. The vars the sites name, resolved where each site sits:
+(def root-altered (atom #{}))
+;; the program's top-level forms, scanned again at each require, when the
+;; library vars they name exist
+(def program-forms (atom []))
+
+(defn alter-root-refs
+  "P12.0j: literal-var-ref of the var argument of every alter-var-root call
+   in form (alter-head :root). with-redefs is left out: it reaches the var
+   through var-get at run time, which the module cannot answer for a
+   program var (wasm.natives' named limit), so converting would not help."
+  [form]
+  (cond (map? form) (mapcat alter-root-refs (mapcat identity form))
+        (or (vector? form) (set? form)) (mapcat alter-root-refs form)
+        (not (seq? form)) []
+        (empty? form) []
+        (= 'quote (first form)) []
+        :else (let [r (when (= :root (alter-head form)) (literal-var-ref (second form)))]
+                (concat (if r [r] []) (mapcat alter-root-refs (rest form))))))
+
+(defn site-var
+  "The var a [:var s] / [:find s] alter-root-refs entry names, from the
+   current ns. resolve answers nil for another namespace's private var
+   (#'ir.passes.typeinfer/call-declared-type, a defn-), which (var ..)
+   still names natively, so a qualified s falls back to find-var through
+   the current ns's alias or the namespace itself."
+  [r]
+  (let [s (second r)]
+    (if (= :find (first r))
+      (find-var s)
+      (or (resolve s)
+          (when (namespace s)
+            (let [a (get (ns-aliases *ns*) (symbol (namespace s)))
+                  n (if a (ns-name a) (symbol (namespace s)))]
+              (find-var (symbol (str n) (name s)))))))))
+
+(defn note-root-alters!
+  "Resolve each alter-root-refs entry of forms, in the current ns, into
+   root-altered."
+  [forms]
+  (run! (fn [r]
+          (let [v (try (site-var r) (catch e nil))]
+            (when (var? v) (swap! root-altered conj v))))
+        (mapcat alter-root-refs forms)))
+
+(defn altered-own-syms
+  "P12.0j: the names the program's literal alter-var-root sites give for
+   vars of its own namespace (unqualified, or qualified with it), before
+   any of them is defined; process! makes such a defn a def."
+  [forms]
+  (let [nsf (first (filter (fn [f] (and (seq? f) (= 'ns (first f)))) forms))
+        own (if nsf (str (second nsf)) "user")]
+    (set (keep (fn [r]
+                 (let [s (second r)]
+                   (when (or (nil? (namespace s)) (= own (namespace s))) (symbol (name s)))))
+               (mapcat alter-root-refs forms)))))
+
+(declare ns-file)
+
+(defn own-var-sym
+  "q when it names an existing var of a program or library namespace (one
+   with a source file here, or the current one), else nil."
+  [q]
+  (let [nsn (namespace q)]
+    (when (and nsn (or (= nsn (str (ns-name *ns*))) (some? (ns-file (symbol nsn))))
+               (some? (try (find-var q) (catch e nil))))
+      q)))
+
+(defn alter-sites->var
+  "P12.0j: a program or library var named by (get (ns-interns 'n) 's), the
+   spelling src/ uses for a private var, as (var n/s) anywhere (the
+   module's ns-interns knows only the registry's namespaces), and the
+   (find-var 'n/s) argument of an alter-var-root likewise, so lower-wasm
+   sees a var constant and can lower the alter onto the var's global.
+   Natively both name the same Var, and (var n/s) reaches a private one.
+   Only an existing var is rewritten (a missing one stays nil, as native's
+   lookup gives). An unchanged form is returned as is, its reader meta kept."
+  [form]
+  (let [new (cond (map? form) (into {} (map (fn [kv] [(alter-sites->var (key kv)) (alter-sites->var (val kv))]) form))
+                  (vector? form) (mapv alter-sites->var form)
+                  (not (seq? form)) form
+                  (empty? form) form
+                  (= 'quote (first form)) form
+                  (and (= 'get (first form)) (literal-var-ref form) (own-var-sym (second (literal-var-ref form))))
+                  (list 'var (second (literal-var-ref form)))
+                  :else
+                  (let [r (when (= :root (alter-head form)) (literal-var-ref (second form)))
+                        q (when (and r (= :find (first r))) (own-var-sym (second r)))
+                        out (apply list (map alter-sites->var form))]
+                    (if q (apply list (first out) (list 'var q) (drop 2 out)) out)))]
+    (cond (= new form) form
+          (seq? new) (with-meta new (meta form))
+          :else new)))
 
 ;; P7: each program namespace's defmacro forms, in source order (ns-sym ->
 ;; [form ...]), for the program table's :macros.
@@ -619,9 +787,14 @@
                 (let [[nm _] (lw-rt/strip-meta-name (second form))
                       v (lw-rt/ns-var ns-sym nm)]
                   (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " did not load") {})))
-                  (swap! defined conj nm)
-                  (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name nm :lib true
-                                                  :arities (lw-rt/arities (drop 2 form))}))
+                  (if (contains? @root-altered v)
+                    ;; P12.0j (D210): altered, so a var-table var set where
+                    ;; the defn sits, as a def is
+                    (do (global! nm)
+                        (swap! init-forms conj (expand-top (defn->def (apply list 'defn nm (drop 2 form))))))
+                    (do (swap! defined conj nm)
+                        (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name nm :lib true
+                                                        :arities (lw-rt/arities (drop 2 form))}))))
                 ;; P6.8: a defonce of a name an earlier form defined is a
                 ;; no-op, as native's (when-not (bound? v) ..) makes it
                 (and (= 'defonce head) (contains? @defined (first (lw-rt/strip-meta-name (second form))))) nil
@@ -648,7 +821,7 @@
                         (doseq [nm (thunk-def-syms e)]
                           (swap! thunk-vars conj (lw-rt/ns-var ns-sym (first (lw-rt/strip-meta-name nm)))))
                         (swap! init-forms conj e)))))]
-      (doseq [form forms] (note-var-refs! form) (index! form))
+      (doseq [form forms] (note-var-refs! form) (index! (alter-sites->var form)))
       (let [init-sym '__lw_nsinit
             v (intern ns-sym init-sym (fn [] nil))]
         (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name init-sym :lib true :pre-expanded true
@@ -661,6 +834,11 @@
   [form nss var-globals]
   (let [order (lib-order! nss)]
     (eval form)
+    ;; P12.0j: every alter site these namespaces and the program hold is
+    ;; noted before any of them is indexed, since a namespace is indexed
+    ;; before the ones that require it (lower_wasm alters ir.build's defns)
+    (note-root-alters! @program-forms)
+    (run! (fn [e] (binding [*ns* (the-ns (first e))] (note-root-alters! (read-program (second e))))) order)
     (let [inits (doall (for [[n path] order]
                          (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
       (register-protocol-dispatch!)
@@ -895,6 +1073,9 @@
         defined (atom #{})
         ;; names defined by more than one defn/defn-/def form (bug-09)
         redef (set (for [[s n] (frequencies (keep defining-sym forms)) :when (> n 1)] s))
+        ;; P12.0j (D210): and a defn a literal alter-var-root site names
+        redef (into redef (altered-own-syms forms))
+        _ (reset! program-forms forms)
         process!
         (fn [form]
           (when (and (seq? form) (#{'defn 'defn- 'def 'declare} (first form)))
@@ -968,7 +1149,7 @@
                (if-let [d (try (macro-do-expansion form) (catch e nil))]
                  (when-let [m (reduce step nil (rest d))] (reduced m))
                  (try (note-var-refs! form)
-                      (let [form (defonce-form form @defined)] (process! form) (stamp! form)) nil
+                      (let [form (alter-sites->var (defonce-form form @defined))] (process! form) (stamp! form)) nil
                       (catch e (if-let [m (::native (ex-data e))]
                                  (if (and test? (defn-form? form) (contains? (set @tests) (def-sym form)))
                                    (do (process! (stub-deftest (def-sym form))) nil)
@@ -999,8 +1180,12 @@
           ;; table's stand-ins read their vars only when eval derefs them
           boot (registry-boot-forms (ns-name *ns*) (conj (vec (sort @lib-loaded)) (ns-name *ns*))
                                     var-globals (keep defn-var @defns))
-          ;; P7.9: top-level calls of eval and of program fns, when eval is reached
-          wrap-calls (if @eval-reached
+          ;; P7.9: top-level calls of eval and of program fns, when eval is reached.
+          ;; Not under LW_TRACE=1: the layer is an ex-info, and the runtime's
+          ;; ex-info keeps only an ex-info cause (native keeps any), so the
+          ;; wrapped error's own chain, which the evaluator writes into its
+          ;; message as native's "caused by" lines, would be lost.
+          wrap-calls (if (and @eval-reached (not (= "1" (os/getenv "LW_TRACE"))))
                        (let [fns (into (set (keep defn-var @defns)) (keys @lw-rt/lib-defns))
                              wrap? #(or (= % #'eval) (contains? fns %))]
                          #(calling-wrap % wrap?))
@@ -1017,11 +1202,16 @@
         (binding [*stub-failures* (boolean test?) lw/*stub-libs* (boolean test?) lw/*program-file* in
                   lw/*thunk-def-vars* @thunk-vars
                   ;; natives only: the program's and its libraries' own vars
-                  ;; are var-table vars or direct-call defns
+                  ;; are var-table vars or direct-call defns. D207: the vars
+                  ;; an alter site names, or every #'x when one is not literal
                   lw/*rooted-natives* (let [own (conj @lib-loaded (ns-name *ns*))]
+                                        (when (and @alter-fallback (= "1" (os/getenv "LW_TRACE")))
+                                          (binding [*out* *err*]
+                                            (println "lower-wasm: D207 fallback, every #'x is rooted; non-literal var in"
+                                                     (let [s (pr-str @alter-fallback)] (subs s 0 (min 200 (count s)))))))
                                         (set (remove #(or (contains? var-globals %)
                                                           (contains? own (some-> (:ns (meta %)) ns-name)))
-                                                     @rooted-vars)))]
+                                                     (if @alter-fallback @rooted-vars @altered-vars))))]
          ;; the cached, fully lowered runtime (lower-wasm/load-rtlib!)
          (when rtlib? (lw/load-rtlib!))
          (doseq [v @decls] (lw/add-decl! v))

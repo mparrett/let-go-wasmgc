@@ -224,7 +224,11 @@
   (testing "getenv reads *host-env*, not the process"
     (is (nil? (wasm/host-getenv (wasm/bytes-of-string "HOME"))))
     (binding [wasm/*host-env* {"SEED" "42"}]
-      (is (= "42" (wasm/string-of-bytes (wasm/host-getenv (wasm/bytes-of-string "SEED"))))))))
+      (is (= "42" (wasm/string-of-bytes (wasm/host-getenv (wasm/bytes-of-string "SEED")))))))
+  (testing "read-file reads *host-files*, not the file system (D208)"
+    (is (nil? (wasm/host-read-file (wasm/bytes-of-string "README.md"))))
+    (binding [wasm/*host-files* {"a.txt" "hi"}]
+      (is (= "hi" (wasm/string-of-bytes (wasm/host-read-file (wasm/bytes-of-string "a.txt"))))))))
 
 (deftest traps
   (is (thrown-with-msg? Exception #"wasm trap: boom" (wasm/trap "boom")))
