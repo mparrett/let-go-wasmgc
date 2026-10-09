@@ -635,9 +635,15 @@
         pops (map (fn [p] (list 'pop-binding! (list 'var (first p)))) pairs)]
     (cat-list (list 'do) (cat-list (vec pushes) (list (list 'try (cons 'do body) (cons 'finally pops)))))))
 
+;; core/< and core/inc as native's syntax-quoted dotimes has them: a local
+;; named < or inc must not capture the test or the step, and the carried
+;; compiler, which expands a program's dotimes through this table inside a
+;; module, must hand ir.build var calls as native does (an unqualified < or
+;; inc is ir.build's typed op, so the counter typed i64 where native's stays
+;; boxed: D212)
 (defn- m-dotimes [bindings & body]
   (let [i (first bindings) nn (second bindings) g (gensym "n__")]
-    (list 'let [g nn] (list 'loop [i 0] (list* 'when (list '< i g) (concat body (list (list 'recur (list 'inc i)))))))))
+    (list 'let [g nn] (list 'loop [i 0] (list* 'when (list 'core/< i g) (concat body (list (list 'recur (list 'core/inc i)))))))))
 
 (defn- m-declare [& names] (cons 'do (map (fn [x] (list 'def x)) names)))
 
