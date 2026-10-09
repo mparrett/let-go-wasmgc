@@ -192,7 +192,7 @@ the guard says so in its PR with one program's WAT diff, re-freezes in its own c
 
 | item | state | by | note |
 |---|---|---|---|
-| P12.0 | queued | | self-compile.sh built 2026-10-08; red at the rooted-var driver crash (first task) |
+| P12.0 | green 2026-10-09 (D210) | opus | self-compile.sh MATCH at 0733792 (module 3,632,735 bytes; build 252 s warm rtlib at load 6, 2,004 s cold at load 35-50): the backend carried as a program with let-go's ir/ as a library root prints native's `197 257 42` |
 | P12.1 | queued | | 9 `binding [*ns* ...]` units; backend-census.sh built 2026-10-08, reports 13 |
 | P12.2 | queued | | 3 dynamic vars + f64-to-i64-sat |
 | P12.3 | queued | | corpus/eval/registry/ built 2026-10-08; 3 of 17 lines mismatch (:macro meta, bound?, ns-resolve privacy) |

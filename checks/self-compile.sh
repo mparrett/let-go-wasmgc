@@ -38,8 +38,10 @@
 # lower-wasm/rtlib-key, which since P12.0j keys LW_LETGO_CORE's text, so
 # this check's archive never shares an entry with a git-show build whose
 # text differs), so a stale entry is never reused; a fresh temp dir
-# per run would make every run pay the cold rebuild (526 s on 2026-10-08),
-# so it lives in LW_SELF_COMPILE_CACHE (default $TMPDIR/lw-self-compile-rtlib).
+# per run would make every run pay the cold rebuild, so it lives in
+# LW_SELF_COMPILE_CACHE (default $TMPDIR/lw-self-compile-rtlib). Measured
+# 2026-10-08/09: the module build took 2,004 s cold (load 35-50) and 252 s
+# warm (load 6); KEEP=1 still keeps the run's temp dir, not the cache.
 #
 # Rename trap: the sed must also match a name at end of line ((ns lw-rt with
 # nothing after it) or the file defines into the old ns and its in-ns switches
