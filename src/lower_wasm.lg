@@ -1176,6 +1176,28 @@
     (str "(global.set " g " " (arg-as val :box) ")"
          (when-not (dead? nid) (str " (local.set $v" nid " " (arg-as vr (ty nid)) ")")))))
 
+(defn table-alter-var
+  "P12.0j (D210): the var of an (alter-var-root (var x) f ..) call whose x
+   is a program var-table var (a def, a library global, or a defn the
+   driver made one because a literal alter site names it), else nil.
+   wasm.natives' alter-var-root cannot reach such a var's value from its
+   stand-in, so the call is lowered onto the global itself."
+  [v args]
+  (when (and (= v #'alter-var-root) (>= (count args) 2) (var-const? (first args)))
+    (let [x (const-val (first args))]
+      (when (contains? *var-globals* x) x))))
+
+(defn table-alter-wat
+  "P12.0j: x's global set to (f old more..), the call's value the new root,
+   as native's alterVarRoot returns it. Not atomic: the module is single
+   threaded."
+  [nid x args]
+  (let [g (get *var-globals* x)
+        more (drop 2 args)]
+    (str "(global.set " g " (call $rt_invoke" (invoke-n! (inc (count more))) " " (arg-as (second args) :box)
+         " (global.get " g ")" (apply str (map (fn [a] (str " " (arg-as a :box))) more)) "))"
+         (when-not (no-local? nid) (str " (local.set $v" nid " (global.get " g ")" (coerce :box (ty nid)) ")")))))
+
 ;; review3 bug-07 (P5.8): a call to a native the runtime has no twin for
 ;; went through its nil var-table slot and raised `TypeError: nil is not a
 ;; function `, which reads as a native error and is swallowed by a
@@ -1949,6 +1971,8 @@
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
       (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
+      (and (= op :call) (table-alter-var (var-of (first refs)) (rest refs)))
+      (table-alter-wat nid (table-alter-var (var-of (first refs)) (rest refs)) (rest refs))
       (= op :call)
       (let [callee (first refs) v (var-of callee)]
         (if (and v (not (table-var? v)))
@@ -1984,6 +2008,7 @@
     (cond
       (not (and v (not (table-var? v)))) (inv (arg-as callee :box))
       (lw-rt/intrinsic? v) nil
+      (table-alter-var v args) nil
       (rooted-call? v argc) nil
       (core-var-ops v) nil
       (and *rt* (rt-overrides v)) nil
