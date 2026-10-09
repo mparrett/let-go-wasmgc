@@ -1039,24 +1039,21 @@
             (recur (rest xs) out (subs x 9))
             (recur (rest xs) (conj out x) target)))))))
 
-(defn -main [& argv]
+(defn compile-text
+  "The module text for the program at path in, the WAT -main writes to its
+   output file. A library entry (P12.4): the backend carried as a program
+   requires this namespace and hands the text to its host to assemble, since
+   a module has no spit. opts: :target (:gc or :linear), :rt, :shake,
+   :rtlib (start from the cached runtime library), :test (compile deftests,
+   the shim installed) and :skip (deftest symbols left out under :test).
+   The library search path is source-paths, which -main sets from its args."
+  [in opts]
   ;; plain bindings: a destructuring one takes a gensym when this file loads,
   ;; which renumbers IR values in every program compiled after it (D174)
-  (let [targeted (target-args argv)
-        argv (first targeted)
-        target (second targeted)
-        sp-arg (second (drop-while #(not= "-source-paths" %) argv))
-        _ (reset! source-paths (if sp-arg (vec (remove empty? (clojure.string/split sp-arg #":"))) []))
-        argv (if sp-arg (remove #{"-source-paths" sp-arg} argv) argv)
-        skip-arg (second (drop-while #(not= "--skip" %) argv))
-        skip (set (map symbol (when skip-arg (clojure.string/split skip-arg #","))))
-        argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
-        flags (set (filter #(clojure.string/starts-with? % "--") argv))
-        [in out] (remove flags argv)
-        opts {:target target :rt (not (flags "--no-rt")) :shake (not (flags "--no-shake"))}
-        rtlib? (and (:rt opts) (not (flags "--no-rtlib")))
-        test? (flags "--test")
-        opts (assoc opts :trap-throws (boolean test?))
+  (let [rtlib? (:rtlib opts)
+        test? (:test opts)
+        skip (:skip opts)
+        opts (assoc {:target (:target opts) :rt (:rt opts) :shake (:shake opts)} :trap-throws (boolean test?))
         forms (mapcat splice-do (read-program in))
         tests (atom [])
         forms (if test?
@@ -1242,6 +1239,29 @@
            ;; --no-shake: the whole runtime, for the size comparison
            (when (and (:rt opts) (not rtlib?) (not (:shake opts)))
              (doseq [d lw-rt/defns] (lw/rt-analyze! (:var d))))
-           (spit out (lw/session-module ss fns)))))))))
+           (lw/session-module ss fns))))))))
 
-(apply -main *command-line-args*)
+(defn -main [& argv]
+  (let [targeted (target-args argv)
+        argv (first targeted)
+        target (second targeted)
+        sp-arg (second (drop-while #(not= "-source-paths" %) argv))
+        _ (reset! source-paths (if sp-arg (vec (remove empty? (clojure.string/split sp-arg #":"))) []))
+        argv (if sp-arg (remove #{"-source-paths" sp-arg} argv) argv)
+        skip-arg (second (drop-while #(not= "--skip" %) argv))
+        skip (set (map symbol (when skip-arg (clojure.string/split skip-arg #","))))
+        argv (if skip-arg (remove #{"--skip" skip-arg} argv) argv)
+        flags (set (filter #(clojure.string/starts-with? % "--") argv))
+        [in out] (remove flags argv)
+        rt? (not (flags "--no-rt"))]
+    (spit out (compile-text in {:target target :rt rt? :shake (not (flags "--no-shake"))
+                                :rtlib (and rt? (not (flags "--no-rtlib")))
+                                :test (boolean (flags "--test")) :skip skip}))))
+
+;; Only the driver run as lg's program file compiles: the namespace-renamed
+;; copy the self-host checks carry (lwx.driver) is required as a library and
+;; must not start a compile when it loads. Not a *file* test: inside a module
+;; *file* is the program's path wherever it is read (lower-wasm's
+;; *program-file*), so a library's load would see itself as the program.
+(when (= 'driver (ns-name *ns*))
+  (apply -main *command-line-args*))
