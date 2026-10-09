@@ -994,7 +994,10 @@
   ;; (apply and list* call spread), and the carried compiler resolves them
   ;; from inside core. Named limit: a module answers a stand-in for another
   ;; namespace's private name, where native's resolve refuses it
-  (let [names (vec (sort (map str (keys (ns-interns (symbol nsn))))))
+  ;; Macros left out: inside core a stand-in without :macro shadowed the
+  ;; evaluator's builtin macros, so in-module macroexpand of core forms
+  ;; expanded nothing (core/map's (fn [rf] ..): unresolved symbol rf)
+  (let [names (vec (sort (map (fn [e] (str (key e))) (remove (fn [e] (:macro (meta (val e)))) (ns-interns (symbol nsn))))))
         prefix (str "#'" nsn "/")]
     (list 'let* ['__lw_nsy (list 'clojure.core/symbol (str "<ns " nsn ">")) '__lw_names names]
           {:aliases {} :refers {} :macros {}
