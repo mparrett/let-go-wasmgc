@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # checks/backend-census.sh [max-limits] — rows P12.1/P12.2: the backend's own
 # units through checks/census.lg (as the xsofy/legmacs census, each unit
-# lowered alone), counting the units that do not compile ("other ..." buckets:
-# today all `binding` of a non-var-table var, plus one f64 typing miss).
+# lowered alone), counting the units that do not compile ("other ..." buckets;
+# none since 2026-10-09: the `binding` sites became calls in P12.1/P12.2,
+# and census.lg boxes float-tainted params as analyze-fn does).
 # Prints each such row and the count; exit 0 iff count <= max-limits
 # (default 0). File order matters: lower_linear.lg has no ns form and must
 # follow lower_wasm.lg. ~4 min, one lg process. KEEP=1 keeps the TSV.

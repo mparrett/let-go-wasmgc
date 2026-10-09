@@ -360,10 +360,11 @@
 ;; Every program defn and the _main body are analysed inside the session,
 ;; each after the runtime defns it reaches (P2.1: typeinfer then sees their
 ;; return types), and its signature is registered before the next one.
-;; --test only: a defn that does not compile becomes a stub that throws
-;; when called (lower-wasm/stub-fn), so the file's other tests still run and
-;; the failure is reported as that test's ERROR rather than hiding the file.
-(def ^:dynamic *stub-failures* false)
+;; --test only (analyze-program!'s stub?, -main's lower-one): a defn that
+;; does not compile becomes a stub that throws when called
+;; (lower-wasm/stub-fn), so the file's other tests still run and the failure
+;; is reported as that test's ERROR rather than hiding the file. A parameter,
+;; not a dynamic var: the backend binds only var-table vars (P12.2).
 
 (defn arity-key
   "A defn arity's key: its param count, or \"v\" for the variadic one
@@ -397,17 +398,19 @@
 ;; analysed there, not in the program's final namespace.
 (defn tag-ns [srcs] (mapv #(vary-meta % assoc ::ns (ns-name *ns*)) srcs))
 (defn src-ns [src] (the-ns (or (::ns (meta src)) (ns-name *ns*))))
-(defn defn-var [src] (binding [*ns* (src-ns src)] (resolve (second src))))
+(defn defn-var [src] (lw-rt/call-in-ns (src-ns src) (fn [] (resolve (second src)))))
 
 (defn analyze-program!
-  "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint)."
-  [defns main-src boxed]
+  "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint).
+   stub?: --test, a failing defn becomes a stub (above)."
+  [defns main-src boxed stub?]
   (doall
    (for [src (conj defns main-src)]
-     (binding [*ns* (src-ns src)]
+     (lw-rt/call-in-ns (src-ns src)
+      (fn []
        ;; P2.14: in --test a library defn the test reaches that fails
          ;; to compile stubs the test (below) instead of the whole file
-         (if *stub-failures*
+         (if stub?
            (try (lw/analyze-deps! src) (catch e nil))
            (lw/analyze-deps! src))
          (let [main? (= main-src src)
@@ -418,7 +421,7 @@
                info (try (binding [lw/*box-params* (contains? boxed [v argc])]
                            (assoc (lw/analyze-fn src wname (boolean multi?)) :export-name ename))
                          ;; P1.4's refusals compare the error's first line: rethrow as is
-                         (catch e (if (and *stub-failures* (not main?))
+                         (catch e (if (and stub? (not main?))
                                     (stub-info src e)
                                     (throw e))))]
            (when v
@@ -428,7 +431,7 @@
                               (if (= "v" argc)
                                 (assoc e :variadic (assoc sig :fixed (lw/fixed-count (nth src 2))))
                                 (assoc-in e [:arities (count (:params info))] sig))))))
-           info)))))
+           info))))))
 
 (defn boxing-needed
   "[var argc] keys of program defns whose typed params some call cannot
@@ -730,7 +733,7 @@
     (reduce (fn [_ x]
               (when (seq? x)
                 (let [m (first x)
-                      mv (binding [*ns* (the-ns ns-sym)] (resolve m))]
+                      mv (lw-rt/call-in-ns ns-sym (fn [] (resolve m)))]
                   (when-not (contains? @protocol-methods mv)
                     (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
                   (swap! protocol-methods assoc-in [mv :impls tag]
@@ -769,7 +772,8 @@
   "Index one loaded library namespace (see above). Returns the init var's
    symbol. var-globals collects the namespace's def vars."
   [ns-sym path var-globals]
-  (binding [*ns* (the-ns ns-sym)]
+  (lw-rt/call-in-ns ns-sym
+   (fn []
     (let [forms (read-program path)
           init-forms (atom [])
           ;; P6.8: names an earlier form of this namespace defined (defonce)
@@ -826,7 +830,7 @@
             v (intern ns-sym init-sym (fn [] nil))]
         (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name init-sym :lib true :pre-expanded true
                                         :arities [(into [[]] (conj @init-forms nil))]})
-        (symbol (str ns-sym) (str init-sym))))))
+        (symbol (str ns-sym) (str init-sym)))))))
 
 (defn load-libs!
   "Natively load what form requires, index each newly reached library
@@ -838,7 +842,7 @@
     ;; noted before any of them is indexed, since a namespace is indexed
     ;; before the ones that require it (lower_wasm alters ir.build's defns)
     (note-root-alters! @program-forms)
-    (run! (fn [e] (binding [*ns* (the-ns (first e))] (note-root-alters! (read-program (second e))))) order)
+    (run! (fn [e] (lw-rt/call-in-ns (first e) (fn [] (note-root-alters! (read-program (second e)))))) order)
     (let [inits (doall (for [[n path] order]
                          (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
       (register-protocol-dispatch!)
@@ -1199,7 +1203,7 @@
       (lw/with-session*
        ss
        (fn []
-        (binding [*stub-failures* (boolean test?) lw/*stub-libs* (boolean test?) lw/*program-file* in
+        (binding [lw/*stub-libs* (boolean test?) lw/*program-file* in
                   lw/*thunk-def-vars* @thunk-vars
                   ;; natives only: the program's and its libraries' own vars
                   ;; are var-table vars or direct-call defns. D207: the vars
@@ -1225,12 +1229,12 @@
                ;; a stub keeps the analysed name and signature: callers were
                ;; lowered against them
                lower-one #(cond (:stub %) (:stub %)
-                                *stub-failures* (try (lw/lower-fn %)
+                                test? (try (lw/lower-fn %)
                                                      (catch e (lw/stub-fn (select-keys % [:name :params :ret])
                                                                           (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))))
                                 :else (lw/lower-fn %))
                fns (loop [boxed #{}]
-                     (let [infos (analyze-program! @defns main-src boxed)
+                     (let [infos (analyze-program! @defns main-src boxed (boolean test?))
                            notes (atom {})
                            fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
                            more (remove boxed (boxing-needed @notes prog-vars))]

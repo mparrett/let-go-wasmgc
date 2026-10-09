@@ -3507,8 +3507,8 @@
     (swap! *rt* assoc-in [:state v] :busy)
     (let [d (lw-rt/source-defn v)
           multi? (> (count (:arities d)) 1)]
-      (binding [*ns* (the-ns (:ns d))]
-        (let [srcs (doall (for [[params & body] (:arities d)
+      (lw-rt/call-in-ns (:ns d)
+        (fn [] (let [srcs (doall (for [[params & body] (:arities d)
                                 :let [[params body] (split-rest-pattern params body)]]
                             ;; a namespace init (driver, P3.2) arrives expanded
                             (apply list 'defn (:name d) params (if (:pre-expanded d) body (map expand-form body)))))]
@@ -3532,7 +3532,7 @@
                                                (if var?
                                                  (assoc e :variadic (assoc sig :fixed (fixed-count params)))
                                                  (assoc-in e [:arities argc] sig)))))
-              (swap! *rt* update :pending conj info))))))
+              (swap! *rt* update :pending conj info)))))))
     (swap! *rt* assoc-in [:state v] :done)))
 
 (defn callee-sig
@@ -3545,13 +3545,13 @@
 (defn rt-init-fn!
   "Analyse a 0-arg init fn named wname whose body is form, in ns."
   [wname ns form]
-  (binding [*ns* (the-ns ns)]
-    (let [src (list 'defn '__init [] (expand-form form))]
+  (lw-rt/call-in-ns ns
+    (fn [] (let [src (list 'defn '__init [] (expand-form form))]
       (analyze-deps! src)
       ;; P6.1: the global is (ref null eq); typeinfer may type the init's
       ;; result i64/f64 ((def n 2)), so its returns box (`return` coerces
       ;; to :ret)
-      (swap! *rt* update :pending conj (assoc (analyze-fn src wname true) :export? false :ret :box)))))
+      (swap! *rt* update :pending conj (assoc (analyze-fn src wname true) :export? false :ret :box))))))
 
 (defn rt-global!
   "The wasm global of a runtime top-level def (D39), its init fn analysed."
