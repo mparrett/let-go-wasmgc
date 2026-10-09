@@ -397,14 +397,15 @@
 ;; analysed there, not in the program's final namespace.
 (defn tag-ns [srcs] (mapv #(vary-meta % assoc ::ns (ns-name *ns*)) srcs))
 (defn src-ns [src] (the-ns (or (::ns (meta src)) (ns-name *ns*))))
-(defn defn-var [src] (binding [*ns* (src-ns src)] (resolve (second src))))
+(defn defn-var [src] (lw-rt/call-in-ns (src-ns src) (fn [] (resolve (second src)))))
 
 (defn analyze-program!
   "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint)."
   [defns main-src boxed]
   (doall
    (for [src (conj defns main-src)]
-     (binding [*ns* (src-ns src)]
+     (lw-rt/call-in-ns (src-ns src)
+      (fn []
        ;; P2.14: in --test a library defn the test reaches that fails
          ;; to compile stubs the test (below) instead of the whole file
          (if *stub-failures*
@@ -428,7 +429,7 @@
                               (if (= "v" argc)
                                 (assoc e :variadic (assoc sig :fixed (lw/fixed-count (nth src 2))))
                                 (assoc-in e [:arities (count (:params info))] sig))))))
-           info)))))
+           info))))))
 
 (defn boxing-needed
   "[var argc] keys of program defns whose typed params some call cannot
@@ -730,7 +731,7 @@
     (reduce (fn [_ x]
               (when (seq? x)
                 (let [m (first x)
-                      mv (binding [*ns* (the-ns ns-sym)] (resolve m))]
+                      mv (lw-rt/call-in-ns ns-sym (fn [] (resolve m)))]
                   (when-not (contains? @protocol-methods mv)
                     (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
                   (swap! protocol-methods assoc-in [mv :impls tag]
@@ -769,7 +770,8 @@
   "Index one loaded library namespace (see above). Returns the init var's
    symbol. var-globals collects the namespace's def vars."
   [ns-sym path var-globals]
-  (binding [*ns* (the-ns ns-sym)]
+  (lw-rt/call-in-ns ns-sym
+   (fn []
     (let [forms (read-program path)
           init-forms (atom [])
           ;; P6.8: names an earlier form of this namespace defined (defonce)
@@ -826,7 +828,7 @@
             v (intern ns-sym init-sym (fn [] nil))]
         (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name init-sym :lib true :pre-expanded true
                                         :arities [(into [[]] (conj @init-forms nil))]})
-        (symbol (str ns-sym) (str init-sym))))))
+        (symbol (str ns-sym) (str init-sym)))))))
 
 (defn load-libs!
   "Natively load what form requires, index each newly reached library
@@ -838,7 +840,7 @@
     ;; noted before any of them is indexed, since a namespace is indexed
     ;; before the ones that require it (lower_wasm alters ir.build's defns)
     (note-root-alters! @program-forms)
-    (run! (fn [e] (binding [*ns* (the-ns (first e))] (note-root-alters! (read-program (second e))))) order)
+    (run! (fn [e] (lw-rt/call-in-ns (first e) (fn [] (note-root-alters! (read-program (second e)))))) order)
     (let [inits (doall (for [[n path] order]
                          (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
       (register-protocol-dispatch!)

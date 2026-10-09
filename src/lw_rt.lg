@@ -85,6 +85,23 @@
 ;; the counter where this file's runtime loading starts (snapshot paths only)
 (def gensym-start (when (or snapshot-in snapshot-out) (gensym-take)))
 
+(defn call-in-ns
+  "(f) with namespace n current, the caller's current again however f exits.
+   In place of (binding [*ns* n] ..) in src/ (P12.1): *ns* is a native var,
+   so a backend fn compiled without the runtime library cannot bind it,
+   while in-ns is an ordinary call (native's, the module's core/in-ns twin).
+   lg has no namespace argument on resolve, eval, read-string, alias or
+   refer, and ns-resolve answers only n's own public vars (not its refers
+   or aliases), so the switch itself is what these sites need. the-ns
+   first, so an absent namespace throws as the binding did instead of being
+   created by in-ns. Restored by name: an eval of a def under the binding
+   left *ns* at n afterwards (D124), which no caller relied on."
+  [n f]
+  (let [cur (ns-name *ns*)
+        nn (ns-name (the-ns n))]
+    (in-ns nn)
+    (try (f) (finally (in-ns cur)))))
+
 (defn- snap-fail [msg]
   (throw (ex-info (str "lw-rt snapshot " snapshot-in ": " msg) {:snapshot snapshot-in})))
 
@@ -164,14 +181,15 @@
   "A restored namespace's aliases and refers, once every namespace exists."
   [e]
   (let [n (:ns e)]
-    (binding [*ns* (the-ns n)]
-      (run! (fn [a]
-              (when-not (find-ns (val a))
-                (snap-fail (str "namespace " (val a) " (aliased as " (key a) " in " n ") is neither in the snapshot nor loaded")))
-              (alias (key a) (val a)))
-            (:aliases e))
-      (run! (fn [r] (let [v (snap-var (val r))] (refer (ns-name (:ns (meta v))) :only [(key r)])))
-            (:refers e)))))
+    (call-in-ns n
+      (fn []
+        (run! (fn [a]
+                (when-not (find-ns (val a))
+                  (snap-fail (str "namespace " (val a) " (aliased as " (key a) " in " n ") is neither in the snapshot nor loaded")))
+                (alias (key a) (val a)))
+              (:aliases e))
+        (run! (fn [r] (let [v (snap-var (val r))] (refer (ns-name (:ns (meta v))) :only [(key r)])))
+              (:refers e))))))
 
 (defn- restore-macros!
   "Macros are fn values the backend's own expansion calls, so each is
@@ -179,7 +197,7 @@
   [e]
   (run! (fn [ve]
           (when (= :macro (nth ve 2))
-            (binding [*ns* (the-ns (:ns e))] (eval (nth ve 3)))
+            (call-in-ns (:ns e) (fn [] (eval (nth ve 3))))
             (set-snap-meta! (:ns e) ve)))
         (:vars e)))
 
@@ -214,7 +232,7 @@
    table and nothing is evaluated or set."
   [snap]
   (when-not *in-wasm*
-    (binding [*ns* (the-ns 'lw-rt)] (run! eval (:ext-forms snap)))
+    (call-in-ns 'lw-rt (fn [] (run! eval (:ext-forms snap))))
     (let [e (first (filter (fn [e] (= 'lw-ext (:ns e))) (:nss snap)))]
       (run! (fn [ve] (set-snap-meta! 'lw-ext ve)) (:vars e)))))
 
@@ -301,7 +319,7 @@
 
 (defn head-var [ns-sym form]
   (when (and (seq? form) (symbol? (first form)) (not (#{'def 'defn 'defn- 'declare 'defmacro 'ns} (first form))))
-    (binding [*ns* (the-ns ns-sym)] (resolve (first form)))))
+    (call-in-ns ns-sym (fn [] (resolve (first form))))))
 
 (def rt-nss (set (keep second file-forms)))
 
@@ -451,7 +469,7 @@
             (try (os/sh "git" "-C" letgo-dir "show" (str letgo-commit ":pkg/rt/core/" file)) (catch e nil)))]
     (if (and r (= 0 (:exit r)))
       (do (require ns-sym)
-          (binding [*ns* (the-ns ns-sym)] (read-string (str "[" (:out r) "\n]"))))
+          (call-in-ns ns-sym (fn [] (read-string (str "[" (:out r) "\n]")))))
       (throw (ex-info (str "lw-rt: cannot read pkg/rt/core/" file " at let-go commit " letgo-commit
                            " from " letgo-dir " (set LETGO, or LW_ROOT with let-go/ under it; see checks/env.sh)")
                       {:file file :dir letgo-dir})))))
@@ -601,14 +619,13 @@
       (let [file (str (str/replace (str/replace (str ns-sym) "." "/") "-" "_") ".lg")
             forms (embedded-forms file ns-sym)
             fills (protocol-fills forms)
-            ;; eval of a defn under (binding [*ns* ..]) leaves *ns* there
-            ;; after the binding exits (lg 4e769212), so restore it by name
-            cur (ns-name *ns*)
-            fill-vars (try (doall (for [[m form] fills]
-                                    (binding [*ns* (the-ns ns-sym)]
-                                      (eval form)
-                                      [(ns-var ns-sym m) (ns-var ns-sym (second form)) form])))
-                           (finally (in-ns cur)))
+            ;; call-in-ns restores *ns* by name, which an eval of a defn
+            ;; under (binding [*ns* ..]) needed done after it (lg 4e769212)
+            fill-vars (doall (for [[m form] fills]
+                               (call-in-ns ns-sym
+                                 (fn []
+                                   (eval form)
+                                   [(ns-var ns-sym m) (ns-var ns-sym (second form)) form]))))
             idx (merge (into {} (for [[v e] (embedded-defns ns-sym forms)]
                                   [v (-> e (dissoc :core-lg) (assoc :lib true))]))
                        (into {} (for [[_ fv form] fill-vars]
