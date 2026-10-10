@@ -28,8 +28,8 @@ differential check (see "Checks"), and the design record is
   the two remaining ones skipped by name.
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
-- **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, xsofy,
-  legmacs; needs Chrome 137 or newer). Built by `host/build-pages.sh` and
+- **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the
+  compiler compiled, xsofy, legmacs; needs Chrome 137 or newer). Built by `host/build-pages.sh` and
   served from the `gh-pages` branch. [docs/READING-GUIDE.md](docs/READING-GUIDE.md)
   is a guided walk through the code.
 - Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0`; gate 7 was rerun
@@ -170,6 +170,19 @@ host/build-explorer-serve.sh /tmp/lw-explorer
 python3 -m http.server 8263 -d /tmp/lw-explorer
 ```
 
+Build and serve the compiler itself as a module, then open
+http://localhost:8264/compile.html. Paste a let-go program: the backend,
+carried as a program (D206, D211), compiles it inside the module in a worker,
+`host/wat-asm` (wasm-tools' text parser compiled to wasm, needs cargo with the
+wasm32-unknown-unknown target) assembles the text, and the page runs the
+result. The first build takes minutes (the P12 rows' build times plus
+wasm-opt) and is cached; a compile in the page takes tens of seconds:
+
+```sh
+host/build-compile-serve.sh /tmp/lw-compile
+python3 -m http.server 8264 -d /tmp/lw-compile
+```
+
 Play xsofy in a terminal, with its dev console enabled (backtick opens it):
 
 ```sh
@@ -208,7 +221,8 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   `rt/wasm/README.md` has the load-order table, the value kind table and the
   declared differences from native.
 - `host/` JS hosts (`lg-wasm-host.js`, `node-host.mjs`), the import ABI
-  (`ABI.md`), the REPL, explorer, xsofy and legmacs pages, and their build scripts.
+  (`ABI.md`), the REPL, explorer, compile, xsofy and legmacs pages, their build
+  scripts, and `wat-asm/`, the page-side assembler.
 - `checks/` the oracle, the row table `items.tsv`, the gate runner and the
   check scripts.
 - `corpus/` inputs and expected outputs for every check, one directory per

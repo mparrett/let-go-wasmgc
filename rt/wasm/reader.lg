@@ -653,8 +653,11 @@
       (if (float-syntax? tk n)
         (parse-float tk 0 n)
         (let [sg (sign-at tk 0 n) a (if (= sg 0) 0 1)]
+          ;; computed, not ##Inf: let-go prints an infinity as +Inf/-Inf,
+          ;; which reads back as a symbol, and the D209 snapshot's read-back
+          ;; check refuses the form (the read-string path below does the same)
           (cond (if (word-at? tk a n (wasm/bytes-of-string "inf")) true (word-at? tk a n (wasm/bytes-of-string "infinity")))
-                (s/box-float (if (= sg -1) ##-Inf ##Inf))
+                (let [inf (* 1.7976931348623157e308 10.0)] (s/box-float (if (= sg -1) (- 0.0 inf) inf)))
                 (word-at? tk a n (wasm/bytes-of-string "nan")) (s/box-float ##NaN)
                 :else (wasm/null)))))
     (c/raise (wasm/bytes-of-string "parse-double expected String"))))
