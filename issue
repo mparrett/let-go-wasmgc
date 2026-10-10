@@ -1,0 +1,13 @@
+id: 0a56040
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D209: armv7 runs early, on the LLVM toolchain alone.
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D209
+description: armv7 runs early, on the LLVM toolchain alone. A side review found that M1's 31-bit-fixnum host profile cannot observe most word-size bugs (a 64-bit host prints the same output either way), so nothing would run 32-bit code before M3, after M2's layout-heavy collector. The bare host and `armv7-virt` profile were pulled forward: `host/native/bare.c` (Arm semihosting for output and exit status), `host/native/boards/armv7-virt/{start.S,link.ld}`, `targets/armv7-virt.edn`, built with `llc`, clang and lld 23.1.2 (`brew install lld`; Homebrew's `llvm` formula no longer includes it) and compiler-rt's builtins, which Homebrew ships for Darwin only and `checks/build-builtins.sh` builds from llvm-project's `llvmorg-<clang version>` tag with compiler-rt's own CMake (22 s, cached by version, triple and cflags). zig is not used. On qemu-system-arm `-M virt`, Cortex-A7, MMU off (so strict alignment): `fixnum-edges.lg` (31-bit fixnums, i64 in register pairs), `loop-recur`, fib(35) (43 s) and `ref.lg` MATCH native lg; `tak` exhausts the 768 MB heap with the named `error: out of memory` until M2's collector, and a 64 KB-heap profile makes that error a check (P12.21). Rows P12.20 and P12.21; the gate runs armv7 from now, so decision 14's "-fix31 until M3" is superseded: both run. Profile fields: `:board` and `:cflags` replace `:link`. `:fixnum-bits` is a signed width, so the 64-bit default is 63, not D207's "62".
