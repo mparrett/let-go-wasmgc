@@ -21,6 +21,11 @@
 # LW_RUNTIME_COMPILE, LW_EXPORT_RT and LW_RT_DIR are cleared, since the
 # self-host rows (D193) load two more files and take 22 more gensyms, and a
 # caller exporting them must not read as a src/ regression.
+#
+# Then writes lw-rt's D209 snapshot from the same sources: the writer checks
+# that its text reads back equal, so a runtime form that does not survive
+# print and read (2026-10-10: an infinity literal, printed +Inf/-Inf and read
+# as a symbol) fails here in a second instead of in the P12 rows' builds.
 set -uo pipefail
 . "$(dirname "$0")/env.sh"
 cd "$(dirname "$0")/.."
@@ -34,8 +39,11 @@ hex=$(grep -o 's_6c772d67656e73796d2d70726f62652d[0-9a-f]*' "$t/p.wat" | head -1
 [ -n "$hex" ] || { echo "probe string not found in the module"; exit 1; }
 got=$(printf '%s' "${hex#s_6c772d67656e73796d2d70726f62652d}" | sed 's/../\\x&/g')
 got=$(printf "$got")
+env -u LW_RUNTIME_COMPILE -u LW_EXPORT_RT -u LW_RT_DIR -u LW_HOST_FS -u LW_HOST_ASM \
+  LW_RT_SNAPSHOT_WRITE="$t/snap.edn" "$LG" -source-paths "$PWD/src" -e "(require 'lw-rt)" >"$t/snap.log" 2>&1 \
+  || { echo "snapshot write failed (a runtime form does not read back equal?):"; grep -v '^\s*at ' "$t/snap.log" | grep -v WARNING | head -4; exit 1; }
 if [ "$got" = "$EXPECT" ]; then
-  echo "OK gensym counter after load: $got"
+  echo "OK gensym counter after load: $got; snapshot writes and reads back ($(wc -c <"$t/snap.edn" | tr -d ' ') bytes)"
 else
   echo "MOVED gensym counter after load: $got (recorded $EXPECT)"
   echo "a src/ or rt/ change takes a different number of gensyms at load; see the header"
