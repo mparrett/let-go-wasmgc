@@ -1,0 +1,13 @@
+id: d9ffebb
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D210: P8.0's GC byte baseline moves from 167f95e to 69681c1.
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D210
+description: P8.0's GC byte baseline moves from 167f95e to 69681c1. Spec decision 8 (D207) makes the runtime read its fixnum bounds from target intrinsics: `wasm/i31`, `wasm/i31?` and `wasm/i31-get` became `wasm/fix`, `wasm/fix?` and `wasm/fix-get`, with zero-argument `(wasm/fix-min)` and `(wasm/fix-max)` (intrinsics are recognised at call sites, so constants would not do), and `seq.lg`'s `box-int` compares against them. The GC lane lowers them to the same `ref.i31` instructions and `i64.const` bounds, but the two calls are IR instructions of their own, so `box-int`'s WAT keeps the bounds in locals and every program that compiles it changes bytes. An experiment isolated it: with only `box-int`'s literal bounds restored, all 21 guard programs were byte-identical to 167f95e, so the intrinsic renames and the jank harness's driver changes (let-go's resolver order in `ns-file`, `--read-clj`) change no bytes. Behaviour checks: P7.0's eval corpus 14/14 MATCH, gate 8's rows green, `checks/run-intrinsics-native.sh` 150 tests 0 failures. Renaming the runtime's `wasm.*` namespaces to target-neutral names (`arch/` for the intrinsics, `rt.*` for the runtime) was discussed and deferred by the maintainer; the names stay through M1.
