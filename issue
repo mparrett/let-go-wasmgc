@@ -1,0 +1,13 @@
+id: 260ee41
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-08T00:00:00Z
+hash_source: content
+title: D216: P8.0's GC byte baseline moves from 4d6fbc2 to 5336b5f, the merge of main into the llvm-target branch.
+status: closed
+priority: medium
+created: 2026-10-08T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D216
+description: P8.0's GC byte baseline moves from 4d6fbc2 to 5336b5f, the merge of main into the llvm-target branch. D210's change (box-int reads its fixnum bounds through `wasm/fix-min` and `wasm/fix-max`) froze 69681c1, a commit the branch's squash removed; on the merged tree the guard's 22 programs were compiled by both 4d6fbc2 and 5336b5f and their WAT compared as text (`wasm-tools` was not installed): 4 identical, 18 differing only inside `$wasm.seq/box-int`, the change D210 describes. Nothing else in the GC lane's output moved.
