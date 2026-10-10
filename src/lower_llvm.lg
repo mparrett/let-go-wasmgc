@@ -19,12 +19,13 @@
 (in-ns 'lower-wasm)
 (require '[lower-llvm-profile :as llvm-prof])
 (require '[lower-llvm-poly :as llvm-poly])
+(require '[lower-llvm-ir :as lir])
 (require '[hash])
 (require '[clojure.walk])
 
 (def ^:dynamic *ll* nil)
 (declare ll-q ll-binding-var! llvm-dump llvm-profile llvm-fn
-         ll-intrinsic! ll-host-declare-text ll-type-defs ll-object-globals ll-true ll-false
+         ll-intrinsic! ll-host-declares ll-declare ll-desc-item ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
          ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
 
@@ -1428,7 +1429,7 @@
         (swap! llvm-datalayouts assoc triple (second m))
         (second m))))
 
-(defn ll-invoke-text
+(defn ll-invoke-fn
   "lg_invoke<n>: call fn value f with n args through its code slot for n
    (n <= 4), else through a FnV's variadic code when its fixed count k <= n,
    the args past k as the rest List (nil when none is left); anything else
@@ -1458,7 +1459,10 @@
                                              "  " l ".3 = getelementptr " lty ", ptr " l ", i32 0, i32 3\n  store i64 " (- n i) ", ptr " l ".3\n"
                                              "  " l ".4 = getelementptr " lty ", ptr " l ", i32 0, i32 4\n  store " w " 0, ptr " l ".4\n"
                                              "  %w" j "_" i " = ptrtoint ptr " l " to " w "\n")))))))]
-    (str "define internal tailcc void @lg_invoke" n "(ptr %k, " w " %f" as ") {\nentry:\n"
+    {:llvm/fn {:name (str "lg_invoke" n) :bare true :linkage "internal" :cc "tailcc" :ret "void"
+               :params (into ["ptr %k" (str w " %f")] (map #(str w " %a" %) (range n)))
+               :body
+    (str "entry:\n"
          "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
          "  %no = or i1 %fx, %nl\n  br i1 %no, label %bad, label %obj\nobj:\n"
          "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
@@ -1487,64 +1491,63 @@
              (str "bad:\n  musttail call tailcc void " (ll-q (:name fb)) "(ptr %k, " w " %f, "
                   (if (= nk :int) (str "i64 " n) (str w " " (inc (* 2 n))))
                   (apply str (for [i (range 4)] (str ", " w " " (if (< i n) (str "%a" i) "0"))))
-                  ")\n  ret void\n}\n"))
+                  ")\n  ret void\n"))
            (if cf
              (let [[_ nk] (:params cf)]
                (str "bad:\n  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, "
-                    (if (= nk :int) (str "i64 " n) (str w " " (inc (* 2 n)))) ")\n  ret void\n}\n"))
-             (str "bad:\n  call void @lg_arity_fail(" w " %f, i32 " n ")\n  unreachable\n}\n"))))))
+                    (if (= nk :int) (str "i64 " n) (str w " " (inc (* 2 n)))) ")\n  ret void\n"))
+             (str "bad:\n  call void @lg_arity_fail(" w " %f, i32 " n ")\n  unreachable\n"))))}}))
 
-(defn llvm-prelude []
+(defn llvm-prelude
+  "The module's fixed part, as items: {:target {:datalayout :triple}, :types,
+   :items} (declarations, globals, descriptors and the backend's own fns)."
+  []
   (let [p (llvm-profile) w (ll-word) fnt (ll-sty "$Fn")
-        fn-ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
-    (str "target datalayout = \"" (llvm-datalayout (:triple p)) "\"\n"
-         "target triple = \"" (:triple p) "\"\n\n"
-         "declare ptr @lg_alloc(" w ", ptr)\n"
-         ;; the collector (host/native/gc.c): the entry check's flag and call
-         "@lg_gc_pending = external global i8\n"
-         "declare void @lg_gc(ptr, i32)\n"
-         "declare void @lg_overflow() noreturn cold\n"
-         "declare void @lg_print_i64(i64)\n"
-         "declare void @lg_print_bool(i32)\n"
-         "declare void @lg_print_space()\n"
-         "declare void @lg_print_nl()\n"
-         "declare void @lg_print_box(" w ")\n"
-         "declare " w " @lg_box_int(i64)\n"
-         "declare i64 @lg_unbox_int(" w ")\n"
-         "declare double @lg_to_f64(" w ")\n"
-         "declare i1 @lg_is_int(" w ")\n"
-         "declare i1 @lg_is_num(" w ")\n"
-         "declare void @lg_unbox_fail() noreturn cold\n"
-         "declare void @lg_arity_fail(" w ", i32) noreturn cold\n"
-         "declare void @lg_div_zero() noreturn cold\n"
-         (ll-host-declare-text) "\n\n"
-         "%kbox = type { ptr, ptr }\n"
-         "%kfin = type { ptr, ptr, " w " }\n"
-         ;; spec decision 9: the innermost handler frame {code, k, prior, depth, ...}
-         "%tryf = type { ptr, ptr, ptr, " w " }\n"
-         "@lg_handler = internal global ptr null\n"
-         "declare void @lg_uncaught(" w ") noreturn cold\n"
-         "define internal tailcc void @lg_throw(ptr %k, " w " %exn) {\n"
-         "  %F = load ptr, ptr @lg_handler\n  %none = icmp eq ptr %F, null\n"
-         "  br i1 %none, label %unc, label %h\nunc:\n  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
-         "  %pp = getelementptr %tryf, ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr %pp\n  store ptr %prior, ptr @lg_handler\n"
-         "  %code = load ptr, ptr %F\n  musttail call tailcc void %code(ptr %F, " w " %exn)\n  ret void\n}\n"
-         "%kinit = type { ptr, ptr }\n"
-         (ll-desc-def "%kbox" [1]) "\n" (ll-desc-def "%kfin" [1 2]) "\n"
-         (ll-desc-def "%tryf" [1 2]) "\n" (ll-desc-def "%kinit" [1]) "\n\n"
-         (apply str (for [[k t box] [[:int "i64" (str "  %b = call " w " @lg_box_int(i64 %v)\n")]
-                                     [:bool "i1" (str "  %b = select i1 %v, " w " " (ll-true) ", " w " " (ll-false) "\n")]
-                                     [:float "double" (str "  %fo = " (ll-alloc-call (ll-sty "$Float")) "\n"
-                                                           "  store " w " " (ll-tid "$Float") ", ptr %fo\n"
-                                                           "  %fv = getelementptr " (ll-sty "$Float") ", ptr %fo, i32 0, i32 1\n  store double %v, ptr %fv\n"
-                                                           "  %b = ptrtoint ptr %fo to " w "\n")]]]
-                      (str "define internal tailcc void @lg_kbox_" (name k) "(ptr %rec, " t " %v) {\n"
-                           "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
-                           "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n}\n")))
-         (apply str (for [n (range (inc ll-max-invoke))] (ll-invoke-text n fnt fn-ids)))
-         "define internal tailcc void @lg_halt(ptr %self, " w " %v) {\n  ret void\n}\n"
-         "@lg_halt_k = internal global ptr @lg_halt\n\n"
-         "define void @lg_run() {\n  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n}\n")))
+        fn-ids (map ll-tid ["$Fn" "$FnV" "$FnX"])
+        fnc (fn [nm params body] {:llvm/fn {:name nm :bare true :linkage "internal" :cc "tailcc" :ret "void" :params params :body body}})
+        decl ll-declare]
+    {:target {:datalayout (llvm-datalayout (:triple p)) :triple (:triple p)}
+     ;; spec decision 9: the innermost handler frame {code, k, prior, depth, ...}
+     :types [{:llvm/type {:name "%kbox" :fields ["ptr" "ptr"]}}
+             {:llvm/type {:name "%kfin" :fields ["ptr" "ptr" w]}}
+             {:llvm/type {:name "%tryf" :fields ["ptr" "ptr" "ptr" w]}}
+             {:llvm/type {:name "%kinit" :fields ["ptr" "ptr"]}}]
+     :items
+     (concat
+      [(decl "ptr" "lg_alloc" [w "ptr"])
+       ;; the collector (host/native/gc.c): the entry check's flag and call
+       {:llvm/global {:name "lg_gc_pending" :bare true :kind "external global" :type "i8"}}
+       (decl "void" "lg_gc" ["ptr" "i32"])
+       (decl "void" "lg_overflow" [] "noreturn" "cold")
+       (decl "void" "lg_print_i64" ["i64"]) (decl "void" "lg_print_bool" ["i32"])
+       (decl "void" "lg_print_space" []) (decl "void" "lg_print_nl" []) (decl "void" "lg_print_box" [w])
+       (decl w "lg_box_int" ["i64"]) (decl "i64" "lg_unbox_int" [w]) (decl "double" "lg_to_f64" [w])
+       (decl "i1" "lg_is_int" [w]) (decl "i1" "lg_is_num" [w])
+       (decl "void" "lg_unbox_fail" [] "noreturn" "cold")
+       (decl "void" "lg_arity_fail" [w "i32"] "noreturn" "cold")
+       (decl "void" "lg_div_zero" [] "noreturn" "cold")]
+      (ll-host-declares)
+      [{:llvm/global {:name "lg_handler" :bare true :kind "internal global" :type "ptr" :init "null"}}
+       (decl "void" "lg_uncaught" [w] "noreturn" "cold")
+       (fnc "lg_throw" ["ptr %k" (str w " %exn")]
+            (str "  %F = load ptr, ptr @lg_handler\n  %none = icmp eq ptr %F, null\n"
+                 "  br i1 %none, label %unc, label %h\nunc:\n  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
+                 "  %pp = getelementptr %tryf, ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr %pp\n  store ptr %prior, ptr @lg_handler\n"
+                 "  %code = load ptr, ptr %F\n  musttail call tailcc void %code(ptr %F, " w " %exn)\n  ret void\n"))
+       (ll-desc-item "%kbox" [1]) (ll-desc-item "%kfin" [1 2]) (ll-desc-item "%tryf" [1 2]) (ll-desc-item "%kinit" [1])]
+      (for [[k t box] [[:int "i64" (str "  %b = call " w " @lg_box_int(i64 %v)\n")]
+                       [:bool "i1" (str "  %b = select i1 %v, " w " " (ll-true) ", " w " " (ll-false) "\n")]
+                       [:float "double" (str "  %fo = " (ll-alloc-call (ll-sty "$Float")) "\n"
+                                             "  store " w " " (ll-tid "$Float") ", ptr %fo\n"
+                                             "  %fv = getelementptr " (ll-sty "$Float") ", ptr %fo, i32 0, i32 1\n  store double %v, ptr %fv\n"
+                                             "  %b = ptrtoint ptr %fo to " w "\n")]]]
+        (fnc (str "lg_kbox_" (name k)) ["ptr %rec" (str t " %v")]
+             (str "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
+                  "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n")))
+      (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
+      [(fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
+       {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
+       {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
 
 (defn ll-rt-fns!
   "Lower the runtime fns the program reached (they may reach more): the
@@ -1658,7 +1661,9 @@
                   (keep-indexed (fn [i r] (when (or (nil? (:name r)) (= i (last-of (:name r)))) r)) rs))
         all (concat fns rt-fns regions)
         w (ll-word)
-        prelude (llvm-prelude)
+        pre (llvm-prelude)
+        ;; the prelude's text, for the shake's roots until symbols are recorded
+        prelude (str/join "\n" (map lir/render (concat (:types pre) (:items pre))))
         texts (into {} (map (juxt :name :text) all))
         ;; the type table, fresh for this module's types (D221); before
         ;; *globals* is read, since its names are Bytes constants; the shake
@@ -1683,14 +1688,13 @@
         inits (ll-init-chain (ll-init-steps texts live?))
         gvars (distinct (concat (vals *var-globals*)
                                 (when *rt* (filter live? (map :name rt-gs)))
-                                (when *rt* (filter live? (:const-order @*rt*)))))
-        ;; named types come first: a constant GEP needs its type sized when parsed
-        type-line? #(re-find #"^%[^ ]+ = type " %)
-        plines (str/split-lines prelude)]
-    (str (str/join "\n" (filter #(str/starts-with? % "target ") plines)) "\n"
-         (str/join "\n" (filter type-line? plines)) "\n"
+                                (when *rt* (filter live? (:const-order @*rt*)))))]
+    ;; named types come first: a constant GEP needs its type sized when parsed
+    (str "target datalayout = \"" (:datalayout (:target pre)) "\"\n"
+         "target triple = \"" (:triple (:target pre)) "\"\n"
+         (str/join "\n" (map lir/render (:types pre))) "\n"
          (str/join "\n" (ll-type-defs)) "\n"
-         (str/join "\n" (remove #(or (type-line? %) (str/starts-with? % "target ")) plines)) "\n"
+         (str/join "\n" (map lir/render (:items pre))) "\n"
          (str/join "\n" (sort (distinct (mapcat :types kept)))) "\n\n"
          (str/join "\n" (ll-object-globals)) "\n"
          (str/join "\n" (for [g (sort gvars)] (str "@\"var" g "\" = internal global " w " 0"))) "\n"

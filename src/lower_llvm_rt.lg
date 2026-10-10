@@ -105,23 +105,31 @@
 ;; refs (kind 1) also traces each element. A type with no ref field gets a
 ;; descriptor with n = 0, which the collector never scans.
 
-(defn ll-desc-name
-  "The descriptor global of LLVM struct type sty (%\"T.Int\" -> @\"gcd.T.Int\",
-   %kbox -> @\"gcd.kbox\")."
+(defn ll-desc-sym
+  "The descriptor global's symbol for LLVM struct type sty (%\"T.Int\" ->
+   gcd.T.Int, %kbox -> gcd.kbox)."
   [sty]
-  (str "@\"gcd." (str/replace (str/replace sty #"^%\"?" "") #"\"$" "") "\""))
+  (str "gcd." (str/replace (str/replace sty #"^%\"?" "") #"\"$" "")))
 
-(defn ll-desc-def
+(defn ll-desc-name "The descriptor global of sty, as an operand." [sty] (str "@\"" (ll-desc-sym sty) "\""))
+
+(defn ll-desc-item
   "The descriptor global of sty: LLVM field indices fields hold words to
    trace; with an array elem index, the length at len and each element of
    the array at elem are traced too."
-  ([sty fields] (ll-desc-def sty fields nil nil))
+  ([sty fields] (ll-desc-item sty fields nil nil))
   ([sty fields len elem]
    (let [off (fn [i] (str "i32 ptrtoint (ptr getelementptr (" sty ", ptr null, i32 0, i32 " i ") to i32)"))
          n (count fields)]
-     (str (ll-desc-name sty) " = internal constant { i32, i32, i32, i32, [" n " x i32] } { "
-          "i32 " (if elem 1 0) ", " (if len (off len) "i32 0") ", " (if elem (off elem) "i32 0") ", i32 " n ", "
-          "[" n " x i32] " (if (zero? n) "zeroinitializer" (str "[" (str/join ", " (map off fields)) "]")) " }"))))
+     {:llvm/global {:name (ll-desc-sym sty) :kind "internal constant"
+                    :type (str "{ i32, i32, i32, i32, [" n " x i32] }")
+                    :init (str "{ i32 " (if elem 1 0) ", " (if len (off len) "i32 0") ", " (if elem (off elem) "i32 0") ", i32 " n ", "
+                               "[" n " x i32] " (if (zero? n) "zeroinitializer" (str "[" (str/join ", " (map off fields)) "]")) " }")}})))
+
+(defn ll-desc-def
+  "ll-desc-item as text."
+  ([sty fields] (lir/render (ll-desc-item sty fields)))
+  ([sty fields len elem] (lir/render (ll-desc-item sty fields len elem))))
 
 (defn ll-alloc-call
   "The text of a call allocating one sty, with its descriptor."
@@ -499,26 +507,28 @@
                (ll-fail "wasm/trap needs a string literal" {}))
       (ll-fail (str "unsupported intrinsic " nm) {}))))
 
-(defn ll-host-declare-text
+(defn ll-declare
+  "A declaration of host function nm (host/native/rt.c, gc.c)."
+  [ret nm params & attrs]
+  {:llvm/declare {:name nm :ret ret :params (vec params) :attrs (vec attrs)}})
+
+(defn ll-host-declares
   "Declarations of the host helpers the intrinsics call (host/native/rt.c)."
   []
   (let [w (ll-word)]
-    (str/replace (str/join "\n"
-              ["declare void @lg_trap(ptr) noreturn cold"
-               "declare void @lg_fill_i8(ptr, W, i8)" "declare void @lg_fill_i32(ptr, W, i32)"
-               "declare void @lg_fill_i64(ptr, W, i64)" "declare void @lg_fill_double(ptr, W, double)"
-               "declare void @lg_fill_ptr(ptr, W, ptr)" "declare void @lg_fill_word(ptr, W, W)"
-               "declare void @lg_array_copy(ptr, W, i64, ptr, W, i64, i64, i64)"
-               "declare W @lg_bytes_new(i64)" "declare W @lg_str_bytes_copy(W)"
-               "declare i64 @lg_host_write_bytes(i64, W)" "declare void @lg_host_sleep(i64)"
-               "declare i64 @lg_host_nanotime()" "declare W @lg_host_getenv(W)" "declare i64 @lg_host_open(W, i64)"
-               "declare i64 @lg_host_argc64()" "declare W @lg_host_arg(i64)"
-               "declare W @lg_term_read_key()" "declare i32 @lg_term_key_pending()" "declare i64 @lg_term_size()"
-               "declare void @lg_host_emit(W, W)" "declare W @lg_host_url_param(W)"
-               "declare void @lg_capture_begin()" "declare W @lg_capture_end()"
-               "declare i64 @llvm.ctlz.i64(i64, i1)" "declare i64 @llvm.cttz.i64(i64, i1)" "declare i64 @llvm.ctpop.i64(i64)"]
-              ) #"\bW\b" w)))
-
+    [(ll-declare "void" "lg_trap" ["ptr"] "noreturn" "cold")
+     (ll-declare "void" "lg_fill_i8" ["ptr" w "i8"]) (ll-declare "void" "lg_fill_i32" ["ptr" w "i32"])
+     (ll-declare "void" "lg_fill_i64" ["ptr" w "i64"]) (ll-declare "void" "lg_fill_double" ["ptr" w "double"])
+     (ll-declare "void" "lg_fill_ptr" ["ptr" w "ptr"]) (ll-declare "void" "lg_fill_word" ["ptr" w w])
+     (ll-declare "void" "lg_array_copy" ["ptr" w "i64" "ptr" w "i64" "i64" "i64"])
+     (ll-declare w "lg_bytes_new" ["i64"]) (ll-declare w "lg_str_bytes_copy" [w])
+     (ll-declare "i64" "lg_host_write_bytes" ["i64" w]) (ll-declare "void" "lg_host_sleep" ["i64"])
+     (ll-declare "i64" "lg_host_nanotime" []) (ll-declare w "lg_host_getenv" [w]) (ll-declare "i64" "lg_host_open" [w "i64"])
+     (ll-declare "i64" "lg_host_argc64" []) (ll-declare w "lg_host_arg" ["i64"])
+     (ll-declare w "lg_term_read_key" []) (ll-declare "i32" "lg_term_key_pending" []) (ll-declare "i64" "lg_term_size" [])
+     (ll-declare "void" "lg_host_emit" [w w]) (ll-declare w "lg_host_url_param" [w])
+     (ll-declare "void" "lg_capture_begin" []) (ll-declare w "lg_capture_end" [])
+     (ll-declare "i64" "llvm.ctlz.i64" ["i64" "i1"]) (ll-declare "i64" "llvm.cttz.i64" ["i64" "i1"]) (ll-declare "i64" "llvm.ctpop.i64" ["i64"])]))
 
 (defn ll-funcref!
   "The code (wasm/funcref tn fv) refers to: a function of func decl tn's

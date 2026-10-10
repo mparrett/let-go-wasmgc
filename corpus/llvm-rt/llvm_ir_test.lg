@@ -45,6 +45,9 @@
          (ir/render {:llvm/global {:name "lg_tinfo_count" :bare true :kind "internal constant" :type "i64" :init "48"}})))
   (is (= "declare void @lg_trap(ptr) noreturn cold"
          (ir/render {:llvm/declare {:name "lg_trap" :ret "void" :params ["ptr"] :attrs ["noreturn" "cold"]}})))
+  (is (= "declare i64 @llvm.ctlz.i64(i64, i1)"
+         (ir/render {:llvm/declare {:name "llvm.ctlz.i64" :ret "i64" :params ["i64" "i1"]}}))
+      "a declaration names a host or LLVM function exactly (no lg. prefix)")
   (is (= "%\"T.Int\" = type { i64, i64 }"
          (ir/render {:llvm/type {:name "%\"T.Int\"" :fields ["i64" "i64"]}}))))
 

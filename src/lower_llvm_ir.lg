@@ -60,9 +60,10 @@
     (str "define " (when linkage (str linkage " ")) (when cc (str cc " ")) ret " " (operand f)
          "(" (str/join ", " params) ")" (attrs (:attrs f)) " {\n" body "}\n")
     (if-let [{:keys [kind type init] :as g} (:llvm/global item)]
-      (str (operand g) " = " kind " " type " " init (attrs (:attrs g)))
+      (str (operand g) " = " kind " " type (when init (str " " init)) (attrs (:attrs g)))
       (if-let [{:keys [ret params] :as d} (:llvm/declare item)]
-        (str "declare " ret " " (str "@" (sym (:name d))) "(" (str/join ", " params) ")" (attrs (:attrs d)))
+        ;; a declaration names a host or LLVM function exactly (@llvm.ctpop.i64)
+        (str "declare " ret " @" (:name d) "(" (str/join ", " params) ")" (attrs (:attrs d)))
         (if-let [{:keys [name fields]} (:llvm/type item)]
           (str name " = type { " (str/join ", " fields) " }")
           (throw (ex-info "lower-llvm-ir: not a module item" {:item item})))))))
