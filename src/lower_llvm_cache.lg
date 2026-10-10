@@ -1,0 +1,170 @@
+;; lower-llvm-cache: what lowering one function depended on, recorded as it
+;; runs, and the normalized form the function cache keys on
+;; (docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md).
+;;
+;; A trace (`with-trace`) is bound around one function's analysis or
+;; lowering. Every question lowering asks the session goes through `ask`
+;; (by way of a `defquestion`), which records the question with a hash of
+;; its answer; every compiler function that runs records itself with
+;; `ran!`. Together they are the function's inputs beyond its own form.
+;; `normalize` is that form with locals as De Bruijn indices, so a hit does
+;; not depend on gensym numbering.
+;;
+;; Two rules keep this usable from an image and harmless to the GC lane:
+;; no file or OS access here (storage belongs to the caller), and nothing
+;; that takes a gensym when the file loads: no destructuring, no `for`, no
+;; auto-gensyms in syntax-quote (D196, row P9.1).
+(ns lower-llvm-cache
+  (:require [hash]))
+
+;; --- canonical answers ----------------------------------------------------------
+
+(defn- unhashable [x]
+  (throw (ex-info "lower-llvm-cache: unhashable answer" {:type (str (type x))})))
+
+(defn encode
+  "x as canonical data: a var as [:lw/var \"ns/name\"], maps and sets as
+   vectors of their encoded entries sorted by pr-str, seqs realized. An
+   atom, a volatile or a fn has no stable value, so it throws."
+  [x]
+  (cond (var? x) [:lw/var (str (symbol x))]
+        (or (fn? x) (contains? #{"let-go.lang.Atom" "let-go.lang.Volatile"} (str (type x)))) (unhashable x)
+        (map? x) (vec (sort-by pr-str (map (fn [e] [(encode (key e)) (encode (val e))]) x)))
+        (set? x) (vec (sort-by pr-str (map encode x)))
+        (vector? x) (mapv encode x)
+        (seq? x) (doall (map encode x))
+        :else x))
+
+(defn answer-hash
+  "The hash an answer is recorded by: xxh3-64 of its canonical printing."
+  [x]
+  (format "%016x" (hash/xxh3-64-str (pr-str (encode x)))))
+
+;; --- traces ---------------------------------------------------------------------
+
+(def ^:dynamic *trace* nil)   ; an atom {:asks {q hash} :ran {sym h}} of the bound trace
+
+(defn- realize
+  "x with every lazy seq inside it realized."
+  [x]
+  (cond (map? x) (into (empty x) (map (fn [e] [(realize (key e)) (realize (val e))]) x))
+        (vector? x) (mapv realize x)
+        (set? x) (into (empty x) (map realize x))
+        (seq? x) (doall (map realize x))
+        :else x))
+
+(defn ask
+  "The answer to question q (a vector headed by a keyword), from f. In a
+   trace, q is recorded with the answer's hash; the same question answered
+   differently later in the trace is recorded as :unstable."
+  [q f]
+  (let [a (realize (f))]
+    (when *trace*
+      (let [k (encode q) h (answer-hash a)]
+        (swap! *trace* update :asks
+               (fn [m] (let [old (get m k)]
+                         (assoc m k (if (and old (not= old h)) :unstable h)))))))
+    a))
+
+(defn ran!
+  "Record, in the bound trace, that compiler function sym (its source hash
+   h) ran. Nothing outside a trace."
+  [sym h]
+  (when *trace* (swap! *trace* update :ran assoc sym h))
+  nil)
+
+(defn with-trace
+  "Call f with a fresh trace bound; [its value, the trace]. A nested call
+   records into its own trace only. The value is realized before the trace
+   closes, so a lazy seq cannot ask its questions outside it."
+  [f]
+  (let [t (atom {:asks {} :ran {}})
+        v (binding [*trace* t] (realize (f)))]
+    [v @t]))
+
+(defmacro defquestion
+  "Define name as a question: (name args) asks q-expr, answered by
+   answer-expr. The only place lowering code may read session state
+   (checks/llvm-funnel-lint.lg)."
+  [name args q-expr answer-expr]
+  (list 'defn name args (list 'lower-llvm-cache/ask q-expr (list 'fn [] answer-expr))))
+
+;; --- the form hash --------------------------------------------------------------
+;; An expanded form with each binder as :lw/bind and each use of a local as
+;; [:lw/local n], n the number of binders between the use and its own
+;; (innermost 0): De Bruijn indices, so a subform normalizes the same
+;; wherever it sits. Other symbols are the caller's resolution.
+
+(declare normalize*)
+
+(defn- local-index [env s]
+  (loop [e env i 0]
+    (cond (empty? e) nil
+          (= s (first e)) i
+          :else (recur (rest e) (inc i)))))
+
+(defn- bind [env s] (cons s env))
+
+(defn- norm-all [xs env resolve] (map (fn [x] (normalize* x env resolve)) xs))
+
+(defn- norm-arity
+  "([params] body...) with params bound in order (& kept as a marker)."
+  [ar env resolve]
+  (let [params (first ar)
+        env2 (reduce (fn [e p] (if (= '& p) e (bind e p))) env params)]
+    (apply list (mapv (fn [p] (if (= '& p) '& :lw/bind)) params)
+           (norm-all (rest ar) env2 resolve))))
+
+(defn- norm-fn [form env resolve]
+  (let [nm (when (symbol? (second form)) (second form))
+        more (if nm (drop 2 form) (rest form))
+        env2 (if nm (bind env nm) env)
+        ;; (fn* [x] body) or (fn* ([x] body) ...)
+        ars (if (vector? (first more)) [more] more)]
+    (apply list 'fn* (concat (when nm [:lw/bind]) (map (fn [ar] (norm-arity ar env2 resolve)) ars)))))
+
+(defn- norm-let [form env resolve]
+  (let [bs (second form)
+        step (reduce (fn [acc i]
+                       (let [e (first acc)
+                             init (normalize* (nth bs (inc i)) e resolve)]
+                         [(bind e (nth bs i)) (conj (second acc) :lw/bind init)]))
+                     [env []] (range 0 (count bs) 2))]
+    (apply list (first form) (second step) (norm-all (drop 2 form) (first step) resolve))))
+
+(defn- norm-letfn [form env resolve]
+  (let [bs (second form)
+        names (map (fn [i] (nth bs i)) (range 0 (count bs) 2))
+        env2 (reduce bind env names)
+        bs2 (vec (mapcat (fn [i] [:lw/bind (normalize* (nth bs (inc i)) env2 resolve)]) (range 0 (count bs) 2)))]
+    (apply list 'letfn* bs2 (norm-all (drop 2 form) env2 resolve))))
+
+(defn- normalize* [form env resolve]
+  (cond
+    (symbol? form) (let [i (local-index env form)] (if i [:lw/local i] (resolve form)))
+    (seq? form)
+    (let [h (first form)]
+      (cond (= 'quote h) form
+            (= 'fn* h) (norm-fn form env resolve)
+            (or (= 'let* h) (= 'loop* h)) (norm-let form env resolve)
+            (= 'letfn* h) (norm-letfn form env resolve)
+            (and (= 'catch h) (<= 3 (count form)))
+            (apply list 'catch (normalize* (second form) env resolve) :lw/bind
+                   (norm-all (drop 3 form) (bind env (nth form 2)) resolve))
+            ;; (. target member args..) and (new Class args..): the member and
+            ;; the class name are names, not locals or vars
+            (= '. h) (apply list '. (normalize* (second form) env resolve) (nth form 2)
+                            (norm-all (drop 3 form) env resolve))
+            (= 'new h) (apply list 'new (second form) (norm-all (drop 2 form) env resolve))
+            :else (apply list (norm-all form env resolve))))
+    (vector? form) (mapv (fn [x] (normalize* x env resolve)) form)
+    (map? form) (into {} (map (fn [e] [(normalize* (key e) env resolve) (normalize* (val e) env resolve)]) form))
+    (set? form) (into #{} (map (fn [x] (normalize* x env resolve)) form))
+    :else form))
+
+(defn normalize
+  "Expanded form with binders as :lw/bind, locals as [:lw/local n] (De
+   Bruijn indices) and every other symbol as (resolve sym). Takes no
+   gensyms and reads no session."
+  [form resolve]
+  (normalize* form '() resolve))
