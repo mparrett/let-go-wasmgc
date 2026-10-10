@@ -1,0 +1,33 @@
+;; lower-llvm-refcheck: a verification aid, loaded only under LW_LL_CHECK_REFS=1
+;; (checks/llvm-refs-check.sh, P12.39). The llvm emitter records each unit's
+;; references as they are written (lower-llvm-ir/ref) and its shake follows
+;; only those, so a module symbol written into text some other way would go
+;; unrecorded and the shake could drop live code. This scans each unit's text
+;; for the symbols it names, which the emitter itself never does, and reports
+;; the module-defined ones the unit did not record.
+(ns lower-llvm-refcheck
+  (:require [clojure.string :as str]))
+
+(def ^:private sym-re #"@(\"[^\"]+\"|[-A-Za-z$._][-A-Za-z$._0-9]*)")
+
+(defn- named "The symbols text names." [text]
+  (set (map #(str/replace (second %) "\"" "") (re-seq sym-re text))))
+
+(def ^:private missed (atom {}))   ; unit -> symbols it named but did not record
+
+(defn note-unit!
+  "Called by the emitter for each unit made: its text, the symbols it
+   defines and the symbols it recorded."
+  [text defs refs]
+  (let [m (remove (set refs) (remove (set defs) (named text)))]
+    (when (seq m) (swap! missed update (first (sort defs)) (fnil into #{}) m))))
+
+(defn report!
+  "Print, once per module, each unit's unrecorded names among the symbols
+   the module defines, as \"refs-check: <unit> ... [syms]\"; the count."
+  [defined]
+  (let [lines (for [[u m] (sort @missed) :let [m (sort (filter (set defined) m))] :when (seq m)]
+                (str "refs-check: " u " names but did not record " (vec m)))]
+    (binding [*out* *err*] (doseq [l lines] (println l)))
+    (reset! missed {})
+    (count lines)))

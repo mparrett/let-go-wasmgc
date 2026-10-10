@@ -32,20 +32,32 @@
 ;; A module unit (a lowered fn, a region, a global) is items plus the symbols
 ;; they define (their names) and name (recorded by lower-llvm-ir/ref while
 ;; they were made), which the shake (llvm-module, D221) walks.
+(def ll-fn-attrs
+  "Every generated fn's attributes: nounwind, since no lowered code unwinds
+   (raising is a CPS call to the handler, D206), so none needs an unwind
+   table entry."
+  ["nounwind"])
 (defn ll-fn
   "A tailcc fn item (internal unless linkage says otherwise) returning void:
    params are \"type %name\" strings, body its text after the opening brace."
   ([nm params body] (ll-fn nm params body "internal"))
   ([nm params body linkage]
-   {:llvm/fn {:name nm :linkage linkage :cc "tailcc" :ret "void" :params (vec params) :body body}}))
+   {:llvm/fn {:name nm :linkage linkage :cc "tailcc" :ret "void" :params (vec params) :attrs ll-fn-attrs :body body}}))
 (defn ll-fn-bare "ll-fn for a backend helper named @lg_* (no quotes)." [nm params body]
   (assoc-in (ll-fn nm params body) [:llvm/fn :bare] true))
+(def ll-refcheck?
+  "LW_LL_CHECK_REFS=1 (checks/llvm-refs-check.sh, P12.39): every unit is
+   also handed to lower-llvm-refcheck, which reports a symbol its text names
+   that it did not record."
+  (= "1" (os/getenv "LW_LL_CHECK_REFS")))
+(when ll-refcheck? (require 'lower-llvm-refcheck))
 (defn ll-unit
   "A module unit: m's :items, their text, the symbols they define (their
    names) and the symbols they name (refs, as recorded while they were made)."
   [m refs]
   (let [items (:items m) text (str/join "\n" (map lir/render items))
         defs (set (keep lir/defines items))]
+    (when ll-refcheck? ((resolve 'lower-llvm-refcheck/note-unit!) text defs refs))
     (assoc m :text text :defs defs :refs (set refs))))
 (defn ll-glob
   "A global item: kind its linkage and kind (\"internal global\", \"private
@@ -1506,7 +1518,7 @@
                                              "  " l ".3 = getelementptr " lty ", ptr " l ", i32 0, i32 3\n  store i64 " (- n i) ", ptr " l ".3\n"
                                              "  " l ".4 = getelementptr " lty ", ptr " l ", i32 0, i32 4\n  store " w " 0, ptr " l ".4\n"
                                              "  %w" j "_" i " = ptrtoint ptr " l " to " w "\n")))))))]
-    {:llvm/fn {:name (str "lg_invoke" n) :bare true :linkage "internal" :cc "tailcc" :ret "void"
+    {:llvm/fn {:name (str "lg_invoke" n) :bare true :linkage "internal" :cc "tailcc" :ret "void" :attrs ll-fn-attrs
                :params (into ["ptr %k" (str w " %f")] (map #(str w " %a" %) (range n)))
                :body
     (str "entry:\n"
@@ -1551,7 +1563,7 @@
   []
   (let [p (llvm-profile) w (ll-word) fnt (ll-sty "$Fn")
         fn-ids (map ll-tid ["$Fn" "$FnV" "$FnX"])
-        fnc (fn [nm params body] {:llvm/fn {:name nm :bare true :linkage "internal" :cc "tailcc" :ret "void" :params params :body body}})
+        fnc ll-fn-bare
         decl ll-declare]
     {:target {:datalayout (llvm-datalayout (:triple p)) :triple (:triple p)}
      ;; spec decision 9: the innermost handler frame {code, k, prior, depth, ...}
@@ -1594,7 +1606,8 @@
       (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
       [(fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
        {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
-       {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
+       {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :attrs ll-fn-attrs
+                  :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
 
 (defn ll-rt-fns!
   "Lower the runtime fns the program reached (they may reach more): the
@@ -1723,6 +1736,11 @@
         live (ll-live (concat fn-units g-units)
                       (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs)
                       #(get init-of % []))
+        _ (when ll-refcheck?
+            ;; the module's symbols: units' and every var global (not units)
+            ((resolve 'lower-llvm-refcheck/report!)
+             (concat (mapcat :defs (concat fn-units g-units))
+                     (map #(str "var" %) (concat (vals *var-globals*) (map :name rt-gs) (when *rt* (:const-order @*rt*)))))))
         live? #(contains? live (str "var" %))
         kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
         kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))

@@ -24,6 +24,7 @@ row P12.31 llvm checks/run-corpus.sh corpus/poly
 row P12.32 llvm checks/run-expected.sh corpus/poly-clj
 row P12.37 checks/llvm-rtlib-check.sh
 row P12.38 checks/llvm-xsofy-check.sh
+row P12.39 checks/llvm-refs-check.sh
 if [ "${GC_LANE:-1}" = 1 ]; then
   row gc-corpora checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
   row P7.0 checks/run-corpus.sh corpus/eval/*/
