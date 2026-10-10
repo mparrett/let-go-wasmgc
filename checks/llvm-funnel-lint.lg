@@ -13,7 +13,11 @@
 (require '[clojure.string :as str])
 
 (def atom-inputs '#{*sigs* *rt* *prog-decls* *externs* *fn-values* lib-defns stdlib-index})
-(def value-inputs '#{*var-globals* *rooted-natives* *thunk-def-vars* *program-file* *box-params* *stub-libs*})
+;; value inputs, and lw-rt's tables of the runtime's sources (read only
+;; through lw-rt's questions: source-kind, global-def?, rt-decls, ...)
+(def value-inputs '#{*var-globals* *rooted-natives* *thunk-def-vars* *program-file* *box-params* *stub-libs*
+                     defn-by-var core-defns ext-defns ext-twins global-by-var decls globals defns type-names
+                     source-defn stdlib-defn})
 
 ;; Functions that run once per compile (assembly, session set-up, the cache
 ;; snapshot), not once per lowered function, so their reads are not
@@ -40,6 +44,22 @@
      ll-live            ; llvm-module: the shake
      ll-rtlib-snapshot  ; rtlib-snapshot under :llvm
      ll-rtlib-restore!  ; rtlib-restore! under :llvm
+     lk-wrappers        ; compile-entries-wat (GC assembly)
+     fnv-types          ; rec-group (GC assembly)
+     ll-init-steps      ; llvm-module: the init chain
+     ll-type-defs       ; llvm-module: the module's type definitions
+     ll-type-descs      ; llvm-module: the collector's descriptors
+     ll-rt-fns!         ; the llvm lowering loop over pending runtime fns
+     ;; reads of the function's own source, which its form hash covers
+     own-source         ; rt-analyze*!: the defn being analysed
+     own-global-def     ; rt-global!: the global whose init is being built
+     rt-target*         ; rt-target, asked as one question
+     ;; consistency checks over outputs: they fail a compile, never shape text
+     ll-add-global!     ; one global per name (D225)
+     ll-const-sym       ; one text per constant name (D221)
+     ;; a memo inside one function's lowering, keyed by that function's own
+     ;; name and node (and the abi-notes atom), never shared across functions
+     ll-try-plan
      })
 
 (defn- sym-name [x] (when (symbol? x) (symbol (name x))))

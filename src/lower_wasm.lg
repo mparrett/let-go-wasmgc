@@ -101,6 +101,7 @@
 (lc/defquestion q-sig [v] [:sig v] (get @*sigs* v))
 (lc/defquestion q-var-global [v] [:var-global v] (get *var-globals* v))
 (lc/defquestion q-prog-decl [v] [:prog-decl v] (get @*prog-decls* v))
+(lc/defquestion q-prog-decls [] [:prog-decls] @*prog-decls*)
 (lc/defquestion q-fn-value [k] [:fn-value k] (get @*fn-values* k))
 (lc/defquestion q-extern [v] [:extern v] (get @*externs* v))
 (lc/defquestion q-rt-state [v] [:rt-state v] (get-in @*rt* [:state v]))
@@ -344,12 +345,12 @@
   "A var read from a mutable global: the program's def/declare vars (the var
    table, D54) and the runtime's top-level defs (D39)."
   [v]
-  (or (some? (q-var-global v)) (and *rt* (contains? lw-rt/global-by-var v))))
+  (or (some? (q-var-global v)) (and *rt* (lw-rt/global-def? v))))
 
 (declare rt-global!)
 
 (defn var-global [v]
-  (or (q-var-global v) (when (and *rt* (contains? lw-rt/global-by-var v)) (rt-global! v))))
+  (or (q-var-global v) (when (and *rt* (lw-rt/global-def? v)) (rt-global! v))))
 
 (defn var-hidden?
   "A var value that gets no local: everything but the var table's vars. Defn
@@ -894,9 +895,9 @@
   (when-let [v (:var ent)]
     (or (get seq-variant-table v)
         (let [sv (lw-rt/ns-var (symbol (namespace (var-sym v))) (symbol (str (name (var-sym v)) "-seq")))
-              d (when (and sv (not (:private (meta sv)))) (lw-rt/source-defn sv))
-              k (when d (count (first (first (:arities d)))))]
-          (when (and k (= 1 (count (:arities d))) (<= 1 k))
+              shape (when (and sv (not (:private (meta sv)))) (lw-rt/source-arity-shape sv))
+              k (when shape (first shape))]
+          (when (and k (= 1 (count shape)) (<= 1 k))
             [sv (dec k) []])))))
 
 (defn seq-variant
@@ -1128,8 +1129,8 @@
    it there saves and sets that same slot."
   [v]
   (and (var? v) (:dynamic (meta v)) (:line (meta v))
-       (not (lw-rt/source-defn v)) (not (lw-rt/runtime-var? v))
-       (not (contains? lw-rt/core-defns v))
+       (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
+       (not (lw-rt/core-defn? v))
        (not (#{"clojure.core" "let-go.core" "core"} (namespace (symbol v))))))
 
 (defn bound-var-global
@@ -1204,7 +1205,7 @@
     (let [x (try @v (catch e nil))]
       (cond (and (= "let-go.lang.NativeFn" (str (type x))) (nil? (:line (meta v))))
             (str "lower-wasm: " (subs (str v) 2) " has no twin")
-            (and (fn? x) (contains? lw-rt/core-defns v))
+            (and (fn? x) (lw-rt/core-defn? v))
             (str "lower-wasm: " (subs (str v) 2) " did not compile")
             :else nil))))
 
@@ -1756,7 +1757,7 @@
    or keyword (lg defines no such var by def outside a program, whose defs
    are var-table vars and never reach var-value-wat)."
   [v]
-  (and (var? v) (not (:dynamic (meta v))) (not (lw-rt/source-defn v)) (not (lw-rt/runtime-var? v))
+  (and (var? v) (not (:dynamic (meta v))) (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
        (let [x (try @v (catch e nil))] (or (float? x) (int? x) (string? x) (keyword? x)))))
 
 (defn scalar-const-wat [x]
@@ -3415,8 +3416,13 @@
                          #'unchecked-subtract #'unchecked-multiply #'quot #'/}
                        (concat (keys core-var-ops) (keys core-fn-impls))))
 
-(defn rt-target
-  "The runtime defn var that implements v (v itself, or its twin), or nil."
+(declare rt-target*)
+;; the runtime defn var that implements v (v itself, or its twin), or nil
+(lc/defquestion rt-target [v] [:rt-target v] (rt-target* v))
+
+(defn rt-target*
+  "rt-target's resolution, asked as one question (its lookups are tables
+   of the runtime's sources and the program's library index)."
   [v]
   (when (and *rt* (var? v))
     (cond (contains? lw-rt/defn-by-var v) v
@@ -3450,9 +3456,19 @@
         (rt-analyze! v)))
     (doseq [v (form-vars form) :when (not (contains? intercepted v))]
       (when-let [t (rt-target v)] (rt-analyze! t))
-      (when (contains? lw-rt/global-by-var v) (rt-global! v)))))
+      (when (lw-rt/global-def? v) (rt-global! v)))))
 
 (declare rt-analyze*!)
+
+(defn own-source
+  "The source defn of v, which is being analysed: its own form, which the
+   function cache keys it by, so not a question of its trace."
+  [v] (lw-rt/source-defn v))
+
+(defn own-global-def
+  "The source of runtime global v, whose init fn is being built: its own
+   form, as own-source."
+  [v] (lw-rt/global-by-var v))
 
 (defn rt-analyze!
   "Analyse every arity of runtime defn v (callees first) and register its
@@ -3460,12 +3476,12 @@
    left out (its calls go through a nil slot, as before P2.1)."
   [v]
   (when (and *rt* (not (q-rt-state v)))
-    (if (:core-lg (lw-rt/source-defn v))
+    (if (:core-lg (lw-rt/source-kind v))
       (try (rt-analyze*! v)
            (catch e (swap! *rt* assoc-in [:state v] :failed)
                     (swap! *sigs* dissoc v)
                     (swap! *rt* update :failures (fnil conj []) [(qual-name v) (ex-message e)])))
-      (if (:lib (lw-rt/source-defn v))
+      (if (:lib (lw-rt/source-kind v))
         ;; P3.2: name the library defn (callers first) in a compile error
         (try (rt-analyze*! v)
              (catch e (throw (ex-info (str "in " (qual-name v) ": " (ex-message e)) (or (ex-data e) {}) e))))
@@ -3475,7 +3491,7 @@
   [v]
   (when (and *rt* (not (q-rt-state v)))
     (swap! *rt* assoc-in [:state v] :busy)
-    (let [d (lw-rt/source-defn v)
+    (let [d (own-source v)
           multi? (> (count (:arities d)) 1)]
       (binding [*ns* (the-ns (:ns d))]
         (let [srcs (doall (for [[params & body] (:arities d)
@@ -3535,7 +3551,7 @@
   (let [g (str "$" (qual-name v))]
     (when-not (q-rt-global v)
       (swap! *rt* assoc-in [:globals v] {:name g :init (str (qual-name v) "__init") :order (rt-global-order)})
-      (let [{:keys [ns init]} (lw-rt/global-by-var v)]
+      (let [{:keys [ns init]} (own-global-def v)]
         (rt-init-fn! (str (qual-name v) "__init") ns init)))
     g))
 

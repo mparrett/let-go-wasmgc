@@ -11,7 +11,7 @@
 ;; wasm.intrinsics' own defns are the reference implementation and are never
 ;; lowered; only its declarations (Bytes) are read.
 (ns lw-rt
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str] [lower-llvm-cache :as lc]))
 
 (def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
 ;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
@@ -142,9 +142,7 @@
                          seg (last (str/split (str (:ns d)) #"\."))]]
                [(:var d) (str "$" (if clash? (str seg "." nm) nm))]))))
 
-(defn type-name
-  "Wasm type name of a declaration var, or nil."
-  [v] (get type-names v))
+(lc/defquestion type-name [v] [:type-name v] (get type-names v))   ; a declaration var's type name, or nil
 
 (def decl-by-name (into {} (for [d decls] [(type-name (:var d)) (:decl d)])))
 
@@ -184,18 +182,19 @@
 
 (def global-by-var (into {} (for [g globals] [(:var g) g])))
 
-(defn runtime-var? [v] (or (contains? defn-by-var v) (contains? global-by-var v)))
+(lc/defquestion runtime-var? [v] [:runtime-var v] (or (contains? defn-by-var v) (contains? global-by-var v)))
 
-(defn intrinsic? [v]
+(defn- intrinsic?* [v]
   (and (var? v) (intrinsic-meta? v)
        ;; P4.1: src/lw_ext.lg declares the backend's own host intrinsics
        ;; (host-emit, host-url-param) until rt/ carries them
        (let [n (ns-name (:ns (meta v)))] (or (contains? rt-nss n) (= n 'lw-ext)))))
 
-(defn intrinsic-vars
-  "Every intrinsic var of the loaded runtime, for the backend's emitter check."
-  []
-  (for [ns-sym rt-nss [_ v] (ns-publics ns-sym) :when (intrinsic? v)] v))
+(lc/defquestion intrinsic? [v] [:intrinsic v] (intrinsic?* v))
+
+;; every intrinsic var of the loaded runtime, for the backend's emitter check
+(lc/defquestion intrinsic-vars [] [:intrinsic-vars]
+  (vec (for [ns-sym rt-nss [_ v] (ns-publics ns-sym) :when (intrinsic?* v)] v)))
 
 ;; P7.6: LW_NO_EVAL=1 builds a module without the evaluator: wasm.eval's
 ;; twins are dropped, so core/eval is again a native with no twin (D139's
@@ -230,7 +229,7 @@
 (def twins-by-value
   (into {} (for [[nv rv] twins] [@nv rv])))
 
-(defn twin-of [v]
+(defn- twin-of* [v]
   (or (get twins v) (get extra-twins v)
       (when (var? v) (let [x (try @v (catch e nil))] (when (some? x) (get twins-by-value x))))))
 
@@ -417,6 +416,8 @@
         (swap! stdlib-index assoc ns-sym idx)
         idx)))
 
+(lc/defquestion twin-of [v] [:twin-of v] (twin-of* v))
+
 (defn stdlib-defn
   "v's source defn when v is an lg-defined stdlib fn outside core/string."
   [v]
@@ -425,7 +426,10 @@
         (when (and n (not (#{'core 'string} n)))
           (get (stdlib-ns! n) v)))))
 
-(defn stdlib-twin
+(declare stdlib-twin*)
+(lc/defquestion stdlib-twin [v] [:stdlib-twin v] (stdlib-twin* v))
+
+(defn- stdlib-twin*
   "The synthesized fill of a stdlib protocol method var (see above), or nil."
   [v]
   (when (var? v)
@@ -446,7 +450,10 @@
 
 (def stdlib-alias-map (atom {}))   ; unsourced var -> the embedded var whose fn it holds
 
-(defn stdlib-alias
+(declare stdlib-alias*)
+(lc/defquestion stdlib-alias [v] [:stdlib-alias v] (stdlib-alias* v))
+
+(defn- stdlib-alias*
   "The embedded stdlib var whose fn an unsourced var holds, or nil. A core
    file may define a fn in one namespace and intern its value into another
    (ir.data's accessors land in ir); the interned var carries no meta, so
@@ -476,3 +483,18 @@
    core fn, one of src/lw_ext.lg's, a stdlib defn, or a program library defn."
   [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v) (get @lib-defns v)
           (stdlib-defn v)))
+
+;; --- lowering's questions about sources -----------------------------------------
+;; Narrow on purpose: a caller's trace holds only what it used of another
+;; defn, so a body edit there does not invalidate it (the function cache,
+;; docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md).
+(lc/defquestion source-kind [v] [:source-kind v]
+  (let [d (source-defn v)] (when d {:core-lg (boolean (:core-lg d)) :lib (boolean (:lib d))})))
+(lc/defquestion source-arity-shape [v] [:arity-shape v]
+  (let [d (source-defn v)] (when d (mapv (fn [a] (count (first a))) (:arities d)))))
+(lc/defquestion stdlib-defn? [v] [:stdlib-defn v] (some? (stdlib-defn v)))
+(lc/defquestion core-defn? [v] [:core-defn v] (contains? core-defns v))
+(lc/defquestion global-def? [v] [:global-def v] (contains? global-by-var v))
+;; the runtime's declarations, in order: [{:var :tn :decl}]
+(lc/defquestion rt-decls [] [:rt-decls]
+  (mapv (fn [d] {:var (:var d) :tn (get type-names (:var d)) :decl (:decl d)}) decls))

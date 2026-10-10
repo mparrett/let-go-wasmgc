@@ -13,4 +13,6 @@ printf '(lc/defquestion q-sig [v] [:sig v] (get @*sigs* v))\n(defn g [v] (swap! 
 lint "$t/bad.lg" > "$t/bad.out"
 if ! grep -q 'funnel: .*bad.lg f reads \*sigs\*' "$t/bad.out"; then echo "llvm-funnel: self-test failed (a planted read was not reported)"; exit 1; fi
 if ! lint "$t/good.lg" > "$t/good.out"; then echo "llvm-funnel: self-test failed (a question or a write was reported)"; cat "$t/good.out"; exit 1; fi
-lint src/lower_wasm.lg src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg src/lw_rt.lg src/lw_ext.lg
+# lw_rt.lg and lw_ext.lg are the data layer behind lw-rt's questions; the
+# lowering files may reach their tables only through those questions
+lint src/lower_wasm.lg src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg

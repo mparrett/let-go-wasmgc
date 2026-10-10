@@ -15,20 +15,20 @@
 ;; --- the type registry ----------------------------------------------------
 
 (defn ll-fn-decl []
-  (:decl (first (filter #(= "$Fn" (lw-rt/type-name (:var %))) lw-rt/decls))))
+  (:decl (first (filter #(= "$Fn" (:tn %)) (lw-rt/rt-decls)))))
 
 (defn ll-static-types
   "[{:tn :decl}] in id order (id = index + 1): the runtime's declarations,
    then FnV and FnX. No program type is among them, so these ids are the
    same in every compile and cached runtime text can hold them (D221)."
   []
-  (or (get @*fn-values* [:llvm :types])
+  (or (q-fn-value [:llvm :types])
       (let [fnd (ll-fn-decl)
             extra [{:type :funcref :mut false} {:type :i32 :mut false}]
             fnv (assoc fnd :fields (into (:fields fnd) extra))
             fnx (assoc fnd :fields (into (into (:fields fnd) extra)
                                          (repeat (- max-arity-x max-arity) {:type :funcref :mut false})))
-            ts (vec (concat (for [d lw-rt/decls] {:tn (lw-rt/type-name (:var d)) :decl (:decl d)})
+            ts (vec (concat (for [d (lw-rt/rt-decls)] {:tn (:tn d) :decl (:decl d)})
                             [{:tn "$FnV" :decl fnv} {:tn "$FnX" :decl fnx}]))]
         (swap! *fn-values* assoc [:llvm :types] ts)
         ts)))
@@ -38,7 +38,7 @@
    from one counter that starts after the static types, so neither shifts
    the other's, nor a static one."
   []
-  (let [id (get @*fn-values* [:llvm :next-id] (inc (count (ll-static-types))))]
+  (let [id (or (q-fn-value [:llvm :next-id]) (inc (count (ll-static-types))))]
     (swap! *fn-values* assoc [:llvm :next-id] (inc id))
     id))
 
@@ -46,9 +46,9 @@
   "[{:tn :decl :id}] for the program's declarations, in declaration order,
    each with its id from ll-next-id! (assigned on first use)."
   []
-  (vec (for [[_ d] (sort-by (comp :order val) @*prog-decls*)]
+  (vec (for [[_ d] (sort-by (comp :order val) (q-prog-decls))]
          (let [k [:llvm :prog-tid (:name d)]
-               id (or (get @*fn-values* k) (let [i (ll-next-id!)] (swap! *fn-values* assoc k i) i))]
+               id (or (q-fn-value k) (let [i (ll-next-id!)] (swap! *fn-values* assoc k i) i))]
            {:tn (:name d) :decl (:decl d) :id id}))))
 
 (defn ll-registered-types
@@ -60,7 +60,7 @@
 (defn ll-tid
   "The id of runtime or program type tn ($Int, $Fn ...)."
   [tn]
-  (let [m (or (get @*fn-values* [:llvm :tids])
+  (let [m (or (q-fn-value [:llvm :tids])
               (let [m (into {} (map-indexed (fn [i t] [(:tn t) (inc i)]) (ll-static-types)))]
                 (swap! *fn-values* assoc [:llvm :tids] m)
                 m))]
@@ -72,7 +72,7 @@
   "The id of the closure environment for capture kinds (one type per kind
    vector, as the WasmGC lane keeps them), from ll-next-id!."
   [kinds]
-  (let [m (get @*fn-values* [:llvm :envs] {})]
+  (let [m (or (q-fn-value [:llvm :envs]) {})]
     (or (get m kinds)
         (let [id (ll-next-id!)]
           (swap! *fn-values* assoc [:llvm :envs] (assoc m kinds id))
@@ -537,8 +537,8 @@
    tail-calls it, through a boxing continuation when fv's result is not
    boxed and tn's result is a ref. Made once per (tn, fv)."
   [tn d fv]
-  (or (get @*fn-values* [:llvm-ref tn fv])
-      (let [argc (count (:params d)) ent (or (get @*sigs* fv) (callee-sig fv)) sig (get-in ent [:arities argc])
+  (or (q-fn-value [:llvm-ref tn fv])
+      (let [argc (count (:params d)) ent (or (q-sig fv) (callee-sig fv)) sig (get-in ent [:arities argc])
             w (ll-word) cname (str "fref." (subs tn 1) "." (safe-id (subs (str fv) 2)) "_" (hex32 (str fv)))]
         (when-not sig (ll-fail "wasm/funcref target has no arity for the signature" {:var fv :sig tn}))
         (when-not (= :ref (:result d)) (ll-fail "wasm/funcref of a func type with a non-ref result" {:sig tn}))

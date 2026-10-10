@@ -360,7 +360,7 @@
   "The direct-call signature of v for argc args: a program defn, or (with
    the runtime) the runtime defn that implements v (D58 twins)."
   [v argc]
-  (or (get-in @*sigs* [v :arities argc])
+  (or (get-in (q-sig v) [:arities argc])
       (and *rt* (rt-target v) (get-in (callee-sig v) [:arities argc]))))
 
 (defn ll-pre-operand
@@ -379,7 +379,7 @@
    when none is left); nil when neither takes argc args."
   [v args]
   (let [argc (count args)
-        ent (or (get @*sigs* v) (when (and *rt* (rt-target v)) (callee-sig v)))]
+        ent (or (q-sig v) (when (and *rt* (rt-target v)) (callee-sig v)))]
     (when ent
       (if-let [vs (:variadic ent)]
         (let [k (:fixed vs)]
@@ -416,7 +416,7 @@
    callable through the runtime's own invoke-args (keywords, maps, sets,
    vars as fns). Emitted once, when a call needs it."
   []
-  (or (get @*fn-values* [:llvm :invoke-args])
+  (or (q-fn-value [:llvm :invoke-args])
       (let [w (ll-word) real (:name (get-in (callee-sig (lw-rt/rt-var 'core 'invoke-args)) [:arities 6]))
             ids (map ll-tid ["$Fn" "$FnV" "$FnX"]) as ["%a" "%b" "%c" "%d"]]
         (swap! *fn-values* assoc [:llvm :invoke-args] "lg_invoke_args")
@@ -443,7 +443,7 @@
    otherwise lg_invoke<n> up to ll-max-invoke (which raises the arity
    error); past that, the runtime's call-fail. Emitted once, when needed."
   []
-  (or (get @*fn-values* [:llvm :apply-list])
+  (or (q-fn-value [:llvm :apply-list])
       (let [w (ll-word) lty (ll-sty "$List") vty (ll-sty "$FnV") xty (ll-sty "$FnX")
             cf (get-in (callee-sig (lw-rt/rt-var 'core 'call-fail)) [:arities 2])
             ;; the first j items of %l as %e<tag>_0.., the tail as %t<tag>_j
@@ -506,7 +506,7 @@
    literal's included): a boxed value for an unboxed param, or a float for
    an int one, is a violation the driver's boxing fixpoint resolves."
   [v args sig]
-  (when (and *abi-notes* v (:var (get @*sigs* v))
+  (when (and *abi-notes* v (:var (q-sig v))
              (some (fn [[a k]] (let [h (ll-arg-kind a)]
                                  (or (and (not= k :box) (not= k :func) (= h :box))
                                      (and (= k :int) (= h :float)))))
@@ -1394,10 +1394,10 @@
   ;; keyed by the signature entry, as defn-fn-global is: a boxing round
   ;; changes the params the wrapper unboxes to
   ;; the cache holds the Fn global's symbol, so each use records it
-  (if-let [g (get @*fn-values* [:llvm v (get @*sigs* v)])]
+  (if-let [g (q-fn-value [:llvm v (q-sig v)])]
       (str "ptrtoint (ptr " (lir/ref g) " to " (ll-word) ")")
       (let [id (str (safe-id (subs (str v) 2)) "_" (hex32 (str v)))
-            e (or (get @*sigs* v) (when (and *rt* (rt-target v)) (callee-sig v)))
+            e (or (q-sig v) (when (and *rt* (rt-target v)) (callee-sig v)))
             op (when-not *rt* (core-var-ops v))
             codes (cond
                     e (into (if-let [vs (:variadic e)]
@@ -1425,7 +1425,7 @@
                               (cond v1 (first (:v codes)) (= 1 (count codes)) (key (first codes)) :else 0)
                               (if e (:base e) (name (symbol (subs (str v) 2)))))
             o (ll-fn-object! id codes info)]
-        (swap! *fn-values* assoc [:llvm v (get @*sigs* v)] (str "fnval." id))
+        (swap! *fn-values* assoc [:llvm v (q-sig v)] (str "fnval." id))
         o))))
 
 (def llvm-profiles (atom {}))
