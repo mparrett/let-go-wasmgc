@@ -1,0 +1,13 @@
+id: 757e4e7
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D214: `rt/llvm/` is the llvm target's own runtime (D211 and D212 superseded where they differ):
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D214
+description: `rt/llvm/` is the llvm target's own runtime (D211 and D212 superseded where they differ): the runtime files directly under `rt/llvm/`, namespaces `llvm.*`, the intrinsics `llvm.arch` (file `arch.lg`, alias `arch/`), the evaluator's in-program host `eval_host.lg`, its native-lg seam `eval_native.lg` (for the tests), and the backend's let-go fills `ext.lg` (namespace `lw-ext`, which the compiler's twin table names). Left out as wasm-only: `emit.lg`, `wasmbin.lg`, `watread.lg` (run-time compilation to wasm bytes; the llvm target's counterpart is M5's JIT). It does not track `rt/wasm`; the compiler reaches either runtime only through D213's interface, and `src/lw_rt.lg` picks `rt/llvm` (and its `ext.lg`) for `--target llvm`. The runtime's tests are `corpus/llvm-rt/` (the corpus/intrinsics tests for these files, renamed): 124 tests under native lg, 0 failures (P12.23). With `-source-paths rt`, `llvm.seq` resolves to `rt/llvm/seq.lg`.
