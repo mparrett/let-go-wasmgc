@@ -605,6 +605,60 @@
                       (if (>= (+ e5 1023) 2047) -1.0 (scale2 (wasm/i64-to-f64 mant) (- e5 52)))))))]
     (if (< r 0.0) (wasm/null) (s/box-float (if neg (* -1.0 r) r)))))
 
+;; parse-double (CoreParseDouble, lang.go:8908): strconv.ParseFloat(s, 64),
+;; nil on any error. The decimal forms go through parse-float above (the
+;; same exact path); inf/infinity/nan in any case are the words ParseFloat
+;; accepts; an underscore between two digits is skipped, as Go's syntax
+;; allows. Named limit: a hex float ("0x1p-2") reads as nil.
+(defn- underscores-ok? [tk n]                              ; Go's underscoreOK: each _ sits between two digits
+  (loop [i 0]
+    (if (>= i n)
+      true
+      (if (= 95 (wasm/bget tk i))
+        (if (if (> i 0) (if (< (inc i) n) (if (dec-digit? (wasm/bget tk (dec i))) (dec-digit? (wasm/bget tk (inc i))) false) false) false)
+          (recur (inc i))
+          false)
+        (recur (inc i))))))
+
+(defn- digit-or-sep? [c] (if (= c 95) true (dec-digit? c)))
+
+(defn- float-syntax? [tk n]                                ; [+-]? digits [. digits] [(e|E) [+-]? digits], a digit somewhere in the mantissa
+  (let [i0 (if (= 0 (sign-at tk 0 n)) 0 1)
+        i (loop [i i0] (if (if (< i n) (digit-or-sep? (wasm/bget tk i)) false) (recur (inc i)) i))
+        d1 (- i i0)
+        j (if (if (< i n) (= 46 (wasm/bget tk i)) false)
+            (loop [j (inc i)] (if (if (< j n) (digit-or-sep? (wasm/bget tk j)) false) (recur (inc j)) j))
+            i)
+        d2 (if (> j i) (- j (inc i)) 0)]
+    (if (if (= 0 (+ d1 d2)) true (not (underscores-ok? tk n)))
+      false
+      (if (>= j n)
+        true
+        (if (if (= 101 (wasm/bget tk j)) true (= 69 (wasm/bget tk j)))
+          (let [k (inc j) k (if (= 0 (sign-at tk k n)) k (inc k))
+                e (loop [e k] (if (if (< e n) (digit-or-sep? (wasm/bget tk e)) false) (recur (inc e)) e))]
+            (if (> e k) (= e n) false))
+          false)))))
+
+(defn- word-at? [tk a n w]                                ; tk[a..n) equals w ignoring ASCII case
+  (if (= (- n a) (wasm/alen w))
+    (loop [i 0] (if (>= i (wasm/alen w)) true
+                  (let [c (wasm/bget tk (+ a i)) c (if (if (>= c 65) (<= c 90) false) (+ c 32) c)]
+                    (if (= c (wasm/bget w i)) (recur (inc i)) false))))
+    false))
+
+(defn ^{:twin "core/parse-double"} parse-double [s]
+  (if (= 17 (sq/kind s))
+    (let [tk (s/str-bytes s) n (wasm/alen tk)]
+      (if (float-syntax? tk n)
+        (parse-float tk 0 n)
+        (let [sg (sign-at tk 0 n) a (if (= sg 0) 0 1)]
+          (cond (if (word-at? tk a n (wasm/bytes-of-string "inf")) true (word-at? tk a n (wasm/bytes-of-string "infinity")))
+                (s/box-float (if (= sg -1) ##-Inf ##Inf))
+                (word-at? tk a n (wasm/bytes-of-string "nan")) (s/box-float ##NaN)
+                :else (wasm/null)))))
+    (c/raise (wasm/bytes-of-string "parse-double expected String"))))
+
 ;; ---------------------------------------------------------------------------
 ;; readNumber (reader.go:638): the token, then the same cascade of parsers.
 
