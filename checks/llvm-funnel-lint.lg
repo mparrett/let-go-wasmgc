@@ -1,0 +1,79 @@
+;; checks/llvm-funnel-lint.lg — lowering reads session state only through
+;; questions (docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md,
+;; "Recording every lookup"; row P12.40 via checks/llvm-funnel-check.sh).
+;;
+;; Usage: lg checks/llvm-funnel-lint.lg FILE...
+;; Reads each file's top-level forms with the reader (no text matching) and
+;; prints "funnel: <file> <defn> reads <sym>" for each read of a session
+;; input inside a top-level defn that is not on the allowlist, then
+;; "llvm-funnel: N violations"; exits 1 when N > 0. A read is:
+;;   - (deref A) of an atom-valued input A (a swap!/reset! is a write);
+;;   - any use of a value input V, except as a key of a binding vector.
+;; Reads inside a (defquestion ..) form are the funnel itself.
+(require '[clojure.string :as str])
+
+(def atom-inputs '#{*sigs* *rt* *prog-decls* *externs* *fn-values* lib-defns stdlib-index})
+(def value-inputs '#{*var-globals* *rooted-natives* *thunk-def-vars* *program-file* *box-params* *stub-libs*})
+
+;; Functions that run once per compile (assembly, session set-up, the cache
+;; snapshot), not once per lowered function, so their reads are not
+;; lowering's inputs. Each says who calls it.
+(def allowlist
+  '#{new-session        ; the driver, once per compile
+     with-session*      ; the driver, once per compile
+     add-decl!          ; the driver, per program declaration, before lowering
+     session-module     ; the driver: module assembly
+     module-parts       ; session-module and rt-fixpoint: module assembly
+     rt-fixpoint        ; session-module: the runtime fixpoint around assembly
+     build-rtlib!       ; load-rtlib!: builds the cached runtime once
+     rtlib-snapshot     ; load-rtlib!: saves the cached runtime
+     rtlib-restore!     ; load-rtlib!: restores it
+     load-rtlib!        ; the driver, once per compile
+     llvm-module        ; session-module under :llvm: module assembly
+     ll-live            ; llvm-module: the shake
+     ll-rtlib-snapshot  ; rtlib-snapshot under :llvm
+     ll-rtlib-restore!  ; rtlib-restore! under :llvm
+     })
+
+(defn- sym-name [x] (when (symbol? x) (symbol (name x))))
+
+(defn- reads
+  "The session inputs form reads, as a seq of symbols."
+  [form]
+  (cond
+    (symbol? form) (when (contains? value-inputs (sym-name form)) [(sym-name form)])
+    (seq? form)
+    (let [h (sym-name (first form))]
+      (cond (= 'defquestion h) nil
+            (= 'quote h) nil
+            (= 'deref h) (let [a (second form)]
+                           (if (contains? atom-inputs (sym-name a)) [(sym-name a)] (reads a)))
+            (contains? '#{swap! reset!} h) (mapcat reads (drop 2 form))
+            (and (= 'binding h) (vector? (second form)))
+            (concat (mapcat (fn [i] (reads (nth (second form) (inc i)))) (range 0 (count (second form)) 2))
+                    (mapcat reads (drop 2 form)))
+            :else (mapcat reads form)))
+    (coll? form) (mapcat reads (if (map? form) (mapcat identity form) form))
+    :else nil))
+
+(defn violations
+  "[[defn-name sym] ...] for one file's text."
+  [text]
+  (let [forms (read-string (str "[" text "\n]"))]
+    (distinct
+     (for [f forms
+           :when (and (seq? f) (contains? '#{defn defn-} (first f)))
+           :let [nm (second f)]
+           :when (not (contains? allowlist nm))
+           s (reads (drop 2 f))]
+       [nm s]))))
+
+(defn -main [& files]
+  (let [n (atom 0)]
+    (doseq [file files [nm s] (violations (slurp file))]
+      (swap! n inc)
+      (println "funnel:" file nm "reads" s))
+    (println "llvm-funnel:" @n "violations")
+    (os/exit (if (zero? @n) 0 1))))
+
+(apply -main *command-line-args*)
