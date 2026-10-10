@@ -94,6 +94,7 @@
         (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
         (and *rt* (= v #'*in-wasm*)) (lw-rt/rt-var 'host 'in-wasm)
         (and *rt* (= v #'*assert*)) (lw-rt/rt-var 'host 'assert-on)
+        (and *rt* (= v #'*compiling-aot*)) (lw-rt/rt-var 'host 'compiling-aot)
         :else v))
 
 (defn ll-table-var? [v] (and v (table-var? (ll-var-alias v))))

@@ -45,6 +45,9 @@
 (def in-wasm (sq/bool true))
 ;; *assert* (ll-var-alias): true, as natively (assert's check runs)
 (def assert-on (sq/bool true))
+;; *compiling-aot* (ll-var-alias): false, as natively when a program runs
+;; (true only while lgbgen compiles it ahead of time)
+(def compiling-aot (sq/bool false))
 
 (defn out-handle "The value of *out*." [] (arch/get HGlobals 0 globals))
 (defn err-handle "The value of *err*." [] (arch/get HGlobals 1 globals))
