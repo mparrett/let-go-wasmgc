@@ -1,0 +1,13 @@
+id: 7fa3bef
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-09T00:00:00Z
+hash_source: content
+title: D223: `lw_rt`'s `stdlib-twin` and `stdlib-alias` remember a miss as well as a hit.
+status: closed
+priority: medium
+created: 2026-10-09T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D223
+description: `lw_rt`'s `stdlib-twin` and `stdlib-alias` remember a miss as well as a hit. Each answers `rt-target`, which the backend asks once per var reference while it scans a form for callees (118,688 times compiling xsofy's world dump), and a miss re-walked a namespace's interns (`stdlib-twin`) or every namespace's (`stdlib-alias`): 299 s of an llvm compile of xsofy, about 2.5 ms a call; 0.35 s with misses remembered, the dumps unchanged on seeds 1, 2, 3, 7 and 11. A var whose namespace a later `stdlib-ns!` indexes still gets its fill, which `stdlib-ns!` writes over the remembered miss. Both lanes compile through it.
