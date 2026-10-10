@@ -340,3 +340,22 @@ mirror of that workspace. In practice:
 
 MIT; see [LICENSE](LICENSE). [NOTICE](NOTICE) lists the material taken from
 let-go, xsofy and legmacs.
+
+## Issues
+
+Work items live in this repository as git notes under `refs/notes/issue-*`,
+managed with `git-issue` (the git-issue-tracker project on GitHub).
+Once per clone:
+
+```sh
+git issue setup-sync enable      # hooks + fetch refspec for the notes
+git fetch origin 'refs/notes/issue-*:refs/notes/issue-*'
+git issue list
+git issue ready                  # open, unblocked, by priority
+```
+
+Reference an issue from a commit with a trailer (`Issue: #<id>`, `Fixes: #<id>`,
+`Closes: #<id>`); `git issue scan-commits` finds them. Push soon after editing
+an issue: the tool's default fetch refspec is forcing and a fetch can replace a
+local issue ref that has unpushed edits (tracked as git-issue-tracker #e2dfdaa).
+
