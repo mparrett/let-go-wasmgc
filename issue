@@ -1,0 +1,13 @@
+id: 646deae
+v: 2
+title: Extract a common runtime core shared by rt/wasm and rt/llvm
+status: open
+priority: high
+created: 2026-10-10T21:10:00Z
+updated: 2026-10-10T21:10:00Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+issue_type: task
+labels: llvm
+description: rt/llvm's drift from rt/wasm is intentional (no wasm-specific intrinsics). Rather than merging either into the other, extract a target-neutral core written against a general arch layer; wasm's intrinsics and llvm's natives are two implementations, each with its own host file. The drift is the inventory. Context: mparrett's PR #25 review asked whether llvm would move onto rt/wasm.
