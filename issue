@@ -1,0 +1,13 @@
+id: 1e11c64
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D207: `docs/LLVM-TARGET-SPEC.md` is approved as the work order for `--target llvm` and settles D206's open fixnum question:
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D207
+description: `docs/LLVM-TARGET-SPEC.md` is approved as the work order for `--target llvm` and settles D206's open fixnum question: the range is parameterized by target. The runtime's i31 intrinsics become `wasm/fix`, `wasm/fix?`, `wasm/fix-get` with `wasm/fix-min`/`wasm/fix-max`; gc and linear keep -2^30..2^30-1, and llvm takes `:fixnum-bits` from a hardware profile (62 on the 64-bit host by default, 31 on 32-bit profiles). Hardware profiles are EDN data in `targets/`, selected with `--profile`/`LW_PROFILE` and part of the cache keys; they choose the triple, word size, fixnum width, tail-call convention (`:tailcc`, or `:uniform` for riscv32; MIPS and PowerPC 32 are a named limit, since `llc` gives no guaranteed `musttail` there under any convention), float ABI, host (`:posix` or `:bare` over semihosting) and the link and run commands. `:int` stays i64 and `:float` double on every profile. The gate runs the host profile and one pinned 32-bit profile, `armv7-virt` under qemu, from M1; rv32 and Cortex-M are M5, run on demand. Pure CPS without Cheney on the MTA: no `setjmp`/`longjmp` anywhere, and a throw from a direct-style leaf returns a sentinel with the exception in `lg_pending`. Continuation records are never mutated after allocation, and handler and binding state live on the heap, so `call/cc` for programs (M6, unscheduled) stays possible. Acceptance for this target is oracle MATCH, with no byte-identity checks of its own; M6 will be the named exception, since native lg has no `call/cc`.
