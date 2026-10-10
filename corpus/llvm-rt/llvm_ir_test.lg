@@ -1,0 +1,56 @@
+;; lower-llvm-ir (src/lower_llvm_ir.lg) under native lg: module items as data,
+;; one printer, and symbol references recorded as they are written.
+(ns llvm-ir-test
+  (:require [test :refer [deftest is]]
+            [lower-llvm-ir :as ir]))
+
+(deftest symbols
+  (is (= "lg.llvm.core/raise" (ir/sym "llvm.core/raise")) "LLVM reserves llvm.*")
+  (is (= "lg_alloc" (ir/sym "lg_alloc")))
+  (is (= "@\"lg.llvm.core/raise\"" (ir/ref "llvm.core/raise")) "a quoted operand")
+  (is (= "@lg_alloc" (ir/ref-bare "lg_alloc"))))
+
+(deftest refs-are-recorded
+  (let [[v refs] (ir/with-refs #(str (ir/ref "a") (ir/ref-bare "b")))]
+    (is (= "@\"a\"@b" v))
+    (is (= #{"a" "b"} refs)))
+  (is (= "@\"x\"" (ir/ref "x")) "outside a unit nothing is recorded"))
+
+(deftest nested-units-record-their-own
+  (let [[inner-refs outer-refs]
+        (let [inner (atom nil)
+              [_ outer] (ir/with-refs (fn []
+                                        (ir/ref "outer-only")
+                                        (reset! inner (second (ir/with-refs #(ir/ref "inner-only"))))))]
+          [@inner outer])]
+    (is (= #{"inner-only"} inner-refs))
+    (is (= #{"outer-only"} outer-refs))))
+
+(deftest render-fn
+  (is (= "define internal tailcc void @\"f\"(ptr %k, i64 %a0) {\nentry:\n  ret void\n}\n"
+         (ir/render {:llvm/fn {:name "f" :linkage "internal" :cc "tailcc" :ret "void"
+                               :params ["ptr %k" "i64 %a0"] :body "entry:\n  ret void\n"}})))
+  (is (= "define tailcc void @\"_main\"(ptr %k) nounwind {\nentry:\n}\n"
+         (ir/render {:llvm/fn {:name "_main" :cc "tailcc" :ret "void" :params ["ptr %k"]
+                               :attrs ["nounwind"] :body "entry:\n"}}))
+      "no linkage is external; attributes follow the params")
+  (is (= "define internal tailcc void @lg_halt(ptr %self, i64 %v) {\n  ret void\n}\n"
+         (ir/render {:llvm/fn {:name "lg_halt" :bare true :linkage "internal" :cc "tailcc" :ret "void"
+                               :params ["ptr %self" "i64 %v"] :body "  ret void\n"}}))))
+
+(deftest render-global-declare-type
+  (is (= "@\"var$x\" = internal global i64 0"
+         (ir/render {:llvm/global {:name "var$x" :kind "internal global" :type "i64" :init "0"}})))
+  (is (= "@lg_tinfo_count = internal constant i64 48"
+         (ir/render {:llvm/global {:name "lg_tinfo_count" :bare true :kind "internal constant" :type "i64" :init "48"}})))
+  (is (= "declare void @lg_trap(ptr) noreturn cold"
+         (ir/render {:llvm/declare {:name "lg_trap" :ret "void" :params ["ptr"] :attrs ["noreturn" "cold"]}})))
+  (is (= "%\"T.Int\" = type { i64, i64 }"
+         (ir/render {:llvm/type {:name "%\"T.Int\"" :fields ["i64" "i64"]}}))))
+
+(deftest units
+  (let [u (ir/unit {:llvm/global {:name "g" :kind "internal global" :type "i64" :init "0"}} #{"h"})]
+    (is (= #{"g"} (:defs u)))
+    (is (= #{"h"} (:refs u))))
+  (is (= #{"f"} (:defs (ir/unit {:llvm/fn {:name "f" :cc "tailcc" :ret "void" :params [] :body ""}} #{}))))
+  (is (= #{} (:defs (ir/unit {:llvm/declare {:name "d" :ret "void" :params []}} #{}))) "a declare defines nothing"))
