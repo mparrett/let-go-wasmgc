@@ -1,0 +1,13 @@
+id: 8c12d92
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D212: Amends D211:
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D212
+description: Amends D211: `rt/llvm/wasm/` holds only what the build reads (the runtime's `.lg` files and the README's load-order table); the copied design notes stay in `rt/wasm/` only, there is no divergence file or divergence check, and diverging files carry no markers. A change to either copy is recorded in its commit message (and here when it is a decision), like any other change. Also recorded from let-go's execution-form design (docs/superpowers/specs/2026-10-03-execution-form-design.md in the maintainer's let-go checkout): only proven types may be unboxed, since `infer-arg-types` types a parameter from its uses, so the llvm emitter must report mismatched calls to the driver's boxing fixpoint (`note-call-abi!`) as the WasmGC emitter does.
