@@ -1951,7 +1951,8 @@
 
 (defn inst-wat [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)
-        set (fn [expr] (str "(local.set $v" nid " " expr ")"))]
+        set (fn [expr] (str "(local.set $v" nid " " expr ")"))
+        alter-var (when (= op :call) (table-alter-var (var-of (first refs)) (rest refs)))]
     (cond
       (= op :block-arg) nil
       ;; a constant var is materialised at each use (arg-as); a var-table var
@@ -1987,8 +1988,7 @@
       (direct-call-wat nid (callee-sig #'wasm.math/div) refs)
       (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
-      (and (= op :call) (table-alter-var (var-of (first refs)) (rest refs)))
-      (table-alter-wat nid (table-alter-var (var-of (first refs)) (rest refs)) (rest refs))
+      alter-var (table-alter-wat nid alter-var (rest refs))
       (= op :call)
       (let [callee (first refs) v (var-of callee)]
         (if (and v (not (table-var? v)))
@@ -2839,8 +2839,10 @@
   (call $wasm.pvec/varray#1__box (local.get $v)))"))
 
 ;; D208: host-read-file, getenv's contract over env.read_file (-1 = no such
-;; file: null; a length past the buffer grows memory and asks again). In the
-;; text only under LW_HOST_FS=1, as its import is.
+;; file: null; a length past the buffer grows memory and asks again, until
+;; the answer fits: unlike an env var, the file can grow between two reads
+;; (review of #28, finding 2)). In the text only under LW_HOST_FS=1, as its
+;; import is.
 (def host-fs-runtime "
 (func $rt_host_read_file (param $nm (ref $Bytes)) (result (ref null eq))
   (local $bo i32) (local $cap i32) (local $len i32) (local $i i32) (local $r (ref null $Bytes))
@@ -2849,10 +2851,13 @@
   (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
   (local.set $len (call $host_read_file (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))
   (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (ref.null none))))
-  (if (i32.gt_u (local.get $len) (local.get $cap))
-    (then (drop (memory.grow (i32.add (i32.shr_u (i32.sub (local.get $len) (local.get $cap)) (i32.const 16)) (i32.const 1))))
-          (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
-          (local.set $len (call $host_read_file (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))))
+  (block $fits (loop $grow
+    (br_if $fits (i32.le_u (local.get $len) (local.get $cap)))
+    (drop (memory.grow (i32.add (i32.shr_u (i32.sub (local.get $len) (local.get $cap)) (i32.const 16)) (i32.const 1))))
+    (local.set $cap (i32.sub (i32.mul (memory.size) (i32.const 65536)) (local.get $bo)))
+    (local.set $len (call $host_read_file (i32.const 32) (array.len (local.get $nm)) (local.get $bo) (local.get $cap)))
+    (if (i32.lt_s (local.get $len) (i32.const 0)) (then (return (ref.null none))))
+    (br $grow)))
   (local.set $r (array.new_default $Bytes (local.get $len)))
   (block $done (loop $l
     (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
