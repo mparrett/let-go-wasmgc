@@ -24,7 +24,14 @@
      add-decl!          ; the driver, per program declaration, before lowering
      session-module     ; the driver: module assembly
      module-parts       ; session-module and rt-fixpoint: module assembly
-     rt-fixpoint        ; session-module: the runtime fixpoint around assembly
+     rt-fixpoint!       ; session-module: the runtime fixpoint around assembly
+     rt-global-items    ; module-parts: the runtime globals' module items
+     rt-init-wat        ; session-module: the init chain
+     const-init-order   ; rt-init-wat: the init chain's order
+     rec-group          ; session-module, rec-group-constant: the type rec group
+     export-rt-wat      ; runtime (GC assembly): exports for run-time compiles
+     rt-global-order    ; rt-global!: the order assembly emits a global in
+     rtlib-variant      ; load-rtlib!: which cached runtime to restore
      build-rtlib!       ; load-rtlib!: builds the cached runtime once
      rtlib-snapshot     ; load-rtlib!: saves the cached runtime
      rtlib-restore!     ; load-rtlib!: restores it
