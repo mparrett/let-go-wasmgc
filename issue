@@ -1,0 +1,13 @@
+id: 113709d
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-09T00:00:00Z
+hash_source: content
+title: D224: The llvm target takes a program's native paths:
+status: closed
+priority: medium
+created: 2026-10-09T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D224
+description: The llvm target takes a program's native paths: `*in-wasm*` reads false, as native lg does (D222 had made it true, copying the GC lane, which put xsofy on its browser paths: restart instead of quit, prompts, 30 ms frame floors, no debug log). The runtime gains the file I/O those paths use: `arch/host-open` (path Bytes, mode 0 read, 1 write, 2 append; an fd or -1), `lg_host_open` in the C host over `open(2)` (-1 on the bare host), and `open` in `llvm.host` (moved from `llvm.core`, beside the Handle it builds), so `write!` and `close!` reach files; `flush!` stays a no-op (native fsyncs, which fails on a pipe). `corpus/llvm/files.lg` checks open, write! and close! against native, and a failed open throws catchably (its text names no OS error, unlike native's).
