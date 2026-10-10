@@ -24,7 +24,7 @@
 (require '[clojure.walk])
 
 (def ^:dynamic *ll* nil)
-(declare ll-q ll-binding-var! llvm-dump llvm-profile llvm-fn
+(declare ll-q ll-fail ll-binding-var! llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declares ll-declare ll-desc-item ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
          ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
@@ -54,7 +54,20 @@
   (let [m (if-let [items (:items m)] (assoc m :text (str/join "\n" (map lir/render items))) m)
         t (str (:text m))]
     (assoc m :defs (ll-sym-defs t) :refs (ll-sym-refs t))))
-(defn ll-global! "Add one global line to the module." [line] (swap! *globals* conj (ll-unit {:text line})))
+(defn ll-glob
+  "A global item: kind its linkage and kind (\"internal global\", \"private
+   constant\" ..), type and init its LLVM type and initializer."
+  [nm kind type init]
+  {:llvm/global {:name nm :kind kind :type type :init init}})
+(defn ll-global!
+  "Add a global item to the module, once per name: the same name with
+   another text fails the compile, never two globals or a silent pick."
+  [item]
+  (let [u (ll-unit {:items [item]}) nm (lir/defines item)
+        k [:llvm :global nm] h (hash/xxh3-64-str (:text u)) seen (get @*fn-values* k)]
+    (cond (nil? seen) (do (swap! *fn-values* assoc k h) (swap! *globals* conj u))
+          (not= seen h) (ll-fail "two definitions of one global" {:global nm}))
+    nil))
 (defn ll-region! "Add a lifted region (closure code, a wrapper, a try region)." [m] (swap! *regions* conj (ll-unit m)))
 
 (defn ll-fail [msg data]
@@ -145,7 +158,7 @@
         (ll-fail "block-arg with no binding" {:nid nid})
         (str "%v" nid))))
 
-(declare ll-unbox-lines ll-raise-text ll-emit! ll-fresh ll-double-lit ll-float-const! ll-char-const! ll-i64-of-word! ll-alloc-call ll-desc-def ll-kind-fields ll-type-descs)
+(declare ll-unbox-lines ll-raise-text ll-emit! ll-fresh ll-double-lit ll-float-const! ll-char-const! ll-i64-of-word! ll-alloc-call ll-desc-item ll-kind-fields ll-type-descs)
 
 (defn ll-coerce! [have want x]
   (let [t (fn [] (ll-fresh "%w")) w (ll-word)]
@@ -220,6 +233,17 @@
       :else (ll-fail "a constant that needs the runtime" {:value (pr-str v)}))
     (ll-coerce! (ty nid) want (ll-op nid)))))
 
+(defn ll-const-sym
+  "The symbol of the constant global for text s of a kind: the kind and the
+   xxh3-64 of the text. Two texts with one name fail the compile."
+  [kind s]
+  (let [s (str s) nm (str kind "." (format "%016x" (hash/xxh3-64-str s)))
+        k [:llvm :cid-text nm] seen (get @*fn-values* k)]
+    (when (and seen (not= seen s))
+      (ll-fail "constant name collision" {:name nm :texts [seen s]}))
+    (when-not seen (swap! *fn-values* assoc k s))
+    nm))
+
 (defn ll-const-id
   "The global name for constant text s of a kind (\"str\", \"bytes\",
    \"cstr\"): its kind and the xxh3-64 of its text, so the name does not
@@ -227,21 +251,16 @@
    (D221). hex32 collided (\"s6rja\" and \"snpfo\"), so two texts with one
    64-bit name fail the compile instead of sharing a global."
   [kind s]
-  (let [s (str s) id (str "@\"" kind "." (format "%016x" (hash/xxh3-64-str s)) "\"")
-        k [:llvm :cid-text id] seen (get @*fn-values* k)]
-    (when (and seen (not= seen s))
-      (ll-fail "constant name collision" {:name id :texts [seen s]}))
-    (when-not seen (swap! *fn-values* assoc k s))
-    id))
+  (str "@\"" (ll-const-sym kind s) "\""))
 
 (defn ll-str-const!
   "A string literal: a Str object over a constant Bytes object (its hash
    field is cached at run time, so the Str is a mutable global)."
   [s]
-  (let [w (ll-word) g (ll-const-id "str" s)]
-    (ll-global! (str g " = internal global " (ll-sty "$Str") " { " w " " (ll-tid "$Str") ", " w " "
-                               (ll-bytes-const! s) ", i64 -1 }"))
-    (str "ptrtoint (ptr " g " to " w ")")))
+  (let [w (ll-word) nm (ll-const-sym "str" s)]
+    (ll-global! (ll-glob nm "internal global" (ll-sty "$Str")
+                         (str "{ " w " " (ll-tid "$Str") ", " w " " (ll-bytes-const! s) ", i64 -1 }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
 
 (defn ll-hex64 [hi lo] (format "0x%08X%08X" hi lo))
 
@@ -277,16 +296,16 @@
 (defn ll-float-const!
   "A boxed float constant: a constant Float object."
   [x]
-  (let [w (ll-word) [hi lo] (ll-double-bits x) g (str "@\"flt." (format "%08X%08X" hi lo) "\"")]
-    (ll-global! (str g " = internal constant " (ll-sty "$Float") " { " w " " (ll-tid "$Float") ", double " (ll-hex64 hi lo) " }"))
-    (str "ptrtoint (ptr " g " to " w ")")))
+  (let [w (ll-word) [hi lo] (ll-double-bits x) nm (str "flt." (format "%08X%08X" hi lo))]
+    (ll-global! (ll-glob nm "internal constant" (ll-sty "$Float") (str "{ " w " " (ll-tid "$Float") ", double " (ll-hex64 hi lo) " }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
 
 (defn ll-char-const!
   "A char constant: a constant Char object."
   [c]
-  (let [w (ll-word) g (str "@\"chr." (int c) "\"")]
-    (ll-global! (str g " = internal constant " (ll-sty "$Char") " { " w " " (ll-tid "$Char") ", i32 " (int c) " }"))
-    (str "ptrtoint (ptr " g " to " w ")")))
+  (let [w (ll-word) nm (str "chr." (int c))]
+    (ll-global! (ll-glob nm "internal constant" (ll-sty "$Char") (str "{ " w " " (ll-tid "$Char") ", i32 " (int c) " }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
 
 (defn ll-typed
   "\"<type> <operand>\" for nid in representation want."
@@ -884,10 +903,9 @@
   (let [nm (str "%\"k." (ll-fn-name cont) "\"")
         kinds (concat (ll-implicit-kinds) (map ty (ll-saved cont)))]
     (swap! (:types *ll*) conj
-           (str nm " = type { ptr, ptr" (apply str (map #(str ", " (first %)) (ll-implicit)))
-                (apply str (map #(str ", " (ll-type (ty %))) (ll-saved cont))) " }"))
+           {:llvm/type {:name nm :fields (concat ["ptr" "ptr"] (map first (ll-implicit)) (map #(ll-type (ty %)) (ll-saved cont)))}})
     ;; with the type, so a later boxing round's records replace these
-    (swap! (:types *ll*) conj (ll-desc-def nm (cons 1 (ll-kind-fields 2 kinds))))
+    (swap! (:types *ll*) conj (ll-desc-item nm (cons 1 (ll-kind-fields 2 kinds))))
     nm))
 
 (defn ll-slot0
@@ -1178,19 +1196,19 @@
 (defn ll-cstring!
   "A private constant C string global for s; returns its name."
   [s]
-  (let [bs (.getBytes (str s)) id (ll-const-id "cstr" s)]
-    (ll-global! (str id " = private unnamed_addr constant [" (inc (count bs)) " x i8] c\""
-                               (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\\00\""))
-    id))
+  (let [bs (.getBytes (str s)) nm (ll-const-sym "cstr" s)]
+    (ll-global! (ll-glob nm "private unnamed_addr constant" (str "[" (inc (count bs)) " x i8]")
+                         (str "c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\\00\"")))
+    (lir/ref nm)))
 
 (defn ll-fn-info!
   "An FnInfo object (kind 0 one arity, 1 several, 3 variadic; the name's
    bytes, or nil for an anonymous fn): its word operand."
   [id kind arity nm]
-  (let [g (str "@\"info." id "\"") w (ll-word)]
-    (ll-global! (str g " = internal global " (ll-sty "$FnInfo") " { " w " " (ll-tid "$FnInfo") ", i32 " kind
-                               ", i32 " arity ", " w " " (if nm (ll-bytes-const! nm) "0") " }"))
-    (str "ptrtoint (ptr " g " to " w ")")))
+  (let [g (str "info." id) w (ll-word)]
+    (ll-global! (ll-glob g "internal global" (ll-sty "$FnInfo")
+                         (str "{ " w " " (ll-tid "$FnInfo") ", i32 " kind ", i32 " arity ", " w " " (if nm (ll-bytes-const! nm) "0") " }")))
+    (str "ptrtoint (ptr " (lir/ref g) " to " w ")")))
 
 (defn ll-fn-type
   "The runtime type of a fn value with these codes: a FnX when an arity is
@@ -1219,10 +1237,10 @@
   "A Fn global named id with code per arity (arity -> fn name); returns its
    word operand. Its hash is cached at run time, so it is not constant."
   [id codes info]
-  (let [g (str "@\"fnval." id "\"") w (ll-word) tn (ll-fn-type codes)]
-    (ll-global! (str g " = internal global " (ll-sty tn) " { " w " " (ll-tid tn)
-                               (apply str (map (fn [[t v]] (str ", " t " " v)) (ll-fn-fields codes "0" info))) " }"))
-    (str "ptrtoint (ptr " g " to " w ")")))
+  (let [g (str "fnval." id) w (ll-word) tn (ll-fn-type codes)]
+    (ll-global! (ll-glob g "internal global" (ll-sty tn)
+                         (str "{ " w " " (ll-tid tn) (apply str (map (fn [[t v]] (str ", " t " " v)) (ll-fn-fields codes "0" info))) " }")))
+    (str "ptrtoint (ptr " (lir/ref g) " to " w ")")))
 
 (defn ll-closure!
   "Lambda-lift every arity of the closure built at nid (each a closure code
@@ -1679,7 +1697,7 @@
         ;; the shake (D221)
         unit (fn [it] (let [u (if (:defs it) it (ll-unit it))] {:item it :defs (:defs u) :refs (:refs u)}))
         fn-units (map unit all)
-        g-units (map unit (concat (map #(hash-map :text %) tinfo) (distinct @*globals*)))
+        g-units (map unit (concat (map #(ll-unit {:items [%]}) tinfo) @*globals*))
         rt-gs (when *rt* (vals (:globals @*rt*)))
         hooks (when *rt* (:name (get (:globals @*rt*) (lw-rt/rt-var 'seq 'hooks))))
         install (when hooks (ll-sym (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))))
@@ -1700,18 +1718,20 @@
     (str "target datalayout = \"" (:datalayout (:target pre)) "\"\n"
          "target triple = \"" (:triple (:target pre)) "\"\n"
          (str/join "\n" (map lir/render (:types pre))) "\n"
-         (str/join "\n" (ll-type-defs)) "\n"
+         (str/join "\n" (map lir/render (ll-type-defs))) "\n"
          (str/join "\n" (map lir/render (:items pre))) "\n"
-         (str/join "\n" (sort (distinct (mapcat :types kept)))) "\n\n"
-         (str/join "\n" (ll-object-globals)) "\n"
-         (str/join "\n" (for [g (sort gvars)] (str "@\"var" g "\" = internal global " w " 0"))) "\n"
+         (str/join "\n" (sort (distinct (map lir/render (mapcat :types kept))))) "\n\n"
+         (str/join "\n" (map lir/render (ll-object-globals))) "\n"
+         (str/join "\n" (for [g (sort gvars)] (lir/render (ll-glob (str "var" g) "internal global" w "0")))) "\n"
          ;; the collector's global roots: every var global, the handler chain and
          ;; the binding stack (ll-binding-var!)
-         "@lg_bind_stack = internal global " w " 0\n"
-         (let [roots (concat (for [g (sort gvars)] (str "ptr @\"var" g "\"")) ["ptr @lg_handler" "ptr @lg_bind_stack"])]
-           (str "@lg_gc_globals = constant [" (count roots) " x ptr] [" (str/join ", " roots) "]\n"
-                "@lg_gc_nglobals = constant i32 " (count roots) "\n"))
-         (str/join "\n" (ll-type-descs)) "\n"
+         (let [roots (concat (for [g (sort gvars)] (str "ptr " (lir/ref (str "var" g)))) ["ptr @lg_handler" "ptr @lg_bind_stack"])]
+           (str/join "\n" (map lir/render
+                               [(assoc-in (ll-glob "lg_bind_stack" "internal global" w "0") [:llvm/global :bare] true)
+                                (assoc-in (ll-glob "lg_gc_globals" "constant" (str "[" (count roots) " x ptr]") (str "[" (str/join ", " roots) "]")) [:llvm/global :bare] true)
+                                (assoc-in (ll-glob "lg_gc_nglobals" "constant" "i32" (str (count roots))) [:llvm/global :bare] true)])))
+         "\n"
+         (str/join "\n" (map lir/render (ll-type-descs))) "\n"
          (str/join "\n" (map :text kept-globals)) "\n\n"
          (str/join "\n" (map lir/render inits)) "\n"
          (str/join "\n" (map :text kept)))))

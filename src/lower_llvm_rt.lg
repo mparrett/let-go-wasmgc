@@ -91,13 +91,12 @@
     (concat
      (for [{:keys [tn decl]} (ll-registered-types)
            :when (#{:struct :array} (lw-rt/decl-kind decl))]
-       (str (ll-sty tn) " = type { " w
-            (if (= :array (lw-rt/decl-kind decl))
-              (str ", " w ", [0 x " (ll-slot-type (:elem decl)) "]")
-              (apply str (map #(str ", " (ll-slot-type (:type %))) (:fields decl))))
-            " }"))
+       {:llvm/type {:name (ll-sty tn)
+                    :fields (cons w (if (= :array (lw-rt/decl-kind decl))
+                                      [w (str "[0 x " (ll-slot-type (:elem decl)) "]")]
+                                      (map #(ll-slot-type (:type %)) (:fields decl))))}})
      (for [[kinds _] (get @*fn-values* [:llvm :envs])]
-       (str (ll-env-sty kinds) " = type { " w (apply str (map #(str ", " (ll-type %)) kinds)) " }")))))
+       {:llvm/type {:name (ll-env-sty kinds) :fields (cons w (map ll-type kinds))}}))))
 
 ;; --- collector descriptors (spec decision 7, host/native/gc.c) ------------
 ;; Every block's header points at its type's descriptor {kind, len offset,
@@ -126,11 +125,6 @@
                     :init (str "{ i32 " (if elem 1 0) ", " (if len (off len) "i32 0") ", " (if elem (off elem) "i32 0") ", i32 " n ", "
                                "[" n " x i32] " (if (zero? n) "zeroinitializer" (str "[" (str/join ", " (map off fields)) "]")) " }")}})))
 
-(defn ll-desc-def
-  "ll-desc-item as text."
-  ([sty fields] (lir/render (ll-desc-item sty fields)))
-  ([sty fields len elem] (lir/render (ll-desc-item sty fields len elem))))
-
 (defn ll-alloc-call
   "The text of a call allocating one sty, with its descriptor."
   [sty]
@@ -151,21 +145,21 @@
          :let [k (lw-rt/decl-kind decl)]
          :when (#{:struct :array} k)]
      (if (= :array k)
-       (if (= :ref (:elem decl)) (ll-desc-def (ll-sty tn) [] 1 2) (ll-desc-def (ll-sty tn) []))
-       (ll-desc-def (ll-sty tn) (keep-indexed (fn [i f] (when (= :ref (:type f)) (inc i))) (:fields decl)))))
+       (if (= :ref (:elem decl)) (ll-desc-item (ll-sty tn) [] 1 2) (ll-desc-item (ll-sty tn) []))
+       (ll-desc-item (ll-sty tn) (keep-indexed (fn [i f] (when (= :ref (:type f)) (inc i))) (:fields decl)))))
    (for [[kinds _] (get @*fn-values* [:llvm :envs])]
-     (ll-desc-def (ll-env-sty kinds) (ll-kind-fields 1 kinds)))))
+     (ll-desc-item (ll-env-sty kinds) (ll-kind-fields 1 kinds)))))
 
 ;; type ids and the boolean objects the C host reads (host/native/rt.c)
 (def ll-host-types ["$Int" "$Err" "$Bool" "$Float" "$Str" "$Bytes" "$Fn" "$FnV" "$FnX" "$FnInfo" "$Kw" "$Sym" "$Char"])
 
 (defn ll-object-globals []
-  (let [w (ll-word)]
+  (let [w (ll-word) bare #(assoc-in % [:llvm/global :bare] true)]
     (concat
      (for [tn ll-host-types :when (some #(= tn (:tn %)) (ll-static-types))]
-       (str "@\"lg_tid_" (subs tn 1) "\" = constant " w " " (ll-tid tn)))
-     [(str "@lg_false = global " (ll-sty "$Bool") " { " w " " (ll-tid "$Bool") ", i64 0 }")
-      (str "@lg_true = global " (ll-sty "$Bool") " { " w " " (ll-tid "$Bool") ", i64 1 }")])))
+       (ll-glob (str "lg_tid_" (subs tn 1)) "constant" w (str (ll-tid tn))))
+     [(bare (ll-glob "lg_false" "global" (ll-sty "$Bool") (str "{ " w " " (ll-tid "$Bool") ", i64 0 }")))
+      (bare (ll-glob "lg_true" "global" (ll-sty "$Bool") (str "{ " w " " (ll-tid "$Bool") ", i64 1 }")))])))
 
 (defn ll-false [] (str "ptrtoint (ptr @lg_false to " (ll-word) ")"))
 (defn ll-true [] (str "ptrtoint (ptr @lg_true to " (ll-word) ")"))
@@ -290,11 +284,11 @@
   "A constant Bytes object holding s's UTF-8 bytes; returns its word operand."
   [s]
   (let [bs (.getBytes (str s)) w (ll-word)
-        id (ll-const-id "bytes" s)]
-    (ll-global!
-           (str id " = private constant { " w ", " w ", [" (count bs) " x i8] } { " w " " (ll-tid "$Bytes") ", " w " " (count bs)
-                ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }"))
-    (str "ptrtoint (ptr " id " to " w ")")))
+        nm (ll-const-sym "bytes" s)]
+    (ll-global! (ll-glob nm "private constant" (str "{ " w ", " w ", [" (count bs) " x i8] }")
+                         (str "{ " w " " (ll-tid "$Bytes") ", " w " " (count bs)
+                              ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
 
 ;; --- the type table (arch/type-*; spec §1) -----------------------------------
 
@@ -313,26 +307,27 @@
         offs (reductions + 0 (map #(count (:anc %)) t))
         anc (mapcat :anc t)
         tv (lw-rt/type-name (resolve 'llvm.core/TypeVal)) nd (lw-rt/type-name (resolve 'llvm.pvec/Node))
-        tref #(str "ptrtoint (ptr @\"lg_type." % "\" to " w ")")]
+        tref #(str "ptrtoint (ptr " (lir/ref (str "lg_type." %)) " to " w ")")]
     (concat
      (mapcat (fn [[id r]]
                (when r
                  (let [k (count (:anc r))]
-                   [(str "@\"lg_tanc." id "\" = private constant { " w ", " w ", [" k " x " w "] } { "
-                         w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }")
-                    (str "@\"lg_type." id "\" = internal global " (ll-sty tv) " { " w " " (ll-tid tv) ", "
-                         w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
-                         w " ptrtoint (ptr @\"lg_tanc." id "\" to " w "), " w " 0, i64 0 }")])))
+                   [(ll-glob (str "lg_tanc." id) "private constant" (str "{ " w ", " w ", [" k " x " w "] }")
+                             (str "{ " w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }"))
+                    (ll-glob (str "lg_type." id) "internal global" (ll-sty tv)
+                             (str "{ " w " " (ll-tid tv) ", " w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
+                                  w " ptrtoint (ptr " (lir/ref (str "lg_tanc." id)) " to " w "), " w " 0, i64 0 }"))])))
              (map-indexed vector t))
-     [(str "@lg_tinfo_types = internal constant [" (count t) " x " w "] ["
-           (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]")
-      (str "@lg_tinfo_names = internal constant [" (count t) " x " w "] ["
-           (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]")
-      (str "@lg_tinfo_off = internal constant [" (count offs) " x i64] ["
-           (str/join ", " (for [o offs] (str "i64 " o))) "]")
-      (str "@lg_tinfo_anc = internal constant [" (max 1 (count anc)) " x i64] ["
-           (if (seq anc) (str/join ", " (for [a anc] (str "i64 " a))) "i64 0") "]")
-      (str "@lg_tinfo_count = internal constant i64 " (count t))])))
+     (map #(assoc-in % [:llvm/global :bare] true)
+          [(ll-glob "lg_tinfo_types" "internal constant" (str "[" (count t) " x " w "]")
+                    (str "[" (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]"))
+           (ll-glob "lg_tinfo_names" "internal constant" (str "[" (count t) " x " w "]")
+                    (str "[" (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]"))
+           (ll-glob "lg_tinfo_off" "internal constant" (str "[" (count offs) " x i64]")
+                    (str "[" (str/join ", " (for [o offs] (str "i64 " o))) "]"))
+           (ll-glob "lg_tinfo_anc" "internal constant" (str "[" (max 1 (count anc)) " x i64]")
+                    (str "[" (if (seq anc) (str/join ", " (for [a anc] (str "i64 " a))) "i64 0") "]"))
+           (ll-glob "lg_tinfo_count" "internal constant" "i64" (str (count t)))]))))
 
 (defn- ll-tinfo-load!
   "Loads element i (an i64 operand) of type table global g, elements ty."
@@ -702,7 +697,7 @@
             plan {:sig {:name tn :params all-ck :ret :box}
                   :args (vec (concat (:caps body) (:caps h) (:caps fin)))}]
         (ll-region! {:name tn :items fns
-                     :types [(lir/render frame-type) (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
+                     :types [frame-type (ll-desc-item ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
         (swap! *fn-values* assoc [:llvm-try *fname* nid *abi-notes*] plan)
         plan)))
 
