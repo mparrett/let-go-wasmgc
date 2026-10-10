@@ -29,17 +29,9 @@
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
          ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
 
-;; A module unit (a lowered fn's text, a region, a global line) carries the
-;; symbols it defines and names, found once when it is made, so the shake
-;; (llvm-module, D221) walks them without rescanning the cached runtime's text.
-(def ^:private ll-sym-re "@(\"[^\"]+\"|[-A-Za-z$._][-A-Za-z$._0-9]*)")
-(defn- ll-unq [x] (str/replace x "\"" ""))
-(defn ll-sym "The symbol global name s is emitted as (ll-q's, unquoted)." [s] (ll-unq (subs (ll-q s) 1)))
-(defn ll-sym-refs [text] (set (map (comp ll-unq second) (re-seq (re-pattern ll-sym-re) text))))
-(defn ll-sym-defs [text]
-  (set (map (comp ll-unq second)
-            (concat (re-seq (re-pattern (str "(?m)^define [^@\n]*" ll-sym-re "\\(")) text)
-                    (re-seq (re-pattern (str "(?m)^" ll-sym-re " = ")) text)))))
+;; A module unit (a lowered fn, a region, a global) is items plus the symbols
+;; they define (their names) and name (recorded by lower-llvm-ir/ref while
+;; they were made), which the shake (llvm-module, D221) walks.
 (defn ll-fn
   "A tailcc fn item (internal unless linkage says otherwise) returning void:
    params are \"type %name\" strings, body its text after the opening brace."
@@ -48,20 +40,12 @@
    {:llvm/fn {:name nm :linkage linkage :cc "tailcc" :ret "void" :params (vec params) :body body}}))
 (defn ll-fn-bare "ll-fn for a backend helper named @lg_* (no quotes)." [nm params body]
   (assoc-in (ll-fn nm params body) [:llvm/fn :bare] true))
-(def ll-refs-check
-  "LW_LL_CHECK_REFS=1: every unit's text is also scanned, and a module symbol
-   the text names but the unit did not record is reported (llvm-module)."
-  (= "1" (os/getenv "LW_LL_CHECK_REFS")))
-(def ll-refs-missed (atom {}))
 (defn ll-unit
   "A module unit: m's :items, their text, the symbols they define (their
    names) and the symbols they name (refs, as recorded while they were made)."
   [m refs]
   (let [items (:items m) text (str/join "\n" (map lir/render items))
         defs (set (keep lir/defines items))]
-    (when ll-refs-check
-      (let [missed (remove (set refs) (remove defs (ll-sym-refs text)))]
-        (when (seq missed) (swap! ll-refs-missed update (first (sort defs)) (fnil into #{}) missed))))
     (assoc m :text text :defs defs :refs (set refs))))
 (defn ll-glob
   "A global item: kind its linkage and kind (\"internal global\", \"private
@@ -1732,18 +1716,13 @@
         g-units (map unit (concat tinfo-units @*globals*))
         rt-gs (when *rt* (vals (:globals @*rt*)))
         hooks (when *rt* (:name (get (:globals @*rt*) (lw-rt/rt-var 'seq 'hooks))))
-        install (when hooks (ll-sym (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))))
+        install (when hooks (lir/sym (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))))
         init-of (merge (into {} (for [g rt-gs] [(str "var" (:name g))
-                                                (cond-> [(ll-sym (:init g))] (= hooks (:name g)) (conj install))]))
-                       (into {} (for [g (when *rt* (:const-order @*rt*))] [(str "var" g) [(ll-sym (str (subs g 1) "__init"))]])))
+                                                (cond-> [(lir/sym (:init g))] (= hooks (:name g)) (conj install))]))
+                       (into {} (for [g (when *rt* (:const-order @*rt*))] [(str "var" g) [(lir/sym (str (subs g 1) "__init"))]])))
         live (ll-live (concat fn-units g-units)
                       (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs)
                       #(get init-of % []))
-        _ (when ll-refs-check
-            (let [defined (set (mapcat :defs (concat fn-units g-units)))]
-              (binding [*out* *err*]
-                (doseq [[u missed] (sort @ll-refs-missed) :let [m (filter defined missed)] :when (seq m)]
-                  (println "refs-check:" u "names but did not record" (vec (sort m)))))))
         live? #(contains? live (str "var" %))
         kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
         kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))
