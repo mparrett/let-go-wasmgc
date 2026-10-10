@@ -1,0 +1,13 @@
+id: 43fce3c
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D206: `--target llvm` spike (branch spike/llvm-target, throwaway until a spec exists):
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D206
+description: `--target llvm` spike (branch spike/llvm-target, throwaway until a spec exists): `src/lower_llvm.lg` lowers the indexed RPN IR straight to LLVM IR text in continuation-passing style, with no wasm in between. Every call is `musttail` with `tailcc`; a call whose result is used later allocates a continuation record [code, k, saved values]; IR blocks are cut after such calls, and each piece after a call, plus each block with other than one predecessor, becomes its own function, while one-predecessor blocks stay as basic blocks. `host/native/lg_rt.c` is the C host, with a bump allocator that never frees. `checks/native-run.sh` builds with clang, or runs under `lli` with `LW_NATIVE_JIT=1`. The driver builds `--target llvm` without the runtime library. Result: corpus/scalar 4/5 MATCH both ways (os-args.lg needs the runtime); corpus/control and corpus/closure 0/29 (non-scalar `:const`, calls without a known signature). WasmGC output for fib is byte-identical before and after the seams; P9.1 holds at 1130. **Open, decide before any runtime code is ported: fixnum width.** The spike's boxed word uses a 62-bit fixnum (v<<1|1, then a heap Int box), not D41's 31-bit `ref.i31` boundary. The runtime relies on D41's canonical form (an in-range int is never an `$Int`; equality and hashing depend on it) and on the i31 range checks in `rt/wasm/intrinsics.lg` (`ref.i31`, `i31.get_s`). Keeping 31 bits means the runtime ports unchanged and stays canonical-equal to the WasmGC lane; 62 bits means fewer heap boxes on a 64-bit target, but every i31 intrinsic and range check needs a native form, and the canonical-form rule must be restated for the wider range. The spike's choice was made silently and is not a decision.
