@@ -186,6 +186,18 @@ int lg_host_read_key(unsigned char *buf, int cap);
 int lg_host_key_ready(void);
 void lg_host_term_dims(int *cols, int *rows);
 
+/* arch/host-open: open the file named by a Bytes path for read (0),
+   write (1, created or truncated) or append (2, created); an fd, or -1. */
+int lg_host_open_c(const char *path, int mode);
+int64_t lg_host_open(intptr_t w, int64_t mode) {
+  const lg_bytes *p = (const lg_bytes *)w;
+  char path[1024];
+  if (p->len >= (intptr_t)sizeof path) return -1;
+  for (intptr_t i = 0; i < p->len; i++) path[i] = (char)p->data[i];
+  path[p->len] = 0;
+  return lg_host_open_c(path, (int)mode);
+}
+
 intptr_t lg_host_getenv(intptr_t w) {
   const lg_bytes *nm = (const lg_bytes *)w;
   char name[256];

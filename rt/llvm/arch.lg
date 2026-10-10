@@ -500,6 +500,14 @@
   (let [v (core/get *host-env* (string-of-bytes name-bytes))]
     (when v (bytes-of-string v))))
 
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:any :int] -> :int"} host-open
+  "Open the file named by Bytes path for read (0), write (1, created or
+   truncated) or append (2, created): an fd, or -1. Natively always -1, as
+   the reference has no file descriptors."
+  [path-bytes mode]
+  (check-int! "arch/host-open" mode)
+  -1)
+
 (def ^:dynamic *host-args* ["lg"])
 
 (defn ^{:intrinsic true :wasm "call $env.argc" :type "[] -> :int"} host-argc

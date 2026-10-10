@@ -481,6 +481,7 @@
       "host-argc" [(call "i64" "lg_host_argc64" "") :int]
       "host-arg" [(call w "lg_host_arg" (str "i64 " (ll-arg (a 0) :int))) :box]
       "host-getenv" [(call w "lg_host_getenv" (str w " " (ll-arg (a 0) :box))) :box]
+      "host-open" [(call "i64" "lg_host_open" (str w " " (ll-arg (a 0) :box)) (str "i64 " (ll-arg (a 1) :int))) :int]
       "term-read-key" [(call w "lg_term_read_key") :box]
       "term-key-pending" (let [r (call "i32" "lg_term_key_pending") c (ll-fresh "%tpc")]
                            (ll-emit! "  " c " = icmp ne i32 " r ", 0") [c :bool])
@@ -510,7 +511,7 @@
                "declare void @lg_array_copy(ptr, W, i64, ptr, W, i64, i64, i64)"
                "declare W @lg_bytes_new(i64)" "declare W @lg_str_bytes_copy(W)"
                "declare i64 @lg_host_write_bytes(i64, W)" "declare void @lg_host_sleep(i64)"
-               "declare i64 @lg_host_nanotime()" "declare W @lg_host_getenv(W)"
+               "declare i64 @lg_host_nanotime()" "declare W @lg_host_getenv(W)" "declare i64 @lg_host_open(W, i64)"
                "declare i64 @lg_host_argc64()" "declare W @lg_host_arg(i64)"
                "declare W @lg_term_read_key()" "declare i32 @lg_term_key_pending()" "declare i64 @lg_term_size()"
                "declare void @lg_host_emit(W, W)" "declare W @lg_host_url_param(W)"
@@ -691,7 +692,7 @@
 ;; every llvm.arch intrinsic has an emitter here: the GC lane's set, plus
 ;; os/args's host-argc and host-arg and the type table's readers
 (def ll-emitted-intrinsics
-  (into emitted-intrinsics #{"host-argc" "host-arg" "type-count" "type-static" "type-name-bytes" "type-anc-count" "type-anc"}))
+  (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "type-name-bytes" "type-anc-count" "type-anc"}))
 
 (when lw-rt/llvm-target?
   (let [missing (for [v (lw-rt/intrinsic-vars)

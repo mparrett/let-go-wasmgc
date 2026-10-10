@@ -1,6 +1,7 @@
 /* posix.c: the :posix host of --target llvm (spec decision 11): bytes out
  * through write(2), memory from malloc, and main entering the module's
  * lg_run. host/native/rt.c holds everything word-generic. */
+#include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -52,6 +53,11 @@ int64_t lg_host_nanotime(void) {
 }
 
 const char *lg_host_getenv_c(const char *name) { return getenv(name); }
+
+int lg_host_open_c(const char *path, int mode) {
+  int fl = mode == 0 ? O_RDONLY : mode == 1 ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND);
+  return open(path, fl, 0644);
+}
 
 int lg_host_read_key(unsigned char *buf, int cap) {
   ssize_t n = read(0, buf, (size_t)cap);

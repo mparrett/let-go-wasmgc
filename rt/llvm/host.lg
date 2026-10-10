@@ -22,7 +22,7 @@
 ;; timeout channel exists (xsofy sleeps with (<!! (timeout ms))); chan, go
 ;; and >! are Phase 5.
 (ns llvm.host
-  (:refer-clojure :exclude [println print pr prn write! flush! close! sleep])
+  (:refer-clojure :exclude [println print pr prn write! flush! close! sleep open])
   (:require [llvm.arch :as arch]
             [llvm.seq :as sq]
             [llvm.str :as s]
@@ -40,9 +40,9 @@
 (def stdout-handle (arch/new Handle 1 (arch/bytes-of-string "/dev/stdout") 0))
 (def stderr-handle (arch/new Handle 2 (arch/bytes-of-string "/dev/stderr") 0))
 (def globals (arch/new HGlobals stdout-handle stderr-handle (arch/null) (arch/null)))
-;; *in-wasm* (ll-var-alias): true, as on the GC lane: the llvm runtime has no
-;; file system yet, and programs (xsofy.debug) test it to stay off host I/O
-(def in-wasm (sq/bool true))
+;; *in-wasm* (ll-var-alias): false, as natively: a native binary takes a
+;; program's native paths (files through open, the terminal's own timing)
+(def in-wasm (sq/bool false))
 ;; *assert* (ll-var-alias): true, as natively (assert's check runs)
 (def assert-on (sq/bool true))
 ;; *compiling-aot* (ll-var-alias): false, as natively when a program runs
@@ -116,6 +116,19 @@
 
 ;; write!: a String verbatim, a byte-array's raw bytes, anything else its
 ;; String() form.
+;; open (lang.go's CoreOpen): a Handle on a file, for read (the default),
+;; :write (created or truncated) or :append (created)
+(defn- kw [st] (s/kw-of-bytes (arch/bytes-of-string st)))
+(defn ^{:twin "core/open"} open
+  ([path] (open path (kw "read")))
+  ([path mode]
+   (let [m (cond (sq/equals mode (kw "append")) 2 (sq/equals mode (kw "write")) 1 :else 0)
+         nb (s/str-bytes path)
+         fd (arch/host-open nb m)]
+     (if (< fd 0)
+       (raise-str (s/str (s/str (lit (arch/bytes-of-string "open ")) path) (lit (arch/bytes-of-string ": cannot open"))))
+       (arch/new Handle fd nb 0)))))
+
 (defn ^{:twin "core/write!"} write!
   ([] (c/raise (arch/bytes-of-string "write! expects 2 args")))
   ([h] (c/raise (arch/bytes-of-string "write! expects 2 args")))

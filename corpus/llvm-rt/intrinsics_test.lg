@@ -264,6 +264,9 @@
     (is (thrown-with-msg? Exception #"expected a wasm ref" (arch/call-ref Fn1 f1 5)))
     (is (false? (arch/null? f1)) "null? accepts funcrefs")))
 
+(deftest host-open-native
+  (is (= -1 (arch/host-open (arch/bytes-of-string "/nonexistent/dir/f") 1)) "natively no fds"))
+
 (deftest type-table
   (is (< 42 (arch/type-count)))
   (is (= "let-go.lang.Int" (arch/string-of-bytes (arch/type-name-bytes 1))))

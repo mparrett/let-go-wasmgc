@@ -1357,9 +1357,6 @@
     (let [v (arch/host-getenv (s/str-bytes nm))] (if (arch/null? v) (lit (arch/bytes-of-string "")) (s/mk-str v)))
     (lit (arch/bytes-of-string ""))))
 
-(defn ^{:twin "core/open"} open
-  ([x] (open x (arch/null)))
-  ([x mode] (arch/trap "lower-wasm: open is host I/O (Phase 3/4)")))
 (defn ^{:twin "core/read-string"} read-string [x] (arch/trap "lower-wasm: read-string is edn.lg through the backend (plan D8)"))
 
 ;; ---------------------------------------------------------------------------

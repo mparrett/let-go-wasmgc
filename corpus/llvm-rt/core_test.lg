@@ -17,6 +17,7 @@
             [llvm.phs :as hs]
             [llvm.core :as c]
             [llvm.reader :as rd]
+            [llvm.host :as h]
             [ir.passes.pipeline :as pipeline]
             [string]))
 
@@ -558,8 +559,9 @@
   (same (os/getenv nil) (c/getenv (W nil)))
   (is (= "v" (binding [arch/*host-env* {"K" "v"}] (<-w (c/getenv (W "K"))))))
   ;; slurp is llvm.natives' no-file-system twin since P6.6 (D138's text)
-  (doseq [f [#(c/open (W "f")) #(c/read-string (W "1"))]]
-    (is (string/starts-with? (second (res f)) "lower-wasm: ") "named limit")))
+  (is (string/starts-with? (second (res #(c/read-string (W "1")))) "lower-wasm: ") "named limit")
+  ;; open is llvm.host's (D224); natively the host has no fds, so it raises
+  (is (string/includes? (second (res #(h/open (W "f") (s/kw-of-bytes (arch/bytes-of-string "append"))))) "cannot open")))
 
 ;; ---------------------------------------------------------------------------
 ;; Printing maps and sets through llvm.str's hook
