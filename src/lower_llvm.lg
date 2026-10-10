@@ -1618,29 +1618,24 @@
 ;; when a live unit names it; a live runtime global brings its init fn, and
 ;; the hooks global the link step (install!).
 
-(def ^:private ll-sym-re "@(\"[^\"]+\"|[-A-Za-z$._][-A-Za-z$._0-9]*)")
-(defn- ll-unq [x] (str/replace x "\"" ""))
-(defn ll-sym "The symbol global name s is emitted as (ll-q's, unquoted)." [s] (ll-unq (subs (ll-q s) 1)))
-(defn- ll-sym-refs [text] (set (map (comp ll-unq second) (re-seq (re-pattern ll-sym-re) text))))
-(defn- ll-sym-defs [text]
-  (set (map (comp ll-unq second)
-            (concat (re-seq (re-pattern (str "(?m)^define [^@\n]*" ll-sym-re "\\(")) text)
-                    (re-seq (re-pattern (str "(?m)^" ll-sym-re " = ")) text)))))
-
 (defn ll-live
   "The live symbols: from roots, through the units' references, adding the
-   init fn of each live runtime global (init-of: var symbol -> init symbol)."
+   init fn of each live runtime global (init-of: var symbol -> seq of init
+   symbols). Each unit is expanded once, however many symbols it defines."
   [units roots init-of]
-  (let [by-def (reduce (fn [m u] (reduce #(assoc %1 %2 u) m (:defs u))) {} units)]
-    (loop [live #{} todo (vec roots)]
+  (let [us (vec units)
+        by-def (persistent! (reduce (fn [m [i u]] (reduce #(assoc! %1 %2 i) m (:defs u))) (transient {}) (map-indexed vector us)))]
+    (loop [live (transient #{}) done (transient #{}) todo (vec roots)]
       (if (empty? todo)
-        live
+        (persistent! live)
         (let [x (peek todo) todo (pop todo)]
           (if (contains? live x)
-            (recur live todo)
-            (let [u (by-def x)
-                  more (concat (when u (concat (:defs u) (:refs u))) (init-of x))]
-              (recur (conj live x) (into todo (remove live more))))))))))
+            (recur live done todo)
+            (let [i (get by-def x)
+                  expand? (and i (not (contains? done i)))
+                  u (when expand? (us i))
+                  todo (cond-> (into todo (init-of x)) expand? (into (concat (:defs u) (:refs u))))]
+              (recur (conj! live x) (if expand? (conj! done i) done) todo))))))))
 
 (defn llvm-module [fns]
   (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail)))
@@ -1691,9 +1686,6 @@
         ;; named types come first: a constant GEP needs its type sized when parsed
         type-line? #(re-find #"^%[^ ]+ = type " %)
         plines (str/split-lines prelude)]
-    (when (= "1" (os/getenv "LW_RTLIB_STATS"))
-      (binding [*out* *err*] (println (str "llvm-module: " (count kept) " of " (count fn-units) " fn units, "
-                                           (count kept-globals) " of " (count g-units) " globals"))))
     (str (str/join "\n" (filter #(str/starts-with? % "target ") plines)) "\n"
          (str/join "\n" (filter type-line? plines)) "\n"
          (str/join "\n" (ll-type-defs)) "\n"
