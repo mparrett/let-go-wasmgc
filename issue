@@ -1,0 +1,13 @@
+id: 19d441e
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-08T00:00:00Z
+hash_source: content
+title: D217: The driver no longer refuses `defmulti`, `deftype`, `defprotocol` or `defrecord` as a program's top-level form, nor `...
+status: closed
+priority: medium
+created: 2026-10-08T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D217
+description: The driver no longer refuses `defmulti`, `deftype`, `defprotocol` or `defrecord` as a program's top-level form, nor `defmulti` in a library namespace (docs/superpowers/specs/2026-10-08-llvm-polymorphism-design.md). On the WasmGC lane the natives their expansions call (`make-deftype`, `make-record-type`, `defprotocol*`, `extend-type*`, `defmulti*`, `defmethod*` and the rest) are placeholders in `rt/wasm/poly.lg` that raise "<form> is not supported on the WasmGC target" when they run, catchable, so a program using them compiles and fails at the form instead of at the driver. Library namespaces keep the static lowering of deftype, defrecord and defprotocol (`deftype-forms`). The llvm lane implements the forms (the spec's later steps). P12.30 checks the placeholders through `checks/run-expected.sh`, a runner that compares a program's stdout and exit status with `<prog>.out` for behavior the native oracle cannot judge.
