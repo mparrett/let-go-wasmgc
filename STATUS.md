@@ -143,6 +143,7 @@ TOTAL ≈ $1,227
 | P7.GATE | GREEN 2026-10-02 ~20:05 (D168) | runner | gate 7 11/11; gates 1-6 8/13/3/4/14/10, all LW_ATTEST=0 on d953b83 |
 | P9.0 | done 2026-10-03 (D181) | runner | rtlib cache transparent: cold/warm byte-identical on the D181 regression (differed before the fix) |
 | P9.1 | done 2026-10-06 (D196) | runner | gensym counter after driver load = 1129; a destructuring defn in src/ moves it to 1130, a `for` to 1133; #() takes none |
+| pin | done 2026-10-10 (D217) | orchestrator | let-go e9789b7d: gensym 1133; two-lg capture: 9/27 identical, 18 differ by one tied local read in wasm.natives/fmt-f (same sizes); last-index-of twin follows #1042; gates 2, 3 at the new LG |
 | pin | done 2026-10-07 (D198) | runner | let-go ff1e6dac: gates 8, 1, 7, P9.0, P9.1 (1130), map-order pass; Linux and macOS lg builds byte-identical on basic.lg |
 | P1.9 | done 2026-10-07 (D199) | runner | constants of plain data lowered without analysis; corpus/consts MATCH; warm legmacs -4.6% wall |
 | P9.2 | done 2026-10-07 (D200) | opus | rtlib restore replays the build's gensyms (104); legmacs and checks/fixtures/warm-gensym cold = warm-from-own-cache (differed before) |

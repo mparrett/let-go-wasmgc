@@ -630,7 +630,7 @@
             (loop [j (inc i)] (if (if (< j n) (digit-or-sep? (wasm/bget tk j)) false) (recur (inc j)) j))
             i)
         d2 (if (> j i) (- j (inc i)) 0)]
-    (if (if (= 0 (+ d1 d2)) true (not (underscores-ok? tk n)))
+    (if (if (= 0 (+ d1 d2)) true (if (underscores-ok? tk n) false true))
       false
       (if (>= j n)
         true
