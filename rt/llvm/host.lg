@@ -32,13 +32,43 @@
 
 (arch/defstruct Handle [:i64 :ref [:mut :i32]])  ; fd, name bytes (/dev/stdout), closed (1/0)
 (arch/defstruct Chan [:i64 [:mut :i32]])         ; a timeout: deadline (host ns), closed (1/0)
-;; The one runtime global (D39): the two standard handles.
-(arch/defstruct HGlobals [:ref :ref])
-(def globals (arch/new HGlobals (arch/new Handle 1 (arch/bytes-of-string "/dev/stdout") 0)
-                       (arch/new Handle 2 (arch/bytes-of-string "/dev/stderr") 0)))
+;; The one runtime global (D39): the current *out* and *err* handles and the
+;; handles a (binding [*out* h] ..) or *err* replaced, as Lists (D222).
+(arch/defstruct HGlobals [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]])
+;; *out* and *err* read as values (ll-var-alias): the standard handles. A
+;; read inside a binding still gives these; printing follows the binding.
+(def stdout-handle (arch/new Handle 1 (arch/bytes-of-string "/dev/stdout") 0))
+(def stderr-handle (arch/new Handle 2 (arch/bytes-of-string "/dev/stderr") 0))
+(def globals (arch/new HGlobals stdout-handle stderr-handle (arch/null) (arch/null)))
+;; *in-wasm* (ll-var-alias): true, as on the GC lane: the llvm runtime has no
+;; file system yet, and programs (xsofy.debug) test it to stay off host I/O
+(def in-wasm (sq/bool true))
+;; *assert* (ll-var-alias): true, as natively (assert's check runs)
+(def assert-on (sq/bool true))
 
 (defn out-handle "The value of *out*." [] (arch/get HGlobals 0 globals))
 (defn err-handle "The value of *err*." [] (arch/get HGlobals 1 globals))
+
+;; binding-out's stand-ins (the GC lane's $rt_push_out ..): the backend calls
+;; these for (binding [*out* h] ..) and (binding [*err* h] ..), single-threaded
+(defn push-out! [h]
+  (arch/set! HGlobals 2 globals (arch/new sq/List (arch/get HGlobals 0 globals) (arch/get HGlobals 2 globals) 1 (arch/null)))
+  (arch/set! HGlobals 0 globals h)
+  (arch/null))
+(defn pop-out! []
+  (let [stk (arch/get HGlobals 2 globals)]
+    (arch/set! HGlobals 0 globals (arch/get sq/List 0 stk))
+    (arch/set! HGlobals 2 globals (arch/get sq/List 1 stk))
+    (arch/null)))
+(defn push-err! [h]
+  (arch/set! HGlobals 3 globals (arch/new sq/List (arch/get HGlobals 1 globals) (arch/get HGlobals 3 globals) 1 (arch/null)))
+  (arch/set! HGlobals 1 globals h)
+  (arch/null))
+(defn pop-err! []
+  (let [stk (arch/get HGlobals 3 globals)]
+    (arch/set! HGlobals 1 globals (arch/get sq/List 0 stk))
+    (arch/set! HGlobals 3 globals (arch/get sq/List 1 stk))
+    (arch/null)))
 
 (defn- lit [bs] (s/mk-str bs))
 (defn- raise-str [st] (c/raise (s/str-bytes st)))
@@ -50,7 +80,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Printing: one host-write of the whole line, as WriteToOut does.
 
-(defn- emit-out [st] (arch/host-write 1 (s/str-bytes st)) (arch/null))
+(defn- emit-out [st] (arch/host-write (arch/get Handle 0 (out-handle)) (s/str-bytes st)) (arch/null))
 (defn- nl [] (lit (arch/bytes-of-string "\n")))
 
 (defn print-seq "(apply print xs)" [xs] (emit-out (s/print-str-seq xs)))

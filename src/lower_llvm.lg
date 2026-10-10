@@ -23,7 +23,7 @@
 (require '[clojure.walk])
 
 (def ^:dynamic *ll* nil)
-(declare ll-q llvm-dump llvm-profile llvm-fn
+(declare ll-q ll-binding-var! llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declare-text ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
          ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
@@ -90,6 +90,10 @@
 (defn ll-var-alias [v]
   (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
         (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
+        (and *rt* (= v #'*out*)) (lw-rt/rt-var 'host 'stdout-handle)
+        (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
+        (and *rt* (= v #'*in-wasm*)) (lw-rt/rt-var 'host 'in-wasm)
+        (and *rt* (= v #'*assert*)) (lw-rt/rt-var 'host 'assert-on)
         :else v))
 
 (defn ll-table-var? [v] (and v (table-var? (ll-var-alias v))))
@@ -485,7 +489,11 @@
          :args (rest args)})
       ;; neg of anything but an int or a float: the runtime's 1-arity -
       (and (= v #'neg) (not (#{:int :float} (first kinds)))) (to (lw-rt/rt-var 'core 'sub))
-      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (and v (lw-rt/intrinsic? v))
+      ;; (binding [*out* h] ..) and *err* (binding-out's stand-ins): the
+      ;; runtime's handle stacks, which printing follows
+      (and *rt* (#{#'push-out! #'pop-out! #'push-err! #'pop-err!} v))
+      (to (lw-rt/rt-var 'host (symbol (name (symbol v)))))
+      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var!} v) (and v (lw-rt/intrinsic? v))
           (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))))
       nil
       (or (nil? v) (ll-table-var? v))
@@ -768,6 +776,7 @@
       (let [v (ll-callee-var (first refs))]
         (cond (ll-leaf-var? v) (ll-println! nid (rest refs))
               (= v #'catch-matches?) (ll-catch-matches! nid (rest refs))
+              (#{#'push-var! #'pop-var!} v) (ll-binding-var! nid v (rest refs))
               ;; seq/float-bits is the stand-in for f64-bits (D28/D45): the raw
               ;; bits, NaN payloads included (rt-overrides' i64.reinterpret_f64)
               (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits)))
@@ -1118,6 +1127,37 @@
 (def ll-code-field {0 1 1 2 2 3 3 5 4 6})
 
 (defn ll-gvar [v] (str "@\"var" (var-global (ll-var-alias v)) "\""))
+
+(defn ll-binding-var!
+  "binding-out's push-var!/pop-var! (a binding of a program var, k its
+   :ns/name): save the var's global on @lg_bind_stack (one List for every
+   var, since bindings nest) and set it; pop restores it. Single-threaded,
+   as the GC lane's (binding-call-wat)."
+  [nid v args]
+  (let [k (first (ll-const-val (first args)))
+        vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
+        g (when vr (var-global vr))
+        _ (when-not g (ll-fail (str "binding of " k " is not supported (not a var-table var)") {:var (str vr)}))
+        gv (str "@\"var" g "\"") w (ll-word) sty (ll-sty "$List")]
+    (if (= v #'push-var!)
+      (let [val (ll-arg (second args) :box)
+            p (ll-alloc! sty (ll-tid "$List")) old (ll-fresh "%bo") stk (ll-fresh "%bs")]
+        (ll-emit! "  " old " = load " w ", ptr " gv)
+        (ll-emit! "  " stk " = load " w ", ptr @lg_bind_stack")
+        (ll-emit! "  store " w " " old ", ptr " (ll-field-ptr! sty p 1))
+        (ll-emit! "  store " w " " stk ", ptr " (ll-field-ptr! sty p 2))
+        (ll-emit! "  store i64 1, ptr " (ll-field-ptr! sty p 3))
+        (ll-emit! "  store " w " 0, ptr " (ll-field-ptr! sty p 4))
+        (ll-emit! "  store " w " " (ll-word-of! p) ", ptr @lg_bind_stack")
+        (ll-emit! "  store " w " " val ", ptr " gv))
+      (let [stk (ll-fresh "%bs") f (ll-fresh "%bf") r (ll-fresh "%br")]
+        (ll-emit! "  " stk " = load " w ", ptr @lg_bind_stack")
+        (let [sp (ll-ptr! stk)]
+          (ll-emit! "  " f " = load " w ", ptr " (ll-field-ptr! sty sp 1))
+          (ll-emit! "  " r " = load " w ", ptr " (ll-field-ptr! sty sp 2)))
+        (ll-emit! "  store " w " " f ", ptr " gv)
+        (ll-emit! "  store " w " " r ", ptr @lg_bind_stack")))
+    (ll-bind! nid (ll-coerce! :box (ty nid) "0"))))
 
 (defn ll-cstring!
   "A private constant C string global for s; returns its name."
@@ -1661,8 +1701,10 @@
          (str/join "\n" (sort (distinct (mapcat :types kept)))) "\n\n"
          (str/join "\n" (ll-object-globals)) "\n"
          (str/join "\n" (for [g (sort gvars)] (str "@\"var" g "\" = internal global " w " 0"))) "\n"
-         ;; the collector's global roots: every var global, and the handler chain
-         (let [roots (concat (for [g (sort gvars)] (str "ptr @\"var" g "\"")) ["ptr @lg_handler"])]
+         ;; the collector's global roots: every var global, the handler chain and
+         ;; the binding stack (ll-binding-var!)
+         "@lg_bind_stack = internal global " w " 0\n"
+         (let [roots (concat (for [g (sort gvars)] (str "ptr @\"var" g "\"")) ["ptr @lg_handler" "ptr @lg_bind_stack"])]
            (str "@lg_gc_globals = constant [" (count roots) " x ptr] [" (str/join ", " roots) "]\n"
                 "@lg_gc_nglobals = constant i32 " (count roots) "\n"))
          (str/join "\n" (ll-type-descs)) "\n"
