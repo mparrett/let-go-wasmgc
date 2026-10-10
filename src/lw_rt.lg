@@ -429,14 +429,20 @@
   "The synthesized fill of a stdlib protocol method var (see above), or nil."
   [v]
   (when (var? v)
-    (or (get @stdlib-twin-map v)
-        (let [m (meta v) n (when (:ns m) (ns-name (:ns m)))]
-          ;; a protocol method var carries :ns but no :file; index its
-          ;; namespace when that is an embedded stdlib one
-          (when (and n (nil? (:file m)) (not (#{'core 'string} n))
-                     (some #(= (str "<embedded:" n ">") (:file (meta %))) (vals (ns-interns n))))
-            (stdlib-ns! n)
-            (get @stdlib-twin-map v))))))
+    (let [hit (get @stdlib-twin-map v ::unknown)]
+      (if (not= hit ::unknown)
+        hit
+        (let [m (meta v) n (when (:ns m) (ns-name (:ns m)))
+              ;; a protocol method var carries :ns but no :file; index its
+              ;; namespace when that is an embedded stdlib one
+              r (when (and n (nil? (:file m)) (not (#{'core 'string} n))
+                           (some #(= (str "<embedded:" n ">") (:file (meta %))) (vals (ns-interns n))))
+                  (stdlib-ns! n)
+                  (get @stdlib-twin-map v))]
+          ;; a miss is remembered too: the scan above walks the namespace
+          ;; (rt-target asks per var reference, 118k times for xsofy)
+          (when-not (contains? @stdlib-twin-map v) (swap! stdlib-twin-map assoc v r))
+          r)))))
 
 (def stdlib-alias-map (atom {}))   ; unsourced var -> the embedded var whose fn it holds
 
@@ -448,7 +454,9 @@
    file loads before any program, and those take gensyms (P9.1)."
   [v]
   (when (and (var? v) (nil? (:file (meta v))))
-    (or (get @stdlib-alias-map v)
+    (let [hit (get @stdlib-alias-map v ::unknown)]
+      (if (not= hit ::unknown)
+        hit
         (let [x (try @v (catch e nil))]
           (when (fn? x)
             (let [src (some (fn [n]
@@ -459,8 +467,9 @@
                                         sv))
                                     (vals (ns-interns (ns-name n)))))
                             (all-ns))]
-              (when src (swap! stdlib-alias-map assoc v src))
-              src))))))
+              ;; a miss is remembered too: the scan walks every namespace
+              (swap! stdlib-alias-map assoc v src)
+              src)))))))
 
 (defn source-defn
   "The source defn the backend compiles for v: a runtime defn, an lg-defined
