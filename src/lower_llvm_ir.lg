@@ -40,12 +40,23 @@
   [s]
   (str "@" (note! (sym s))))
 
+(defn- realize
+  "x with every lazy seq inside it realized."
+  [x]
+  (cond (map? x) (into (empty x) (map (fn [[k v]] [(realize k) (realize v)]) x))
+        (vector? x) (mapv realize x)
+        (set? x) (into (empty x) (map realize x))
+        (seq? x) (doall (map realize x))
+        :else x))
+
 (defn with-refs
   "Call f with a fresh unit bound; [its value, the symbols it referenced].
-   A nested call records into its own unit only."
+   A nested call records into its own unit only. The value is realized in
+   full before the unit closes: a lazy seq inside it would otherwise name
+   its symbols later, outside the unit, and they would be lost."
   [f]
   (let [refs (atom #{})
-        v (binding [*refs* refs] (f))]
+        v (binding [*refs* refs] (realize (f)))]
     [v @refs]))
 
 ;; --- items ----------------------------------------------------------------------

@@ -110,7 +110,7 @@
   [sty]
   (str "gcd." (str/replace (str/replace sty #"^%\"?" "") #"\"$" "")))
 
-(defn ll-desc-name "The descriptor global of sty, as an operand." [sty] (str "@\"" (ll-desc-sym sty) "\""))
+(defn ll-desc-name "The descriptor global of sty, as an operand." [sty] (lir/ref (ll-desc-sym sty)))
 
 (defn ll-desc-item
   "The descriptor global of sty: LLVM field indices fields hold words to
@@ -161,8 +161,8 @@
      [(bare (ll-glob "lg_false" "global" (ll-sty "$Bool") (str "{ " w " " (ll-tid "$Bool") ", i64 0 }")))
       (bare (ll-glob "lg_true" "global" (ll-sty "$Bool") (str "{ " w " " (ll-tid "$Bool") ", i64 1 }")))])))
 
-(defn ll-false [] (str "ptrtoint (ptr @lg_false to " (ll-word) ")"))
-(defn ll-true [] (str "ptrtoint (ptr @lg_true to " (ll-word) ")"))
+(defn ll-false [] (str "ptrtoint (ptr " (lir/ref-bare "lg_false") " to " (ll-word) ")"))
+(defn ll-true [] (str "ptrtoint (ptr " (lir/ref-bare "lg_true") " to " (ll-word) ")"))
 
 ;; --- object access ----------------------------------------------------------
 
@@ -297,7 +297,7 @@
 ;; llvm-module emits the table for each module (D221).
 
 (defn ll-tinfo-globals
-  "The type table's globals: each Type as a static object (spec §1: name,
+  "[item refs] for each of the type table's globals: each Type as a static object (spec §1: name,
    id, ancestry as a static Node of Types, method table, epoch; the
    collector skips pointers outside its heap), @lg_tinfo_types (the Types
    by id, 0 for a hole), @lg_tinfo_names (name Bytes), @lg_tinfo_off and
@@ -308,26 +308,27 @@
         anc (mapcat :anc t)
         tv (lw-rt/type-name (resolve 'llvm.core/TypeVal)) nd (lw-rt/type-name (resolve 'llvm.pvec/Node))
         tref #(str "ptrtoint (ptr " (lir/ref (str "lg_type." %)) " to " w ")")]
+    (map (fn [f] (lir/with-refs f))
     (concat
      (mapcat (fn [[id r]]
                (when r
                  (let [k (count (:anc r))]
-                   [(ll-glob (str "lg_tanc." id) "private constant" (str "{ " w ", " w ", [" k " x " w "] }")
+                   [#(ll-glob (str "lg_tanc." id) "private constant" (str "{ " w ", " w ", [" k " x " w "] }")
                              (str "{ " w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }"))
-                    (ll-glob (str "lg_type." id) "internal global" (ll-sty tv)
+                    #(ll-glob (str "lg_type." id) "internal global" (ll-sty tv)
                              (str "{ " w " " (ll-tid tv) ", " w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
                                   w " ptrtoint (ptr " (lir/ref (str "lg_tanc." id)) " to " w "), " w " 0, i64 0 }"))])))
              (map-indexed vector t))
-     (map #(assoc-in % [:llvm/global :bare] true)
-          [(ll-glob "lg_tinfo_types" "internal constant" (str "[" (count t) " x " w "]")
+     (map (fn [f] #(assoc-in (f) [:llvm/global :bare] true))
+          [#(ll-glob "lg_tinfo_types" "internal constant" (str "[" (count t) " x " w "]")
                     (str "[" (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]"))
-           (ll-glob "lg_tinfo_names" "internal constant" (str "[" (count t) " x " w "]")
+           #(ll-glob "lg_tinfo_names" "internal constant" (str "[" (count t) " x " w "]")
                     (str "[" (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]"))
-           (ll-glob "lg_tinfo_off" "internal constant" (str "[" (count offs) " x i64]")
+           #(ll-glob "lg_tinfo_off" "internal constant" (str "[" (count offs) " x i64]")
                     (str "[" (str/join ", " (for [o offs] (str "i64 " o))) "]"))
-           (ll-glob "lg_tinfo_anc" "internal constant" (str "[" (max 1 (count anc)) " x i64]")
+           #(ll-glob "lg_tinfo_anc" "internal constant" (str "[" (max 1 (count anc)) " x i64]")
                     (str "[" (if (seq anc) (str/join ", " (for [a anc] (str "i64 " a))) "i64 0") "]"))
-           (ll-glob "lg_tinfo_count" "internal constant" "i64" (str (count t)))]))))
+           #(ll-glob "lg_tinfo_count" "internal constant" "i64" (str (count t)))])))))
 
 (defn- ll-tinfo-load!
   "Loads element i (an i64 operand) of type table global g, elements ty."
@@ -467,17 +468,17 @@
                           (ll-emit! "  store " w " " (ll-arg (a 0) :box) ", ptr " (ll-field-ptr! (ll-sty "$Str") p 1))
                           (ll-emit! "  store i64 -1, ptr " (ll-field-ptr! (ll-sty "$Str") p 2))
                           [(ll-word-of! p) :box])
-      "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr @lg_tinfo_count") [r :int])
-      "type-static" [(ll-tinfo-load! "@lg_tinfo_types" w (ll-arg (a 0) :int)) :box]
-      "type-name-bytes" [(ll-tinfo-load! "@lg_tinfo_names" w (ll-arg (a 0) :int)) :box]
+      "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_tinfo_count")) [r :int])
+      "type-static" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_types") w (ll-arg (a 0) :int)) :box]
+      "type-name-bytes" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_names") w (ll-arg (a 0) :int)) :box]
       "type-anc-count" (let [i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
                          (ll-emit! "  " j " = add i64 " i ", 1")
-                         (ll-emit! "  " r " = sub i64 " (ll-tinfo-load! "@lg_tinfo_off" "i64" j) ", "
-                                   (ll-tinfo-load! "@lg_tinfo_off" "i64" i))
+                         (ll-emit! "  " r " = sub i64 " (ll-tinfo-load! (lir/ref-bare "lg_tinfo_off") "i64" j) ", "
+                                   (ll-tinfo-load! (lir/ref-bare "lg_tinfo_off") "i64" i))
                          [r :int])
       "type-anc" (let [k (ll-fresh "%i")]
-                   (ll-emit! "  " k " = add i64 " (ll-tinfo-load! "@lg_tinfo_off" "i64" (ll-arg (a 0) :int)) ", " (ll-arg (a 1) :int))
-                   [(ll-tinfo-load! "@lg_tinfo_anc" "i64" k) :int])
+                   (ll-emit! "  " k " = add i64 " (ll-tinfo-load! (lir/ref-bare "lg_tinfo_off") "i64" (ll-arg (a 0) :int)) ", " (ll-arg (a 1) :int))
+                   [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_anc") "i64" k) :int])
       "host-write" [(call "i64" "lg_host_write_bytes" (str "i64 " (ll-arg (a 0) :int)) (str w " " (ll-arg (a 1) :box))) :int]
       "host-sleep" (do (ll-emit! "  call void @lg_host_sleep(i64 " (ll-arg (a 0) :int) ")") [nil :void])
       "host-nanotime" [(call "i64" "lg_host_nanotime") :int]
@@ -548,7 +549,7 @@
                           (str "entry:\n"
                              (str/join "\n" (mapcat conv ps)) "\n"
                              (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
-                                                      "  store ptr @lg_kbox_" (name ret) ", ptr %r\n"
+                                                      "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
                                                       "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
                              "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
                              (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n"))]}))
@@ -630,22 +631,25 @@
                               "  musttail call tailcc void " (ll-q (:name fin)) "(ptr %r2" (apply str as) ")\n  ret void\n")))
             to-k (fn [F b] (str "  %kp = getelementptr " ft ", ptr " F ", i32 0, i32 1\n  %kk = load ptr, ptr %kp\n"
                                 "  %kc = load ptr, ptr %kk\n  musttail call tailcc void %kc(ptr %kk, " w " " b ")\n  ret void\n"))
-            pop (fn [F] (str "  %pp = getelementptr " ft ", ptr " F ", i32 0, i32 2\n  %pr = load ptr, ptr %pp\n  store ptr %pr, ptr @lg_handler\n"))
+            pop (fn [F] (str "  %pp = getelementptr " ft ", ptr " F ", i32 0, i32 2\n  %pr = load ptr, ptr %pp\n  store ptr %pr, ptr " (lir/ref-bare "lg_handler") "\n"))
             rec (fn [code F] (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr " code ", ptr %r\n  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr " F ", ptr %r.1\n"))
             reify (get-in (callee-sig (lw-rt/rt-var 'core 'reify-caught)) [:arities 1])
             frame-type {:llvm/type {:name ft :fields (into ["ptr" "ptr" "ptr" w] (map ll-type all-ck))}}
-            fns
+            ;; the region's fns, made inside its ll-region! so their symbols are its
+            build-fns
+            (fn []
+            (let [fns
             [;; enter: push F, run the body with a continuation that pops it
              (ll-fn tn (cons "ptr %k" (map-indexed (fn [i k] (str (ll-type k) " %a" i)) all-ck))
              (str "entry:\n"
                   "  %F = " (ll-alloc-call ft) "\n"
                   "  store ptr " (q "catch") ", ptr %F\n"
                   "  %F1 = getelementptr " ft ", ptr %F, i32 0, i32 1\n  store ptr %k, ptr %F1\n"
-                  "  %F2 = getelementptr " ft ", ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr @lg_handler\n  store ptr %prior, ptr %F2\n"
+                  "  %F2 = getelementptr " ft ", ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr " (lir/ref-bare "lg_handler") "\n  store ptr %prior, ptr %F2\n"
                   "  %F3 = getelementptr " ft ", ptr %F, i32 0, i32 3\n  store " w " 0, ptr %F3\n"
                   (apply str (map-indexed (fn [i k] (str "  %Fc" i " = getelementptr " ft ", ptr %F, i32 0, i32 " (+ 4 i) "\n  store " (ll-type k) " %a" i ", ptr %Fc" i "\n")) all-ck))
-                  "  store ptr %F, ptr @lg_handler\n"
+                  "  store ptr %F, ptr " (lir/ref-bare "lg_handler") "\n"
                   (rec (q "done") "%F")
                   "  musttail call tailcc void " (ll-q (:name body)) "(ptr %r"
                   (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %a" i)) (:ck body))) ")\n  ret void\n"))
@@ -661,8 +665,8 @@
                   (cond
                     h (str (when fin (str "  %G = " (ll-alloc-call "%tryf") "\n"
                                           "  store ptr " (q "hthrow") ", ptr %G\n  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  store ptr %F, ptr %G1\n"
-                                          "  %G2 = getelementptr %tryf, ptr %G, i32 0, i32 2\n  %gp = load ptr, ptr @lg_handler\n  store ptr %gp, ptr %G2\n"
-                                          "  store ptr %G, ptr @lg_handler\n"))
+                                          "  %G2 = getelementptr %tryf, ptr %G, i32 0, i32 2\n  %gp = load ptr, ptr " (lir/ref-bare "lg_handler") "\n  store ptr %gp, ptr %G2\n"
+                                          "  store ptr %G, ptr " (lir/ref-bare "lg_handler") "\n"))
                            (rec (q "reified") "%F")
                            "  musttail call tailcc void " (ll-q (:name reify)) "(ptr %r, " w " %exn)\n  ret void\n")
                     fin (call-fin "%F" "rethrow" "%exn")
@@ -693,10 +697,11 @@
                           (ll-fn (qn "hthrow") ["ptr %G" (str w " %exn")]
                           (str "entry:\n"
                                "  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  %F = load ptr, ptr %G1\n"
-                               (call-fin "%F" "rethrow" "%exn")))))
+                               (call-fin "%F" "rethrow" "%exn")))))]
+              fns))
             plan {:sig {:name tn :params all-ck :ret :box}
                   :args (vec (concat (:caps body) (:caps h) (:caps fin)))}]
-        (ll-region! {:name tn :items fns
+        (ll-region! {:name tn :items (build-fns)
                      :types [frame-type (ll-desc-item ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
         (swap! *fn-values* assoc [:llvm-try *fname* nid *abi-notes*] plan)
         plan)))

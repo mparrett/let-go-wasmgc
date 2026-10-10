@@ -16,6 +16,15 @@
     (is (= #{"a" "b"} refs)))
   (is (= "@\"x\"" (ir/ref "x")) "outside a unit nothing is recorded"))
 
+(deftest lazy-values-are-realized-inside-the-unit
+  ;; a lazy seq made in the unit names its symbols when realized, which must
+  ;; happen before the unit closes, or its references are lost
+  (let [[v refs] (ir/with-refs #(for [s ["a" "b"]] (ir/ref s)))]
+    (is (= ["@\"a\"" "@\"b\""] (vec v)))
+    (is (= #{"a" "b"} refs)))
+  (let [[v refs] (ir/with-refs #(hash-map :items (map ir/ref ["x" "y"])))]
+    (is (= #{"x" "y"} refs) "nested in a map")))
+
 (deftest nested-units-record-their-own
   (let [[inner-refs outer-refs]
         (let [inner (atom nil)
