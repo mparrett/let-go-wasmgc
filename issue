@@ -1,0 +1,13 @@
+id: bd1b1a0
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D211: `--target llvm` compiles its own copy of the runtime, `rt/llvm/wasm/`, which started identical to `rt/wasm/` at this ...
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D211
+description: `--target llvm` compiles its own copy of the runtime, `rt/llvm/wasm/`, which started identical to `rt/wasm/` at this commit. `src/lw_rt.lg`'s `rt-dir` follows the target, read from `--target`/`--target=` or `LW_TARGET` when lw-rt loads (the runtime loads before the driver parses its flags); `LW_RT_DIR` still overrides. The copy lets the llvm runtime specialise (object layouts, booleans, fixnums, host calls) without changing what the WasmGC and linear lanes compile, so llvm work no longer moves P8.0. The namespaces stay `wasm.*` (with the `arch` alias), since the shared compiler refers to runtime vars by name and only one runtime loads per build; the directory is `rt/llvm/wasm/` so `wasm.seq` resolves to `<root>/wasm/seq.lg` with `-source-paths rt/llvm`. Drift is deliberate and visible: `rt/llvm/DIVERGENCE.md` lists every differing file with its reason, and `checks/rt-divergence.sh` (P12.22) fails on an unlisted difference or a stale entry; a fix either copy needs is made in both. `checks/run-intrinsics-native.sh` takes `RT_ROOT=rt/llvm` (P12.23: 150 tests, 0 failures at the copy).
