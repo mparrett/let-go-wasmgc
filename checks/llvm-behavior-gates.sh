@@ -10,24 +10,28 @@ export LW_PAR=${LW_PAR:-1}
 fail=0
 row() { local name=$1; shift; "$@"; local rc=$?; echo "ROW $name exit $rc"; [ $rc = 0 ] || fail=1; }
 llvm() { env WASM_RUN=checks/native-run.sh "$@"; }
+# a serial check takes one slot of the machine-wide pool (checks/sem.sh), as
+# run-corpus.sh's programs each do, so this gate shares the machine with
+# other agents' builds instead of oversubscribing it
+slot() { checks/sem.sh "$@"; }
 row P12.3a llvm checks/run-corpus.sh corpus/llvm-scalar corpus/llvm
 row P12.3b llvm LW_PROFILE=host-aarch64-darwin-fix31 checks/run-corpus.sh corpus/llvm-scalar corpus/llvm
-row P12.3c checks/llvm-word-check.sh
-row P12.20 checks/llvm-armv7-check.sh
-row P12.21 checks/llvm-oom-check.sh
+row P12.3c slot checks/llvm-word-check.sh
+row P12.20 slot checks/llvm-armv7-check.sh
+row P12.21 slot checks/llvm-oom-check.sh
 row P12.23 env TEST_DIR=corpus/llvm-rt checks/run-intrinsics-native.sh
 row llvm-corpora llvm checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
 row P1.10 checks/run-corpus.sh corpus/reader-ns
 row P1.10-llvm llvm checks/run-corpus.sh corpus/reader-ns
-row P12.30 checks/run-expected.sh corpus/poly-wasm
+row P12.30 slot checks/run-expected.sh corpus/poly-wasm
 row P12.31 llvm checks/run-corpus.sh corpus/poly
-row P12.32 llvm checks/run-expected.sh corpus/poly-clj
-row P12.37 checks/llvm-rtlib-check.sh
-row P12.38 checks/llvm-xsofy-check.sh
-row P12.39 checks/llvm-refs-check.sh
+row P12.32 slot env WASM_RUN=checks/native-run.sh checks/run-expected.sh corpus/poly-clj
+row P12.37 slot checks/llvm-rtlib-check.sh
+row P12.38 slot checks/llvm-xsofy-check.sh
+row P12.39 slot checks/llvm-refs-check.sh
 # P12.40: lowering reads the session only through questions (red until
 # the function cache's groundwork plan, Task 4)
-row P12.40 checks/llvm-funnel-check.sh
+row P12.40 slot checks/llvm-funnel-check.sh
 if [ "${GC_LANE:-1}" = 1 ]; then
   row gc-corpora checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
   row P7.0 checks/run-corpus.sh corpus/eval/*/
