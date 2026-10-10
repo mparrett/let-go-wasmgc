@@ -1,0 +1,21 @@
+[package]
+name = "wat-asm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 WITH LLVM-exception"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# the same crate `wasm-tools parse` uses, at the version checks/env.sh's
+# wasm-tools has (1.256.0): the page's bytes are the oracle's bytes
+wat = { version = "=1.256.0", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
