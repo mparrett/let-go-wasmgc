@@ -1,0 +1,13 @@
+id: b1a8c6e
+v: 2
+title: Named limit: a mark-stack overflow makes the collector rescan every marked block
+status: open
+priority: low
+created: 2026-10-10T21:10:00Z
+updated: 2026-10-10T21:10:00Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+issue_type: limit
+labels: llvm
+description: host/native/gc.c: when the mark stack overflows it sets a flag and rescans marked blocks until no child is left (gc.c:132), which can be quadratic on deep heaps. Raised in mparrett's review of PR #25 (2026-10-10) as a named limit for the PR body.
