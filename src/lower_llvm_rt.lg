@@ -549,14 +549,14 @@
                                         (ll-fail "wasm/funcref param kind mismatch" {:sig tn :param i}))
                                (ll-fail "wasm/funcref param slot type unsupported" {:sig tn :type t}))))]
           (ll-region!
-                 {:text (str "define internal tailcc void " (ll-q cname) "(ptr %k"
-                             (apply str (map #(str ", " (ll-slot-type (nth (:params d) %)) " %a" %) ps)) ") {\nentry:\n"
+                 {:items [(ll-fn cname (cons "ptr %k" (map #(str (ll-slot-type (nth (:params d) %)) " %a" %) ps))
+                          (str "entry:\n"
                              (str/join "\n" (mapcat conv ps)) "\n"
                              (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                                       "  store ptr @lg_kbox_" (name ret) ", ptr %r\n"
                                                       "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
                              "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
-                             (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n}\n")}))
+                             (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n"))]}))
         (swap! *fn-values* assoc [:llvm-ref tn fv] cname)
         cname)))
 
@@ -618,7 +618,7 @@
             body (region (nth refs 0) "body" [])
             h (when has-handler (region (nth refs 1) "catch" [:box]))
             fin (when has-finally (region (nth refs (if has-handler 2 1)) "finally" []))
-            tn (str *fname* ".try" nid) q (fn [x] (ll-q (str tn "." x)))
+            tn (str *fname* ".try" nid) qn (fn [x] (str tn "." x)) q (fn [x] (ll-q (qn x)))
             ft (str "%\"tryf." tn "\"")
             all-ck (vec (concat (:ck body) (:ck h) (:ck fin)))
             off-h (count (:ck body)) off-f (+ off-h (count (:ck h)))
@@ -639,10 +639,11 @@
             rec (fn [code F] (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr " code ", ptr %r\n  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr " F ", ptr %r.1\n"))
             reify (get-in (callee-sig (lw-rt/rt-var 'core 'reify-caught)) [:arities 1])
-            texts
-            [(str ft " = type { ptr, ptr, ptr, " w (apply str (map #(str ", " (ll-type %)) all-ck)) " }")
-             ;; enter: push F, run the body with a continuation that pops it
-             (str "define internal tailcc void " (ll-q tn) "(ptr %k" (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %a" i)) all-ck)) ") {\nentry:\n"
+            frame-type {:llvm/type {:name ft :fields (into ["ptr" "ptr" "ptr" w] (map ll-type all-ck))}}
+            fns
+            [;; enter: push F, run the body with a continuation that pops it
+             (ll-fn tn (cons "ptr %k" (map-indexed (fn [i k] (str (ll-type k) " %a" i)) all-ck))
+             (str "entry:\n"
                   "  %F = " (ll-alloc-call ft) "\n"
                   "  store ptr " (q "catch") ", ptr %F\n"
                   "  %F1 = getelementptr " ft ", ptr %F, i32 0, i32 1\n  store ptr %k, ptr %F1\n"
@@ -652,14 +653,16 @@
                   "  store ptr %F, ptr @lg_handler\n"
                   (rec (q "done") "%F")
                   "  musttail call tailcc void " (ll-q (:name body)) "(ptr %r"
-                  (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %a" i)) (:ck body))) ")\n  ret void\n}\n")
+                  (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %a" i)) (:ck body))) ")\n  ret void\n"))
              ;; the body returned: pop F, then the finally or the try's continuation
-             (str "define internal tailcc void " (q "done") "(ptr %rec, " (ll-type (:ret body)) " %v) {\nentry:\n"
+             (ll-fn (qn "done") ["ptr %rec" (str (ll-type (:ret body)) " %v")]
+             (str "entry:\n"
                   "  %rp = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n" (pop "%F")
                   (str/join "\n" (ll-box-lines (:ret body) "%v" "%b")) "\n"
-                  (if fin (call-fin "%F" "fdone" "%b") (to-k "%F" "%b")) "}\n")
+                  (if fin (call-fin "%F" "fdone" "%b") (to-k "%F" "%b"))))
              ;; a throw reached F (lg_throw popped it)
-             (str "define internal tailcc void " (q "catch") "(ptr %F, " w " %exn) {\nentry:\n"
+             (ll-fn (qn "catch") ["ptr %F" (str w " %exn")]
+             (str "entry:\n"
                   (cond
                     h (str (when fin (str "  %G = " (ll-alloc-call "%tryf") "\n"
                                           "  store ptr " (q "hthrow") ", ptr %G\n  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  store ptr %F, ptr %G1\n"
@@ -668,34 +671,38 @@
                            (rec (q "reified") "%F")
                            "  musttail call tailcc void " (ll-q (:name reify)) "(ptr %r, " w " %exn)\n  ret void\n")
                     fin (call-fin "%F" "rethrow" "%exn")
-                    :else (str "  musttail call tailcc void @lg_throw(ptr null, " w " %exn)\n  ret void\n"))
-                  "}\n")]
-            texts (if-not h texts
-                    (conj texts
-                          (str "define internal tailcc void " (q "reified") "(ptr %rec, " w " %e) {\nentry:\n"
+                    :else (str "  musttail call tailcc void @lg_throw(ptr null, " w " %exn)\n  ret void\n"))))]
+            fns (if-not h fns
+                    (conj fns
+                          (ll-fn (qn "reified") ["ptr %rec" (str w " %e")]
+                          (str "entry:\n"
                                "  %rp = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n"
                                (rec (q "hdone") "%F")
                                (let [[ls as] (caps-from "%F" off-h (:ck h))] (str (str/join "\n" ls) "\n"
-                                 "  musttail call tailcc void " (ll-q (:name h)) "(ptr %r, " w " %e" (apply str as) ")\n  ret void\n}\n")))
-                          (str "define internal tailcc void " (q "hdone") "(ptr %rec, " (ll-type (:ret h)) " %v) {\nentry:\n"
+                                 "  musttail call tailcc void " (ll-q (:name h)) "(ptr %r, " w " %e" (apply str as) ")\n  ret void\n"))))
+                          (ll-fn (qn "hdone") ["ptr %rec" (str (ll-type (:ret h)) " %v")]
+                          (str "entry:\n"
                                "  %rp = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n"
                                (str/join "\n" (ll-box-lines (:ret h) "%v" "%b")) "\n"
-                               (if fin (str (pop "%F") (call-fin "%F" "fdone" "%b")) (to-k "%F" "%b")) "}\n")))
-            texts (if-not fin texts
-                    (conj texts
-                          (str "define internal tailcc void " (q "fdone") "(ptr %rec, " (ll-type (:ret fin)) " %ignored) {\nentry:\n"
+                               (if fin (str (pop "%F") (call-fin "%F" "fdone" "%b")) (to-k "%F" "%b"))))))
+            fns (if-not fin fns
+                    (conj fns
+                          (ll-fn (qn "fdone") ["ptr %rec" (str (ll-type (:ret fin)) " %ignored")]
+                          (str "entry:\n"
                                "  %rp = getelementptr %kfin, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n"
-                               "  %vp = getelementptr %kfin, ptr %rec, i32 0, i32 2\n  %b = load " w ", ptr %vp\n" (to-k "%F" "%b") "}\n")
-                          (str "define internal tailcc void " (q "rethrow") "(ptr %rec, " (ll-type (:ret fin)) " %ignored) {\nentry:\n"
+                               "  %vp = getelementptr %kfin, ptr %rec, i32 0, i32 2\n  %b = load " w ", ptr %vp\n" (to-k "%F" "%b")))
+                          (ll-fn (qn "rethrow") ["ptr %rec" (str (ll-type (:ret fin)) " %ignored")]
+                          (str "entry:\n"
                                "  %vp = getelementptr %kfin, ptr %rec, i32 0, i32 2\n  %e = load " w ", ptr %vp\n"
-                               "  musttail call tailcc void @lg_throw(ptr null, " w " %e)\n  ret void\n}\n")
-                          (str "define internal tailcc void " (q "hthrow") "(ptr %G, " w " %exn) {\nentry:\n"
+                               "  musttail call tailcc void @lg_throw(ptr null, " w " %e)\n  ret void\n"))
+                          (ll-fn (qn "hthrow") ["ptr %G" (str w " %exn")]
+                          (str "entry:\n"
                                "  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  %F = load ptr, ptr %G1\n"
-                               (call-fin "%F" "rethrow" "%exn") "}\n")))
+                               (call-fin "%F" "rethrow" "%exn")))))
             plan {:sig {:name tn :params all-ck :ret :box}
                   :args (vec (concat (:caps body) (:caps h) (:caps fin)))}]
-        (ll-region! {:name tn :text (str/join "\n" (rest texts))
-                               :types [(first texts) (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
+        (ll-region! {:name tn :items fns
+                     :types [(lir/render frame-type) (ll-desc-def ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
         (swap! *fn-values* assoc [:llvm-try *fname* nid *abi-notes*] plan)
         plan)))
 

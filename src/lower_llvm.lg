@@ -40,8 +40,20 @@
   (set (map (comp ll-unq second)
             (concat (re-seq (re-pattern (str "(?m)^define [^@\n]*" ll-sym-re "\\(")) text)
                     (re-seq (re-pattern (str "(?m)^" ll-sym-re " = ")) text)))))
-(defn ll-unit "m with its :defs and :refs." [m]
-  (let [t (str (:text m))] (assoc m :defs (ll-sym-defs t) :refs (ll-sym-refs t))))
+(defn ll-fn
+  "A tailcc fn item (internal unless linkage says otherwise) returning void:
+   params are \"type %name\" strings, body its text after the opening brace."
+  ([nm params body] (ll-fn nm params body "internal"))
+  ([nm params body linkage]
+   {:llvm/fn {:name nm :linkage linkage :cc "tailcc" :ret "void" :params (vec params) :body body}}))
+(defn ll-fn-bare "ll-fn for a backend helper named @lg_* (no quotes)." [nm params body]
+  (assoc-in (ll-fn nm params body) [:llvm/fn :bare] true))
+(defn ll-unit
+  "m with its :defs and :refs; m's :items, when it has them, are its text."
+  [m]
+  (let [m (if-let [items (:items m)] (assoc m :text (str/join "\n" (map lir/render items))) m)
+        t (str (:text m))]
+    (assoc m :defs (ll-sym-defs t) :refs (ll-sym-refs t))))
 (defn ll-global! "Add one global line to the module." [line] (swap! *globals* conj (ll-unit {:text line})))
 (defn ll-region! "Add a lifted region (closure code, a wrapper, a try region)." [m] (swap! *regions* conj (ll-unit m)))
 
@@ -370,8 +382,8 @@
             ids (map ll-tid ["$Fn" "$FnV" "$FnX"]) as ["%a" "%b" "%c" "%d"]]
         (swap! *fn-values* assoc [:llvm :invoke-args] "lg_invoke_args")
         (ll-region!
-               {:text (str "define internal tailcc void @lg_invoke_args(ptr %k, " w " %f, i64 %n"
-                           (apply str (map #(str ", " w " " %) as)) ") {\nentry:\n"
+               {:items [(ll-fn-bare "lg_invoke_args" (concat ["ptr %k" (str w " %f") "i64 %n"] (map #(str w " " %) as))
+                         (str "entry:\n"
                            "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
                            "  %no = or i1 %fx, %nl\n  br i1 %no, label %other, label %obj\nobj:\n"
                            "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
@@ -382,7 +394,7 @@
                                         (str "n" j ":\n  musttail call tailcc void @lg_invoke" j "(ptr %k, " w " %f"
                                              (apply str (map #(str ", " w " " %) (take j as))) ")\n  ret void\n")))
                            "other:\n  musttail call tailcc void " (ll-q real) "(ptr %k, " w " %f, i64 %n"
-                           (apply str (map #(str ", " w " " %) as)) ")\n  ret void\n}\n")})
+                           (apply str (map #(str ", " w " " %) as)) ")\n  ret void\n"))]})
         "lg_invoke_args")))
 
 (defn ll-apply-list!
@@ -410,7 +422,8 @@
             ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
         (swap! *fn-values* assoc [:llvm :apply-list] "lg_apply_list")
         (ll-region!
-               {:text (str "define internal tailcc void @lg_apply_list(ptr %k, " w " %f, " w " %l, i64 %n) {\nentry:\n"
+               {:items [(ll-fn-bare "lg_apply_list" ["ptr %k" (str w " %f") (str w " %l") "i64 %n"]
+                         (str "entry:\n"
                            "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
                            "  %no = or i1 %fx, %nl\n  br i1 %no, label %fixed, label %obj\nobj:\n"
                            "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
@@ -446,7 +459,7 @@
                              (str "  %n2 = shl i64 %n, 1\n  %n3 = or i64 %n2, 1\n"
                                   (if (= w "i64") "  %nb = add i64 %n3, 0\n" (str "  %nb = trunc i64 %n3 to " w "\n"))
                                   "  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, " w " %nb)\n"))
-                           "  ret void\n}\n")})
+                           "  ret void\n"))]})
         "lg_apply_list")))
 
 (defn ll-note-abi!
@@ -1105,20 +1118,21 @@
                           (when-not (:self-type *ll*) (ll-boxed-roots implicit)))
                   :else (concat [["ptr" "%k"]] (ll-boxed-roots implicit)
                                 (ll-boxed-roots (map (fn [s] [(ty s) (str "%a" s)]) (concat live (ll-params b))))))
-          body (str "(" (str/join ", " (if fast? jparams params)) ") {\nentry:\n"
+          body (str "entry:\n"
                     (ll-gc-check roots)
                     (str/join "\n" @(:lines *ll*))
                     (when @(:ovf *ll*) (str "\novf:\n" (ll-raise-text 'overflow-error "lg_overflow")))
-                    "\n}\n")]
+                    "\n")]
       (if-not fast?
-        (str "define " (if (= p [(ir/entry-block *f*) 0]) "" "internal ") "tailcc void " (ll-q nm) body)
+        [(ll-fn nm params body (when-not (= p [(ir/entry-block *f*) 0]) "internal"))]
         ;; the slow path's continuation: load the record, enter the join
-        (str "define internal tailcc void " (ll-q (str nm ".j")) body
-             "define internal tailcc void " (ll-q nm) "(ptr %rec, " rty " %res) {\nentry:\n"
-             "  %ks = getelementptr " rt ", ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n"
-             (apply str (map-indexed (fn [i [t n]] (str "  %im" i " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ 2 i) "\n  " n " = load " t ", ptr %im" i "\n")) (ll-implicit)))
-             (apply str (map-indexed (fn [i s] (str "  %s" s " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ (ll-slot0) i) "\n  %a" s " = load " (ll-type (ty s)) ", ptr %s" s "\n")) (ll-saved p)))
-             "  musttail call tailcc void " (ll-q (str nm ".j")) "(" (str/join ", " jparams) ")\n  ret void\n}\n")))))
+        [(ll-fn (str nm ".j") jparams body)
+         (ll-fn nm ["ptr %rec" (str rty " %res")]
+                (str "entry:\n"
+                     "  %ks = getelementptr " rt ", ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n"
+                     (apply str (map-indexed (fn [i [t n]] (str "  %im" i " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ 2 i) "\n  " n " = load " t ", ptr %im" i "\n")) (ll-implicit)))
+                     (apply str (map-indexed (fn [i s] (str "  %s" s " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ (ll-slot0) i) "\n  %a" s " = load " (ll-type (ty s)) ", ptr %s" s "\n")) (ll-saved p)))
+                     "  musttail call tailcc void " (ll-q (str nm ".j")) "(" (str/join ", " jparams) ")\n  ret void\n"))]))))
 
 ;; --- fn values (spec decision 10) ----------------------------------------
 ;; A fn value is a word pointing at an object of the runtime's own Fn type
@@ -1274,14 +1288,14 @@
    continuation when its result is not boxed."
   [cname sig n]
   (let [w (ll-word) ps (range n) ret (:ret sig)]
-    (str "define internal tailcc void " (ll-q cname) "(ptr %k, " w " %self"
-         (apply str (map #(str ", " w " %a" %) ps)) ") {\nentry:\n"
+    (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) ps))
+    (str "entry:\n"
          (str/join "\n" (mapcat #(ll-unbox-lines (nth (:params sig) %) (str "%a" %) (str "%u" %)) ps)) "\n"
          (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr @lg_kbox_" (name ret) ", ptr %r\n"
                                   "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
          "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
-         (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n}\n")))
+         (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n"))))
 
 (defn ll-seq-wrapper
   "Variadic code for a native's value through its -seq form sv: (k, self,
@@ -1298,13 +1312,13 @@
                                          (ll-unbox-lines (nth ps i) o (str "%u" i))))
                       (range) ops)
         args (map-indexed (fn [i [_ o]] (str ", " (ll-type (nth ps i)) " " (if (= :box (nth ps i)) o (str "%u" i)))) ops)]
-    (str "define internal tailcc void " (ll-q cname) "(ptr %k, " w " %self"
-         (apply str (map #(str ", " w " %a" %) (range k))) ", " w " %rest) {\nentry:\n"
+    (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) (range k)) [(str w " %rest")])
+    (str "entry:\n"
          (str/join "\n" lines) "\n"
          (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
                                   "  store ptr @lg_kbox_" (name ret) ", ptr %r\n"
                                   "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
-         "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r") (apply str args) ")\n  ret void\n}\n")))
+         "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r") (apply str args) ")\n  ret void\n"))))
 
 (def ll-core-unary {:inc "sadd" :dec "ssub" :zero? "eq" :pos? "sgt" :neg? "slt"})
 (def ll-core-binary {:add "sadd" :sub "ssub" :mul "smul" :lt "slt" :lte "sle" :gt "sgt" :gte "sge"})
@@ -1315,8 +1329,8 @@
   [cname op n]
   (let [w (ll-word) arith? (contains? #{:inc :dec :add :sub :mul} op)
         cmp (if (= n 1) (ll-core-unary op) (ll-core-binary op))]
-    (str "define internal tailcc void " (ll-q cname) "(ptr %k, " w " %self"
-         (apply str (map #(str ", " w " %a" %) (range n))) ") {\nentry:\n"
+    (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) (range n)))
+    (str "entry:\n"
          (str/join "\n" (mapcat #(ll-unbox-lines :int (str "%a" %) (str "%u" %)) (range n))) "\n"
          (if arith?
            (str "  %o = call {i64, i1} @llvm." cmp ".with.overflow.i64(i64 %u0, i64 " (if (= n 1) "1" "%u1") ")\n"
@@ -1324,7 +1338,7 @@
                 "  br i1 %f, label %ovf, label %ok\novf:\n  call void @lg_overflow()\n  unreachable\nok:\n"
                 "  %b = call " w " @lg_box_int(i64 %v)\n")
            (str "  %c = icmp " cmp " i64 %u0, " (if (= n 1) "0" "%u1") "\n  %b = select i1 %c, " w " " (ll-true) ", " w " " (ll-false) "\n"))
-         "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n}\n")))
+         "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n"))))
 
 (defn ll-var-value
   "The word operand of var v used as a value: a defn's, a runtime twin's or
@@ -1343,22 +1357,22 @@
             codes (cond
                     e (into (if-let [vs (:variadic e)]
                               (let [c (str "fnval." id ".v") k (:fixed vs)]
-                                (ll-region! {:name c :text (ll-defn-wrapper c vs (inc k))})
+                                (ll-region! {:name c :items [(ll-defn-wrapper c vs (inc k))]})
                                 {:v [k c]})
                               ;; a native past its fixed arities, through its -seq
                               ;; form (defn-fn-global's adapter): (apply + xs)
                               (if-let [[sv k pre] (seq-adapter e)]
                                 (let [c (str "fnval." id ".seq")]
-                                  (ll-region! {:name c :text (ll-seq-wrapper c sv k pre)})
+                                  (ll-region! {:name c :items [(ll-seq-wrapper c sv k pre)]})
                                   {:v [k c]})
                                 {}))
                             (for [[n sig] (:arities e) :when (<= n ll-max-invoke)]
                               (let [c (str "fnval." id "." n)]
-                                (ll-region! {:name c :text (ll-defn-wrapper c sig n)})
+                                (ll-region! {:name c :items [(ll-defn-wrapper c sig n)]})
                                 [n c])))
                     op (into {} (for [n (cond (ll-core-unary op) [1] (ll-core-binary op) [2] :else [])]
                                   (let [c (str "fnval." id "." n)]
-                                    (ll-region! {:name c :text (ll-core-wrapper c op n)})
+                                    (ll-region! {:name c :items [(ll-core-wrapper c op n)]})
                                     [n c])))
                     :else (ll-fail "a var used as a value" {:var v}))
             v1 (and (:v codes) (= 1 (count codes)))
@@ -1401,8 +1415,8 @@
         (let [live (ll-liveness)]
           (binding [*ll* (assoc *ll* :live live)]
             (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))]
-              (let [text (str/join "\n" (doall (map #(ll-function! % (count params)) entries)))]
-                (ll-unit {:name name :types @(:types *ll*) :text text})))))))))))
+              (let [items (vec (doall (mapcat #(ll-function! % (count params)) entries)))]
+                (ll-unit {:name name :types @(:types *ll*) :items items})))))))))))
 
 (defn llvm-dump [{:keys [name f params ret]}]
   (binding [*f* f *memo* (atom {})]
@@ -1602,25 +1616,18 @@
    next step); the last enters _main."
   [steps]
   (let [w (ll-word) n (count steps)]
-    (str/join "\n"
-              (concat
-               (for [[i st] (map-indexed vector steps)]
-                 (str "define internal tailcc void @lg_init." i "(ptr %k) {\n"
-                      "  %r = " (ll-alloc-call "%kinit") "\n"
-                      "  store ptr @lg_init." i ".done, ptr %r\n  %r.1 = getelementptr %kinit, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"
-                      "  musttail call tailcc void " (ll-q (or (:init st) (:call st))) "(ptr %r)\n  ret void\n}\n"
-                      "define internal tailcc void @lg_init." i ".done(ptr %rec, " w " %v) {\n"
-                      (when (:global st) (str "  store " w " %v, ptr @\"var" (:global st) "\"\n"))
-                      "  %ks = getelementptr %kinit, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n"
-                      "  musttail call tailcc void @lg_init." (inc i) "(ptr %k)\n  ret void\n}\n"))
-               [(str "define internal tailcc void @lg_init." n "(ptr %k) {\n"
-                     "  musttail call tailcc void @\"_main\"(ptr %k)\n  ret void\n}\n")]))))
-
-;; --- the shake (D221): with the cached library every runtime fn is lowered,
-;; so the module keeps only what _main reaches. A unit is a lowered fn's text
-;; (its entry and continuation defines) or one global line; a symbol is live
-;; when a live unit names it; a live runtime global brings its init fn, and
-;; the hooks global the link step (install!).
+    (concat
+     (mapcat (fn [[i st]]
+               [(ll-fn-bare (str "lg_init." i) ["ptr %k"]
+                            (str "  %r = " (ll-alloc-call "%kinit") "\n"
+                                 "  store ptr @lg_init." i ".done, ptr %r\n  %r.1 = getelementptr %kinit, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"
+                                 "  musttail call tailcc void " (ll-q (or (:init st) (:call st))) "(ptr %r)\n  ret void\n"))
+                (ll-fn-bare (str "lg_init." i ".done") ["ptr %rec" (str w " %v")]
+                            (str (when (:global st) (str "  store " w " %v, ptr @\"var" (:global st) "\"\n"))
+                                 "  %ks = getelementptr %kinit, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n"
+                                 "  musttail call tailcc void @lg_init." (inc i) "(ptr %k)\n  ret void\n"))])
+             (map-indexed vector steps))
+     [(ll-fn-bare (str "lg_init." n) ["ptr %k"] "  musttail call tailcc void @\"_main\"(ptr %k)\n  ret void\n")])))
 
 (defn ll-live
   "The live symbols: from roots, through the units' references, adding the
@@ -1706,7 +1713,7 @@
                 "@lg_gc_nglobals = constant i32 " (count roots) "\n"))
          (str/join "\n" (ll-type-descs)) "\n"
          (str/join "\n" (map :text kept-globals)) "\n\n"
-         inits "\n"
+         (str/join "\n" (map lir/render inits)) "\n"
          (str/join "\n" (map :text kept)))))
 
 (defn ll-stub-fn
@@ -1716,10 +1723,10 @@
   (let [w (ll-word) m (str "lower-wasm: " name " did not compile (" msg ")")
         raise (:name (get-in (callee-sig (lw-rt/rt-var 'core 'raise)) [:arities 1]))]
     (ll-unit
-    {:name name :types []
-     :text (str "define tailcc void " (ll-q name) "(ptr %k"
-                (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %p" i)) params)) ") {\n"
-                "  musttail call tailcc void " (ll-q raise) "(ptr %k, " w " " (ll-bytes-const! m) ")\n  ret void\n}")})))
+     {:name name :types []
+      :items [(ll-fn name (cons "ptr %k" (map-indexed (fn [i k] (str (ll-type k) " %p" i)) params))
+                     (str "  musttail call tailcc void " (ll-q raise) "(ptr %k, " w " " (ll-bytes-const! m) ")\n  ret void\n")
+                     nil)]})))
 
 ;; --- the runtime library cache (D221) ----------------------------------------
 ;; The GC lane's (D181): the whole runtime analysed and lowered once, the
