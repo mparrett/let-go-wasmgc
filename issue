@@ -1,0 +1,13 @@
+id: d88584c
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D213: The compiler names runtime vars only through lw-rt's interface:
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D213
+description: The compiler names runtime vars only through lw-rt's interface: `rt-ns` (a logical namespace name to the target runtime's namespace), `rt-var`, `rt-sym`, and `decl-kind` for a declaration's kind keyword. `rt-prefix` is `wasm` for gc and linear and `llvm` for `--target llvm`; `intrinsics-ns` is `wasm.intrinsics` or `llvm.arch`. About 100 hard-coded `#'wasm.X/y`, `'wasm.X/y`, `'wasm.X` and `:wasm.intrinsics/kind` references in `src/lower_wasm.lg`, `src/lw_rt.lg` and `src/driver.lg` now go through it, so the vars they name are the contract each target's runtime provides, and a runtime is otherwise its target's own (D211 amended: `rt/llvm` is the llvm target's runtime with its own names, not a mirror of `rt/wasm`). Checked by output, not by P8.0: fib, os-args.lg and an eval program compile to byte-identical WAT before and after, as does fib under `--target linear`; the gensym count at load stays 1130.
