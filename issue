@@ -1,0 +1,13 @@
+id: 6812531
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-10T00:00:00Z
+hash_source: content
+title: D225: The llvm emitter builds modules from data, not strings it later reads back.
+status: closed
+priority: medium
+created: 2026-10-10T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D225
+description: The llvm emitter builds modules from data, not strings it later reads back. `src/lower_llvm_ir.lg` (ns lower-llvm-ir, no lower-wasm dependency) holds the module items (fn, global, declare, named type, as maps), one printer (`render`), named-type operands that remember what they name (`type-op`, `type-name`), and `ref`/`ref-bare`, the only way a module symbol enters text, which record it into the unit being made (`with-refs`, which realizes its value in full so a lazy seq cannot name symbols after its unit closes). Every function, global, declaration and type the emitter makes is an item (`ll-fn`, `ll-glob`, `ll-declare`), with linkage, calling convention and attributes as fields; a global is kept once per name and two texts for one name fail the compile. The shake (D221) follows recorded references, so the regexes that read definitions and references back out of emitted text, the line classification of the prelude, the `W` placeholder in host declarations, the descriptor-name derivation and the init chain's text scan are gone. Generated functions are `nounwind` (no lowered code unwinds): on `corpus/poly/types.lg` the binary drops from 972 KB to 840 KB, `__eh_frame` from 116 KB to nothing. Instruction bodies are still lines of text, and `ll-pre-operand` still parses WAT from lower_wasm.lg's seq-variant-table (named for later). A symbol written into text without `ref` would go unrecorded and the shake could drop live code (mid-refactor, hand-written `@"var..."` names did, about 51,000 lines), so P12.39 (`checks/llvm-refs-check.sh`) compiles the llvm, poly and control corpora with `LW_LL_CHECK_REFS=1`, under which `src/lower_llvm_refcheck.lg` scans each unit's text, and fails on any symbol named but not recorded; a planted hand-written name is reported. Each step was checked by an unchanged module on four programs (a refactor diagnostic) and the behavior rows.
