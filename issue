@@ -1,0 +1,13 @@
+id: d364fce
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-08T00:00:00Z
+hash_source: content
+title: D218: On the llvm target a type is a Type object (spec §1, divergence 5).
+status: closed
+priority: medium
+created: 2026-10-08T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D218
+description: On the llvm target a type is a Type object (spec §1, divergence 5). `src/lower_llvm_poly.lg` holds the one table of type ids: the native ids `(type x)` uses (0-41) with their printed names, then fifteen abstract Types (Object, Seqable, Counted, Coll, Sequential, Seq, Associative, Indexed, Map, Set, Vector, List, Fn, Named, Number) from 42, each with its ordered direct supertypes. The build computes each type's C3 linearization, so ancestry is deterministic, follows declaration order and is monotonic, and a declaration with no C3 order is an error naming the type and the conflicting supertypes; native let-go has no ancestry. The backend emits every Type as a static object (name, id, ancestry, a method table slot and its epoch for later protocols) and `llvm.core/type-of` returns it; under native lg, where `llvm.arch` cannot build runtime objects, `llvm.core` makes the Type on first use instead. Dispatch keys on that native type id (`llvm.core/dispatch-id`), not the runtime struct id, since one struct can carry two types. The table fixed two ids the runtime shared: PersistentVector with PersistentTreeSet (39) and java.lang.Exception with PersistentTreeMap (38), so `(type (sorted-set 1))` printed PersistentVector. `instance?` holds when the value's Type is the type or has it in its ancestry. P12.31 runs `corpus/poly` against native lg; `corpus/llvm-rt/c3_test.lg` checks C3 and the table under P12.23.
