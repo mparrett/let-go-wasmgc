@@ -90,18 +90,31 @@
 ;; alter site whose var is not a literal var form (nil when none)
 (def altered-vars (atom #{}))
 (def alter-fallback (atom nil))
+(defn form-refs
+  "The entries (own list-form) gives for every unquoted list in form, in
+   reading order: the one tree walk the var collectors share (review of
+   #28, finding 8: three hand-rolled walks had drifted on sets). Descends
+   into maps, vectors, sets and every item of a list, its head included
+   (((partial f #'x) y) names x), not into quote. Syntactic, on the forms
+   as read."
+  [own form]
+  (cond (map? form) (mapcat (fn [x] (form-refs own x)) (mapcat identity form))
+        (or (vector? form) (set? form)) (mapcat (fn [x] (form-refs own x)) form)
+        (not (seq? form)) []
+        (empty? form) []
+        (= 'quote (first form)) []
+        :else (concat (own form) (mapcat (fn [x] (form-refs own x)) form))))
+
 (defn var-ref-syms
   "P6.8: [:var sym] for each (var sym) / #'sym in form, [:find sym] for
    each (find-var 'sym): the vars a program can alter-var-root."
   [form]
-  (cond (map? form) (mapcat var-ref-syms (mapcat identity form))
-        (or (vector? form) (set? form)) (mapcat var-ref-syms form)
-        (not (seq? form)) []
-        (and (= 'var (first form)) (symbol? (second form))) [[:var (second form)]]
-        (= 'quote (first form)) []
-        (and (= 'find-var (first form)) (seq? (second form)) (= 'quote (first (second form))) (symbol? (second (second form))))
-        [[:find (second (second form))]]
-        :else (mapcat var-ref-syms form)))
+  (form-refs (fn [f]
+               (cond (and (= 'var (first f)) (symbol? (second f))) [[:var (second f)]]
+                     (and (= 'find-var (first f)) (seq? (second f)) (= 'quote (first (second f))) (symbol? (second (second f))))
+                     [[:find (second (second f))]]
+                     :else []))
+             form))
 
 ;; P7 (ROUND3 "Phase 7 seam"): does the program reach the runtime's ns
 ;; registry? `eval` anywhere (program or library, unquoted) makes the backend
@@ -158,24 +171,28 @@
    literal vars. [:fallback site] for an alter site whose var is not
    literal. Syntactic, on the forms as read, like var-ref-syms."
   [form]
-  (cond (map? form) (mapcat alter-site-refs (mapcat identity form))
-        (or (vector? form) (set? form)) (mapcat alter-site-refs form)
-        (not (seq? form)) []
-        (empty? form) []
-        (= 'quote (first form)) []
-        :else
-        (let [kind (alter-head form)
-              arg (second form)
-              lit (fn [x] (or (literal-var-ref x) [:fallback form]))
-              own (cond (= kind :root) [(lit arg)]
-                        (= kind :redefs) (if (vector? arg)
-                                           (map (fn [s] (if (symbol? s) [:var s] [:fallback form])) (take-nth 2 arg))
-                                           [[:fallback form]])
-                        (= kind :redefs-fn) (cond (vector? arg) (map lit arg)
-                                                  (map? arg) (map lit (keys arg))
-                                                  :else [[:fallback form]])
-                        :else [])]
-          (concat own (mapcat alter-site-refs (rest form))))))
+  (form-refs
+   (fn [f]
+     (let [kind (alter-head f)
+           arg (second f)
+           lit (fn [x] (or (literal-var-ref x) [:fallback f]))]
+       ;; D207's named limit (review of #28, finding 3): an alter reached
+       ;; through apply/map/run! with the var passed positionally has no
+       ;; alter head, so nothing is rooted for it; say so under LW_TRACE=1
+       (when (and (nil? kind) (= "1" (os/getenv "LW_TRACE"))
+                  (some (fn [a] (and (symbol? a) (some? (alter-head (list a))))) (rest f)))
+         (binding [*out* *err*]
+           (println "lower-wasm: D207 alter head passed positionally, its var is not rooted:"
+                    (let [s (pr-str f)] (subs s 0 (min 200 (count s)))))))
+       (cond (= kind :root) [(lit arg)]
+             (= kind :redefs) (if (vector? arg)
+                                (map (fn [s] (if (symbol? s) [:var s] [:fallback f])) (take-nth 2 arg))
+                                [[:fallback f]])
+             (= kind :redefs-fn) (cond (vector? arg) (map lit arg)
+                                       (map? arg) (map lit (keys arg))
+                                       :else [[:fallback f]])
+             :else [])))
+   form))
 
 (defn note-alter-ref!
   "Resolve one alter-site-refs entry into altered-vars or alter-fallback."
@@ -212,13 +229,8 @@
    through var-get at run time, which the module cannot answer for a
    program var (wasm.natives' named limit), so converting would not help."
   [form]
-  (cond (map? form) (mapcat alter-root-refs (mapcat identity form))
-        (or (vector? form) (set? form)) (mapcat alter-root-refs form)
-        (not (seq? form)) []
-        (empty? form) []
-        (= 'quote (first form)) []
-        :else (let [r (when (= :root (alter-head form)) (literal-var-ref (second form)))]
-                (concat (if r [r] []) (mapcat alter-root-refs (rest form))))))
+  (form-refs (fn [f] (let [r (when (= :root (alter-head f)) (literal-var-ref (second f)))] (if r [r] [])))
+             form))
 
 (defn site-var
   "The var a [:var s] / [:find s] alter-root-refs entry names, from the
@@ -280,6 +292,7 @@
   [form]
   (let [new (cond (map? form) (into {} (map (fn [kv] [(alter-sites->var (key kv)) (alter-sites->var (val kv))]) form))
                   (vector? form) (mapv alter-sites->var form)
+                  (set? form) (set (map alter-sites->var form))
                   (not (seq? form)) form
                   (empty? form) form
                   (= 'quote (first form)) form
@@ -672,6 +685,9 @@
                       (throw (ex-info (str "lower-wasm: namespace cycle " (clojure.string/join " -> " (map str (conj stack n)))) {}))
                       (contains? @seen n) nil
                       :else
+                      ;; read for the ns form only: the namespace is not
+                      ;; loaded yet, and a syntax-quoted symbol resolves
+                      ;; against the current namespace as it is read
                       (let [nsf (first (filter #(and (seq? %) (= 'ns (first %))) (read-program path)))]
                         (doseq [r (ns-form-requires nsf)] (visit r (conj stack n)))
                         (swap! seen conj n)
@@ -771,11 +787,11 @@
 (defn index-lib-ns!
   "Index one loaded library namespace (see above). Returns the init var's
    symbol. var-globals collects the namespace's def vars."
-  [ns-sym path var-globals]
+  ([ns-sym path var-globals] (index-lib-ns! ns-sym path var-globals (read-program path)))
+  ([ns-sym path var-globals forms]
   (lw-rt/call-in-ns ns-sym
    (fn []
-    (let [forms (read-program path)
-          init-forms (atom [])
+    (let [init-forms (atom [])
           ;; P6.8: names an earlier form of this namespace defined (defonce)
           defined (atom #{})
           global! (fn [nm] (swap! defined conj nm)
@@ -830,23 +846,37 @@
             v (intern ns-sym init-sym (fn [] nil))]
         (swap! lw-rt/lib-defns assoc v {:var v :ns ns-sym :name init-sym :lib true :pre-expanded true
                                         :arities [(into [[]] (conj @init-forms nil))]})
-        (symbol (str ns-sym) (str init-sym)))))))
+        (symbol (str ns-sym) (str init-sym))))))))
 
 (defn load-libs!
   "Natively load what form requires, index each newly reached library
    namespace, and return the form _main runs in its place (the inits)."
   [form nss var-globals]
-  (let [order (lib-order! nss)]
+  (let [order (lib-order! nss)
+        before @root-altered]
     (eval form)
     ;; P12.0j: every alter site these namespaces and the program hold is
     ;; noted before any of them is indexed, since a namespace is indexed
     ;; before the ones that require it (lower_wasm alters ir.build's defns)
     (note-root-alters! @program-forms)
-    (run! (fn [e] (lw-rt/call-in-ns (first e) (fn [] (note-root-alters! (read-program (second e)))))) order)
-    (let [inits (doall (for [[n path] order]
-                         (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals))))]
-      (register-protocol-dispatch!)
-      (when (seq inits) (apply list 'do (map list inits))))))
+    ;; each file read once, in its own loaded namespace (review of #28,
+    ;; finding 9): the alter scan and the index take these forms; read any
+    ;; earlier, a syntax-quoted symbol would resolve against the driver's ns
+    (let [order (mapv (fn [e] (conj e (lw-rt/call-in-ns (first e) (fn [] (read-program (second e)))))) order)]
+      (run! (fn [e] (lw-rt/call-in-ns (first e) (fn [] (note-root-alters! (nth e 2))))) order)
+      ;; A var an earlier require's library already indexed as a direct call
+      ;; cannot become a var-table var now (review of #28, finding 1): refuse,
+      ;; rather than let the module ignore an alter that native applies.
+      (run! (fn [v]
+              (when (and (:lib (get @lw-rt/lib-defns v)) (not (contains? @var-globals v)))
+                (throw (ex-info (str "lower-wasm: " v " is altered by a library this require reaches, but an earlier require"
+                                     " already indexed it as a direct call; require the altering namespace first")
+                                {:var v}))))
+            (remove before @root-altered))
+      (let [inits (doall (for [[n path forms] order]
+                           (do (swap! lib-loaded conj n) (index-lib-ns! n path var-globals forms))))]
+        (register-protocol-dispatch!)
+        (when (seq inits) (apply list 'do (map list inits)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; P7 (ROUND3 "Phase 7 seam"): the program table in-module eval resolves

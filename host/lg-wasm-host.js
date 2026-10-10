@@ -170,12 +170,13 @@ export class LgWasmHost {
         return h.copyOut(String(h.envMap[name]), buf, cap);
       },
       // D208: a file's bytes under getenv's contract; -1 = not found or not
-      // a file (no readFile: every read). The module asks again with a
-      // bigger buffer when the length exceeds cap, so the file is read twice
-      // then; the self-compile build's reads are a handful of files.
+      // a file (no readFile: every read; a readFile answering null or
+      // undefined, as Map.get does, means not found). The module asks again
+      // with a bigger buffer when the length exceeds cap, so the file is read
+      // twice then; the self-compile build's reads are a handful of files.
       read_file: (pptr, plen, buf, cap) => {
         const b = h.readFile ? h.readFile(h.str(pptr, plen)) : null;
-        return b === null ? -1 : h.copyOut(b, buf, cap);
+        return b == null ? -1 : h.copyOut(b, buf, cap);
       },
       // D211: the module's own WAT text to the assembler; the binary's byte
       // length, or -1 with the reason on stderr
