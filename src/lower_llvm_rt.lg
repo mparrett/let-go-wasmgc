@@ -78,8 +78,13 @@
           (swap! *fn-values* assoc [:llvm :envs] (assoc m kinds id))
           id))))
 
-(defn ll-sty [tn] (str "%\"T." (subs tn 1) "\""))
-(defn ll-env-sty [kinds] (str "%\"Env." (apply str (map {:int "i" :bool "z" :box "b" :float "f"} kinds)) "\""))
+(defn ll-sty [tn] (lir/type-op (str "T." (subs tn 1))))
+(defn ll-env-sty [kinds] (lir/type-op (str "Env." (apply str (map {:int "i" :bool "z" :box "b" :float "f"} kinds)))))
+;; the backend's own continuation and frame records (the prelude defines them)
+(defn ll-kbox [] (lir/type-op "kbox" true))
+(defn ll-kfin [] (lir/type-op "kfin" true))
+(defn ll-tryf [] (lir/type-op "tryf" true))
+(defn ll-kinit [] (lir/type-op "kinit" true))
 
 (defn ll-slot-type [t]
   (case t :i64 "i64" :i32 "i32" :i8 "i8" :f64 "double" :ref (ll-word) :funcref "ptr"))
@@ -105,10 +110,10 @@
 ;; descriptor with n = 0, which the collector never scans.
 
 (defn ll-desc-sym
-  "The descriptor global's symbol for LLVM struct type sty (%\"T.Int\" ->
+  "The descriptor global's symbol for named type sty (%\"T.Int\" ->
    gcd.T.Int, %kbox -> gcd.kbox)."
   [sty]
-  (str "gcd." (str/replace (str/replace sty #"^%\"?" "") #"\"$" "")))
+  (str "gcd." (lir/type-name sty)))
 
 (defn ll-desc-name "The descriptor global of sty, as an operand." [sty] (lir/ref (ll-desc-sym sty)))
 
@@ -548,7 +553,7 @@
                  {:items [(ll-fn cname (cons "ptr %k" (map #(str (ll-slot-type (nth (:params d) %)) " %a" %) ps))
                           (str "entry:\n"
                              (str/join "\n" (mapcat conv ps)) "\n"
-                             (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
+                             (if (= :box ret) "" (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
                                                       "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
                                                       "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
                              "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
@@ -615,7 +620,7 @@
             h (when has-handler (region (nth refs 1) "catch" [:box]))
             fin (when has-finally (region (nth refs (if has-handler 2 1)) "finally" []))
             tn (str *fname* ".try" nid) qn (fn [x] (str tn "." x)) q (fn [x] (ll-q (qn x)))
-            ft (str "%\"tryf." tn "\"")
+            ft (lir/type-op (str "tryf." tn))
             all-ck (vec (concat (:ck body) (:ck h) (:ck fin)))
             off-h (count (:ck body)) off-f (+ off-h (count (:ck h)))
             ;; the region's captures, loaded from frame F (field 4 onward)
@@ -624,7 +629,7 @@
                                        [(apply concat ls) (map-indexed (fn [i k] (str ", " (ll-type k) " %cv" i)) ck)]))
             call-fin (fn [F after v]
                        (let [[ls as] (caps-from F off-f (:ck fin))]
-                         (str "  %r2 = " (ll-alloc-call "%kfin") "\n"
+                         (str "  %r2 = " (ll-alloc-call (ll-kfin)) "\n"
                               "  store ptr " (q after) ", ptr %r2\n  %r2.1 = getelementptr %kfin, ptr %r2, i32 0, i32 1\n  store ptr " F ", ptr %r2.1\n"
                               "  %r2.2 = getelementptr %kfin, ptr %r2, i32 0, i32 2\n  store " w " " v ", ptr %r2.2\n"
                               (str/join "\n" ls) "\n"
@@ -632,7 +637,7 @@
             to-k (fn [F b] (str "  %kp = getelementptr " ft ", ptr " F ", i32 0, i32 1\n  %kk = load ptr, ptr %kp\n"
                                 "  %kc = load ptr, ptr %kk\n  musttail call tailcc void %kc(ptr %kk, " w " " b ")\n  ret void\n"))
             pop (fn [F] (str "  %pp = getelementptr " ft ", ptr " F ", i32 0, i32 2\n  %pr = load ptr, ptr %pp\n  store ptr %pr, ptr " (lir/ref-bare "lg_handler") "\n"))
-            rec (fn [code F] (str "  %r = " (ll-alloc-call "%kbox") "\n"
+            rec (fn [code F] (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
                                   "  store ptr " code ", ptr %r\n  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr " F ", ptr %r.1\n"))
             reify (get-in (callee-sig (lw-rt/rt-var 'core 'reify-caught)) [:arities 1])
             frame-type {:llvm/type {:name ft :fields (into ["ptr" "ptr" "ptr" w] (map ll-type all-ck))}}
@@ -663,7 +668,7 @@
              (ll-fn (qn "catch") ["ptr %F" (str w " %exn")]
              (str "entry:\n"
                   (cond
-                    h (str (when fin (str "  %G = " (ll-alloc-call "%tryf") "\n"
+                    h (str (when fin (str "  %G = " (ll-alloc-call (ll-tryf)) "\n"
                                           "  store ptr " (q "hthrow") ", ptr %G\n  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  store ptr %F, ptr %G1\n"
                                           "  %G2 = getelementptr %tryf, ptr %G, i32 0, i32 2\n  %gp = load ptr, ptr " (lir/ref-bare "lg_handler") "\n  store ptr %gp, ptr %G2\n"
                                           "  store ptr %G, ptr " (lir/ref-bare "lg_handler") "\n"))

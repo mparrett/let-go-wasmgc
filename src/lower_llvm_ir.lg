@@ -59,6 +59,25 @@
         v (binding [*refs* refs] (realize (f)))]
     [v @refs]))
 
+;; --- named types ----------------------------------------------------------------
+;; A named type's operand (%kbox, %"T.Int") is made here and remembered, so
+;; what it names is a lookup, never read back out of the operand's text.
+
+(def ^:private type-names (atom {}))   ; operand -> name
+
+(defn type-op
+  "The operand of named type nm: %nm when bare (a backend type), else %\"nm\"."
+  ([nm] (type-op nm false))
+  ([nm bare]
+   (let [op (if bare (str "%" nm) (str "%\"" nm "\""))]
+     (swap! type-names assoc op nm)
+     op)))
+
+(defn type-name
+  "The name of named type operand op (one type-op made)."
+  [op]
+  (or (get @type-names op) (throw (ex-info "lower-llvm-ir: not a named type operand" {:op op}))))
+
 ;; --- items ----------------------------------------------------------------------
 
 (defn- operand [{:keys [name bare]}] (if bare (str "@" (sym name)) (str "@\"" (sym name) "\"")))

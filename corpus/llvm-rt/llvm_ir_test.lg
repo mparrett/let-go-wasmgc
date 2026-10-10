@@ -60,6 +60,13 @@
   (is (= "%\"T.Int\" = type { i64, i64 }"
          (ir/render {:llvm/type {:name "%\"T.Int\"" :fields ["i64" "i64"]}}))))
 
+(deftest named-types
+  (is (= "%kbox" (ir/type-op "kbox" true)))
+  (is (= "%\"T.Int\"" (ir/type-op "T.Int")))
+  (is (= "T.Int" (ir/type-name "%\"T.Int\"")) "a lookup, not a parse")
+  (is (= "kbox" (ir/type-name "%kbox")))
+  (is (thrown? Exception (ir/type-name "%\"never-made\""))))
+
 (deftest units
   (let [u (ir/unit {:llvm/global {:name "g" :kind "internal global" :type "i64" :init "0"}} #{"h"})]
     (is (= #{"g"} (:defs u)))

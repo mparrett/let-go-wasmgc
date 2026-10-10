@@ -24,7 +24,7 @@
 (require '[clojure.walk])
 
 (def ^:dynamic *ll* nil)
-(declare ll-q ll-fail ll-binding-var! llvm-dump llvm-profile llvm-fn
+(declare ll-q ll-fail ll-binding-var! ll-kbox ll-kfin ll-tryf ll-kinit llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declares ll-declare ll-desc-item ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
          ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
@@ -924,7 +924,7 @@
    {code, k, saved...}; its definition, and its collector descriptor (k,
    then the boxed implicit and saved values), are collected for the module."
   [cont]
-  (let [nm (str "%\"k." (ll-fn-name cont) "\"")
+  (let [nm (lir/type-op (str "k." (ll-fn-name cont)))
         kinds (concat (ll-implicit-kinds) (map ty (ll-saved cont)))]
     (swap! (:types *ll*) conj
            {:llvm/type {:name nm :fields (concat ["ptr" "ptr"] (map first (ll-implicit)) (map #(ll-type (ty %)) (ll-saved cont)))}})
@@ -1338,7 +1338,7 @@
     (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) ps))
     (str "entry:\n"
          (str/join "\n" (mapcat #(ll-unbox-lines (nth (:params sig) %) (str "%a" %) (str "%u" %)) ps)) "\n"
-         (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
+         (if (= :box ret) "" (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
                                   "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
                                   "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
          "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
@@ -1362,7 +1362,7 @@
     (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) (range k)) [(str w " %rest")])
     (str "entry:\n"
          (str/join "\n" lines) "\n"
-         (if (= :box ret) "" (str "  %r = " (ll-alloc-call "%kbox") "\n"
+         (if (= :box ret) "" (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
                                   "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
                                   "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
          "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r") (apply str args) ")\n  ret void\n"))))
@@ -1571,10 +1571,10 @@
         decl ll-declare]
     {:target {:datalayout (llvm-datalayout (:triple p)) :triple (:triple p)}
      ;; spec decision 9: the innermost handler frame {code, k, prior, depth, ...}
-     :types [{:llvm/type {:name "%kbox" :fields ["ptr" "ptr"]}}
-             {:llvm/type {:name "%kfin" :fields ["ptr" "ptr" w]}}
-             {:llvm/type {:name "%tryf" :fields ["ptr" "ptr" "ptr" w]}}
-             {:llvm/type {:name "%kinit" :fields ["ptr" "ptr"]}}]
+     :types [{:llvm/type {:name (ll-kbox) :fields ["ptr" "ptr"]}}
+             {:llvm/type {:name (ll-kfin) :fields ["ptr" "ptr" w]}}
+             {:llvm/type {:name (ll-tryf) :fields ["ptr" "ptr" "ptr" w]}}
+             {:llvm/type {:name (ll-kinit) :fields ["ptr" "ptr"]}}]
      :items
      (concat
       [(decl "ptr" "lg_alloc" [w "ptr"])
@@ -1597,7 +1597,7 @@
                  "  br i1 %none, label %unc, label %h\nunc:\n  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
                  "  %pp = getelementptr %tryf, ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr %pp\n  store ptr %prior, ptr @lg_handler\n"
                  "  %code = load ptr, ptr %F\n  musttail call tailcc void %code(ptr %F, " w " %exn)\n  ret void\n"))
-       (ll-desc-item "%kbox" [1]) (ll-desc-item "%kfin" [1 2]) (ll-desc-item "%tryf" [1 2]) (ll-desc-item "%kinit" [1])]
+       (ll-desc-item (ll-kbox) [1]) (ll-desc-item (ll-kfin) [1 2]) (ll-desc-item (ll-tryf) [1 2]) (ll-desc-item (ll-kinit) [1])]
       (for [[k t box] [[:int "i64" (str "  %b = call " w " @lg_box_int(i64 %v)\n")]
                        [:bool "i1" (str "  %b = select i1 %v, " w " " (ll-true) ", " w " " (ll-false) "\n")]
                        [:float "double" (str "  %fo = " (ll-alloc-call (ll-sty "$Float")) "\n"
@@ -1626,10 +1626,11 @@
   "What runs before _main, as rt-init-wat orders it: each runtime global in
    file order, after the constants its init reads; the link step (install!)
    when the hooks global is live; then the remaining constants, each after
-   the constants it reads. Reads are found in the lowered init fns' text.
-   live? keeps a global (by name) the shake found live (D221)."
-  ([texts] (ll-init-steps texts (constantly true)))
-  ([texts live?]
+   the constants it reads, as each init fn recorded them (refs: fn name ->
+   its unit's references). live? keeps a global (by name) the shake found
+   live (D221)."
+  ([refs] (ll-init-steps refs (constantly true)))
+  ([refs live?]
   (if-not *rt*
     []
     (let [st @*rt*
@@ -1637,7 +1638,8 @@
           gs (sort-by #(order (key %)) (filter #(live? (:name (val %))) (:globals st)))
           consts (filter live? (:const-order st))
           init-of (fn [g] (str (subs g 1) "__init"))
-          reads (fn [init] (set (map second (re-seq #"@\"var(\$const_[0-9a-f]+)\"" (get texts init "")))))
+          ;; the constants an init fn reads: the var globals it recorded
+          reads (fn [init] (set (keep #(when (str/starts-with? % "var$const_") (subs % 3)) (get refs init))))
           const-step (fn [g] {:global g :init (init-of g)})
           with-deps (fn with-deps [g done]
                       (if (contains? done g) [[] done]
@@ -1668,7 +1670,7 @@
     (concat
      (mapcat (fn [[i st]]
                [(ll-fn-bare (str "lg_init." i) ["ptr %k"]
-                            (str "  %r = " (ll-alloc-call "%kinit") "\n"
+                            (str "  %r = " (ll-alloc-call (ll-kinit)) "\n"
                                  "  store ptr " (lir/ref-bare (str "lg_init." i ".done")) ", ptr %r\n  %r.1 = getelementptr %kinit, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"
                                  "  musttail call tailcc void " (ll-q (or (:init st) (:call st))) "(ptr %r)\n  ret void\n"))
                 (ll-fn-bare (str "lg_init." i ".done") ["ptr %rec" (str w " %v")]
@@ -1718,7 +1720,7 @@
         all (concat fns rt-fns regions)
         w (ll-word)
         [pre prelude-refs] (lir/with-refs llvm-prelude)
-        texts (into {} (map (juxt :name :text) all))
+        unit-refs (into {} (map (juxt :name :refs) all))
         ;; the type table, fresh for this module's types (D221); before
         ;; *globals* is read, since its names are Bytes constants; the shake
         ;; drops it when no live fn reads it
@@ -1745,7 +1747,7 @@
         live? #(contains? live (str "var" %))
         kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
         kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))
-        inits (ll-init-chain (ll-init-steps texts live?))
+        inits (ll-init-chain (ll-init-steps unit-refs live?))
         gvars (distinct (concat (vals *var-globals*)
                                 (when *rt* (filter live? (map :name rt-gs)))
                                 (when *rt* (filter live? (:const-order @*rt*)))))]
