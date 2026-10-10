@@ -602,7 +602,14 @@
 (defn ^{:twin "core/str"} str ([] (lit "")) ([a] (out1 0 a)) ([a b] (out2 0 a b)) ([a b c] (out3 0 a b c)))
 (defn ^{:twin "core/pr-str"} pr-str ([] (lit "")) ([a] (out1 1 a)) ([a b] (out2 1 a b)) ([a b c] (out3 1 a b c)))
 (defn ^{:twin "core/print-str"} print-str ([] (lit "")) ([a] (out1 2 a)) ([a b] (out2 2 a b)) ([a b c] (out3 2 a b c)))
+(defn- nl-lit [] (lit "\n"))
+(defn ^{:twin "core/prn-str"} prn-str                     ; CorePrnStr (lang.go:7494): pr-str + "\n"
+  ([] (nl-lit)) ([a] (str (out1 1 a) (nl-lit))) ([a b] (str (out2 1 a b) (nl-lit))) ([a b c] (str (out3 1 a b c) (nl-lit))))
+(defn ^{:twin "core/println-str"} println-str             ; CorePrintlnStr (lang.go:7510): print-str + "\n"
+  ([] (nl-lit)) ([a] (str (out1 2 a) (nl-lit))) ([a b] (str (out2 2 a b) (nl-lit))) ([a b c] (str (out3 2 a b c) (nl-lit))))
 (defn str-seq [xs] (out-seq 0 xs))
+(defn prn-str-seq [xs] (str (out-seq 1 xs) (nl-lit)))
+(defn println-str-seq [xs] (str (out-seq 2 xs) (nl-lit)))
 (defn value-string "Value.String(): what Go hashes a non-Hashable seq's elements by." [x]
   (let [b (buf-new)] (write-val b x 0) (buf-done b)))
 (defn pr-str-seq [xs] (out-seq 1 xs))
