@@ -1,9 +1,9 @@
 # checks/env.sh — sourced by every script here. One root, LW_ROOT, holds the
 # sibling checkouts and the pinned lg:
-#   $LW_ROOT/let-go      let-go checkout containing commit ff1e6da
+#   $LW_ROOT/let-go      let-go checkout containing commit e9789b7d
 #   $LW_ROOT/xsofy       xsofy checkout (its corpora and the browser lane)
 #   $LW_ROOT/legmacs     legmacs checkout
-#   $LW_ROOT/lg-bin/lg-ff1e6dac76   native lg built from that commit
+#   $LW_ROOT/lg-bin/lg-e9789b7d53   native lg built from that commit
 # LW_ROOT is found automatically when this repository sits beside let-go/
 # (a plain clone next to its siblings) or three levels below it (inside a
 # workspace); otherwise set it. Each path can still be overridden on its own
@@ -20,7 +20,7 @@ if [ -z "${LW_ROOT:-}" ]; then
   done
 fi
 : "${LW_ROOT:?set LW_ROOT to the directory holding let-go/, xsofy/, legmacs/ and lg-bin/ (see checks/env.sh)}"
-LG=${LG:-$LW_ROOT/lg-bin/lg-ff1e6dac76}
+LG=${LG:-$LW_ROOT/lg-bin/lg-e9789b7d53}
 LETGO=${LETGO:-$LW_ROOT/let-go}
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}

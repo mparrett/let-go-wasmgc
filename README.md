@@ -79,11 +79,11 @@ repository is cloned beside those checkouts; otherwise set `LW_ROOT`, or
 override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 
 - **Go 1.25 or newer** for the linear runner (2026-10-03).
-- **Native lg built from let-go commit ff1e6da**, at
-  `$LW_ROOT/lg-bin/lg-ff1e6dac76` or wherever `LG` points. The driver runs
+- **Native lg built from let-go commit e9789b7d**, at
+  `$LW_ROOT/lg-bin/lg-e9789b7d53` or wherever `LG` points. The driver runs
   under this lg and uses let-go's IR passes from it.
 - **A let-go git checkout** (`$LETGO`, default `$LW_ROOT/let-go`) that
-  contains commit ff1e6dac: `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg`
+  contains commit e9789b7d: `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg`
   at that commit with `git show`, and fails with a message naming the path
   when it cannot.
 - **wasm-tools** on `PATH` (WAT to binary).

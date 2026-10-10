@@ -883,8 +883,9 @@
 (defn- last-index-of* [s v end]                          ; last-index-of (lang.go:4152) + runeLastIndex (:4727)
   (let [hay (runes-of (str-bytes s)) nd (needle-of v 1) len (wasm/alen hay)
         end (if (> end len) len end) m (wasm/alen nd)]
-    ;; strRunes[:end] panics natively; the VM reports the recovered panic as a catchable error
-    (cond (< end 0) (raise-val (wasm/bytes-of-string "runtime error: slice bounds out of range [:") (sq/box-int end) (wasm/bytes-of-string "]"))
+    ;; a negative end is nil since let-go e9789b7d (#1042's rune-offset search; at
+    ;; ff1e6dac strRunes[:end] panicked and the VM reported it as a catchable error)
+    (cond (< end 0) (wasm/null)
           (= m 0) (sq/box-int end)
           (> m end) (wasm/null)
           :else (loop [i (- end m)]
