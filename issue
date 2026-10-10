@@ -1,0 +1,13 @@
+id: 559de50
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-09T00:00:00Z
+hash_source: content
+title: D222: xsofy runs on the llvm target:
+status: closed
+priority: medium
+created: 2026-10-09T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D222
+description: xsofy runs on the llvm target: P3.2's world dump over xsofy, compiled with `--target llvm`, is byte-identical to native lg on seeds 1-20 at 60 turns and on a 500-turn game (P12.38, `checks/llvm-xsofy-check.sh`). What it took, each the GC lane's shape for now: (binding ..) mirrors `binding-out`'s stand-ins. `push-out!`/`pop-out!`/`push-err!`/`pop-err!` call `llvm.host` fns over handle stacks, and printing writes to the current `*out*` handle's fd, so `(binding [*out* *err*] ..)` prints to stderr. `push-var!`/`pop-var!` (a program dynamic var) are lowered inline onto one `@lg_bind_stack` List, a collector root, since bindings nest; single-threaded, as on the GC lane. Four native vars read as values through `ll-var-alias`: `*out*` and `*err*` give the standard handles (not the bound one inside a binding, a known difference; printing follows the binding), `*in-wasm*` is true as on the GC lane (the llvm runtime has no file system, and xsofy.debug tests it to stay off host I/O; native lg reads false), and `*assert*` is true as natively; `*compiling-aot*` is false, as natively when a program runs (xsofy's `main.lg` guards its entry point with it; the world dump never reads it, so P12.38 did not catch it). `open` gains its 2-arity, still a trap (the GC lane resolves the arity at run time). `corpus/llvm/binding.lg` checks binding against native. The intended design is to lower the expanded `push-binding!`/`pop-binding!` as ordinary calls instead of the stand-ins. Measured 2026-10-09: the llvm xsofy binary takes 4.30 s for a 500-turn game against native lg's 1.08 s, about 70% of it allocation and collection; native lg loads and compiles xsofy in 0.45 s, this lane in minutes (the next decisions).
