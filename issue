@@ -1,0 +1,13 @@
+id: 71aee15
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-07T00:00:00Z
+hash_source: content
+title: D208: Amends D207's milestones.
+status: closed
+priority: medium
+created: 2026-10-07T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D208
+description: Amends D207's milestones. The yardstick for `--target llvm` is jank's `clojure-test-suite` (the submodule ff1e6dac pins at bd610c8), which native lg passes in full at the pin: 242 files, 6,311 assertions, 0 failures (let-go's `TestClojureTestSuite`, 2026-10-07). M1 is the suite on the 64-bit host, compared deftest by deftest against native through a new `checks/jank-suite.sh` built on `checks/run-tests.sh`, ahead of time and under `lli`. The host profile narrowed to 31-bit fixnums runs the same rows, so word-size assumptions are caught without an emulator. M2 is the mark-sweep collector, M3 is 32-bit on `armv7-virt` (from then the pinned 32-bit profile), then `go` blocks (M4), the JIT (M5), rv32 and Cortex-M (M6) and `call/cc` (M7). The driver's refusal of `defmulti`, `deftype`, `defprotocol` and `defrecord` (driver.lg:834) is lifted in M1 for every target, since let-go's IR builds them and seven suite files use them. Whether Ratio, BigInt and BigDecimal (D15) are implemented or counted as named exceptions is decided from the harness's first measured runs on both lanes; until then D15-caused failures are reported, not counted. wasm-tools 1.261.0 and binaryen were installed with Homebrew so P8.0 runs on the development machine; a cold run took 20 minutes and passed (21 programs identical) with the llvm seams in place.
