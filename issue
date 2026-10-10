@@ -1,0 +1,13 @@
+id: e5cc4bf
+v: 2
+author: Norman Nunley, Jr
+updated: 2026-10-09T00:00:00Z
+hash_source: content
+title: D220: The llvm target's hierarchy (spec §3, divergence 1's isa?):
+status: closed
+priority: medium
+created: 2026-10-09T00:00:00Z
+issue_type: decision
+labels: llvm
+external_ref: D220
+description: The llvm target's hierarchy (spec §3, divergence 1's isa?): `rt/llvm/poly.lg`, plain lg like natives.lg, twins `make-hierarchy`, `derive`, `underive`, `isa?`, `parents`, `ancestors`, `descendants` and `register-type-parent!` with native's value shape (`{:parents :ancestors :descendants}`, rebuilt transitive on each change) and error texts. Types are nodes: `isa?` holds by equality, by a Type's C3 ancestry (D218), by the hierarchy's ancestors of the value or of any Type in its ancestry (so a `derive` of `Object` reaches every type), and element-wise on vectors of equal length, as Clojure does; native compares vectors by equality and lists a type's Go/Java interfaces where this lists its ancestry. `core/Object` is the abstract Object Type, printed `java.lang.Object`. The global `derive`, `underive` and `register-type-parent!` bump a dispatch epoch (`llvm.poly/epoch`) for later caches. P12.31's `corpus/poly/hierarchy.lg` checks keywords against native; P12.32 checks types and vectors against JVM Clojure's output (`checks/run-expected.sh corpus/poly-clj`).
