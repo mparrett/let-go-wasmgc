@@ -8,6 +8,7 @@
 // overflows near 10k non-tail lg frames, while native lg (growable Go stacks)
 // recurses into the millions; 256 MB covers 3M int frames (measured).
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { Worker, isMainThread, workerData } from 'node:worker_threads';
 
 if (isMainThread) {
@@ -61,6 +62,38 @@ if (isMainThread) {
       const b = Buffer.from(process.env[name]);
       if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
       return b.length;
+    },
+    // D208: slurp's file read, getenv's contract (-1 = not found or not a
+    // file), relative paths from the cwd as native lg; only a module built
+    // with LW_HOST_FS=1 imports it
+    read_file: (pptr, plen, buf, cap) => {
+      const path = Buffer.from(new Uint8Array(mem.buffer, pptr, plen)).toString('utf8');
+      let b;
+      try {
+        if (!fs.statSync(path).isFile()) return -1;
+        b = fs.readFileSync(path);
+      } catch {
+        return -1;
+      }
+      if (b.length <= cap) new Uint8Array(mem.buffer, buf, b.length).set(b);
+      return b.length;
+    },
+    // D211: the module's own WAT text, parsed by `wasm-tools parse`; the
+    // binary is kept (LW_ASSEMBLE_OUT names its file, the text goes beside it
+    // as <out>.wat for the oracle) and its byte length returned, or -1 with
+    // the parser's error on stderr. Only a module built with LW_HOST_ASM=1
+    // imports it.
+    assemble: (ptr, len) => {
+      const text = Buffer.from(new Uint8Array(mem.buffer, ptr, len));
+      const r = spawnSync('wasm-tools', ['parse', '-'], { input: text, maxBuffer: 1 << 30 });
+      if (r.status !== 0) {
+        flush();
+        fs.writeSync(2, `assemble: ${r.error ? r.error.message : r.stderr.toString().trim()}\n`);
+        return -1;
+      }
+      const out = process.env.LW_ASSEMBLE_OUT;
+      if (out) { fs.writeFileSync(out, r.stdout); fs.writeFileSync(`${out}.wat`, text); }
+      return r.stdout.length;
     },
   };
 

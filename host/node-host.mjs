@@ -1,12 +1,18 @@
 // node-host.mjs — lg-wasm-host.js under Node, for CI and for the three-host
 // matrix in checks/browser-boot.sh.
 //
-//   node host/node-host.mjs <module.wasm> [--keys abq] [--env K=V ...] [--url seed=42&x=y] [--size 100x30] [--coalesce]
+//   node host/node-host.mjs <module.wasm> [--keys abq] [--env K=V ...] [--url seed=42&x=y] [--size 100x30] [--coalesce] [--no-fs] [--assemble-out <path>]
 //
 // --url feeds js/url-param (what xsofy reads ?seed= through). os/getenv
 // reads the host's own environment (process.env), as native lg does, so
 // `XSOFY_DEV=1 node host/node-host.mjs xsofy.wasm` unlocks the dev console;
-// --env K=V adds or overrides a single name on top of it.
+// --env K=V adds or overrides a single name on top of it. slurp reads the
+// host's file system too (env.read_file, D208, in a module built with
+// LW_HOST_FS=1): a relative path is taken from the process's cwd, as native
+// lg does; --no-fs answers every read as missing, as the browser host does.
+// A module built with LW_HOST_ASM=1 (D211) hands its own WAT text to
+// env.assemble: this host parses it with `wasm-tools parse` and keeps the
+// binary; --assemble-out <path> writes it there, and the text to <path>.wat.
 //
 // Keys: each character of --keys is one key, sent once the module is
 // running, then end of input; otherwise piped stdin feeds keys one character
@@ -66,13 +72,15 @@ if (!process.execArgv.some((a) => a.startsWith('--wasm-stack-switching-stack-siz
 
 const { LgWasmHost } = await import('./lg-wasm-host.js');
 const args = process.argv.slice(2);
-const opts = { wasm: null, keys: null, env: {}, url: null, cols: 80, rows: 24, coalesce: false, forms: null, mode: 'compile' };
+const opts = { wasm: null, keys: null, env: {}, url: null, cols: 80, rows: 24, coalesce: false, forms: null, mode: 'compile', fs: true, assembleOut: null };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--keys') opts.keys = args[++i];
   else if (a === '--env') { const [k, ...v] = args[++i].split('='); opts.env[k] = v.join('='); }
   else if (a === '--url') opts.url = args[++i];
   else if (a === '--coalesce') opts.coalesce = true;
+  else if (a === '--no-fs') opts.fs = false;
+  else if (a === '--assemble-out') opts.assembleOut = args[++i];
   else if (a === '--forms') opts.forms = args[++i];
   else if (a === '--mode') opts.mode = args[++i];
   else if (a === '--size') { const [c, r] = args[++i].split('x').map(Number); opts.cols = c; opts.rows = r; }
@@ -82,12 +90,31 @@ for (let i = 0; i < args.length; i++) {
 }
 if (!opts.wasm) { console.error('usage: node-host.mjs <module.wasm> [--keys STR] [--env K=V] [--size CxR]'); process.exit(2); }
 
+// D208: a regular file's bytes, else null (missing, a directory, unreadable)
+function readHostFile(path) {
+  try {
+    return fs.statSync(path).isFile() ? fs.readFileSync(path) : null;
+  } catch {
+    return null;
+  }
+}
+
+// D211: WAT text -> binary through wasm-tools; throws with its error
+function assembleWat(text) {
+  const r = spawnSync('wasm-tools', ['parse', '-'], { input: text, maxBuffer: 1 << 30 });
+  if (r.status !== 0) throw new Error(r.error ? r.error.message : r.stderr.toString().trim());
+  if (opts.assembleOut) { fs.writeFileSync(opts.assembleOut, r.stdout); fs.writeFileSync(`${opts.assembleOut}.wat`, text); }
+  return r.stdout;
+}
+
 const host = new LgWasmHost({
   env: { ...process.env, ...opts.env }, cols: opts.cols, rows: opts.rows,
   urlParams: opts.url == null ? null : new URLSearchParams(opts.url),
   // piped/--keys input arrives faster than a human types; queue all of it
   keyCapacity: Infinity,
   coalesceKeys: opts.coalesce,
+  readFile: opts.fs ? readHostFile : null,
+  assemble: assembleWat,
   onOutput: (text, fd) => fs.writeSync(fd === 2 ? 2 : 1, text),
 });
 if (opts.forms !== null) process.exit(await runForms(host, fs.readFileSync(opts.wasm), fs.readFileSync(opts.forms, 'utf8'), opts.mode));

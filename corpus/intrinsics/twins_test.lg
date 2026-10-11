@@ -1,0 +1,61 @@
+;; The twins added 2026-10-10 after the "run something for real" probes:
+;; rand, parse-double, prn-str, println-str (against native lg on the same
+;; inputs) and read-line (against the host key queue's contract, as
+;; term_test does for read-key). Reuses core-test's boundary glue.
+(ns twins-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.core :as c]
+            [wasm.math :as m]
+            [wasm.reader :as rd]
+            [wasm.term :as t]
+            [core-test :as ct]
+            [ir.passes.pipeline :as pipeline]))
+
+(deftest parse-double-twin
+  (c/install!)
+  (testing "every decimal form ParseFloat accepts, and what it refuses, agree with native"
+    (doseq [x ["1.5" "-2e3" ".5" "1." "+7" "0" "007" "1e-3" "1E+2" "12345678901234567890" "1e400" "-0.0"
+               "abc" "" "+" "." "e5" "1e" "1e+" "1.2.3" " 1" "1 " "1_000" "1_0.0_1e1_0" "_1" "1_" "1__0" "1_.0" "0x10"]]
+      (is (= (parse-double x) (ct/<-w (rd/parse-double (ct/->w x)))) (pr-str x))))
+  (testing "inf and nan, any case"
+    (doseq [x ["inf" "+Inf" "-INF" "Infinity" "-infinity"]]
+      (is (= (parse-double x) (ct/<-w (rd/parse-double (ct/->w x)))) (pr-str x)))
+    (is (NaN? (parse-double "nan")))
+    (is (NaN? (ct/<-w (rd/parse-double (ct/->w "NaN")))))))
+
+(deftest rand-twin
+  (c/install!)
+  (testing "the contract: a Float in [0,1), scaled by n"
+    (dotimes [_ 50]
+      (let [r (ct/<-w (m/rand))] (is (float? r)) (is (<= 0.0 r)) (is (< r 1.0))))
+    (dotimes [_ 20]
+      (let [r (ct/<-w (m/rand (ct/->w 10)))] (is (<= 0.0 r)) (is (< r 10.0)))
+      (let [r (ct/<-w (m/rand (ct/->w 2.5)))] (is (<= 0.0 r)) (is (< r 2.5))))
+    (is (= 0.0 (ct/<-w (m/rand (ct/->w 0)))))))
+
+(deftest prn-str-twins
+  (c/install!)
+  (doseq [args [[] [1] ["a"] ["a" :k] [[1 "x"] {:a "b"} nil]]]
+    (is (= (apply prn-str args) (ct/<-w (apply s/prn-str (map ct/->w args)))) (pr-str (cons 'prn-str args)))
+    (is (= (apply println-str args) (ct/<-w (apply s/println-str (map ct/->w args)))) (pr-str (cons 'println-str args)))))
+
+(defn- rt-str [r] (if (wasm/null? r) nil (ct/<-w r)))
+
+(deftest read-line-twin
+  (c/install!)
+  (testing "LF ends a line; CR too (a raw terminal's Enter); the line is returned without it"
+    (binding [t/*term-input* (atom ["a" "b" "\n" "c" "d" "\r" "e"])]
+      (is (= "ab" (rt-str (t/read-line))))
+      (is (= "cd" (rt-str (t/read-line))))
+      (is (= "e" (rt-str (t/read-line))) "input ends mid-line: what was read")
+      (is (nil? (rt-str (t/read-line))) "then nil")))
+  (testing "an empty line is the empty string, not nil; multi-byte keys arrive whole"
+    (binding [t/*term-input* (atom ["\n" "日" "本" "\n"])]
+      (is (= "" (rt-str (t/read-line))))
+      (is (= "日本" (rt-str (t/read-line))))))
+  (testing "end of input with nothing read is nil"
+    (binding [t/*term-input* (atom [])]
+      (is (nil? (rt-str (t/read-line)))))))

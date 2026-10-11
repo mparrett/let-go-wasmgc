@@ -20,7 +20,7 @@ export LG
 # The IR tree at the commit the pinned lg was built from (src/lw_rt.lg's
 # letgo-commit; both move on a pin bump), not the checkout's working tree:
 # the module must carry the same pipeline the native oracle runs.
-letgo_commit=ff1e6dac
+letgo_commit=e9789b7d
 prog=$root/checks/fixtures/ir-pipeline/main.lg
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 # Only ir/ is exported: pkg/rt/core also holds string.lg and the other

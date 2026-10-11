@@ -4,11 +4,13 @@
 # directories, each produced by its serve script:
 #   repl/     host/build-repl-serve.sh        (compiles corpus/host/repl.lg)
 #   explorer/ host/build-explorer-serve.sh    (the P10.2 compiler host, D194)
+#   compile/  host/build-compile-serve.sh     (the backend as a module, D206)
 #   xsofy/    host/build-xsofy-serve.sh       (module from build-xsofy-module.sh)
 #   legmacs/  host/build-legmacs-serve.sh     (module from build-legmacs-module.sh)
 # Any static server serves the result; the JSPI lane needs no COOP/COEP (D91).
 # The xsofy and legmacs serve scripts read the xsofy checkout and the let-go
-# checkout (XSOFY, LETGO); see each script's header. Env: LG, LW_NO_OPT=1.
+# checkout (XSOFY, LETGO), the compile one needs cargo with the wasm32 target;
+# see each script's header. Env: LG, LW_NO_OPT=1.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:?usage: build-pages.sh <out-dir>}
@@ -18,6 +20,7 @@ command cp "$here/pages-index.html" "$out/index.html"
 command cp "$here/../LICENSE" "$here/../NOTICE" "$out/"
 "$here/build-repl-serve.sh" "$out/repl"
 "$here/build-explorer-serve.sh" "$out/explorer"
+"$here/build-compile-serve.sh" "$out/compile"
 "$here/build-xsofy-module.sh" "$t/xsofy.wasm"
 "$here/build-xsofy-serve.sh" "$out/xsofy" "$t/xsofy.wasm"
 command mv -f "$out/xsofy/xsofy.wasm" "$out/xsofy/module.wasm"

@@ -73,6 +73,7 @@ P5.8	oracle corpus/review3/fix-natives/ checks/run-corpus.sh
 P5.9	oracle corpus/review3/fix-meta/ checks/run-corpus.sh
 P5.10	oracle corpus/review3/ checks/run-tests.sh checks/run-tests.skip src/testshim.lg
 P5.11	oracle corpus/review3/counter.txt checks/run-tests.sh src/testshim.lg
+P5.12	oracle src/driver.lg checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg checks/wasm-run.sh corpus/jank-harness/
 P5.12	oracle corpus/review3/fix-scope/ checks/run-corpus.sh
 P6.0	rt/ corpus/natives/ checks/native-twins.sh tools/ legmacs
 P6.1	oracle src/ checks/census.sh checks/census.lg checks/census-summary.py corpus/wasm/dynvars/ corpus/wasm/arity/ corpus/wasm/nsinit/ checks/run-corpus.sh legmacs
@@ -110,12 +111,14 @@ P8.5	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/oracle.sh corpus/sca
 P8.12	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/linear-runner-abi-check.sh checks/fixtures/linear-argv.lg checks/fixtures/linear-large-host.lg checks/oracle.sh
 P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P8.13	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric/
+P13.1	oracle src/ host/native/ targets/ checks/native-run.sh corpus/llvm-scalar/
+P13.2	src/ targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh
+P13.3	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/
+P13.4	oracle src/ host/native/ targets/ checks/native-run.sh checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg corpus/jank/
+P13.5	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-armv7-check.sh checks/build-builtins.sh corpus/llvm/ corpus/llvm-scalar/
+P13.6	src/ host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj
+P13.7	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg src/lower_llvm_poly.lg src/lower_llvm_ir.lg
 P11.0	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
-P12.1	oracle src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/profile-field.lg corpus/llvm-scalar/
-P12.2	src/driver.lg src/lower_wasm.lg src/lower_llvm.lg src/lower_llvm_profile.lg targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh checks/profile-field.lg
-P12.3	oracle src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh checks/profile-field.lg corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/
-P12.4	oracle src/driver.lg checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg checks/native-test-runner.lg corpus/jank-harness/
-P12.23	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg src/lower_llvm_poly.lg src/lower_llvm_ir.lg
 P12.30	rt/wasm/poly.lg src/driver.lg corpus/poly-wasm/ checks/run-expected.sh
 P12.31	oracle src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ host/native/ checks/native-run.sh corpus/poly/
 P12.32	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ host/native/ checks/native-run.sh checks/run-expected.sh corpus/poly-clj/
@@ -123,8 +126,6 @@ P12.37	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-rtlib-check.s
 P12.38	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-xsofy-check.sh corpus/dump-world.lg xsofy
 P12.39	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_ir.lg src/lower_llvm_refcheck.lg checks/llvm-refs-check.sh corpus/llvm/ corpus/poly/ corpus/control/
 P12.40	src/ checks/llvm-funnel-lint.lg checks/llvm-funnel-check.sh
-P12.20	oracle checks/llvm-armv7-check.sh src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/profile-field.lg corpus/llvm/ corpus/llvm-scalar/
-P12.21	src/lower_llvm.lg src/lower_llvm_profile.lg host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P11.3	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
@@ -141,6 +142,12 @@ P10.2	src/ rt/ corpus/scalar/ corpus/opmatrix/ corpus/typed/ corpus/emit/ host/n
 P10.3	src/ rt/ corpus/emit/host/ host/explorer.html host/build-explorer-serve.sh host/lg-wasm-host.js checks/explorer-page-check.mjs checks/sem.sh checks/env.sh
 P7.11	oracle corpus/eval/program/multi/ checks/run-corpus.sh
 P10.6	oracle checks/ir-pipeline.sh checks/fixtures/ir-pipeline/ checks/env.sh
+P12.0	oracle checks/self-compile.sh checks/fixtures/self-compile/ checks/env.sh
+P12.1	src/ checks/backend-census.sh checks/census.lg checks/env.sh
+P12.2	src/ checks/backend-census.sh checks/census.lg checks/env.sh
+P12.3	oracle corpus/eval/registry/ checks/run-corpus.sh
+P12.4	oracle checks/self-compile-assemble.sh checks/self-compile-module.sh checks/fixtures/self-compile-assemble/ corpus/scalar/ref.lg checks/env.sh
+P12.5	oracle checks/self-compiled-run.sh checks/self-compile-module.sh checks/fixtures/self-compile-assemble/ corpus/scalar/ corpus/eval/special/ checks/oracle.sh checks/env.sh
 EOF
 }
 # BSD sed has no \b: the token is always first in column 2, so match it there.

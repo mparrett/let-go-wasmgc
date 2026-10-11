@@ -2,6 +2,8 @@
 # checks/run-intrinsics-native.sh — P2.1 native half: run the intrinsic and
 # (TEST_DIR=corpus/llvm-rt: the llvm target's runtime, rt/llvm, D213)
 # pvec test files under native lg with the reference wasm.intrinsics.
+# TEST_DIR (default corpus/intrinsics) names the test directory: another
+# target's runtime brings its own (phase 13, row P13.7).
 # Exit 0 iff every assertion passes AND the number of tests run equals the
 # number of deftest forms in the files (guards the run-tests zero-suite trap).
 # Tiers (D51): the default must finish under 90 s (68 s on 2026-10-01);

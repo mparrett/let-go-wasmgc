@@ -397,10 +397,12 @@
 ;; (the old continuation backtracker was exponential on (a*)*b), and since
 ;; the program is Go's, its leftmost-first results and captures are Go's.
 ;; Supported: literals and escapes, `.`, classes [..] [^..] with ranges and
-;; POSIX [:name:] / [:^name:], \d \w \s \D \W \S, groups (..) (?:..),
-;; alternation, * + ? {n} {n,} {n,m} and their lazy forms, ^ $ \A \z \b \B.
+;; POSIX [:name:] / [:^name:], \d \w \s \D \W \S, the Unicode letter
+;; classes \p{Lu} \p{Ll} \p{L} (\pL, \P{..}, \p{^..}; P12.4, see rx-uprop?),
+;; groups (..) (?:..), alternation, * + ? {n} {n,} {n,m} and their lazy
+;; forms, ^ $ \A \z \b \B.
 ;; Named limits (the constant stays a Phase-2 constant): flags (?i), named
-;; groups, \p classes, \x escapes, lookahead.
+;; groups, other \p classes, \x escapes, lookahead.
 ;; re-pattern of a run-time String compiles it with the same two fns at
 ;; run time (re-pattern-v, P5.8).
 ;;
@@ -413,7 +415,8 @@
     (let [t (str v)]
       (try (let [src (read-string (subs t 1))] (when (string? src) src)) (catch e nil)))))
 
-;; AST: [:lit c] [:any] [:cls k] [:set neg? items] (items [:r lo hi] or
+;; AST: [:lit c] [:any] [:cls k] (k :d :w :s :D :W :S, or :Lu :Ll :L :NLu
+;; :NLl :NL for \p/\P) [:set neg? items] (items [:r lo hi] or
 ;; [:cls k]) [:grp n node] [:cat nodes] [:alt nodes] [:rep node min max
 ;; greedy?] (max -1 = unbounded) [:bol] [:eol] [:wb] [:nwb]; chars are code
 ;; points.
@@ -433,6 +436,28 @@
   (let [[out lo] (reduce (fn [[out lo] [a b]] [(if (< lo a) (conj out [lo (dec a)]) out) (inc b)]) [[] 0] rs)]
     (if (<= lo 0x10FFFF) (conj out [lo 0x10FFFF]) out)))
 
+(def ^:private rx-uprops {"Lu" :Lu "Ll" :Ll "L" :L})
+(def ^:private rx-uprop-neg {:Lu :NLu :Ll :NLl :L :NL})
+
+(defn- rx-parse-uprop
+  "Go's parseUnicodeClass after `\\p` (neg false) or `\\P` (neg true), the
+   name at @pos: \\pX (one letter) or \\p{Name}, a leading ^ in the braces
+   negating as \\P does. A [:cls k] leaf (rx-uprop?). Outside regex-parse's
+   letfn because each letfn binding takes a gensym when this file loads
+   (P9.1)."
+  [cs pos neg fail]
+  (let [n (count cs)]
+    (when (>= @pos n) (fail "\\p without a class name"))
+    (let [nm (if (= \{ (nth cs @pos))
+               (let [e (loop [j @pos] (cond (>= j n) nil (= \} (nth cs j)) j :else (recur (inc j))))]
+                 (when (nil? e) (fail "unterminated \\p{"))
+                 (let [t (apply str (subvec cs (inc @pos) e))] (reset! pos (inc e)) t))
+               (let [c (nth cs @pos)] (swap! pos inc) (str c)))
+          caret (clojure.string/starts-with? nm "^")
+          k (rx-uprops (if caret (subs nm 1) nm))]
+      (when (nil? k) (fail (str "Unicode class \\p{" nm "}")))
+      [:cls (if (not= neg caret) (rx-uprop-neg k) k)])))
+
 (defn regex-parse
   "{:ast .. :groups n} for pattern src, or throws (unsupported syntax).
    Runs natively, at build time."
@@ -448,6 +473,8 @@
               (when (>= @pos n) (fail "trailing backslash"))
               (let [c (nextc)]
                 (cond (esc-class c) [:cls (esc-class c)]
+                      (= c \p) (rx-parse-uprop cs pos false fail)
+                      (= c \P) (rx-parse-uprop cs pos true fail)
                       (esc-char c) [:lit (esc-char c)]
                       (punct? c) [:lit (int c)]
                       (and (not in-class?) (= c \b)) [:wb]
@@ -621,13 +648,32 @@
       (let [start (cmp (simp ast) 0)]
         {:prog @prog :start start}))))
 
+;; P12.4: the Unicode letter classes over Latin-1 only, the range the
+;; runtime's own case mapping covers (rt/wasm/str.lg case-rune): Lu =
+;; A-Z U+00C0-U+00D6 U+00D8-U+00DE; Ll = a-z U+00B5 U+00DF-U+00F6
+;; U+00F8-U+00FF; L = both plus the two Lo letters U+00AA U+00BA (Latin-1 has
+;; no Lt or Lm). Go's tables are full Unicode, so a code point above U+00FF
+;; raises a named limit instead of answering: the module never disagrees
+;; with native silently.
+(defn- rx-uprop? [k c]
+  (cond (> c 255) (wasm.core/raise (wasm.str/str-bytes "lower-wasm: regex \\p class on a code point above U+00FF (Unicode tables are not ported; named limit)"))
+        (= k :Lu) (or (if (>= c 65) (<= c 90) false) (if (>= c 192) (<= c 214) false) (if (>= c 216) (<= c 222) false))
+        (= k :Ll) (or (if (>= c 97) (<= c 122) false) (= c 181) (if (>= c 223) (<= c 246) false) (>= c 248))
+        :else (or (rx-uprop? :Lu c) (rx-uprop? :Ll c) (= c 170) (= c 186))))
+
 (defn- rx-cls? [k c]
   (cond (= k :d) (if (>= c 48) (<= c 57) false)
         (= k :w) (or (rx-cls? :d c) (if (>= c 65) (<= c 90) false) (if (>= c 97) (<= c 122) false) (= c 95))
         (= k :s) (or (= c 32) (= c 9) (= c 10) (= c 12) (= c 13))
         (= k :D) (not (rx-cls? :d c))
         (= k :W) (not (rx-cls? :w c))
-        :else (not (rx-cls? :s c))))
+        (= k :S) (not (rx-cls? :s c))
+        (= k :Lu) (rx-uprop? :Lu c)
+        (= k :Ll) (rx-uprop? :Ll c)
+        (= k :L) (rx-uprop? :L c)
+        (= k :NLu) (not (rx-uprop? :Lu c))
+        (= k :NLl) (not (rx-uprop? :Ll c))
+        :else (not (rx-uprop? :L c))))
 
 (defn- rx-set? [items c]
   (loop [i 0]

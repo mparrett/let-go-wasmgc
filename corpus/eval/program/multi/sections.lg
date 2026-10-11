@@ -1,0 +1,6 @@
+;; A library's top-level in-ns sections (evlib/sections.lg): the forms after
+;; (in-ns 'evlib.elsewhere) are that namespace's. Run with
+;; LG_ARGS="-source-paths corpus/eval/program/multi/lib".
+(ns eval.multi.sections (:require [evlib.sections :as s]))
+(println (s/here) (:v (s/via 3)) evlib.elsewhere/answer)
+(println (instance? evlib.elsewhere/Box (s/via 1)) (instance? evlib.elsewhere/Marker (s/marker)) (instance? evlib.elsewhere/Marker (s/via 1)))

@@ -54,6 +54,22 @@
 
 (defn ^{:twin "term/key-pending?"} key-pending? [] (sq/bool (term-key-pending)))
 
+;; read-line (pkg/rt/iort.go:220): keys from the host's queue up to a newline
+;; (LF, or CR as a raw terminal sends Enter), the line without it; nil at end
+;; of input with nothing read, what was read when input ends mid-line. The
+;; host does not echo under a raw TTY, and the handle argument is a named
+;; limit (the module has only the key queue).
+(defn ^{:twin "core/read-line"} read-line
+  ([] (loop [acc (wasm/null)]
+        (let [bs (term-read-key)]
+          (if (wasm/null? bs)
+            acc
+            (let [c (wasm/bget bs 0)]
+              (if (if (= c 10) true (= c 13))
+                (if (wasm/null? acc) (lit (wasm/bytes-new 0)) acc)
+                (recur (if (wasm/null? acc) (s/mk-str bs) (s/str acc (s/mk-str bs))))))))))
+  ([h] (c/raise (wasm/bytes-of-string "lower-wasm: read-line of a handle is a named limit (the module reads the key queue only)"))))
+
 ;; size: a PersistentVector (NewPersistentVector builds that type at any
 ;; length, persistent_vector.go:690), so pkind 1 (D73). A zero dimension
 ;; reads as the default, as term_wasm.go:96-101 does with an unset SAB slot.

@@ -1,0 +1,20 @@
+;; corpus/host/compile.lg — the browser self-compilation demo's program
+;; (D206). The backend carried as a program (src/ renamed under lwx., built
+;; as checks/self-compile-module.sh builds the P12.4 fixture) compiles the
+;; file LW_ASSEMBLE_IN names, read through the host (LW_HOST_FS=1), and hands
+;; the text to the host's assembler (LW_HOST_ASM=1: wasm.host-asm/assemble).
+;; The page keeps both files it reads (the program and lw-rt's D209 snapshot)
+;; in memory and assembles with host/wat-asm. The printed lines are what the
+;; page parses: `time` prints the compile's elapsed time, then
+;; "text <bytes> <hex32>" and "binary <bytes>". Same shape as
+;; checks/fixtures/self-compile-assemble/main.lg, whose header says why
+;; lwx.lw-ext is required first and why the options say :rtlib false.
+(ns compile-host (:require [lwx.lw-ext] [lwx.driver :as d] [lwx.lower-wasm :as lw]))
+
+(def in (let [p (os/getenv "LW_ASSEMBLE_IN")] (if (seq p) p "/prog.lg")))
+;; one form: compile-text leaves *ns* in the program's namespace
+(let [text (time (d/compile-text in {:target :gc :rt true :shake true :rtlib false :test false :skip #{}}))
+      _ (println "text" (count text) (lw/hex32 text))
+      n (wasm.host-asm/assemble text)]
+  (when (neg? n) (throw (ex-info "assemble: the host did not assemble the text" {})))
+  (println "binary" n))

@@ -33,7 +33,7 @@ t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' E
 
 # the stock lane: lane5.sh's cache (same key), built by lane5.sh if missing
 cache=${LW_LANE5_CACHE:-${TMPDIR:-/tmp}/lw-lane5-stock}
-key=$( { echo ff1e6dac; shasum "$LG"; cat "$XSOFY/main.lg" "$XSOFY/tools/xsofy-shell.html";
+key=$( { echo e9789b7d; shasum "$LG"; cat "$XSOFY/main.lg" "$XSOFY/tools/xsofy-shell.html";
          find "$XSOFY/xsofy" -name '*.lg' -print0 | sort -z | xargs -0 cat; } | md5 -q)
 stock=$cache/$key
 if [ ! -f "$stock/index.html" ]; then
@@ -76,11 +76,11 @@ xs = subprocess.run(['git', '-C', __import__('os').environ['XSOFY'], 'rev-parse'
 today = datetime.date.today().isoformat()
 rows = [
   ('lane 5: lower-wasm (emitted)', mb(l_raw), mb(l_br), mb(l_gz), ms(bl, 'titleMedian'), ms(bl, 'screenMedian')),
-  ('stock Go (lg -w, let-go ff1e6dac)', mb(s_raw), mb(s_br), mb(s_gz), ms(bs, 'titleMedian'), ms(bs, 'screenMedian')),
+  ('stock Go (lg -w, let-go e9789b7d)', mb(s_raw), mb(s_br), mb(s_gz), ms(bs, 'titleMedian'), ms(bs, 'screenMedian')),
   ('TinyGo (recorded 2026-09-20, not re-run)', '2.3 MB', '1.27 MB (floor build)', '1.70 MB (floor build)', '8725 ms', '12553 ms'),
 ]
 out = [f'# P4.3: lane 5 size and boot (measured {today}, checks/size-boot.sh)', '',
-       f'xsofy {xs}, lg ff1e6dac (`lg-ff1e6dac76`), headless Chromium via zz-boot-time-probe.mjs, {reps} runs per lane, medians.',
+       f'xsofy {xs}, lg e9789b7d (`lg-e9789b7d53`), headless Chromium via zz-boot-time-probe.mjs, {reps} runs per lane, medians.',
        'Bundle = every file the page fetches (shell included in both). Boot times are from navigation; the title card itself',
        'animates for part of the time-to-title on every lane.', '',
        '| lane | bundle raw | brotli -q 11 | gzip -9 | time-to-title | time-to-map |', '|---|---|---|---|---|---|']

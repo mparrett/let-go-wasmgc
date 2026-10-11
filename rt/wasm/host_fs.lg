@@ -1,0 +1,30 @@
+;; wasm.host-fs — D208: slurp through the host's file system, for a module
+;; built with LW_HOST_FS=1. src/lw_rt.lg loads this row of README.md only
+;; under that flag, and its twin is claimed after natives.lg's, so it replaces
+;; that no-file-system slurp; a build without the flag never reads this file,
+;; so its bytes do not change. The import is env.read_file (host/ABI.md): the
+;; node hosts read the process's files, the browser host has none and answers
+;; every read as missing, so slurp raises native's no-such-file error there as
+;; it does without the flag. spit, os/* and directory reads stay natives.lg's.
+;;
+;; DIALECT: plain lg like natives.lg. Written without destructuring, for or
+;; doseq, as the other runtime files are (they take gensyms at load, P9.1).
+(ns wasm.host-fs
+  (:refer-clojure :exclude [slurp])
+  (:require [wasm.intrinsics :as wasm]
+            [wasm.str :as s]
+            [wasm.core :as c]))
+
+(defn- raise-lit [msg] (c/raise (s/str-bytes msg)))
+
+;; CoreSlurp (lang.go:6299). A path the host cannot read raises the open
+;; error native gives for a missing file; a directory reads as missing too
+;; (natively "read <path>: is a directory": named limit).
+(defn ^{:twin "core/slurp"} slurp [& args]
+  (cond (not= 1 (count args)) (raise-lit (str "wrong number of arguments " (count args)))
+        (not (string? (first args))) (raise-lit "slurp expected String")
+        :else (let [path (first args)
+                    b (wasm/host-read-file (s/str-bytes path))]
+                (if (wasm/null? b)
+                  (raise-lit (str "slurp failed: open " path ": no such file or directory"))
+                  (s/mk-str b)))))

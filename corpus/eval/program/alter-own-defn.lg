@@ -1,0 +1,17 @@
+;; P12.0j (D210): alter-var-root of the program's own defn. A literal alter
+;; site names f and fact, so each is a var-table var: g calls f from the same
+;; namespace before and after the alter, the wrapper reaches the original
+;; through its argument, and fact's self-calls go through the var (the
+;; wrapper counts every level, as native's var does).
+(ns alter-own-defn)
+(defn f [x] (* 2 x))
+(defn g [x] (+ 100 (f x)))
+(println (f 5) (g 5))
+(alter-var-root #'f (fn [o] (fn [x] (inc (o x)))))
+(println (f 5) (g 5) (map f [1 2 3]))
+(def calls (atom 0))
+(defn fact [n] (if (< n 2) 1 (* n (fact (dec n)))))
+(alter-var-root #'fact (fn [o] (fn [n] (swap! calls inc) (o n))))
+(println (fact 5) @calls)
+(alter-var-root #'f (fn [o k] (fn [x] (+ k (o x)))) 1000)
+(println (g 1))
