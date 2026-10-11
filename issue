@@ -14,3 +14,4 @@ description: checks/gensym-load.sh: the gensym counter after load moved before t
 
 ## Comments
 [2026-10-11T02:10:10Z] Matt Parrett: On the wasm side checks/gensym-load.sh now also writes a snapshot after the probe (#37), which moves the recorded count again; re-record after rebasing on main rather than chasing 1130.
+[2026-10-11T20:27:06Z] Norman Nunley, Jr: Settled on llvm-poly: D219's read-program had three destructuring parameters, each a gensym at load. Taken apart with nth instead, P9.1 reads 1133 (main's value) and the GC byte guard is IDENTICAL on all 28 programs against main's base.
