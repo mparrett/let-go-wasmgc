@@ -2,9 +2,15 @@ name: publish-check
 # Refuses material that belongs to the workspace this tree is developed in:
 # a pattern over tracked files and commit messages, held in the repository
 # secret PUBLISH_CHECK_TERMS (see checks/publish-check.sh).
+# Every branch push runs it, not only main: a pull_request run needs the
+# merge commit, so a PR with conflicts against main gets no run at all (an
+# open target branch sat without a check for two days that way, 2026-10-08
+# to 10-10). On a push the base is the previous tip; a new branch or a
+# rewritten one (event.before unreachable) scans every tracked file and
+# every reachable message.
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
 concurrency:
   group: publish-check-${{ github.ref }}
@@ -23,5 +29,5 @@ jobs:
         run: |
           base=""
           if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"
-          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then base="${{ github.event.before }}"; fi
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then base="${{ github.event.before }}"; fi
           checks/publish-check.sh "$base"
