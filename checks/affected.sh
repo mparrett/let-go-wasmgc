@@ -72,6 +72,7 @@ P5.8	oracle corpus/review3/fix-natives/ checks/run-corpus.sh
 P5.9	oracle corpus/review3/fix-meta/ checks/run-corpus.sh
 P5.10	oracle corpus/review3/ checks/run-tests.sh checks/run-tests.skip src/testshim.lg
 P5.11	oracle corpus/review3/counter.txt checks/run-tests.sh src/testshim.lg
+P5.12	oracle src/driver.lg checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg checks/wasm-run.sh corpus/jank-harness/
 P5.12	oracle corpus/review3/fix-scope/ checks/run-corpus.sh
 P6.0	rt/ corpus/natives/ checks/native-twins.sh tools/ legmacs
 P6.1	oracle src/ checks/census.sh checks/census.lg checks/census-summary.py corpus/wasm/dynvars/ corpus/wasm/arity/ corpus/wasm/nsinit/ checks/run-corpus.sh legmacs
