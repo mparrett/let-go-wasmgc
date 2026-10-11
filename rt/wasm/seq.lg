@@ -19,7 +19,7 @@
                             some vec range repeat hash realized? chunk chunk-append
                             chunk-buffer chunk-cons chunk-first chunk-rest chunk-next
                             chunked-seq? lazy-seq* map*])
-  (:require [wasm.intrinsics :as wasm]
+  (:require [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
             [wasm.pvec :as pv]))
 
 ;; ---------------------------------------------------------------------------
@@ -95,8 +95,8 @@
 (wasm/defstruct ArrSeq [:ref :i64 :i32])          ; arr (pv/Node, never empty), i, flavour (0 MapSeq, 1 SetSeq)
 
 (defn box-int [n]
-  (if (if (>= n -1073741824) (<= n 1073741823) false) (wasm/i31 n) (wasm/new Int n)))
-(defn unbox-int [x] (if (wasm/i31? x) (wasm/i31-get x) (wasm/get Int 0 x)))
+  (if (if (>= n (wasm/fix-min)) (<= n (wasm/fix-max)) false) (wasm/fix n) (wasm/new Int n)))
+(defn unbox-int [x] (if (wasm/fix? x) (wasm/fix-get x) (wasm/get Int 0 x)))
 (defn bool [b] (wasm/new Bool (if b 1 0)))
 
 ;; D68 raises. A message that names a type (Go's Type().Name()) gets it from
@@ -218,7 +218,7 @@
 ;;  27 ArrSeq (MapSeq/SetSeq)
 (defn kind [x]
   (cond (wasm/null? x) 0
-        (wasm/i31? x) 1
+        (wasm/fix? x) 1
         (wasm/is? Int x) 1
         ;; the scalar boxes early: they are the common map keys (hash/equiv hot path)
         (wasm/is? Kw x) 20

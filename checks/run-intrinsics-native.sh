@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # checks/run-intrinsics-native.sh — P2.1 native half: run the intrinsic and
 # pvec test files under native lg with the reference wasm.intrinsics.
+# TEST_DIR (default corpus/intrinsics) names the test directory: another
+# target's runtime brings its own (phase 13, row P13.7).
 # Exit 0 iff every assertion passes AND the number of tests run equals the
 # number of deftest forms in the files (guards the run-tests zero-suite trap).
 # Tiers (D51): the default must finish under 90 s (68 s on 2026-10-01);
@@ -27,8 +29,8 @@ cd "$(dirname "$0")/.."
 export LG
 par=${LW_PAR:-4}
 case $par in ''|*[!0-9]*|0) echo "LW_PAR must be a positive integer (got '$par')" >&2; exit 2;; esac
-files=(corpus/intrinsics/*_test.lg)
-[ -e "${files[0]}" ] || { echo "no corpus/intrinsics/*_test.lg" >&2; exit 2; }
+files=("${TEST_DIR:-corpus/intrinsics}"/*_test.lg)
+[ -e "${files[0]}" ] || { echo "no ${TEST_DIR:-corpus/intrinsics}/*_test.lg" >&2; exit 2; }
 expected=$(cat "${files[@]}" | grep -c '^(deftest ')
 echo "tier: $([ "${SLOW:-}" = 1 ] && echo slow || echo default)"
 # stop a whole subtree (xargs -> sem.sh -> worker -> lg), parent first so xargs
@@ -50,7 +52,7 @@ weight() {
 one() {
   local f=$1 b n
   b=${1##*/}; b=${b%.lg}; n=$(grep -c '^(deftest ' "$f")
-  "$LG" -source-paths rt:corpus/intrinsics checks/intrinsics-native-runner.lg "$n" "${b//_/-}" >"$t/$b.out" 2>&1
+  "$LG" -source-paths rt:"${TEST_DIR:-corpus/intrinsics}" checks/intrinsics-native-runner.lg "$n" "${b//_/-}" >"$t/$b.out" 2>&1
   echo $? >"$t/$b.rc"
 }
 export -f one

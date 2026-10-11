@@ -72,6 +72,7 @@ P5.8	oracle corpus/review3/fix-natives/ checks/run-corpus.sh
 P5.9	oracle corpus/review3/fix-meta/ checks/run-corpus.sh
 P5.10	oracle corpus/review3/ checks/run-tests.sh checks/run-tests.skip src/testshim.lg
 P5.11	oracle corpus/review3/counter.txt checks/run-tests.sh src/testshim.lg
+P5.12	oracle src/driver.lg checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg checks/wasm-run.sh corpus/jank-harness/
 P5.12	oracle corpus/review3/fix-scope/ checks/run-corpus.sh
 P6.0	rt/ corpus/natives/ checks/native-twins.sh tools/ legmacs
 P6.1	oracle src/ checks/census.sh checks/census.lg checks/census-summary.py corpus/wasm/dynvars/ corpus/wasm/arity/ corpus/wasm/nsinit/ checks/run-corpus.sh legmacs
@@ -109,6 +110,13 @@ P8.5	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/oracle.sh corpus/sca
 P8.12	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/linear-runner-abi-check.sh checks/fixtures/linear-argv.lg checks/fixtures/linear-large-host.lg checks/oracle.sh
 P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P8.13	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric/
+P13.1	oracle src/ host/native/ targets/ checks/native-run.sh corpus/llvm-scalar/
+P13.2	src/ targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh
+P13.3	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/
+P13.4	oracle src/ host/native/ targets/ checks/native-run.sh checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg corpus/jank/
+P13.5	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-armv7-check.sh checks/build-builtins.sh corpus/llvm/ corpus/llvm-scalar/
+P13.6	src/ host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj
+P13.7	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg
 P11.0	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/

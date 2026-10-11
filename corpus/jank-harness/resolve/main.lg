@@ -1,0 +1,7 @@
+;; ns-file resolution follows let-go's resolver (pkg/resolver/resolver.go):
+;; per source path, the hyphenated path before the underscored one, and
+;; .lg, .cljc, .clj in that order. Run with -source-paths this directory.
+(ns main
+  (:require [harness.cljc-lib :as c]
+            [harness.hyphen-dir.lib :as h]))
+(println (c/f 1) (h/g 2))

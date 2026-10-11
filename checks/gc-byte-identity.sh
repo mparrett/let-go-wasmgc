@@ -2,6 +2,9 @@
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-11 at
 # 7203bb3, library in-ns sections: the 27 modules are identical, corpus/eval/program/multi/sections.lg
 # joins the corpus; before that 2026-10-10 at
+# 056fa85, D213: seq.lg's box-int reads its fixnum bounds from the fix-min and fix-max intrinsics,
+# so every module carrying it changes in that one function (bounds in locals, locals renumbered);
+# the rt-ns seam and the intrinsic renames move no bytes; before that 2026-10-10 at
 # 54048e6, D217: the let-go pin moves to e9789b7d and 18 of 27 modules change one tied local read in
 # wasm.natives/fmt-f at the same size (captured with both lgs from the same tree; the old lg
 # reproduces the previous baseline exactly); last-index-of's twin follows #1042; before that 2026-10-09 at

@@ -9,8 +9,8 @@
 
 ;; Deterministic 31-bit LCG so the op sequence is the same on every run.
 (defn- lcg [s] (bit-and (+ (* s 1103515245) 12345) 0x7fffffff))
-(defn- box [n] (wasm/i31 n))
-(defn- unbox [r] (wasm/i31-get r))
+(defn- box [n] (wasm/fix n))
+(defn- unbox [r] (wasm/fix-get r))
 
 (defn- to-vec [v] (mapv #(unbox (pv/vnth v %)) (range (pv/vcount v))))
 
