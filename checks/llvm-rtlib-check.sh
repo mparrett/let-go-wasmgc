@@ -11,6 +11,10 @@
 #      fn rebuilds at most LLVM_RTLIB_EDIT_MAX nodes (default 8), as the
 #      driver's "rtlib-llvm: N reused, M rebuilt" line (LW_RTLIB_STATS=1) says.
 # Exit 0 iff every part holds. A scratch cache dir keeps it off src/.rtlib.
+# Each compile in parts 1 and 3 takes a slot of the machine-wide pool
+# (checks/sem.sh); part 2's timed compile runs on a quiet machine
+# (checks/quiet.sh), so the bound measures the cache, not other agents' load.
+# The gate row runs this unslotted: a quiet run cannot drain a pool it holds.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . checks/env.sh
@@ -21,18 +25,20 @@ t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 export LW_RTLIB_DIR="$t/rtlib"
 fail=0
 now() { python3 -c 'import time; print(time.time())'; }
-drv() { "$LG" -source-paths src src/driver.lg --target llvm "$@"; }
 
 # 1. behavior, cached against uncached
 for p in "${progs[@]}"; do
-  a=$(LW_DRIVER_ARGS=--no-rtlib checks/native-run.sh "$p" 2>&1; echo "exit $?")
-  b=$(checks/native-run.sh "$p" 2>&1; echo "exit $?")
+  a=$(LW_DRIVER_ARGS=--no-rtlib checks/sem.sh checks/native-run.sh "$p" 2>&1; echo "exit $?")
+  b=$(checks/sem.sh checks/native-run.sh "$p" 2>&1; echo "exit $?")
   if [ "$a" = "$b" ]; then echo "SAME $p"; else echo "DIFFER $p"; diff <(echo "$a") <(echo "$b") | head -10; fail=1; fi
 done
 
 # 2. a warm compile within the bound (the cache is warm after part 1)
-s=$(now); drv corpus/scalar/fib.clj "$t/fib.ll" > "$t/warm.log" 2>&1; rc=$?; e=$(now)
-secs=$(python3 -c "print(round($e - $s, 2))")
+# quiet.sh prints the timed command's output after the lease; it is the
+# duration line only (the compile's own output goes to warm.log)
+timed() { local s e; s=$(now); "$LG" -source-paths src src/driver.lg --target llvm corpus/scalar/fib.clj "$t/fib.ll" > "$t/warm.log" 2>&1; local rc=$?; e=$(now); echo "$rc $(python3 -c "print(round($e - $s, 2))")"; }
+export -f now timed; export LG t
+read -r rc secs < <(checks/quiet.sh bash -c timed)
 if [ $rc -eq 0 ] && python3 -c "import sys; sys.exit(0 if $secs <= $warm_max else 1)"; then
   echo "WARM ${secs}s <= ${warm_max}s"
 else echo "WARM ${secs}s exceeds ${warm_max}s (exit $rc)"; tail -3 "$t/warm.log"; fail=1; fi
@@ -41,7 +47,7 @@ else echo "WARM ${secs}s exceeds ${warm_max}s (exit $rc)"; tail -3 "$t/warm.log"
 if [ "${LLVM_RTLIB_PARTIAL:-0}" = 1 ]; then
 cp -R rt "$t/rt"
 export LW_RT_DIR="$t/rt/llvm"
-stats() { LW_RTLIB_STATS=1 drv corpus/scalar/fib.clj "$t/p.ll" 2>&1 | grep -E '^rtlib-llvm: [0-9]+ reused, [0-9]+ rebuilt' | tail -1; }
+stats() { LW_RTLIB_STATS=1 checks/sem.sh "$LG" -source-paths src src/driver.lg --target llvm corpus/scalar/fib.clj "$t/p.ll" 2>&1 | grep -E '^rtlib-llvm: [0-9]+ reused, [0-9]+ rebuilt' | tail -1; }
 rebuilt() { echo "$1" | sed -E 's/.* ([0-9]+) rebuilt.*/\1/'; }
 base=$(stats); echo "BASE ${base:-<no stats line>}"
 printf '\n;; a comment-only edit\n' >> "$t/rt/llvm/math.lg"
