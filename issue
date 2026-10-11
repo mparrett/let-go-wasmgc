@@ -11,3 +11,6 @@ hash_source: content
 issue_type: bug
 labels: llvm
 description: checks/gensym-load.sh: the gensym counter after load moved before the function-cache groundwork started (at 554b7ff it already read 1133). The groundwork holds it at 1133; the recorded value or the cause needs settling.
+
+## Comments
+[2026-10-11T02:10:10Z] Matt Parrett: On the wasm side checks/gensym-load.sh now also writes a snapshot after the probe (#37), which moves the recorded count again; re-record after rebasing on main rather than chasing 1130.
