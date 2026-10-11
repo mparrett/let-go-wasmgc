@@ -26,7 +26,7 @@ row P1.10-llvm llvm checks/run-corpus.sh corpus/reader-ns
 row P12.30 slot checks/run-expected.sh corpus/poly-wasm
 row P12.31 llvm checks/run-corpus.sh corpus/poly
 row P12.32 slot env WASM_RUN=checks/native-run.sh checks/run-expected.sh corpus/poly-clj
-row P12.37 slot checks/llvm-rtlib-check.sh
+row P12.37 checks/llvm-rtlib-check.sh   # slots its own compiles; its timed one runs under checks/quiet.sh
 row P12.38 slot checks/llvm-xsofy-check.sh
 row P12.39 slot checks/llvm-refs-check.sh
 # P12.40: lowering reads the session only through questions (red until
