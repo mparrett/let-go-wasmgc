@@ -1936,7 +1936,7 @@
    (a top-level try/binding body, catch or finally; P6.8), possibly nested.
    A closure's name has a __fn<nid>_ link, so a fn body never matches."
   [nm]
-  (boolean (re-matches #"(_main|.+/__lw_nsinit)(__try[0-9]+_(body|catch|finally))*" nm)))
+  (boolean (re-matches #"(_main|.+/__lw_nsinit(_[0-9]+)?)(__try[0-9]+_(body|catch|finally))*" nm)))
 
 ;; P6.8: the vars a top-level with-out-str/with-redefs thunk defs (the
 ;; driver's thunk-def-syms): their def may sit in that thunk's closure

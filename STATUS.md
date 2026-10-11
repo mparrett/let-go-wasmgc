@@ -162,6 +162,7 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 |---|---|---|---|
 | 2026-10-03 | P8.0 | PASS | All 18 frozen scalar/eval programs byte-identical with default and explicit GC after every emitter checkpoint. |
 | 2026-10-08 | P8.0 guard | FINDING | Backend determinism defect: corpus/eval/registry/registry-probe.lg compiles with one local `$v64` or `$v65` in a wasm.natives fn depending on whether the rtlib dir was warmed by earlier programs; the guard now captures and compares in the same corpus order (header of checks/gc-byte-identity.sh). |
+| 2026-10-11 | P8.0 guard | re-frozen | library in-ns sections: the 27 modules are identical to the 54048e6 cache; corpus/eval/program/multi/sections.lg joins the corpus (28 programs); base 7203bb3. |
 | 2026-10-10 | P8.0 guard | re-frozen | D213: `box-int` reads `fix-min`/`fix-max`; 23 of 27 modules change +19 bytes in `$wasm.seq/box-int` only, the 4 scalar modules are identical; base 056fa85. |
 | 2026-10-03 | P8.1 | PASS | Target precedence, invalid targets, named refusals and target-separated caches. |
 | 2026-10-03 | P8.2 | PASS | Numeric types, memory, table, nominal headers and leaking allocator validate with GC disabled. |
