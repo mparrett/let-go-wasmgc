@@ -1,0 +1,19 @@
+;; P12.4: the Unicode letter classes in lw-ext's regex engine, on ASCII
+;; input (the engine's classes cover Latin-1; a code point above U+00FF is a
+;; named limit, src/lw_ext.lg rx-uprop?). let-go's ir.build tests
+;; #"^\p{Lu}" on a catch clause's first symbol, which is what the carried
+;; backend needs.
+(def s "Hello World, ABC def 42 _x Q")
+(println (re-seq #"\p{Lu}" s))
+(println (re-seq #"\p{Ll}+" s))
+(println (re-seq #"\p{L}+" s))
+(println (re-seq #"\pL+" s))
+(println (re-seq #"\P{L}+" s))
+(println (re-seq #"\P{Lu}+" s))
+(println (re-seq #"\P{Ll}+" s))
+(println (re-seq #"\p{^Lu}+" s))
+(println (re-seq #"[\p{Lu}\d]+" s))
+(println (re-seq #"[^\p{L} ]+" s))
+(println (re-find #"^\p{Lu}" "Exception") (re-find #"^\p{Lu}" "e") (re-find #"[./]" "java.lang"))
+(println (re-matches #"\p{Lu}\p{Ll}*" "Hello") (re-matches #"\p{Lu}\p{Ll}*" "hello"))
+(println (clojure.string/replace "aBcD" #"\p{Lu}" "_"))

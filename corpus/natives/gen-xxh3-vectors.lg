@@ -6,7 +6,7 @@
 ;; (0, +-1, MinInt64, MaxInt64, 2^32 neighbours, pseudo-random). Bytes are
 ;; pseudo-random (xorshift64 from the row index), so the file is
 ;; reproducible. Run from dev/lower-wasm:
-;;   $LW_ROOT/lg-bin/lg-ff1e6dac76 corpus/natives/gen-xxh3-vectors.lg > corpus/natives/xxh3-vectors.tsv
+;;   $LW_ROOT/lg-bin/lg-e9789b7d53 corpus/natives/gen-xxh3-vectors.lg > corpus/natives/xxh3-vectors.tsv
 ;; xsofy_natives_test checks the runtime against every row AND that native
 ;; lg still produces each expected value (a stale table fails).
 (defn- xs [x] (let [x (bit-xor x (bit-shift-left x 13)) x (bit-xor x (unsigned-bit-shift-right x 7))] (bit-xor x (bit-shift-left x 17))))

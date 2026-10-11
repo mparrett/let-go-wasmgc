@@ -1,0 +1,17 @@
+;; P12.0f: load-string (eval.go:335) evaluates every form of a string in the
+;; caller's namespace and returns the last value; an in-ns inside the string
+;; holds for the rest of that string only. Any argument but one String is nil.
+(println (load-string "(def ls-a 1) (in-ns 'ls-x) (def ls-b 2) (+ ls-b 1)"))
+(println (str *ns*))
+(println (resolve 'ls-a))
+(println (resolve 'ls-b))
+(println (load-string "ls-a ls-x/ls-b"))
+(println (load-string 7))
+(println (load-string "1" "2"))
+(println (load-string ""))
+(println (load-string "(str *ns*)"))
+(println (try (load-string "(in-ns 'ls-y) (def ls-c 3) (throw (ex-info \"inside\" {:k 1}))")
+              (catch Exception e [(ex-message e) (ex-data e)])))
+(println (str *ns*))
+(println (load-string "ls-y/ls-c"))
+(println (try (load-string "(+ 1 :a)") (catch Exception e :caught)))

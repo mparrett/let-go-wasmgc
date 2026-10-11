@@ -33,7 +33,8 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `array-copy` | 6 | array.copy (memmove) | [decl dst di src si n] → nil | P H V |
 | `ref-eq` | 2 | ref.eq | [:any :any] → :bool | H (identity fast path, transient owner) V |
 | `null` / `null?` | 0 / 1 | ref.null none / ref.is_null | | P H |
-| `i31` / `i31?` / `i31-get` | 1 | ref.i31 / ref.test i31 / i31.get_s | | V (D2 hybrid box), P test |
+| `fix` / `fix?` / `fix-get` | 1 | ref.i31 / ref.test i31 / i31.get_s | | V (D2 hybrid box), P test |
+| `fix-min` / `fix-max` | 0 | i64.const (the target's fixnum bounds: i31's here) | → :int | V (box-int) |
 | `i64-add` `-sub` `-mul` | 2 | i64.add/sub/mul (wrap) | [:int :int] → :int | V (murmur3, hash mixing) |
 | `i64-shl` `-shr-s` `-shr-u` | 2 | i64.shl/shr_s/shr_u (count mod 64) | [:int :int] → :int | H (bitpos) V |
 | `i64-lt-u` | 2 | i64.lt_u | → :bool | V (uint32 hash compare) |
@@ -46,11 +47,13 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `bytes-of-string` | 1 | array.new_data (literal only) | [:string] → :any | V IO |
 | `string-of-bytes` | 1 | none (identity) | [:any] → :string | reference/test boundary only |
 | `host-write` `host-sleep` `host-nanotime` `host-getenv` | 2/1/0/1 | call $env.* | | IO (D6, D11's `env.write`) |
+| `host-read-file` | 1 | call $env.read_file (getenv's contract) | [:any] → :any | IO (D208: `slurp` in rt/wasm/host_fs.lg, a row loaded only under `LW_HOST_FS=1`; the reference reads `*host-files*`) |
+| `host-assemble` | 1 | call $env.assemble | [:any] → :int | IO (D211: `assemble` in rt/wasm/host_asm.lg, a row loaded only under `LW_HOST_ASM=1`; the reference has no assembler and answers -1) |
 | `trap` | 1 | unreachable | [:string] → :bottom | P V |
 | `funcref` / `call-ref` | 2 / 2–7 | ref.func / call_ref $Sig (7 = `$Code4`: closure + 4 args, P2.7) | | C |
 
-43 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-10-01 (`f64-neg` added
-by P2.13: `(* -1.0 x)` may return either NaN sign in wasm, Go's `-x` flips it; lg's own
+45 intrinsics, 3 declaration macros, 1 built-in type, as of 2026-10-09 (`host-assemble`
+added by D211, `host-read-file` by D208; `f64-neg` by P2.13: `(* -1.0 x)` may return either NaN sign in wasm, Go's `-x` flips it; lg's own
 unary `-` on a Float is Go's `-x`, so it is the reference, and native `hash` sees the bit).
 `new` gained its 7-field arity on 2026-10-01 for D52's `$Fn`.
 
@@ -60,7 +63,7 @@ lg 4e769212: `unchecked-add` wraps; lg's own shifts follow Go, so the reference
 masks the count; `(long ##NaN)` is 0 and `(long 1e19)` saturates, so
 `f64-to-i64` checks the trap cases itself). The reference is *stricter* than
 wasm where wasm is silent and a correct runtime never relies on it: an
-out-of-range `i31` traps (wasm drops the top bit), an index ≥ 2^32 traps (wasm
+out-of-range `fix` traps (wasm drops the top bit), an index ≥ 2^32 traps (wasm
 would wrap it to i32 and may land in bounds), a raw lg value in a `:ref` slot
 or an out-of-range value in an `:i32` slot throws. One exception (P2.10): a
 native exception may sit in a `:ref` slot, as the stand-in for the payload a

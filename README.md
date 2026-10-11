@@ -28,8 +28,8 @@ differential check (see "Checks"), and the design record is
   the two remaining ones skipped by name.
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
-- **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, xsofy,
-  legmacs; needs Chrome 137 or newer). Built by `host/build-pages.sh` and
+- **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the
+  compiler compiled, xsofy, legmacs; needs Chrome 137 or newer). Built by `host/build-pages.sh` and
   served from the `gh-pages` branch. [docs/READING-GUIDE.md](docs/READING-GUIDE.md)
   is a guided walk through the code.
 - Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0`; gate 7 was rerun
@@ -79,11 +79,11 @@ repository is cloned beside those checkouts; otherwise set `LW_ROOT`, or
 override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 
 - **Go 1.25 or newer** for the linear runner (2026-10-03).
-- **Native lg built from let-go commit ff1e6da**, at
-  `$LW_ROOT/lg-bin/lg-ff1e6dac76` or wherever `LG` points. The driver runs
+- **Native lg built from let-go commit e9789b7d**, at
+  `$LW_ROOT/lg-bin/lg-e9789b7d53` or wherever `LG` points. The driver runs
   under this lg and uses let-go's IR passes from it.
 - **A let-go git checkout** (`$LETGO`, default `$LW_ROOT/let-go`) that
-  contains commit ff1e6dac: `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg`
+  contains commit e9789b7d: `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg`
   at that commit with `git show`, and fails with a message naming the path
   when it cannot.
 - **wasm-tools** on `PATH` (WAT to binary).
@@ -170,6 +170,19 @@ host/build-explorer-serve.sh /tmp/lw-explorer
 python3 -m http.server 8263 -d /tmp/lw-explorer
 ```
 
+Build and serve the compiler itself as a module, then open
+http://localhost:8264/compile.html. Paste a let-go program: the backend,
+carried as a program (D206, D211), compiles it inside the module in a worker,
+`host/wat-asm` (wasm-tools' text parser compiled to wasm, needs cargo with the
+wasm32-unknown-unknown target) assembles the text, and the page runs the
+result. The first build takes minutes (the P12 rows' build times plus
+wasm-opt) and is cached; a compile in the page takes tens of seconds:
+
+```sh
+host/build-compile-serve.sh /tmp/lw-compile
+python3 -m http.server 8264 -d /tmp/lw-compile
+```
+
 Play xsofy in a terminal, with its dev console enabled (backtick opens it):
 
 ```sh
@@ -208,7 +221,8 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   `rt/wasm/README.md` has the load-order table, the value kind table and the
   declared differences from native.
 - `host/` JS hosts (`lg-wasm-host.js`, `node-host.mjs`), the import ABI
-  (`ABI.md`), the REPL, explorer, xsofy and legmacs pages, and their build scripts.
+  (`ABI.md`), the REPL, explorer, compile, xsofy and legmacs pages, their build
+  scripts, and `wat-asm/`, the page-side assembler.
 - `checks/` the oracle, the row table `items.tsv`, the gate runner and the
   check scripts.
 - `corpus/` inputs and expected outputs for every check, one directory per
@@ -326,3 +340,22 @@ mirror of that workspace. In practice:
 
 MIT; see [LICENSE](LICENSE). [NOTICE](NOTICE) lists the material taken from
 let-go, xsofy and legmacs.
+
+## Issues
+
+Work items live in this repository as git notes under `refs/notes/issue-*`,
+managed with `git-issue` (the git-issue-tracker project on GitHub).
+Once per clone:
+
+```sh
+git issue setup-sync enable      # hooks + fetch refspec for the notes
+git fetch origin 'refs/notes/issue-*:refs/notes/issue-*'
+git issue list
+git issue ready                  # open, unblocked, by priority
+```
+
+Reference an issue from a commit with a trailer (`Issue: #<id>`, `Fixes: #<id>`,
+`Closes: #<id>`); `git issue scan-commits` finds them. Push soon after editing
+an issue: the tool's default fetch refspec is forcing and a fetch can replace a
+local issue ref that has unpushed edits (tracked as git-issue-tracker #e2dfdaa).
+

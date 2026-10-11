@@ -406,6 +406,13 @@
     (wasm/set! MGlobals 0 globals x)
     (wasm/i64-shr-u x 1)))                               ; 63 random bits, non-negative
 
+(defn ^{:twin "core/rand"} rand                           ; CoreRandf (lang.go:6939): Float in [0,1), scaled by n
+  ([] (s/box-float (* (wasm/i64-to-f64 (next-rand)) 1.0842021724855044e-19)))   ; 63 bits / 2^63
+  ([n] (if (if (int-val? n) true (= 22 (sq/kind n)))
+         (s/box-float (* (* (wasm/i64-to-f64 (next-rand)) 1.0842021724855044e-19) (f64-of n)))
+         (c/raise (wasm/bytes-of-string "rand expected number"))))
+  ([a b] (raise-arity 2)))
+
 (defn ^{:twin "core/rand-int"} rand-int
   ([] (raise-arity 0))
   ([n] (if (int-val? n)

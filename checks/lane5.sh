@@ -3,7 +3,7 @@
 # the stock-Go lane after the same scripted play, at seed 424242.
 #
 # Lanes:
-#   stock  xsofy main.lg bundled by `lg -w -w-shell none` at let-go ff1e6dac
+#   stock  xsofy main.lg bundled by `lg -w -w-shell none` at let-go e9789b7d
 #          (the backend's ground truth, LETGO_SRC = a `git archive` export of
 #          that commit, so the canonical let-go checkout is not touched), then
 #          xsofy-shell.html injected by local-scripts/inject-shell.sh: exactly
@@ -42,7 +42,7 @@ ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LETGO=${LETGO:-$LW_ROOT/let-go}
-COMMIT=ff1e6dac
+COMMIT=e9789b7d
 SEED=${SEED:-424242}
 pw=${LW_BROWSER_TOOLS:-$ws/local-scripts}/browser-smoke-playwright
 t=$(mktemp -d); pids=()

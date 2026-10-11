@@ -11,6 +11,16 @@
 ;; through a var-table slot. The unit's complete module goes to
 ;; <wat-dir>/u<idx>.wat for census.sh to validate; nothing is run.
 ;;
+;; Params are boxed as a real compile boxes them (P12.2): lower-wasm's
+;; analyze-fn re-analyses a defn with each param boxed that
+;; float-tainted-params reports (an :int-typed param whose value meets a float,
+;; e.g. (< x 0.0)), until stable. That pass reads only the unit's own IR, not
+;; its callers, so a unit it boxes compiles in every build and stays `ok`
+;; here. The census runs it in a throwaway session (`boxed-params`) and lowers
+;; with those params boxed; a unit it boxes nothing for lowers exactly as
+;; before. Not mirrored: analyze-fn's optimistic self-call typing and its
+;; boxing of a variadic arity's params.
+;;
 ;; Nested fn* bodies are not separate rows (census.lg's inner:* rows): the
 ;; backend lambda-lifts them while lowering the parent, so a parent's bucket
 ;; already covers every closure inside it.
@@ -107,6 +117,23 @@
 (def rows (atom []))
 (def idx (atom 0))
 
+(defn boxed-params
+  "The param indices analyze-fn's float-taint loop boxes for unit src (built
+   afresh each round, since optimize-fn rewrites the IR in place), in a
+   throwaway session. #{} when the probe fails: the unit's own lowering then
+   meets the same error and is bucketed by it."
+  [fname src]
+  (try
+    (loop [boxed #{}]
+      (let [f (ir.build/build-fn src)
+            ss (lower-wasm/new-session {} {})
+            info (binding [lower-wasm/*box-param-idx* boxed]
+                   (ir.passes.pipeline/optimize-fn f)
+                   (lower-wasm/with-session* ss (fn [] (lower-wasm/analyze-opt fname f))))
+            more (remove boxed (lower-wasm/float-tainted-params info))]
+        (if (empty? more) boxed (recur (into boxed more)))))
+    (catch e #{})))
+
 (defn run-unit [rel name arity args-vec body]
   (let [i (swap! idx inc)
         t0 (System/nanoTime)
@@ -115,8 +142,10 @@
             (let [src (apply list 'defn name args-vec (map lower-wasm/expand-form body))
                   f (try (ir.build/build-fn src)
                          (catch e (throw (ex-info "build" {::stage :build ::e e}))))
+                  boxed (boxed-params fname src)
                   ss (lower-wasm/new-session {} {})
-                  {:keys [wat externs phase2]} (lower-wasm/lower-fn-only ss fname f)
+                  {:keys [wat externs phase2]} (binding [lower-wasm/*box-param-idx* boxed]
+                                                 (lower-wasm/lower-fn-only ss fname f))
                   outside (sort (map #(subs (str %) 2) (remove #(contains? @corpus-nses (var-ns %)) externs)))
                   inside (count (filter #(contains? @corpus-nses (var-ns %)) externs))]
               (spit (str wat-dir "/u" i ".wat") (lower-wasm/session-module ss [wat]))

@@ -80,6 +80,7 @@ These records were kept while the backend was built inside a larger workspace. T
 | P5.8 | done 2026-10-02 06:10 | opus | fix-natives 1/1; no-twin named error; verified by rerun |
 | P5.10 | done 2026-10-02 06:15 | opus | 3/3 PASS after P5.8's error landed; verified by rerun |
 | P5.11 | done 2026-10-02 06:15 | opus | counter vs native; core tests stay 271/273; verified by rerun |
+| P5.12 | green 2026-10-11 | claude | jank-suite.sh --self-test: both .cljc fixtures agree with native under --read-clj, the wrong one fails the same 3 assertions, ns-file finds a .cljc file and a hyphenated directory as let-go's resolver does. Falsified: main's driver MISMATCHes the resolve fixture; without --read-clj the backend reads the :default branches and the fixture FAILs. Full suite: 0/241 on every lane until the driver's deftype refusal lifts (the portability shim every file loads defines one), so corpus/jank/baseline.tsv is all zeros and --ratchet is not a row yet. |
 | P5.9 | done 2026-10-02 06:40 | opus | fix-meta 5/5; verified by rerun |
 | P5.4 | done 2026-10-02 07:20 | runner | first gate.sh 2 10m29s all 14 ok (P2.3 included); second run 1 s, 13 attested, same result |
 | GATE 2 | re-run 2026-10-02 07:15 | runner | 14/14 ok on af7e1d0, no named limit left (D127's P2.3 limit closed by P5.2) |
@@ -130,7 +131,7 @@ TOTAL ≈ $1,227
 | P7.5 | green 2026-10-02 09:00 (on B's in-flight src) | runner | eval-hosts.sh PASS: node, Chromium, legmacs C-x C-e => 42; playground legmacs.wasm + :8261 refreshed for our test drive |
 | P7.0 | done 2026-10-02 (D160) | opus A | corpus/eval 10/10, native tier 122 tests, P2.1/P4.2 green; program/ waits for B |
 | C: legmacs wiring | running | opus | P7.2 script 6, P7.1 ledger + bar, P7.3 prep, evaluator gaps in rt |
-| P7.1 | done 2026-10-02 (D162) | opus C | 28/30 (repl 7/7, letgo 21/23); whole suite 316/373, bar raised |
+| P7.1 | done 2026-10-02 (D162) | opus C | 28/30 (repl 7/7, letgo 21/23); whole suite 316/373, bar raised. 2026-10-08: each legmacs eval test file compiles in ~365 s alone (700+ s under load), past run-tests.sh's 300 s per-file cap, so the row times out on this machine whatever the code; gate runs set `LW_TEST_TIMEOUT` (seconds, default 300). Bar unchanged |
 | P7.2 | done 2026-10-02 (D162) | opus C | script 6 byte-identical |
 | P7.3 | done 2026-10-02 (D162) | opus C | comment.lg loaded by eval defines comment-dwim; defcommand expands in-module |
 | B: program table | done 2026-10-02 (D161) | opus B | table +24 KB brotli, eval.lg +23 KB; xsofy byte-identical |
@@ -143,6 +144,7 @@ TOTAL ≈ $1,227
 | P7.GATE | GREEN 2026-10-02 ~20:05 (D168) | runner | gate 7 11/11; gates 1-6 8/13/3/4/14/10, all LW_ATTEST=0 on d953b83 |
 | P9.0 | done 2026-10-03 (D181) | runner | rtlib cache transparent: cold/warm byte-identical on the D181 regression (differed before the fix) |
 | P9.1 | done 2026-10-06 (D196) | runner | gensym counter after driver load = 1129; a destructuring defn in src/ moves it to 1130, a `for` to 1133; #() takes none |
+| pin | done 2026-10-10 (D217) | orchestrator | let-go e9789b7d: gensym 1133; two-lg capture: 9/27 identical, 18 differ by one tied local read in wasm.natives/fmt-f (same sizes); last-index-of twin follows #1042; gates 2, 3 at the new LG |
 | pin | done 2026-10-07 (D198) | runner | let-go ff1e6dac: gates 8, 1, 7, P9.0, P9.1 (1130), map-order pass; Linux and macOS lg builds byte-identical on basic.lg |
 | P1.9 | done 2026-10-07 (D199) | runner | constants of plain data lowered without analysis; corpus/consts MATCH; warm legmacs -4.6% wall |
 | P9.2 | done 2026-10-07 (D200) | opus | rtlib restore replays the build's gensyms (104); legmacs and checks/fixtures/warm-gensym cold = warm-from-own-cache (differed before) |
@@ -159,6 +161,9 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 | date | item | result | evidence |
 |---|---|---|---|
 | 2026-10-03 | P8.0 | PASS | All 18 frozen scalar/eval programs byte-identical with default and explicit GC after every emitter checkpoint. |
+| 2026-10-08 | P8.0 guard | FINDING | Backend determinism defect: corpus/eval/registry/registry-probe.lg compiles with one local `$v64` or `$v65` in a wasm.natives fn depending on whether the rtlib dir was warmed by earlier programs; the guard now captures and compares in the same corpus order (header of checks/gc-byte-identity.sh). |
+| 2026-10-11 | P8.0 guard | re-frozen | library in-ns sections: the 27 modules are identical to the 54048e6 cache; corpus/eval/program/multi/sections.lg joins the corpus (28 programs); base 7203bb3. |
+| 2026-10-10 | P8.0 guard | re-frozen | D213: `box-int` reads `fix-min`/`fix-max`; 23 of 27 modules change +19 bytes in `$wasm.seq/box-int` only, the 4 scalar modules are identical; base 056fa85. |
 | 2026-10-03 | P8.1 | PASS | Target precedence, invalid targets, named refusals and target-separated caches. |
 | 2026-10-03 | P8.2 | PASS | Numeric types, memory, table, nominal headers and leaking allocator validate with GC disabled. |
 | 2026-10-03 | P8.3 | PASS | Completed census families, cast branches and stack operands validate and execute under GC-disabled wazero. |
@@ -182,6 +187,24 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 - 2026-10-03: existing GC runtime-cache restore variance and the bare os/args printer-reachability issue remain reported in the PR; their GC behavior is preserved. Neither blocked the required final gates.
 - 2026-10-03: GC legmacs boot/size rerun: lower-wasm module alone: 2,265,456 B as emitted, 686,520 B after `wasm-opt -O3` (served), 170,576 B brotli, 206,572 B gzip. Bundle raw/brotli/gzip: 707 KB, 178 KB, 215 KB; median title-or-boot / first frame: 128 ms / 128 ms. Full dated runs: corpus/legmacs/size-boot.md.
 - 2026-10-03: GC xsofy boot/size rerun: Lane 5 module alone: 1,920,368 B as emitted, 430,783 B after `wasm-opt -O3` (served), 115,153 B brotli, 137,162 B gzip. Bundle raw/brotli/gzip: 521 KB, 147 KB, 174 KB; median title-or-boot / first frame: 4060 ms / 5144 ms. Full dated runs: corpus/xsofy/size-boot.md.
+
+## Stage 2, the self-compiling backend (D205/D206), rows added 2026-10-08
+
+Plan, stage-0 census and the stage-2 measurements are in the maintainers' notes (D205, D206 record
+the decisions). Byte rule for this phase: byte-neutral by default; a row that moves
+the guard says so in its PR with one program's WAT diff, re-freezes in its own commit, merges with
+`--merge`; a move nobody explained is red.
+
+| item | state | by | note |
+|---|---|---|---|
+| P12.0 | green 2026-10-09 (D210) | opus | self-compile.sh MATCH at 0733792 (module 3,632,735 bytes; build 252 s warm rtlib at load 6, 2,004 s cold at load 35-50): the backend carried as a program with let-go's ir/ as a library root prints native's `197 257 42` |
+| P12.1 | green 2026-10-09 | opus | the 14 `(binding [*ns* ..])` units call `lw-rt/call-in-ns` (in-ns, restored by name in a finally); `backend-census.sh 4` 571 units, 4 limits; GC guard 25/25 IDENTICAL at 90da78e; self-compile MATCH; gensym 1130 |
+| P12.2 | green 2026-10-09 | opus | `*linear-state*`/`*linear-function-locals*` are atoms set and restored in a finally, `*stub-failures*` an `analyze-program!` param; census.lg boxes float-tainted params as analyze-fn does (f64-to-i64-sat); `backend-census.sh 0` 571 units, 0 limits; xsofy/legmacs census verdicts unchanged; GC guard both lanes 25/25 IDENTICAL at 90da78e |
+| P12.3 | green 2026-10-08 (#27) | opus | corpus/eval/registry/registry-probe.lg 1/1 MATCH: an evaluated defmacro's var carries :macro in (meta v), bound? follows CoreBoundQ/Var.IsBound, resolve of another namespace's :private var is nil (always nil through an alias, visible from its own namespace; new private-var?). rt/ change by design: 16 of 23 guard programs +1307 B each (eval programs + legmacs), re-frozen at f6c3a3e. P7.0 15/15, P7.10 36/38 (the two ledger mismatches). In the stage-2 final run on main 2bfce99 (2026-10-09): ok |
+| P12.4 | green 2026-10-09 (D211); red 2026-10-10 between #35 and the ##-Inf fix (the snapshot would not write) | opus | self-compile-assemble.sh MATCH at 17c9a2f: the carried backend compiles corpus/scalar/ref.lg in the module in 23.0 s (module 3,972,833 bytes, build 317 s, run 27 s) and the binary env.assemble keeps (4,845 bytes) equals wasm-tools'; carried text differs from native (28,980 vs 32,437 bytes: _main's dotimes typed i64, finding for P12.5); lw-ext `\p{Lu}` `\p{Ll}` `\p{L}` (Latin-1 named limit); guard re-frozen at 6782b56, 26/26 IDENTICAL; gensym 1130; self-compile MATCH; P10.6 MATCH; P6.8 9/9; eval/program 6/6 |
+| P12.5 | green 2026-10-09 (D212) | opus | self-compiled-run.sh 6/6 MATCH at 9fe06ec: the carried compiler compiles ref.lg, fib, tak, loop-recur, os-args and corpus/eval/special/basic.lg in the module (40/24/27/21/117/519 s; native driver 22/1/1/0/16/92 s, measured beside a gate run), node runs each result and native's output MATCHes (run 0.1-0.3 s; basic.lg's compile peaks at 1.18 GB); module 4,232,134 bytes, build 649 s. Carried WAT is native's for the five scalar programs; basic.lg's differs (output matches; the diff is B2's input). basic.lg's `unresolved symbol rf` had two causes in driver.lg's names-only program-table entry: it listed core's macros as plain names (a stand-in without :macro shadowed the evaluator's builtin macros inside core; 701cfc4 leaves them out) and it carried no refers (core's `bigint?` from let-go.types; 9fe06ec carries non-core refers, `{}` under *in-wasm*). Earlier on this row: ref.lg's i64 dotimes was the evaluator's bare </inc (fixed, re-frozen d3aa439); list-n and spread arity; f64-lit's NaN?; qualified builtin names; regex literals via build-quote; ns-refers/the-ns/private names as named limits. Guard 27/27 at d3aa439 (byte-neutral), gensym 1130 |
+| P12.6 | green 2026-10-10 (D206 fallback) | opus | compile-page-check.mjs: host/compile.html compiles corpus/scalar/fib.clj inside the browser (headless Chromium, 35.1 s at load ~12; the P12.4 module shape as corpus/host/compile.lg, run in a worker), host/wat-asm (wasm-tools' `wat` crate 1.256.0 compiled to wasm, 515,383 B) assembles the text in 14 ms to 4,356 bytes IDENTICAL to `wasm-tools parse` of the same text, the result runs on the page and prints native's output; a defmulti stops with native's named limit and the page keeps working. Served: compiler 1,246,943 B (wasm-opt -O3 of 4,243,116; 272 KB brotli), snapshot 720,217 B, assembler 515,383 B; module build 1,195 s at load ~12. wabt 1.0.39 cannot parse `rec`; binaryen 132's text parser emits bytes V8 rejects |
+| P12.GATE | green 2026-10-09 | orchestrator | STAGE 2 FINISH LINE on main 2bfce99 (#26–#31 merged with --merge; final run 15:06–18:50, LW_GATE_J=1, LW_ATTEST=0, GOGC=400 GOMEMLIMIT=3GiB): gate 12 exit 0 with P12.0–P12.5 all ok; gates 1, 4, 6–10 exit 0; P8.0 byte guard IDENTICAL, 27 programs, both lanes, base 0609395 (the merge-commit re-freezes of #28/#30/#31 are verified by this run); P9.1 1130; census keys refreshed (verdict columns identical: xsofy ok 71 / unbound-var 976 / phase2-const 15 / optimize error 2; legmacs ok 123 / unbound-var 688 / phase2-const 5). Gates 2, 3, 5 were red on one cause, D211's host-assemble intrinsic with no intrinsics_test row (P2.9, P3.0; P5.4 refuses on a red gate 2): fixed in #32 (4352d98), gates 2, 3, 5 rerun there 19:07–19:28, all exit 0 (30 rows ok). In-gate numbers: P12.4 module 4,233,417 B (build 553 s cold), P12.5 module 4,233,423 B (349 s), 6/6 MATCH, basic.lg 448 s in-module vs 57 s native. Stage 2 is done; the loop stops here; B2 is the next lane (D206), with the #28 review follow-ups first |
 
 ## LLVM target, M1 — 2026-10-07
 

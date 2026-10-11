@@ -1,0 +1,13 @@
+;; A library file whose top-level in-ns moves forms into another namespace
+;; (let-go's test/compat portability shim defines a deftype in core that way):
+;; each section is indexed in its own namespace, with an init of its own.
+(ns evlib.sections)
+(defn here [] :here)
+(in-ns 'evlib.elsewhere)
+(deftype Marker [])
+(defrecord Box [v])
+(def answer 42)
+(defn wrap [x] (->Box x))
+(in-ns 'evlib.sections)
+(defn via [x] (evlib.elsewhere/wrap x))
+(defn marker [] (evlib.elsewhere/->Marker))

@@ -6,12 +6,12 @@
 # the pinned commit with `git show` (the let-go checkout is not touched).
 # Open <out-dir>/index.html?module=<name>.wasm (default module.wasm) through
 # any static server; no COOP/COEP needed (D91). Env: LETGO (default the
-# canonical checkout), LG_COMMIT (default ff1e6dac, the pinned lg).
+# canonical checkout), LG_COMMIT (default e9789b7d, the pinned lg).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/../checks/env.sh"
 LETGO=${LETGO:-$LW_ROOT/let-go}
-LG_COMMIT=${LG_COMMIT:-ff1e6dac}
+LG_COMMIT=${LG_COMMIT:-e9789b7d}
 out=${1:?usage: build-legmacs-serve.sh <out-dir> [module.wasm ...]}; shift
 mkdir -p "$out"
 command cp "$here/legmacs.html" "$out/index.html"

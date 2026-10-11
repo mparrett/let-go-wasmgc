@@ -1,0 +1,27 @@
+;; P12.4 (D211): the backend carried as a program compiles a program inside
+;; the module and hands the text to its host's assembler. checks/
+;; self-compile-assemble.sh copies src/ with its namespaces renamed under
+;; lwx. (driver.lg included: its -main runs only as the program file) and
+;; builds this with LW_HOST_FS=1 (the program and lw-rt's snapshot are read
+;; through the host) and LW_HOST_ASM=1 (wasm.host-asm/assemble). The options
+;; are -main's for `driver.lg --no-rtlib <in> <out>`: the cached runtime
+;; library is keyed on the lg binary's hash, which a module cannot take, so
+;; it would miss and its build would need spit.
+;; lwx.lw-ext is required here, first, because lw-rt loads it with
+;; load-string, not a require: the driver indexes (and the program table
+;; holds) only namespaces an ns form reaches, so without this the module's
+;; find-var answers nil for every lw-ext var, the carried ext-defns is empty
+;; and rt-analyze*! finds no source for an ext-twin (the-ns of nil). Natively
+;; the driver's own lw-rt has loaded the runtime namespaces lw_ext.lg names.
+(ns self-compile-assemble (:require [lwx.lw-ext] [lwx.driver :as d] [lwx.lower-wasm :as lw]))
+
+(def in (let [p (os/getenv "LW_ASSEMBLE_IN")] (if (seq p) p "corpus/scalar/ref.lg")))
+;; one form: compile-text evaluates the program's forms in their own
+;; namespace and leaves *ns* there, so a later top-level form of this file
+;; would resolve its names in the wrong one (natively; the module's code is
+;; resolved when it is compiled)
+(let [text (time (d/compile-text in {:target :gc :rt true :shake true :rtlib false :test false :skip #{}}))
+      _ (println "text" (count text) (lw/hex32 text))
+      n (wasm.host-asm/assemble text)]
+  (when (neg? n) (throw (ex-info "assemble: the host did not assemble the text" {})))
+  (println "binary" n))

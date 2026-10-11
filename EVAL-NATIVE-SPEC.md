@@ -91,7 +91,7 @@ The honest finding of the work is the table above, corrected.
   `corpus/eval/native-ledger.md`, `corpus/review5/bugs/`. Never `src/`,
   never `rt/wasm/natives.lg` (say what you need from it instead), never the
   wasm side's behaviour.
-- Native lg is `$LW_ROOT/lg-bin/lg-ff1e6dac76` (let-go ff1e6dac).
+- Native lg is `$LW_ROOT/lg-bin/lg-e9789b7d53` (let-go e9789b7d).
 - No git commit/push/gh from the agent; the runner commits. No upstream
   anything.
 - Toolchain on the devbox: lg only, plus the repo. `LW_SLOTS=2` is enough.

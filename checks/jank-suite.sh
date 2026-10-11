@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # checks/jank-suite.sh: jank's clojure-test-suite against native lg, deftest
-# by deftest (D208, plan task 4). The suite is let-go's submodule
-# test/clojure-test-suite (bd610c8 at the ff1e6dac pin); its core_test and
+# by deftest. The suite is let-go's submodule test/clojure-test-suite at the
+# pinned commit (bd610c8 at e9789b7d); its core_test and
 # string_test files are compared the way checks/run-tests.sh --corpus compares
 # let-go's core tests: native lg's run-tests report (checks/jank-native.lg,
 # let-go's own harness setup: :clj reader conditionals, the portability shim

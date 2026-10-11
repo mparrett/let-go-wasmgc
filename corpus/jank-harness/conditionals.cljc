@@ -1,4 +1,4 @@
-;; checks/jank-suite.sh --self-test (plan review focus 4): .cljc reader
+;; checks/jank-suite.sh --self-test: .cljc reader
 ;; conditionals take the :clj branch on both sides of the comparison.
 (ns harness.conditionals
   (:require [clojure.test :refer [deftest is testing]]))

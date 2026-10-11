@@ -1,0 +1,11 @@
+;; P12.5 (D212): dotimes' test and step are core/< and core/inc in native's
+;; expansion (syntax-quote qualifies them), so a local named < or inc does not
+;; capture them. The evaluator's dotimes, and the carried compiler that
+;; expands through it inside a module, must give the same answer.
+(let [inc (fn [x] (+ x 2))]
+  (dotimes [i 4] (print i))
+  (println))
+(eval '(let [inc (fn [x] (+ x 2)) < (fn [a b] (> a 100))]
+         (dotimes [i 3] (print i))
+         (println)))
+(println (eval '(let [n 0] (dotimes [_ 5] nil) :done)))
