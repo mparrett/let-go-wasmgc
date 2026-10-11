@@ -1064,7 +1064,7 @@
    evaluator, which cannot resolve it either. \"user\" holds the program's
    own vars."
   []
-  (let [v (lw-rt/ns-var 'wasm.natives 'builtin-nss)
+  (let [v (lw-rt/rt-var 'natives 'builtin-nss)
         listed (second (first (:arities (get lw-rt/defn-by-var v))))]
     ;; map/filter, not for: a for here takes gensyms when this file loads (P9.1)
     (into {} (map (fn [nsn] [nsn (names-entry nsn)])
@@ -1086,10 +1086,10 @@
    ;; P10.6: LW_PROGRAM_TABLE=1 emits the table for a program that reaches
    ;; the registry without eval (a library init that resolves or interns
    ;; its vars: let-go's ir.data); the trigger stays syntactic eval
-   (when (and (or @eval-reached table-asked?) (lw-rt/ns-var 'wasm.eval 'install-program-table!)
+   (when (and (or @eval-reached table-asked?) (lw-rt/ns-var (lw-rt/rt-ns 'eval) 'install-program-table!)
               (not lw-rt/no-eval?)
               (not= "1" (os/getenv "LW_NO_PROGRAM_TABLE")))
-     [(list 'wasm.eval/install-program-table!
+     [(list (lw-rt/rt-sym 'eval 'install-program-table!)
             (into (if table-asked? (builtin-names-entries) {})
                   (for [n nss] (ns-table-entry! n var-globals main-defn-vars))))])))
 

@@ -33,7 +33,8 @@ Used by: **P** = `pvec.lg`, **H** = HAMT (P2.4), **C** = closures/arity dispatch
 | `array-copy` | 6 | array.copy (memmove) | [decl dst di src si n] → nil | P H V |
 | `ref-eq` | 2 | ref.eq | [:any :any] → :bool | H (identity fast path, transient owner) V |
 | `null` / `null?` | 0 / 1 | ref.null none / ref.is_null | | P H |
-| `i31` / `i31?` / `i31-get` | 1 | ref.i31 / ref.test i31 / i31.get_s | | V (D2 hybrid box), P test |
+| `fix` / `fix?` / `fix-get` | 1 | ref.i31 / ref.test i31 / i31.get_s | | V (D2 hybrid box), P test |
+| `fix-min` / `fix-max` | 0 | i64.const (the target's fixnum bounds: i31's here) | → :int | V (box-int) |
 | `i64-add` `-sub` `-mul` | 2 | i64.add/sub/mul (wrap) | [:int :int] → :int | V (murmur3, hash mixing) |
 | `i64-shl` `-shr-s` `-shr-u` | 2 | i64.shl/shr_s/shr_u (count mod 64) | [:int :int] → :int | H (bitpos) V |
 | `i64-lt-u` | 2 | i64.lt_u | → :bool | V (uint32 hash compare) |
@@ -62,7 +63,7 @@ lg 4e769212: `unchecked-add` wraps; lg's own shifts follow Go, so the reference
 masks the count; `(long ##NaN)` is 0 and `(long 1e19)` saturates, so
 `f64-to-i64` checks the trap cases itself). The reference is *stricter* than
 wasm where wasm is silent and a correct runtime never relies on it: an
-out-of-range `i31` traps (wasm drops the top bit), an index ≥ 2^32 traps (wasm
+out-of-range `fix` traps (wasm drops the top bit), an index ≥ 2^32 traps (wasm
 would wrap it to i32 and may land in bounds), a raw lg value in a `:ref` slot
 or an out-of-range value in an `:i32` slot throws. One exception (P2.10): a
 native exception may sit in a `:ref` slot, as the stand-in for the payload a
