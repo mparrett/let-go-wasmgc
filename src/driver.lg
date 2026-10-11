@@ -32,15 +32,18 @@
     (if (empty? cuts)
       forms
       (let [starts (vec (reductions + 0 (map #(inc (count %)) (clojure.string/split text #"\n" -1))))
-            ;; read-all's "[" sits before line 1, one column to the left
-            off (fn [[l c]] (+ (starts (dec l)) (dec c) (if (= 1 l) -1 0)))
-            pad (fn [[l c]] (str (apply str (repeat (dec l) "\n")) (apply str (repeat (dec c) " "))))
+            ;; read-all's "[" sits before line 1, one column to the left.
+            ;; Positional, not destructured: a destructuring binding takes a
+            ;; gensym when this file loads (D188, P9.1)
+            off (fn [lc] (let [l (nth lc 0) c (nth lc 1)] (+ (starts (dec l)) (dec c) (if (= 1 l) -1 0))))
+            pad (fn [lc] (let [l (nth lc 0) c (nth lc 1)] (str (apply str (repeat (dec l) "\n")) (apply str (repeat (dec c) " ")))))
             ends (concat (map off (rest cuts)) [(count text)])
             head (take-while #(not (and (switch-ns %) (:line (meta %)))) forms)]
         (vec (concat head
-                     (mapcat (fn [[l c n] e]
-                               (binding [*ns* (create-ns n)]
-                                 (read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e)))))
+                     (mapcat (fn [cut e]
+                               (let [l (nth cut 0) c (nth cut 1) n (nth cut 2)]
+                                 (binding [*ns* (create-ns n)]
+                                   (read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e))))))
                              cuts ends)))))))
 
 (defn splice-do
