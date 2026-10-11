@@ -1,0 +1,11 @@
+id: f6a5d6a
+v: 2
+title: Function cache key: De Bruijn normalization of the expanded form
+status: open
+priority: medium
+created: 2026-10-11T03:10:58Z
+updated: 2026-10-11T03:10:58Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: lower-llvm-cache/normalize (src/lower_llvm_cache.lg, plan 1 Task 1) rewrites a fully expanded form so that renaming its locals does not change its hash: every binder becomes :lw/bind and every local use [:lw/local n], n counting binders outward from the use; free symbols become their resolved var; quoted data, the member of `.` and the class of `new` are kept. A closed subform hashes the same in any context, so the cache can key an inner fn independently of its parent. Covers every binding form let-go special-cases: fn*, let*, loop*, letfn*, catch. Tests: corpus/llvm-rt/llvm_cache_test.lg. Plan 2 keys each entry on it. Separate from the structural naming of locals in let-go output, which is deferred.
