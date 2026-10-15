@@ -9,3 +9,6 @@ author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
 description: git-issue's setup-sync fetches notes with +refs/notes/*:refs/notes/*, so a fetch or pull force-replaces a local issue ref and drops unpushed local edits (reproduced 2026-10-10 in scratch clones; tracked in nnunley/git-issue-tracker as #e2dfdaa). Lost edits survive only in the reflog: git reflog show refs/notes/issue-<id>.
+
+## Comments
+[2026-10-15T19:51:29Z] Norman Nunley, Jr: Closing: e2dfdaa is fixed in git-issue main, and this clone now fetches issues into refs/issue-remotes/ and merges them on `git issue sync`, so a fetch or pull no longer overwrites unpushed edits. Matt still needs `git issue setup-sync enable` on his side to get the merge.
