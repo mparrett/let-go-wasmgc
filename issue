@@ -16,3 +16,4 @@ description: D219 re-reads a file at each ns switch and consumes extra gensyms; 
 [2026-10-12T00:44:24Z] Norman Nunley, Jr: No re-freeze needed: the renumbering is gone. D219's read-program had three destructuring parameters, each taking a gensym when driver.lg loads, which shifted every program's expansion by three. llvm-poly now takes them apart with nth.
  
  On llvm-poly after merging main: P9.1 reads 1133, the same as main, and the GC byte guard is IDENTICAL on all 28 programs against main's base (the merge of #42), default and explicit-gc lanes. I'd close this.
+[2026-10-15T18:42:39Z] Matt Parrett: Closing: llvm-poly takes read-program apart with nth, so the renumbering and the re-freeze are both gone (confirmed IDENTICAL on 28 programs against the #42 merge). Nothing to do on the wasm side when the branch merges.
