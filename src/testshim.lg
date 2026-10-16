@@ -53,7 +53,7 @@
 ;; probe run under `quiet` (with-out-str*) must have them captured, and only
 ;; the runtime's printers write to the *out* fd stack (lw_ext's capture).
 ;; An error: the ERROR line the check compares, then the exception's message
-;; on its own indented line, where native's clojure.test prints it. The
+;; on its own indented line (native carries it on its "actual:" line). The
 ;; check's norm never reads that line; checks/run-tests.sh records it as the
 ;; file's cause, so checks/jank-suite.sh can tell a d15 constant (a BigInt or
 ;; Ratio the backend refuses) from a real mismatch. e is nil for a deftest
@@ -65,6 +65,8 @@
     (if (string? m) (print (str "  error: " m "\n")) nil)))
 
 (defn __t-report [r]
+  ;; :__t-error has no caller in the driver since the is macro passes the
+  ;; exception to __t-erred; kept for a test file that calls it by name
   (if (= r :__t-error)
     (__t-erred nil)
     (if r
