@@ -1,0 +1,11 @@
+id: e9c84fc
+v: 2
+title: Records are tagged maps: dissoc, equality and printing of a record differ from native
+status: open
+priority: medium
+created: 2026-10-16T06:30:52Z
+updated: 2026-10-16T06:30:52Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: P10.6/#43 represent a defrecord instance as a map carrying :lw/type (D122: the backend has no type kind), so (dissoc r :a) keeps the tag where native returns a plain map, (= r {:a 1}) is false where native compares fields, and pr-str shows the tag. The jank suite shows it in dissoc.cljc and the record tests. Fixing it is a representation decision (a map kind that carries its type out of band, or a type kind) and touches the runtime layout under discussion on PR #25, so it waits for that answer. Out of scope for the 2026-10-15 loop.
