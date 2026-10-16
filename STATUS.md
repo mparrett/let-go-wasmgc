@@ -163,6 +163,7 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 |---|---|---|---|
 | 2026-10-03 | P8.0 | PASS | All 18 frozen scalar/eval programs byte-identical with default and explicit GC after every emitter checkpoint. |
 | 2026-10-08 | P8.0 guard | FINDING | Backend determinism defect: corpus/eval/registry/registry-probe.lg compiles with one local `$v64` or `$v65` in a wasm.natives fn depending on whether the rtlib dir was warmed by earlier programs; the guard now captures and compares in the same corpus order (header of checks/gc-byte-identity.sh). |
+| 2026-10-16 | P8.0 guard | re-frozen | jank twins: = and assoc! become multi-arity, bit-test a real twin; every evaluator-carrying module gains those functions (compile.lg 3132 -> 3151 funcs), scalar programs unchanged; the 29 programs MATCH native; base bb942b4. |
 | 2026-10-15 | P8.0 guard | re-frozen | review of #43: progtypes.lg alone moves (a cross-namespace arm calls a hidden defn; +3 functions, 565 -> 568), the 28 others identical to the dc31123 cache with it set aside; base a96f9e6. |
 | 2026-10-15 | P8.0 guard | re-frozen | a program's own defprotocol/deftype/defrecord (#69d344c step 2): the 28 modules are identical to the 1646fc7 cache with the new program set aside; corpus/eval/program/multi/progtypes.lg joins the corpus (29 programs); base dc31123. |
 | 2026-10-11 | P8.0 guard | re-frozen | library in-ns sections: the 27 modules are identical to the 54048e6 cache; corpus/eval/program/multi/sections.lg joins the corpus (28 programs); base 7203bb3. |

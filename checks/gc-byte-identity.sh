@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-15 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-16 at
+# bb942b4, the jank twins: equals and assoc! become multi-arity defns (#0/#1/#v beside the fixed
+# arity) and bit-test's notwin stub becomes the bit-test* twin with bitn/bitn-arity, so every module
+# that takes = as a value (the evaluator's core table) gains those functions; scalar programs do not
+# carry them. Behaviour: the 29 programs MATCH native through the oracle; before that 2026-10-15 at
 # a96f9e6, the review of #43: a cross-namespace protocol arm calls a hidden defn in the type's
 # namespace, so progtypes.lg alone moves (+3 functions: __lw_Sq_area, __lw_Sq_label and the
 # fixture's own twice); the 28 others are identical to the dc31123 cache; before that 2026-10-15 at
@@ -74,7 +78,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=a96f9e6de335197f55039fdd496bcb3a7c4a8ad1
+base=bb942b41149689220c3a05992eaba49ad35da9e6
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
