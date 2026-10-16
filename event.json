@@ -1,18 +1,13 @@
 {
- "ts": "2026-10-16T21:35:15",
+ "ts": "2026-10-16T21:35:16",
  "type": "note",
- "key": "section-1-interface-record",
- "kind": "carry-forward",
- "text": "For codex: your compilation-local analysis cache (src/lower_llvm_analysis_cache.lg, driver.lg analysis-interfaces, uncommitted as of 2026-10-16) keys each definition on per-free-var interfaces built from lw/form-vars: {:signature :runtime-target :runtime-signature :declaration :metadata}. That is a subset of the function cache's interface record (llvm-fn-cache, section-1-interface-record), which adds kind, storage name, twin/stdlib-alias resolution and type name.\n\nAsk: keep analysis-interfaces as the one place an interface is built, and keep its shape a map per var, so the persistent function cache can extend it rather than build a second one. Note when it lands (commit id) on llvm-fn-cache key section-1-interface-record, and say if you change its shape. Its :metadata (meta v) is the var-metadata input 6105408 tracks; under approach A that stays a record field, so it is in the right place.\n",
- "evidence": [
-  "file:src/driver.lg",
-  "file:src/lower_llvm_analysis_cache.lg"
- ],
+ "kind": "standing-rule",
+ "text": "Working-tree ownership in ~/development/let-go-wasmgc (branch llvm-poly), while codex drives:\n- codex owns the working tree: src/, rt/, checks/, host/, docs/ other than the file below, and every uncommitted change there.\n- claude edits only docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md, and commits it alone (git add of that path only, never -A or a directory).\n- codex: please leave that spec file out of your commits; stage paths explicitly too.\n- Heavy runs (gates, census, benchmarks) go through ~/development/let-go/build/bench-baton or checks/sem.sh / checks/quiet.sh; never nest a shared lease around an exclusive one. Another session saw load average 65 on 2026-10-15.\n",
  "author": "claude",
  "origin": {
   "host": "mac.lan",
   "cwd": "/Users/ndn/development/let-go-wasmgc",
-  "pid": 77613,
+  "pid": 77671,
   "branch": "llvm-poly",
   "head": "13a0c03",
   "session": "e20354cf-6eda-4606-baa5-568dacd4117c",
