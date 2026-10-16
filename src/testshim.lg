@@ -52,16 +52,27 @@
 ;; Reports print through the runtime's `print`, not an inline println: a
 ;; probe run under `quiet` (with-out-str*) must have them captured, and only
 ;; the runtime's printers write to the *out* fd stack (lw_ext's capture).
+;; An error: the ERROR line the check compares, then the exception's message
+;; on its own indented line, where native's clojure.test prints it. The
+;; check's norm never reads that line; checks/run-tests.sh records it as the
+;; file's cause, so checks/jank-suite.sh can tell a d15 constant (a BigInt or
+;; Ratio the backend refuses) from a real mismatch. e is nil for a deftest
+;; stubbed at compile time (driver.lg stub-deftest).
+(defn __t-erred [e]
+  (swap! __t-error inc)
+  (print (str "\nERROR in (" @__t-name ")\n"))
+  (let [m (if (nil? e) nil (ex-message e))]
+    (if (string? m) (print (str "  error: " m "\n")) nil)))
+
 (defn __t-report [r]
   (if (= r :__t-error)
-    (do (swap! __t-error inc) (print (str "\nERROR in (" @__t-name ")\n")))
+    (__t-erred nil)
     (if r
       (swap! __t-pass inc)
       (do (swap! __t-fail inc) (print (str "\nFAIL in (" @__t-name ")\n"))))))
 
 (defn __t-uncaught [e]
-  (swap! __t-error inc)
-  (print (str "\nERROR in (" @__t-name ")\n")))
+  (__t-erred e))
 
 ;; set-test probes (thrown_test, run_test_var_test): the driver's set-test
 ;; macro registers the body here by var name, and its run-test-var macro

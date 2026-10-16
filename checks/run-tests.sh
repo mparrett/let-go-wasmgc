@@ -254,6 +254,10 @@ for f in "${files[@]}"; do
   fi
   norm <"$t/$b.native" >"$t/$b.n"; norm <"$t/$b.wasm.out" >"$t/$b.w"
   werr=$(grep -m1 -E '^(error|lower-wasm)' "$t/$b.wasm.out" | strip)
+  # else the message the test shim prints under its first ERROR line: the
+  # compared lines carry only test names, and jank-suite.sh's cause column
+  # needs the message to tell a d15 constant from a real mismatch
+  [ -n "$werr" ] || werr=$(grep -m1 -E '^  error: ' "$t/$b.wasm.out" | sed 's/^  //' | strip)
   if [ ! -s "$t/$b.n" ]; then
     msg="native run printed no summary: $(grep -v catalog "$t/$b.native" | head -1 | strip)"
     echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
