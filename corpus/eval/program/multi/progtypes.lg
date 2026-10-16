@@ -1,0 +1,30 @@
+;; #69d344c step 2: defprotocol, deftype and defrecord as a program's own top-level
+;; forms, also below a macro that expands to a (do ..) (the jank suite's
+;; when-var-exists), and a program type implementing a library's protocol. Run with
+;; LG_ARGS="-source-paths corpus/eval/program/multi/lib".
+(ns eval.multi.progtypes (:require [evlib.types :as t]))
+
+(defprotocol Named
+  (nm [this])
+  (greet [this s]))
+
+(defmacro when-present [sym & body] `(do ~@body))
+
+(when-present deftype
+  (deftype Dot []
+    Named
+    (nm [this] "dot")
+    (greet [this s] (str "hi " s)))
+  (defrecord Pt [x y]
+    Named
+    (nm [this] (str "pt" x))
+    (greet [this s] (str s x y))))
+
+(defrecord Sq [side]
+  t/Shape
+  (area [this] (* side side))
+  (label [this n] (str "sq" n)))
+
+(println (nm (->Dot)) (greet (->Dot) "a") (nm (->Pt 1 2)) (greet (->Pt 1 2) "b"))
+(println (t/area (->Sq 3)) (t/label (->Sq 3) 4) (t/area (t/->Rect 2 5)))
+(println (instance? Dot (->Dot)) (instance? Pt (->Dot)) (instance? Sq (->Sq 1)) (:x (map->Pt {:x 9})))
