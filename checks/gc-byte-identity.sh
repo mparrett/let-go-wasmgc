@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-16 at
+# d55d645, the hierarchy twins: no function changes; one constant's init call moves two lines in
+# the modules carrying natives.lg (the ns form's exclude list changes a load order), the 29 programs
+# MATCH native and legmacs parity holds; before that 2026-10-16 at
 # bb942b4, the jank twins: equals and assoc! become multi-arity defns (#0/#1/#v beside the fixed
 # arity) and bit-test's notwin stub becomes the bit-test* twin with bitn/bitn-arity, so every module
 # that takes = as a value (the evaluator's core table) gains those functions; scalar programs do not
@@ -78,7 +81,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=bb942b41149689220c3a05992eaba49ad35da9e6
+base=d55d645c4055ba11f797502a011df07a1454186b
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
