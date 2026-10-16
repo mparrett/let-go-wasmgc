@@ -1,0 +1,68 @@
+;; The hierarchy family (make-hierarchy, derive, underive, parents,
+;; ancestors, descendants, isa?) had no runtime twin. Covers the global
+;; hierarchy (1/2-arg forms, derive/underive return nil) and an explicit one
+;; (3-arg forms return the new map), lookups with 1 and 2 args, unknown tags,
+;; multi-level ancestry, a diamond, isa? shapes, and native's error texts.
+;; Keywords are spelled :h/x, not ::x: the backend reads ::x in the driver's
+;; namespace, so the printed sets would differ by namespace, not by twin.
+(defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
+
+(println "make" (make-hierarchy) (= {:parents {} :descendants {} :ancestors {}} (make-hierarchy)))
+
+;; global: a chain plus a fork, and a keyword standing in for a record type
+(def TestRecord :h/test-record)
+(println "derive-global" (t #(derive :h/leaf :h/t)) (t #(derive :h/t :h/p-1)) (t #(derive :h/t :h/p-2))
+         (t #(derive :h/p-1 'ns/p-0)) (t #(derive TestRecord :h/record)) (t #(derive (type 1) :h/num)))
+(println "parents1" (parents :h/leaf) (parents :h/t) (parents :h/p-1) (parents :h/p-2) (parents :h/nope)
+         (parents TestRecord) (parents (type 1)) (parents nil) (parents "x") (parents 42) (parents []))
+(println "ancestors1" (ancestors :h/leaf) (ancestors :h/t) (ancestors :h/p-2) (ancestors :h/nope) (ancestors (type 1)))
+(println "descendants1" (descendants 'ns/p-0) (descendants :h/p-1) (descendants :h/leaf) (descendants :h/nope)
+         (descendants :h/record) (descendants 1) (descendants nil))
+(println "isa-global" (isa? :h/leaf :h/t) (isa? :h/leaf 'ns/p-0) (isa? :h/t :h/leaf) (isa? TestRecord :h/record)
+         (isa? (type 1) :h/num) (isa? 1 1) (isa? "a" "a") (isa? nil nil) (isa? nil :h/t) (isa? :h/nope :h/t))
+(println "isa-vec" (isa? [:h/a :h/b] [:h/a :h/b]) (isa? [:h/leaf :h/t] [:h/t :h/p-1]) (isa? [:h/leaf] [:h/t :h/p-1])
+         (isa? [] []) (isa? [:h/leaf :h/t] [:h/t]))
+
+;; diamond on an explicit hierarchy
+(def diamond (-> (make-hierarchy) (derive :h/b :h/a) (derive :h/c :h/a) (derive :h/d :h/b) (derive :h/d :h/c) (derive :h/leaf :h/d)))
+(println "diamond-parents" (parents diamond :h/d) (parents diamond :h/b) (parents diamond :h/a) (parents diamond :h/nope)
+         (parents diamond :h/leaf) (parents diamond nil) (parents nil :h/d) (parents {} :h/d) (parents 42 42))
+(println "diamond-ancestors" (= #{:h/a :h/b :h/c} (ancestors diamond :h/d)) (ancestors diamond :h/b) (ancestors diamond :h/a)
+         (= #{:h/a :h/b :h/c :h/d} (ancestors diamond :h/leaf)) (ancestors diamond :h/p-1) (ancestors "x" "x"))
+(println "diamond-descendants" (descendants diamond :h/d) (descendants diamond :h/b) (= #{:h/b :h/c :h/d :h/leaf} (descendants diamond :h/a))
+         (descendants diamond :h/nope) (descendants nil nil))
+(println "diamond-isa" (isa? diamond :h/leaf :h/a) (isa? diamond :h/d :h/c) (isa? diamond :h/a :h/d) (isa? diamond :h/leaf :h/t)
+         (isa? nil :h/a :h/a) (isa? {} :h/a :h/a) (isa? diamond [:h/d :h/b] [:h/a :h/a]))
+
+(def small (derive (make-hierarchy) :h/rect :h/shape))
+(println "derive-h" small)
+(println "derive-h2" (derive small :h/square :h/rect))
+(println "derive-h3" (= small (derive small :h/rect :h/shape)) (derive (make-hierarchy) :rect :shape)
+         (derive (make-hierarchy) 'n/a 'n/b) (derive {:parents {} :descendants {} :ancestors {}} :h/x :h/y))
+(def sq (derive small :h/square :h/rect))
+(println "underive-h" (underive sq :h/square :h/rect) (= small (underive sq :h/square :h/rect)) (= sq (underive sq :h/rect :h/square))
+         (= sq (underive sq :h/square :h/shape)))
+(println "underive-diamond" (= {:parents {:h/b #{:h/a} :h/c #{:h/a} :h/d #{:h/c}}
+                                  :ancestors {:h/b #{:h/a} :h/c #{:h/a} :h/d #{:h/a :h/c}}
+                                  :descendants {:h/a #{:h/d :h/b :h/c} :h/c #{:h/d}}}
+                                 (underive (underive diamond :h/leaf :h/d) :h/d :h/b))
+         (underive (underive (underive diamond :h/leaf :h/d) :h/d :h/b) :h/d :h/c))
+
+;; underive on the global
+(println "underive-global" (t #(underive :h/leaf :h/t)) (parents :h/leaf) (isa? :h/leaf :h/p-1) (descendants :h/t)
+         (t #(underive :h/leaf :h/t)) (t #(underive nil nil)) (t #(underive 42 3.14)) (ancestors :h/t))
+
+(println "errors-derive" (t #(derive :a nil)) (t #(derive nil nil)) (t #(derive :a :h/b)) (t #(derive 'a 'n/b))
+         (t #(derive :h/a :b)) (t #(derive 'n/a 'b)) (t #(derive :h/tag 42)) (t #(derive :h/tag "parent")) (t #(derive :h/a :h/a))
+         (t #(derive :h/p-1 :h/t)))
+(println "errors-derive-h" (t #(derive (-> (make-hierarchy) (derive :h/a :h/b) (derive :h/b :h/c)) :h/c :h/a))
+         (t #(derive nil :h/a :h/b)) (t #(derive {} :h/a :h/b)) (t #(derive {:parents {} :descendants {}} :h/a :h/b))
+         (t #(derive {:parents nil :descendants {} :ancestors {}} :h/a :h/b)) (t #(derive :h/z :h/a :h/b)) (t #(derive 3.14 :h/a :h/b))
+         (t #(derive (make-hierarchy) :h/a nil)))
+(println "errors-underive-h" (t #(underive nil :h/a :h/b)) (t #(underive {} :h/a :h/b)) (t #(underive [[:parents {}]] :h/a :h/b))
+         (t #(underive true :h/a :h/b)))
+(println "arity" (t #(apply derive [])) (t #(apply derive [:h/a])) (t #(apply derive [1 2 3 4])) (t #(apply parents []))
+         (t #(apply parents [1 2 3])) (t #(apply isa? [1])) (t #(apply make-hierarchy [1])) (t #(apply underive [1]))
+         (t #(apply descendants [])) (t #(apply ancestors [1 2 3])))
+(def d derive) (def i isa?) (def p parents)
+(println "values" (t #(d :h/v :h/w)) (i :h/v :h/w) (p :h/v) (t #(map parents [:h/v :h/t :h/nope])) (t #(apply isa? diamond [:h/d :h/a])))

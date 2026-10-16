@@ -47,7 +47,8 @@
 (ns wasm.natives
   (:refer-clojure :exclude [format fn? identical? instance? record? boolean? decimal? ratio? uuid? ns-aliases rseq alias find-ns all-ns intern create-ns ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
-                            spit slurp make-array complement bound-fn* ns-resolve future*])
+                            spit slurp make-array complement bound-fn* ns-resolve future*
+                            make-hierarchy derive underive parents ancestors descendants isa?])
   (:require [clojure.string :as string]
             [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
             [wasm.pvec :as pv]
@@ -1530,3 +1531,134 @@
   ([a] (raise-arity 1))
   ([a b] (let [y (to-double a) x (to-double b)] (atan2* y x)))
   ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+;; ---------------------------------------------------------------------------
+;; Hierarchies (pkg/rt/hierarchy.go). A hierarchy is the map {:parents
+;; :ancestors :descendants}, each tag -> set; derive and underive change only
+;; :parents and rebuild the other two from it (rebuildHierarchy), so the
+;; rebuild walks the same keys and sets in the same order as native and the
+;; printed maps agree. The 1- and 2-arg forms read the global hierarchy,
+;; module state here (an atom, filled on first use: a map literal as a
+;; runtime global came out empty, see nsaliases above).
+;; Named limits (silent): the runtime has no ValueType parents
+;; (directTypeParents' Object / clojure.lang.* table) and no Object value,
+;; so a type tag has only the parents derive gave it and descendants never
+;; meets the root type it refuses. Written without destructuring, for,
+;; doseq or named fns: those take gensyms at load (checks/gensym-load.sh).
+
+(def hierarchy-cell (atom nil))
+
+(defn- h-empty [] (assoc (assoc (assoc {} :parents {}) :ancestors {}) :descendants {}))
+(defn- global-h [] (or @hierarchy-cell (reset! hierarchy-cell (h-empty))))
+
+;; native's *vm.PersistentMap / *vm.PersistentSet: sorted ones are other types
+(defn- h-map? [x] (and (map? x) (not (sorted? x))))
+(defn- h-set? [x] (and (set? x) (not (sorted? x))))
+
+(defn- h-valid? [h]                                       ; asHierarchy
+  (and (h-map? h) (h-map? (get h :parents)) (h-map? (get h :ancestors)) (h-map? (get h :descendants))))
+
+(defn- h-type? [x] (= 35 (c/ckind x)))                   ; a ValueType (wasm.core's TypeVal)
+(defn- h-tag? [x] (or (keyword? x) (symbol? x) (h-type? x))) ; validLookupTag
+(defn- h-named? [x] (and (or (keyword? x) (symbol? x)) (some? (namespace x))))
+
+(defn- h-section [h k] (let [m (get h k)] (if (h-map? m) m {})))
+(defn- h-set-at [m k] (let [st (get m k)] (if (h-set? st) st nil)))
+(defn- h-assoc-set [m k v] (assoc m k (conj (or (h-set-at m k) #{}) v)))
+(defn- h-nil-or-set [st empty-set?] (if (empty? st) (if empty-set? #{} nil) st))
+
+;; collectAncestors: `seen` is shared across the whole walk, as native's Go map is
+(defn- h-collect [parents tag seen]
+  (reduce (fn [acc p]
+            (if (contains? @seen p)
+              acc
+              (do (swap! seen conj p)
+                  (reduce conj (conj acc p) (h-collect parents p seen)))))
+          #{} (h-set-at parents tag)))
+
+(defn- h-rebuild [parents]
+  (let [step (fn [acc tag]
+               (let [ancs (h-collect parents tag (atom #{}))]
+                 (if (empty? ancs)
+                   acc
+                   [(assoc (nth acc 0) tag ancs)
+                    (reduce (fn [d anc] (h-assoc-set d anc tag)) (nth acc 1) ancs)])))
+        r (reduce step [{} {}] (keys parents))]
+    (assoc (assoc (assoc {} :parents parents) :ancestors (nth r 0)) :descendants (nth r 1))))
+
+(defn- h-parents-for [h tag empty-set?]
+  (if (h-tag? tag) (h-nil-or-set (h-set-at (h-section h :parents) tag) empty-set?) nil))
+(defn- h-ancestors-for [h tag empty-set?]
+  (if (h-tag? tag) (h-nil-or-set (h-set-at (h-section h :ancestors) tag) empty-set?) nil))
+(defn- h-descendants-for [h tag empty-set?]
+  (if (h-tag? tag) (h-nil-or-set (h-set-at (h-section h :descendants) tag) empty-set?) nil))
+
+(defn- h-isa [h tag parent]                               ; isaIn: = or a parent's isa (no vector case)
+  (or (= tag parent)
+      (boolean (some (fn [p] (or (= p parent) (h-isa h p parent))) (h-parents-for h tag false)))))
+
+(defn- h-derive [h tag parent]                            ; deriveIn
+  (if (or (= tag parent) (h-isa h parent tag))
+    (raise-lit "cyclic derivation")
+    (h-rebuild (h-assoc-set (h-section h :parents) tag parent))))
+
+(defn- h-underive [h tag parent]                          ; underiveIn
+  (let [ps (h-section h :parents) cur (h-set-at ps tag)]
+    (if (or (nil? cur) (not (contains? cur parent)))
+      h
+      (let [nxt (disj cur parent)]
+        (h-rebuild (if (empty? nxt) (dissoc ps tag) (assoc ps tag nxt)))))))
+
+(defn- h-check [h] (if (h-valid? h) h (raise-lit "invalid hierarchy")))
+
+(defn ^{:twin "core/make-hierarchy"} make-hierarchy
+  ([] (h-empty))
+  ([a & more] (raise-arity (+ 1 (count more)))))
+
+(defn ^{:twin "core/derive"} derive
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([tag parent]                                           ; validateGlobalDerive, then the global
+   (cond (or (nil? tag) (nil? parent)) (raise-lit "derive requires non-nil tag and parent")
+         (not (or (h-type? tag) (h-named? tag))) (raise-lit "derive tag must be a namespaced symbol/keyword or type")
+         (not (h-named? parent)) (raise-lit "derive parent must be a namespaced symbol/keyword")
+         :else (do (reset! hierarchy-cell (h-derive (global-h) tag parent)) nil)))
+  ([h tag parent]
+   (h-check h)
+   (if (or (nil? tag) (nil? parent))
+     (raise-lit "derive requires non-nil tag and parent")
+     (h-derive h tag parent)))
+  ([a b c d & more] (raise-arity (+ 4 (count more)))))
+
+(defn ^{:twin "core/underive"} underive
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([tag parent] (reset! hierarchy-cell (h-underive (global-h) tag parent)) nil)
+  ([h tag parent] (h-underive (h-check h) tag parent))
+  ([a b c d & more] (raise-arity (+ 4 (count more)))))
+
+(defn ^{:twin "core/parents"} parents
+  ([] (raise-arity 0))
+  ([tag] (h-parents-for (global-h) tag false))
+  ([h tag] (if (h-valid? h) (h-parents-for h tag true) nil))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+(defn ^{:twin "core/ancestors"} ancestors
+  ([] (raise-arity 0))
+  ([tag] (h-ancestors-for (global-h) tag false))
+  ([h tag] (if (h-valid? h) (h-ancestors-for h tag true) nil))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+;; descendantsFor answers nil (not #{}) for an empty result in both forms
+(defn ^{:twin "core/descendants"} descendants
+  ([] (raise-arity 0))
+  ([tag] (h-descendants-for (global-h) tag false))
+  ([h tag] (if (h-valid? h) (h-descendants-for h tag false) nil))
+  ([a b c & more] (raise-arity (+ 3 (count more)))))
+
+(defn ^{:twin "core/isa?"} isa?
+  ([] (raise-arity 0))
+  ([a] (raise-arity 1))
+  ([tag parent] (h-isa (global-h) tag parent))
+  ([h tag parent] (if (h-valid? h) (h-isa h tag parent) false))
+  ([a b c d & more] (raise-arity (+ 4 (count more)))))
