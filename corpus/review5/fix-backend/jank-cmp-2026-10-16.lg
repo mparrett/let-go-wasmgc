@@ -12,3 +12,7 @@
 (println (try (-) (catch Exception e [:sub (type e) (ex-message e)])))
 (println (try (/) (catch Exception e [:div (type e) (ex-message e)])))
 (println (try (<) (catch Exception e [:lt (type e) (ex-message e)])))
+;; any other zero-argument core-var-ops call reaches the runtime's arity error (the
+;; message carries a fn address, so only the class is compared)
+(println (try (inc) (catch Exception e [:inc (type e)])))
+(println (try (clojure.core/inc) (catch Exception e [:qinc (type e)])))
