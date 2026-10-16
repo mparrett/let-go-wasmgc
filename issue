@@ -1,0 +1,11 @@
+id: b2edfcf
+v: 2
+title: Reader: ::kw in a program resolves in the driver namespace, not the program ns
+status: open
+priority: medium
+created: 2026-10-16T10:13:04Z
+updated: 2026-10-16T10:13:04Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: In a program with an ns form, (ns foo.bar) (println ::x (= ::x :foo.bar/x)) prints :foo.bar/x true natively and :driver/x false on the backend; without an ns form *ns* prints user but ::x is :driver/x. Found by the hierarchy twins review (2026-10-16): the corpus program had to use :h/x keywords. Not recorded in DECISIONS, review5 or FINDINGS before. Likely the driver reads the program text while *ns* is its own namespace (read-program / D219 re-read at each ns switch). The jank suite uses ::tags consistently within a file, so it does not flip a file by itself today.
