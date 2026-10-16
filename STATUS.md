@@ -75,6 +75,7 @@ These records were kept while the backend was built inside a larger workspace. T
 | P6.0 | verifying 05:40 | opus+runner | natives.lg 40+ twins, --skip; src patch applied; run.sh P6.0 running |
 | P5.8 | verifying 05:40 | opus+runner | named no-twin error + twins; run.sh P5.8 running |
 | P5.12 | filed 05:40 | — | loop-shadow miscompile repro (native 10 10 7) |
+| jank-suite | 107/241 files 2026-10-15 | claude | #69d344c steps 2+3: a program's own defprotocol/deftype/defrecord and deftests below a spliced do (when-var-exists); from 0/241 (every deftest sat inside a do in _main). Left: 126 mismatch (105 FAIL/ERROR sets, 18 assertion counts), 5 d15, 3 compile (defmulti, definterface, amap arity); make-hierarchy has no twin (4 files). corpus/jank/baseline.tsv untouched: P13.4 ratchets the llvm lane on it. |
 | P5.9 | dispatched 04:40 | opus | reader meta, var/regex stand-ins (type, symbol?, var?, deref) |
 | P6.0 | done 2026-10-02 06:10 | opus | MISSING 0 / SKIPPED 6 / REACHED 146; legmacs-twins 10/10; verified by rerun |
 | P5.8 | done 2026-10-02 06:10 | opus | fix-natives 1/1; no-twin named error; verified by rerun |
@@ -162,7 +163,6 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 |---|---|---|---|
 | 2026-10-03 | P8.0 | PASS | All 18 frozen scalar/eval programs byte-identical with default and explicit GC after every emitter checkpoint. |
 | 2026-10-08 | P8.0 guard | FINDING | Backend determinism defect: corpus/eval/registry/registry-probe.lg compiles with one local `$v64` or `$v65` in a wasm.natives fn depending on whether the rtlib dir was warmed by earlier programs; the guard now captures and compares in the same corpus order (header of checks/gc-byte-identity.sh). |
-| jank-suite | 107/241 files 2026-10-15 | claude | #69d344c steps 2+3: a program's own defprotocol/deftype/defrecord and deftests below a spliced do (when-var-exists); from 0/241 (every deftest sat inside a do in _main). Left: 126 mismatch (105 FAIL/ERROR sets, 18 assertion counts), 5 d15, 3 compile (defmulti, definterface, amap arity); make-hierarchy has no twin (4 files). corpus/jank/baseline.tsv untouched: P13.4 ratchets the llvm lane on it. |
 | 2026-10-15 | P8.0 guard | re-frozen | a program's own defprotocol/deftype/defrecord (#69d344c step 2): the 28 modules are identical to the 1646fc7 cache with the new program set aside; corpus/eval/program/multi/progtypes.lg joins the corpus (29 programs); base dc31123. |
 | 2026-10-11 | P8.0 guard | re-frozen | library in-ns sections: the 27 modules are identical to the 54048e6 cache; corpus/eval/program/multi/sections.lg joins the corpus (28 programs); base 7203bb3. |
 | 2026-10-10 | P8.0 guard | re-frozen | D213: `box-int` reads `fix-min`/`fix-max`; 23 of 27 modules change +19 bytes in `$wasm.seq/box-int` only, the 4 scalar modules are identical; base 056fa85. |

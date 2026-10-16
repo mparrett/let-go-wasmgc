@@ -20,10 +20,15 @@
     (nm [this] (str "pt" x))
     (greet [this s] (str s x y))))
 
+(def k 100)
+(defn twice [n] (* 2 n))
+
+;; a program type implementing a library protocol: its bodies resolve the
+;; program's own vars
 (defrecord Sq [side]
   t/Shape
-  (area [this] (* side side))
-  (label [this n] (str "sq" n)))
+  (area [this] (+ k (* side side)))
+  (label [this n] (str "sq" (twice n))))
 
 (println (nm (->Dot)) (greet (->Dot) "a") (nm (->Pt 1 2)) (greet (->Pt 1 2) "b"))
 (println (t/area (->Sq 3)) (t/label (->Sq 3) 4) (t/area (t/->Rect 2 5)))
