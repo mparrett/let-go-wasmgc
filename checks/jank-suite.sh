@@ -13,16 +13,22 @@
 #   checks/jank-suite.sh --ratchet          also exit 1 when a file listed in the
 #                                           baseline has fewer passing deftests
 #   checks/jank-suite.sh --update-baseline  rewrite the baseline from this run
-# The baseline is LW_JANK_BASELINE (default corpus/jank/baseline.tsv, the llvm
-# lane's, P13.4); the WasmGC lane ratchets against corpus/jank/baseline-wasm.tsv
-# (P5.13). One file per lane: the lanes pass different sets.
 #   checks/jank-suite.sh --list             regenerate corpus/jank/files.tsv
 #   checks/jank-suite.sh --self-test        the harness on corpus/jank-harness
+#
+# The baseline is LW_JANK_BASELINE (default corpus/jank/baseline.tsv, the llvm
+# lane's, P13.4); the WasmGC lane ratchets against corpus/jank/baseline-wasm.tsv
+# (P5.13). One file per lane: the lanes pass different sets. The ratchet also
+# fails when a baseline file is missing from the run (a crashed or filtered
+# run would otherwise pass vacuously).
 #
 # Causes, per file that does not fully agree: d15 (the backend names Ratio,
 # BigInt or BigDecimal, D15), compile (the driver refused the file), crash
 # (no result, a timeout or a runner crash), mismatch (anything else).
-# Env: LG, LETGO, WASM_RUN, P (parallel files, default 3), LW_CACHE.
+# Env: LG, LETGO, WASM_RUN, P (parallel files, default 3), LW_CACHE,
+# LW_JANK_OUT (results dir, default a mktemp), LW_JANK_BASELINE, LW_JANK_REUSE
+# (with an LW_JANK_OUT holding results.tsv: skip the ~30 min run and only
+# re-evaluate the mode over it; exit 2 when there is nothing to reuse).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$here/checks/env.sh"
@@ -70,14 +76,14 @@ fi
 
 out=${LW_JANK_OUT:-$(mktemp -d)}; mkdir -p "$out"
 baseline=${LW_JANK_BASELINE:-$here/corpus/jank/baseline.tsv}
-# LW_JANK_REUSE=1 with an LW_JANK_OUT that already holds results.tsv skips the
-# run (~30 min) and only re-evaluates the mode over it: the way to falsify the
-# ratchet, or to write a baseline from a run already made
-if [ -n "${LW_JANK_REUSE:-}" ] && [ -f "$out/results.tsv" ]; then
+# the way to falsify the ratchet, or to write a baseline from a run already made
+if [ -n "${LW_JANK_REUSE:-}" ]; then
+  [ -f "$out/results.tsv" ] || { echo "jank-suite: LW_JANK_REUSE set but no $out/results.tsv to reuse"; exit 2; }
+  [ -z "$filter" ] || { echo "jank-suite: --filter has no effect on a reused run"; exit 2; }
   echo "jank-suite: reusing $out/results.tsv"
 else
-RESULTS_TSV=$out/results.tsv LETGO_TEST=$suite/clojure SRC_PATHS="$compat:$suite" \
-  "$here/checks/run-tests.sh" --corpus "$here/corpus/jank/files.tsv" ${filter:+--filter "$filter"} --bar 0 > "$out/run.log" 2>&1
+  RESULTS_TSV=$out/results.tsv LETGO_TEST=$suite/clojure SRC_PATHS="$compat:$suite" \
+    "$here/checks/run-tests.sh" --corpus "$here/corpus/jank/files.tsv" ${filter:+--filter "$filter"} --bar 0 > "$out/run.log" 2>&1
 fi
 tail -2 "$out/run.log"
 # the cause of each file that does not fully agree (columns: file deftests oracle passing ... first_failure cause)
@@ -92,6 +98,8 @@ case $mode in
   update-baseline) cp "$out/passing.tsv" "$baseline"; echo "baseline $baseline: $(awk -F'\t' '{s+=$2} END{print s}' "$out/passing.tsv") deftests" ;;
   ratchet)
     [ -f "$baseline" ] || { echo "ratchet: no baseline at $baseline (run --update-baseline first)"; exit 2; }
+    missing=$(join -t $'\t' -v1 "$baseline" "$out/passing.tsv")
+    if [ -n "$missing" ]; then echo "ratchet: baseline files missing from this run (a filtered or crashed run?):"; cut -f1 <<<"$missing" | sed 's/^/  /'; exit 1; fi
     worse=$(join -t $'\t' "$baseline" "$out/passing.tsv" | awk -F'\t' '$3 < $2 {print $1 " " $2 " -> " $3}')
     if [ -n "$worse" ]; then echo "ratchet: fewer passing deftests than $baseline:"; printf '  %s\n' "$worse"; exit 1; fi
     echo "ratchet: no file below its baseline ($baseline)" ;;
