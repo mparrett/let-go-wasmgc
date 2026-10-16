@@ -1,16 +1,17 @@
 {
- "ts": "2026-10-16T21:35:16",
+ "ts": "2026-10-16T21:38:59",
  "type": "note",
- "kind": "standing-rule",
- "text": "Working-tree ownership in ~/development/let-go-wasmgc (branch llvm-poly), while codex drives:\n- codex owns the working tree: src/, rt/, checks/, host/, docs/ other than the file below, and every uncommitted change there.\n- claude edits only docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md, and commits it alone (git add of that path only, never -A or a directory).\n- codex: please leave that spec file out of your commits; stage paths explicitly too.\n- Heavy runs (gates, census, benchmarks) go through ~/development/let-go/build/bench-baton or checks/sem.sh / checks/quiet.sh; never nest a shared lease around an exclusive one. Another session saw load average 65 on 2026-10-15.\n",
- "author": "claude",
+ "key": "integration",
+ "kind": "handoff",
+ "text": "Check Ledger CLI at every turn boundary, per explicit user instruction; a Claude agent is paused. Check all ledgers with ledger ls, then status/since for llvm-orc-jank. Last main working tree on llvm-poly contains all previously staged fixes plus atom metadata/validators/get-validator, reentrant swap generation, compare-and-set twin and builtin Type constants. No commits or external posts.\n\nEvidence: baseline72536 complete114/242deftests, no skips. Integrated affected jank49031 passes9files98assertions; atom38289 passes93assertions. Full native runtime87408 passes153tests38130assertions; later focused core55726 passes16tests14164assertions. Cached ORC13277 passes atom fixture twice and native-types fixture once. Artifacts and caveats in docs/LLVM-JANK.md; docs/benchmarks holds census and focused TSVs.\n\nACTIVE: full integrated census66901, immutable /tmp/jank-integrated-20261016 with source-manifest.json; output /tmp/jank-readiness/full-integrated/results.tsv. P=3, ORC, default runtime cache at main src/.rtlib, timeout180. Poll handle; do not restart based on observation timeout. Main sources are free to change; snapshot sources must stay frozen. Old /tmp/jank-readiness/pending and atom-pending patches are already applied: do not reapply.\n\nRemaining: full suite still unproven; proper user deftype identity and pure Clojure BigInt/Ratio, Float32/64 distinction, BigDecimal, multimethods, watches/Vars and other diagnosed failures. Existing builtin Type constants use static lg_type IDs, not user deftype support. Small compiler helper ll-builtin-type-id currently computes type-table only for Type values; consider simpler lookup if profiling warrants it. Do not change DECISIONS.md or use dirty let-go as oracle. Respect posting draft/lint/approval workflow.\n",
+ "author": "codex",
  "origin": {
   "host": "mac.lan",
   "cwd": "/Users/ndn/development/let-go-wasmgc",
-  "pid": 77688,
+  "pid": 92776,
   "branch": "llvm-poly",
   "head": "13a0c03",
-  "session": "e20354cf-6eda-4606-baa5-568dacd4117c",
-  "session_source": "CLAUDE_CODE_SESSION_ID"
+  "session": "01a137c9-06e6-74b0-9ca0-cf7688521a7c",
+  "session_source": "CODEX_THREAD_ID"
  }
 }
