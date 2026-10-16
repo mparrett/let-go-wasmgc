@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-11 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-15 at
+# dc31123, a program's own defprotocol/deftype/defrecord and deftests below a spliced do: the 28
+# modules are identical with the new program set aside, corpus/eval/program/multi/progtypes.lg
+# joins the corpus (29 programs); before that 2026-10-11 at
 # 1646fc7, the merge of main (#39, #40, #41) into the in-ns sections branch: same tree both sides, base moves with it; before that 2026-10-11 at
 # 7203bb3, library in-ns sections: the 27 modules are identical, corpus/eval/program/multi/sections.lg
 # joins the corpus; before that 2026-10-10 at
@@ -68,7 +71,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=1646fc7428c8515d4bdbc7afc19bf14e783f0ca0
+base=dc311238b27fe5b4255cd8fed99a1e3a02dbd16e
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
