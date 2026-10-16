@@ -10,9 +10,12 @@
 #
 #   checks/jank-suite.sh [--filter w,...]   run the suite, print the summary
 #                                           and the cause table
-#   checks/jank-suite.sh --ratchet          also exit 1 when a deftest listed in
-#                                           corpus/jank/baseline.tsv stops passing
+#   checks/jank-suite.sh --ratchet          also exit 1 when a file listed in the
+#                                           baseline has fewer passing deftests
 #   checks/jank-suite.sh --update-baseline  rewrite the baseline from this run
+# The baseline is LW_JANK_BASELINE (default corpus/jank/baseline.tsv, the llvm
+# lane's, P13.4); the WasmGC lane ratchets against corpus/jank/baseline-wasm.tsv
+# (P5.13). One file per lane: the lanes pass different sets.
 #   checks/jank-suite.sh --list             regenerate corpus/jank/files.tsv
 #   checks/jank-suite.sh --self-test        the harness on corpus/jank-harness
 #
@@ -66,8 +69,16 @@ if [ "$mode" = list ]; then
 fi
 
 out=${LW_JANK_OUT:-$(mktemp -d)}; mkdir -p "$out"
+baseline=${LW_JANK_BASELINE:-$here/corpus/jank/baseline.tsv}
+# LW_JANK_REUSE=1 with an LW_JANK_OUT that already holds results.tsv skips the
+# run (~30 min) and only re-evaluates the mode over it: the way to falsify the
+# ratchet, or to write a baseline from a run already made
+if [ -n "${LW_JANK_REUSE:-}" ] && [ -f "$out/results.tsv" ]; then
+  echo "jank-suite: reusing $out/results.tsv"
+else
 RESULTS_TSV=$out/results.tsv LETGO_TEST=$suite/clojure SRC_PATHS="$compat:$suite" \
   "$here/checks/run-tests.sh" --corpus "$here/corpus/jank/files.tsv" ${filter:+--filter "$filter"} --bar 0 > "$out/run.log" 2>&1
+fi
 tail -2 "$out/run.log"
 # the cause of each file that does not fully agree (columns: file deftests oracle passing ... first_failure cause)
 awk -F'\t' 'NR>1 && $4<$2 {
@@ -78,10 +89,11 @@ awk -F'\t' 'NR>1 && $4<$2 {
 # passing deftests: file<TAB>count, for the ratchet
 awk -F'\t' 'NR>1 {print $1 "\t" $4}' "$out/results.tsv" | sort > "$out/passing.tsv"
 case $mode in
-  update-baseline) cp "$out/passing.tsv" "$here/corpus/jank/baseline.tsv"; echo "baseline: $(awk -F'\t' '{s+=$2} END{print s}' "$out/passing.tsv") deftests" ;;
+  update-baseline) cp "$out/passing.tsv" "$baseline"; echo "baseline $baseline: $(awk -F'\t' '{s+=$2} END{print s}' "$out/passing.tsv") deftests" ;;
   ratchet)
-    worse=$(join -t $'\t' "$here/corpus/jank/baseline.tsv" "$out/passing.tsv" | awk -F'\t' '$3 < $2 {print $1 " " $2 " -> " $3}')
-    if [ -n "$worse" ]; then echo "ratchet: fewer passing deftests than the baseline:"; printf '  %s\n' "$worse"; exit 1; fi
-    echo "ratchet: no file below its baseline" ;;
+    [ -f "$baseline" ] || { echo "ratchet: no baseline at $baseline (run --update-baseline first)"; exit 2; }
+    worse=$(join -t $'\t' "$baseline" "$out/passing.tsv" | awk -F'\t' '$3 < $2 {print $1 " " $2 " -> " $3}')
+    if [ -n "$worse" ]; then echo "ratchet: fewer passing deftests than $baseline:"; printf '  %s\n' "$worse"; exit 1; fi
+    echo "ratchet: no file below its baseline ($baseline)" ;;
 esac
 echo "results: $out"
