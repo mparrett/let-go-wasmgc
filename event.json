@@ -1,20 +1,19 @@
 {
  "ts": "2026-10-16T21:34:27",
  "type": "set",
- "key": "approach",
+ "key": "section-1-interface-record",
  "fields": {
   "status": "agreed"
  },
- "text": "Approach A: a function's lowering sees only a fixed bundle (its De Bruijn-normalized form, one interface record per free var, the runtime interface, the compilation context). Key = form hash + record hashes + runtime-interface hash + compiler key. Replaces per-lookup question traces (B: demand recording; C: two-phase were declined).",
+ "text": "The 20 per-var questions become record fields: kind, resolution (twin/stdlib twin/alias/rt-target resolved before the record), calling convention (sig, arity shape), storage name, type (decl + type name). Fixed inputs: runtime interface (decls, intrinsics, globals/states) as one unit; context (ns, *program-file*, *stub-libs*, *box-params*, target options). q-fn-value (type ids) -\u003e lg_tid_\u003cname\u003e constants; q-rt-const/q-rt-state are output dedupe, not inputs; q-prog-decls is module assembly, outside the boundary.",
  "evidence": [
-  "user:2026-10-16-approved",
-  "file:docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md"
+  "user:2026-10-16-approved"
  ],
  "author": "claude",
  "origin": {
   "host": "mac.lan",
   "cwd": "/Users/ndn/development/let-go-wasmgc",
-  "pid": 74808,
+  "pid": 74862,
   "branch": "llvm-poly",
   "head": "13a0c03",
   "session": "e20354cf-6eda-4606-baa5-568dacd4117c",
