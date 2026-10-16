@@ -1,19 +1,17 @@
 {
  "ts": "2026-10-16T21:34:42",
- "type": "set",
- "key": "compiler-fn-wrappers",
- "fields": {
-  "status": "superseded"
- },
- "text": "Superseded (proposed in section 2): no var wrappers recording which compiler functions ran; lower-llvm-cache/ran! is defined but has no callers and should stay that way. Compiler code enters the key as one hash over the compiler namespaces.",
+ "type": "note",
+ "key": "section-2-boundary",
+ "kind": "gotcha",
+ "text": "In let-go (lg-e9789b7d53), get on a non-map (nil, a fn, a keyword) returns nil, it does not throw; deref of a non-reference and contains? on a non-collection do throw. So rebinding a plain-map session table does not make a stray read fail; enforce the boundary in ask instead.",
  "evidence": [
-  "user:2026-10-16-presented"
+  "file:scratchpad-poison-test"
  ],
  "author": "claude",
  "origin": {
   "host": "mac.lan",
   "cwd": "/Users/ndn/development/let-go-wasmgc",
-  "pid": 75757,
+  "pid": 75791,
   "branch": "llvm-poly",
   "head": "13a0c03",
   "session": "e20354cf-6eda-4606-baa5-568dacd4117c",
