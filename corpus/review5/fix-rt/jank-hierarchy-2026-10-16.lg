@@ -66,3 +66,6 @@
          (t #(apply descendants [])) (t #(apply ancestors [1 2 3])))
 (def d derive) (def i isa?) (def p parents)
 (println "values" (t #(d :h/v :h/w)) (i :h/v :h/w) (p :h/v) (t #(map parents [:h/v :h/t :h/nope])) (t #(apply isa? diamond [:h/d :h/a])))
+;; a record is not a hierarchy (native's asHierarchy wants a plain map)
+(defrecord NotH [parents ancestors descendants])
+(println (parents (->NotH {} {} {}) :a) (try (derive (->NotH {} {} {}) :a :b) (catch Exception e (ex-message e))))

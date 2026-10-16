@@ -1546,13 +1546,15 @@
 ;; meets the root type it refuses. Written without destructuring, for,
 ;; doseq or named fns: those take gensyms at load (checks/gensym-load.sh).
 
-(def hierarchy-cell (atom nil))
+(def ^:private hierarchy-cell (atom nil))
 
 (defn- h-empty [] (assoc (assoc (assoc {} :parents {}) :ancestors {}) :descendants {}))
 (defn- global-h [] (or @hierarchy-cell (reset! hierarchy-cell (h-empty))))
 
 ;; native's *vm.PersistentMap / *vm.PersistentSet: sorted ones are other types
-(defn- h-map? [x] (and (map? x) (not (sorted? x))))
+;; native's asHierarchy wants a plain persistent map: a record is a tagged map
+;; here (P10.6) and must not pass as one
+(defn- h-map? [x] (and (map? x) (not (sorted? x)) (not (contains? x :lw/type))))
 (defn- h-set? [x] (and (set? x) (not (sorted? x))))
 
 (defn- h-valid? [h]                                       ; asHierarchy
