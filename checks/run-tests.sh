@@ -233,8 +233,10 @@ for f in "${files[@]}"; do
     LG_ARGS="-source-paths $sp" LW_DRIVER_ARGS="--test ${skips:+--skip $skips} ${DRIVER_FLAGS:-}" \
       "$WASM_RUN" "$f" >"$t/$b.wasm.out" 2>&1
     secs=$(( $(date +%s) - start ))
-    if ! grep -qE '^Ran [0-9]+ tests' "$t/$b.wasm.out" && grep -qE 'lower-wasm' "$t/$b.wasm.out"; then
-      msg="compile: $(sed -E 's/\x1b\[[0-9;]*m//g' "$t/$b.wasm.out" | grep -v catalog | grep -m1 -E 'lower-wasm' | strip)"
+    # the shim's indented "  error:" lines are a test's own error, not the
+    # compiler's: left out, or a run that dies after one would read as compile
+    if ! grep -qE '^Ran [0-9]+ tests' "$t/$b.wasm.out" && grep -v '^  error: ' "$t/$b.wasm.out" | grep -qE 'lower-wasm'; then
+      msg="compile: $(sed -E 's/\x1b\[[0-9;]*m//g' "$t/$b.wasm.out" | grep -v catalog | grep -v '^  error: ' | grep -m1 -E 'lower-wasm' | strip)"
       echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
       continue
     fi
@@ -254,6 +256,18 @@ for f in "${files[@]}"; do
   fi
   norm <"$t/$b.native" >"$t/$b.n"; norm <"$t/$b.wasm.out" >"$t/$b.w"
   werr=$(grep -m1 -E '^(error|lower-wasm)' "$t/$b.wasm.out" | strip)
+  # else the message the test shim prints under an ERROR line, preferring a
+  # test that does not FAIL/ERROR natively (the one that diverges): the
+  # compared lines carry only test names, and jank-suite.sh's cause column
+  # needs the message to tell a d15 constant from a real mismatch
+  if [ -z "$werr" ]; then
+    grep -E '^(FAIL|ERROR) in \(' "$t/$b.native" 2>/dev/null | sed -E 's/^(FAIL|ERROR) in \(([^)]*)\).*/\2/' | sort -u >"$t/$b.nnames"
+    werr=$(awk 'NR==FNR {native[$0]=1; next}
+                /^ERROR in \(/ {n=$0; sub(/^ERROR in \(/, "", n); sub(/\).*/, "", n); want=!(n in native); next}
+                /^  error: / {if (want) {sub(/^  /, ""); print; exit}; next}
+                {want=0}' "$t/$b.nnames" "$t/$b.wasm.out" | strip)
+    [ -n "$werr" ] || werr=$(grep -m1 -E '^  error: ' "$t/$b.wasm.out" | sed 's/^  //' | strip)
+  fi
   if [ ! -s "$t/$b.n" ]; then
     msg="native run printed no summary: $(grep -v catalog "$t/$b.native" | head -1 | strip)"
     echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"

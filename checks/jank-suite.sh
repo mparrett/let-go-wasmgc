@@ -89,7 +89,7 @@ tail -2 "$out/run.log"
 # the cause of each file that does not fully agree (columns: file deftests oracle passing ... first_failure cause)
 awk -F'\t' 'NR>1 && $4<$2 {
     c = tolower($16 " " $17)
-    cause = (c ~ /ratio|bigint|big int|bigdec|big dec/) ? "d15" : (c ~ /^compile|compile: / ? "compile" : (c ~ /timeout or crash/ ? "crash" : "mismatch"))
+    cause = (c ~ /(^|[^a-z])(ratio|bigint|big int|bigdec|big dec)/) ? "d15" : (c ~ /^compile|compile: / ? "compile" : (c ~ /timeout or crash/ ? "crash" : "mismatch"))
     files[cause]++; lost[cause] += $2 - $4
   } END { printf "%-10s %6s %8s\n", "cause", "files", "deftests"; for (k in files) printf "%-10s %6d %8d\n", k, files[k], lost[k] }' "$out/results.tsv" | sort
 # passing deftests: file<TAB>count, for the ratchet

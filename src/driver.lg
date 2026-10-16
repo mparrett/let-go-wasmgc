@@ -494,7 +494,7 @@
              ;; reports a body that does not throw (bug-08)
              caught (fn [k ok]
                       `(if (__t-limit? ~e) (do (__t-report false) nil)
-                           (if ~(chk k) (do ~ok ~e) (do (__t-report :__t-error) nil))))]
+                           (if ~(chk k) (do ~ok ~e) (do (__t-erred ~e) nil))))]
          (cond
            ;; native's assert-expr special forms. Native's is returns the
            ;; form's value: the caught exception for thrown? and
@@ -508,7 +508,7 @@
                  (catch Throwable ~e
                    ~(caught (second form) `(__t-report (if (re-find ~(nth form 2) (ex-message ~e)) true false)))))
            :else `(try (let [v# ~form] (__t-report (if v# true false)) v#)
-                       (catch Throwable e# (__t-report :__t-error) nil)))))
+                       (catch Throwable e# (__t-erred e#) nil)))))
       ([form msg] `(is ~form)))
     (defmacro testing [s & body] `(do ~@body))
     ;; P5.10: native's are (pkg/rt/core/test.lg): one is per row of args
