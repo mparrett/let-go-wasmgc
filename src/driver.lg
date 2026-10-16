@@ -37,14 +37,17 @@
    its top (legmacs' defcommand: (do (defn f ..) (defcommand! :f ..))),
    expanded; else nil. Native compiles a top-level do subform by subform, so
    that defn is a top-level defn and is indexed as one (it was a :def inside
-   the _main/__lw_nsinit body, unsupported). Other do expansions stay whole:
-   binding-out reads a top-level binding's (do (push-binding! ..) ..) shape."
+   the _main/__lw_nsinit body, unsupported). A do holding a deftest, a
+   deftype or another top-level head is spliced too (the jank suite's
+   when-var-exists wraps whole files in one). Other do expansions stay
+   whole: binding-out reads a top-level binding's (do (push-binding! ..) ..)
+   shape."
   [form]
   (loop [f form n 0]
     (when (and (seq? f) (symbol? (first f)) (< n 32))
       (cond (= 'do (first f))
             (when (and (not (identical? f form))
-                       (some #(and (seq? %) (contains? defining-heads (first %))) (rest f)))
+                       (some #(and (seq? %) (contains? top-level-heads (first %))) (rest f)))
               f)
             (contains? top-level-heads (first f)) nil
             :else (let [v (try (resolve (first f)) (catch e nil))]
@@ -604,6 +607,18 @@
   (when (and (seq? form) (#{'defn 'defn- 'def} (first form)))
     (def-sym form)))
 
+(defn defined-syms
+  "The names a top-level form defines: a defn/def's, or the tag var and
+   constructors a deftype/defrecord stands for (deftype-forms)."
+  [form]
+  (cond (defining-sym form) [(defining-sym form)]
+        (and (seq? form) (#{'deftype 'defrecord} (first form)) (symbol? (second form)))
+        (let [nm (second form)]
+          (if (= 'defrecord (first form))
+            [nm (symbol (str "->" nm)) (symbol (str "map->" nm))]
+            [nm (symbol (str "->" nm))]))
+        :else nil))
+
 (defn defonce-form
   "P6.8: a top-level (defonce x e) as (def x e) when no earlier top-level
    form defined x, else ::defonce-noop: native's expansion
@@ -714,10 +729,12 @@
 ;; wasm.natives' instance? over tags. A protocol method is one library defn
 ;; dispatching on the tag of its first argument over every deftype and
 ;; defrecord that implements it, registered once the require that reached
-;; them is loaded. Named limits: extend-type, extend-protocol, reify and
-;; Object methods are not seen; an implementation compiles in the protocol's
-;; namespace, so one outside it must use qualified names. Written without
-;; destructuring, for or doseq (P9.1).
+;; them is loaded. An implementation in the protocol's own namespace is an
+;; inline arm; one from another namespace (a program's type implementing a
+;; library's protocol) is a hidden defn `__lw_<Type>_<method>` in the type's
+;; namespace, so its body resolves there, and the arm calls it. Named
+;; limits: extend-type, extend-protocol, reify and Object methods are not
+;; seen. Written without destructuring, for or doseq (P9.1).
 (def protocol-methods (atom {}))   ; method var -> {:var :ns :name :params :impls {tag {:params :body :fields}}}
 
 (defn type-tag [ns-sym nm] (keyword (str ns-sym) (str nm)))
@@ -751,16 +768,38 @@
                       (list 'clojure.core/assoc
                             (list 'clojure.core/merge (into {} (map (fn [f] [(keyword (str f)) nil]) fields)) '__lw_m)
                             :lw/type tag)))]
-    (reduce (fn [_ x]
-              (when (seq? x)
-                (let [m (first x)
-                      mv (lw-rt/call-in-ns ns-sym (fn [] (resolve m)))]
-                  (when-not (contains? @protocol-methods mv)
-                    (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
-                  (swap! protocol-methods assoc-in [mv :impls tag]
-                         {:params (vec (nth x 1)) :body (drop 2 x) :fields fields}))))
-            nil (drop 3 form))
-    (if mctor [(list 'def nm tag) ctor mctor] [(list 'def nm tag) ctor])))
+    ;; a method body names its method bare, as native does; it resolves in
+    ;; the namespace of the protocol symbol before it (a program's type
+    ;; implementing a library's protocol), else in the type's own
+    (let [hidden (atom [])
+          _ (reduce (fn [pns x]
+                      (cond (symbol? x)
+                            (let [pv (lw-rt/call-in-ns ns-sym (fn [] (try (resolve x) (catch e nil))))]
+                              (if (and (var? pv) (:ns (meta pv))) (ns-name (:ns (meta pv))) ns-sym))
+                            (seq? x)
+                            (let [m (first x)
+                                  mv (lw-rt/call-in-ns pns (fn [] (try (resolve m) (catch e nil))))
+                                  params (vec (nth x 1))]
+                              (when-not (contains? @protocol-methods mv)
+                                (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
+                              (if (= pns ns-sym)
+                                (swap! protocol-methods assoc-in [mv :impls tag]
+                                       {:params params :body (drop 2 x) :fields fields})
+                                ;; the body stays in the type's namespace: a hidden defn
+                                ;; taking the method's params, its fields bound from the
+                                ;; first; defined natively here so a library's index finds
+                                ;; the var as it does any defn's
+                                (let [hn (symbol (str "__lw_" nm "_" m))
+                                      binds (vec (mapcat (fn [f] [f (list (keyword (str f)) (first params))]) fields))
+                                      hf (list 'defn hn params (apply list 'let binds (drop 2 x)))]
+                                  (lw-rt/call-in-ns ns-sym (fn [] (eval hf)))
+                                  (swap! hidden conj hf)
+                                  (swap! protocol-methods assoc-in [mv :impls tag]
+                                         {:params params :fields fields :call (symbol (str ns-sym) (str hn))})))
+                              pns)
+                            :else pns))
+                    ns-sym (drop 3 form))]
+      (into (if mctor [(list 'def nm tag) ctor mctor] [(list 'def nm tag) ctor]) @hidden))))
 
 (defn protocol-dispatch-form
   "The defn for protocol method e over its noted implementations."
@@ -773,7 +812,9 @@
                          [(if (seq (:fields impl))
                             (list 'identical? tag (list :lw/type '__this))
                             (list 'identical? tag '__this))
-                          (apply list 'let binds (:body impl))]))
+                          (if (:call impl)
+                            (apply list (:call impl) '__this args)
+                            (apply list 'let binds (:body impl)))]))
                      (:impls e))]
     (apply list 'defn (:name e) (into ['__this] args)
            [(apply list 'cond (concat arms [:else (list 'throw (list 'ex-info (str "No implementation of method: " (:name e)) {}))]))])))
@@ -1174,7 +1215,7 @@
         ;; P6.8: names an earlier top-level form defined (defonce)
         defined (atom #{})
         ;; names defined by more than one defn/defn-/def form (bug-09)
-        redef (set (for [[s n] (frequencies (keep defining-sym forms)) :when (> n 1)] s))
+        redef (set (for [[s n] (frequencies (mapcat defined-syms forms)) :when (> n 1)] s))
         ;; P12.0j (D210): and a defn a literal alter-var-root site names
         redef (into redef (altered-own-syms forms))
         _ (reset! program-forms forms)
@@ -1186,6 +1227,12 @@
           (let [form (if (and (seq? form) (#{'defn 'defn-} (first form)) (contains? redef (def-sym form)))
                        (defn->def form)
                        form)]
+            ;; redef is read off the top-level forms; a second defn of a name
+            ;; reached below a spliced do (a macro's) would become a second
+            ;; static function and fail to assemble, so it is refused by name
+            (when (and (seq? form) (#{'defn 'defn-} (first form))
+                       (contains? @defined (def-sym form)) (not (contains? redef (def-sym form))))
+              (throw (ex-info (str "lower-wasm: " (def-sym form) " is defined twice, the second below a spliced do; define it once") {:var (def-sym form)})))
             (cond
               (= form ::defonce-noop) nil
               (= form ::install-test-macros)
@@ -1225,7 +1272,12 @@
                                    (swap! body conj form))
               ;; a macro only matters at expansion time, in this process
               (and (seq? form) (= 'defmacro (first form))) (do (native! form) (note-macro! (ns-name *ns*) form))
-              (and (seq? form) (#{'defmulti 'deftype 'defprotocol} (first form)))
+              ;; a program's defprotocol (P10.6 for a library's): its methods
+              ;; become dispatch defns once every form has been read (below);
+              ;; deftype and defrecord are taken apart in step
+              (and (seq? form) (= 'defprotocol (first form)))
+              (do (native! form) (note-protocol! (ns-name *ns*) form))
+              (and (seq? form) (= 'defmulti (first form)))
               (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               ;; P6.1: a def below the top of the form (in a let/when/if)
               ;; is a var-table var, set where the def runs
@@ -1248,16 +1300,42 @@
         step (fn step [_ form]
                ;; P6.1: defcommand-style macros, subform by subform (expanded
                ;; here, after the forms before it ran: it may use their requires)
-               (if-let [d (try (macro-do-expansion form) (catch e nil))]
-                 (when-let [m (reduce step nil (rest d))] (reduced m))
+               (if-let [d (if (and (seq? form) (#{'deftype 'defrecord} (first form)))
+                            ;; a program's deftype or defrecord stands for the def
+                            ;; and defn forms a library's does (P10.6): the type's
+                            ;; var holds its tag, the constructors are program
+                            ;; defns; native sees the same stand-ins
+                            (cons 'do (deftype-forms (ns-name *ns*) form))
+                            (try (macro-do-expansion form) (catch e nil)))]
+                 (when-let [m (reduce step nil (mapcat splice-do (rest d)))] (reduced m))
+                 ;; a deftest below a spliced do (when-var-exists) is a test as a
+                 ;; top-level one is; a --skip'd one is left out the same way
+                 (let [nested-test? (and test? (seq? form) (= 'deftest (first form)))
+                       skipped? (and nested-test? (contains? skip (second form)))
+                       form (if nested-test? (deftest->defn form) form)]
+                 (when (and nested-test? (not skipped?)) (swap! tests conj (second form)))
+                 (when-not skipped?
                  (try (note-var-refs! form)
                       (let [form (alter-sites->var (defonce-form form @defined))] (process! form) (stamp! form)) nil
                       (catch e (if-let [m (::native (ex-data e))]
                                  (if (and test? (defn-form? form) (contains? (set @tests) (def-sym form)))
                                    (do (process! (stub-deftest (def-sym form))) nil)
                                    (reduced m))
-                                 (throw e))))))
-        compile-error (reduce step nil forms)]
+                                 (throw e))))))))
+        compile-error (reduce step nil forms)
+        ;; the program's protocol methods, each a dispatch defn over the
+        ;; implementations every form has now declared (through step: a
+        ;; body that does not compile is the program's compile error); a
+        ;; library method a program type implements is registered again
+        ;; with its new arm
+        compile-error (let [own (ns-name *ns*)
+                            es (filter (fn [e] (= own (:ns e))) (vals @protocol-methods))
+                            ;; emitted whatever came before: the forms before a
+                            ;; failing one run natively, and may call a method
+                            m (reduce step nil (map protocol-dispatch-form es))]
+                        (reduce (fn [_ e] (swap! protocol-methods dissoc (:var e))) nil es)
+                        (register-protocol-dispatch!)
+                        (if compile-error compile-error m))]
     ;; native stops at the failing form: the forms before it run, then the error
     (when compile-error (swap! body conj (list 'throw (list 'ex-info compile-error {}))))
     (let [defn-names (set (map second @defns))
