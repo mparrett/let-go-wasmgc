@@ -1,17 +1,18 @@
 {
- "ts": "2026-10-16T21:34:42",
+ "ts": "2026-10-16T21:35:15",
  "type": "note",
- "key": "section-2-boundary",
- "kind": "gotcha",
- "text": "In let-go (lg-e9789b7d53), get on a non-map (nil, a fn, a keyword) returns nil, it does not throw; deref of a non-reference and contains? on a non-collection do throw. So rebinding a plain-map session table does not make a stray read fail; enforce the boundary in ask instead.",
+ "key": "section-1-interface-record",
+ "kind": "carry-forward",
+ "text": "For codex: your compilation-local analysis cache (src/lower_llvm_analysis_cache.lg, driver.lg analysis-interfaces, uncommitted as of 2026-10-16) keys each definition on per-free-var interfaces built from lw/form-vars: {:signature :runtime-target :runtime-signature :declaration :metadata}. That is a subset of the function cache's interface record (llvm-fn-cache, section-1-interface-record), which adds kind, storage name, twin/stdlib-alias resolution and type name.\n\nAsk: keep analysis-interfaces as the one place an interface is built, and keep its shape a map per var, so the persistent function cache can extend it rather than build a second one. Note when it lands (commit id) on llvm-fn-cache key section-1-interface-record, and say if you change its shape. Its :metadata (meta v) is the var-metadata input 6105408 tracks; under approach A that stays a record field, so it is in the right place.\n",
  "evidence": [
-  "file:scratchpad-poison-test"
+  "file:src/driver.lg",
+  "file:src/lower_llvm_analysis_cache.lg"
  ],
  "author": "claude",
  "origin": {
   "host": "mac.lan",
   "cwd": "/Users/ndn/development/let-go-wasmgc",
-  "pid": 75791,
+  "pid": 77613,
   "branch": "llvm-poly",
   "head": "13a0c03",
   "session": "e20354cf-6eda-4606-baa5-568dacd4117c",
