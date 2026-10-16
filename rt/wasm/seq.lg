@@ -1080,7 +1080,18 @@
       (sequential-kind? ka) (walk-equal? (to-seq a) (to-seq b))
       :else false)))
 
-(defn ^{:twin "core/="} equals [a b] (bool (equiv? a b)))
+(defn ^{:twin "core/="} equals
+  ([] (raise-b (wasm/bytes-of-string "wrong number of arguments 0")))
+  ([a] (bool true))
+  ([a b] (bool (equiv? a b)))
+  ;; native compares each later arg with the first, not neighbour to neighbour
+  ([a b & more]
+   (if (equiv? a b)
+     (loop [q (seq more)]
+       (cond (wasm/null? q) (bool true)
+             (equiv? a (first q)) (recur (next q))
+             :else (bool false)))
+     (bool false))))
 
 ;; ---------------------------------------------------------------------------
 ;; Float bits (moved from wasm.str at P2.9, since Float hashing needs it and

@@ -486,6 +486,8 @@
           :else (wasm/trap "lower-wasm: mod on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
 
 (defn ^{:twin "core/number?"} number? [x] (sq/bool (num-k? (sq/kind x))))
+(defn ^{:twin "core/any?"} any?* ([] (raise-arity 0)) ([x] (sq/bool true)) ([x y] (raise-arity 2))
+  ([x y & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
 
 (defn ^{:twin "core/bit-and"} bit-and*                    ; CoreBitAnd (lang.go:8101): exactly 2 Ints
   ([] (raise (wasm/bytes-of-string "bit-and expects 2 args")))
@@ -880,11 +882,20 @@
           :else (raise-not-supported (lit (wasm/bytes-of-string "assoc! not supported on ")) t))))
 
 (defn ^{:twin "core/assoc!"} assoc!
+  ([] (raise-arity 0))
   ([t] (raise-arity 1))
   ([t key] (assoc!1 t key (wasm/null)))                  ; a missing val is nil (lang.go:7133)
   ([t key v] (assoc!1 t key v))
   ([t key v key2] (assoc!1 (assoc!1 t key v) key2 (wasm/null)))
-  ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2)))
+  ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2))
+  ([t key v key2 v2 & more]                              ; pairs past the second; an odd tail key gets nil
+   (loop [t (assoc!1 (assoc!1 t key v) key2 v2) q (sq/seq more)]
+     (if (wasm/null? q)
+       t
+       (let [nq (sq/next q)]
+         (if (wasm/null? nq)
+           (assoc!1 t (sq/first q) (wasm/null))
+           (recur (assoc!1 t (sq/first q) (sq/first nq)) (sq/next nq))))))))
 
 (defn ^{:twin "core/dissoc!"} dissoc!
   ([t] (raise-arity 1))
