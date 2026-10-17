@@ -20,6 +20,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 9 | `core.lg` | `wasm.core` | 1-8 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
 | 10 | `reader.lg` | `wasm.reader` | 1-9 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
 | 11 | `math.lg` | `wasm.math` | 1 3 4 9 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `rand-int`, math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
+| 24 | `bignum.lg` | `wasm.bignum` | 1 2 7 9 11 | the numeric tower's library, nothing calls it yet: BigInt (sign + 32-bit limbs in a `wasm.arrays/I64s`) and Ratio (two BigInts in a `wasm.pvec/Node`, normalized as big.Rat; no new types, so the rec group does not change): parse/print, add sub mul, quot rem mod (let-go's) and ediv emod (big.Int's Euclidean), gcd, compare, nearest-even float64. Listed after math.lg, whose `scale2` it uses; numbered 24 so no other row's number moves (the loader reads rows in table order and ignores the numbers) |
 | 12 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
 | 13 | `host.lg` | `wasm.host` | 1 3 4 7 9 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
 | 14 | `lang.lg` | `wasm.lang` | 1-4 9 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
@@ -35,7 +36,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 
 Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
-default build loads the other nineteen namespaces and its bytes do not
+default build loads the other twenty namespaces and its bytes do not
 change (`checks/gc-byte-identity.sh`).
 Row 22 is the same mechanism for `LW_HOST_FS` (D208): only a build with
 that flag loads it, and the backend's `env.read_file` import and helper are
