@@ -85,5 +85,8 @@
          (t #(remove-tap tap-a)) (t #(tap> 3)) (t #(rt tap-boom)) (t #(remove-tap inc)) (t #(tap> 4))
          (t #(add-tap tap-b)) (t #(tap> 5)) (t #(remove-tap tap-b)) (t #(tap> 6)) (t #(remove-tap tap-b)) (t #(tap> 7))
          (t #(deref seen-a)) (t #(deref seen-b)))
+(defn tap-str [x] (throw "str-thrown"))                     ; a thrown non-exception: tap> must still swallow it
+(println "taps-nonexc" (t #(add-tap tap-a)) (t #(add-tap tap-str)) (t #(add-tap tap-b)) (t #(tap> 8)) (t #(deref seen-a)) (t #(deref seen-b))
+         (t #(remove-tap tap-str)) (t #(remove-tap tap-a)) (t #(remove-tap tap-b)))
 (println "taps-err" (t #(add-tap 1)) (t #(add-tap nil)) (t #(add-tap :k)) (t #(remove-tap 1)) (t #(apply add-tap [])) (t #(apply add-tap [inc inc]))
          (t #(apply remove-tap [])) (t #(apply remove-tap [1 2])) (t #(apply tap> [])) (t #(apply tap> [1 2])))

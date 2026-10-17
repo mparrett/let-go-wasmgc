@@ -1,5 +1,6 @@
 ;; wasm.arrays — P3.1: let-go's mutable typed arrays as the runtime sees them
-;; (int-array, byte-array, aget, aset, alength, aclone, bytes), in the
+;; (int-array, long-array, byte-array, into-array, let-go.types/array?,
+;; aget, aset, alength, aclone, bytes), in the
 ;; runtime dialect of seq.lg (IR special forms, IR-op core fns on :int,
 ;; wasm.intrinsics, and the runtime namespaces it requires). Ground truth is
 ;; let-go ff1e6dac: pkg/vm/typed_array.go (TypedArray, TypedArraySeq) and
@@ -119,26 +120,30 @@
   ([] (raise-arity 0))
   ([x] (build 1 x (wasm/null) false))
   ([x init] (build 1 x init true))
-  ([x init c] (raise-arity 3)))
+  ([x init c] (raise-arity 3))
+  ([x init c & more] (raise-arity (+ 3 (sq/unbox-int (sq/count more))))))
 
 ;; long-array is int-array natively (lang.go:4232: the same fn), messages included.
 (defn ^{:twin "core/long-array"} long-array*
   ([] (raise-arity 0))
   ([x] (build 1 x (wasm/null) false))
   ([x init] (build 1 x init true))
-  ([x init c] (raise-arity 3)))
+  ([x init c] (raise-arity 3))
+  ([x init c & more] (raise-arity (+ 3 (sq/unbox-int (sq/count more))))))
 
 (defn ^{:twin "core/byte-array"} byte-array
   ([] (raise-arity 0))
   ([x] (build 0 x (wasm/null) false))
   ([x init] (build 0 x init true))
-  ([x init c] (raise-arity 3)))
+  ([x init c] (raise-arity 3))
+  ([x init c & more] (raise-arity (+ 3 (sq/unbox-int (sq/count more))))))
 
 (defn ^{:twin "core/object-array"} object-array          ; CoreObjectArrayf = buildArray(ArrayObject)
   ([] (raise-arity 0))
   ([x] (build 2 x (wasm/null) false))
   ([x init] (build 2 x init true))
-  ([x init c] (raise-arity 3)))
+  ([x init c] (raise-arity 3))
+  ([x init c & more] (raise-arity (+ 3 (sq/unbox-int (sq/count more))))))
 
 ;; to-array (lang.go:4217): seqOf, so an Int is "don't know how to create
 ;; ISeq from", not a size; nil and () give an empty array.

@@ -1694,6 +1694,10 @@
     (let [x (first args)]
       (loop [q (seq @taps-cell)]
         (when q
-          (future* (partial (first q) x))                   ; future* runs it now, swallowing what it throws
+          ;; CoreTapBang discards every error a tap raises, a thrown
+          ;; non-exception value included, so the catch is the catch-all
+          ;; (D31), not Exception. Not through future*: a program that
+          ;; roots future* (legmacs does) would pull tap> into its module.
+          (try ((first q) x) (catch Throwable e nil))
           (recur (next q))))
       true)))
