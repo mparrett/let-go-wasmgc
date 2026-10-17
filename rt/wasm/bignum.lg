@@ -432,8 +432,11 @@
    included: big.Rat.Float64's rounding."
   [a b]
   (let [s (- 63 (- (bitlen a) (bitlen b)))         ; |a|*2^s / |b| lies in (2^62, 2^64)
-        na (if (> s 0) (mag-shl a s) a)
-        nb (if (< s 0) (mag-shl b (- 0 s)) b)
+        ;; trimmed: mag-shl leaves its carry limb, often 0, on top, and a
+        ;; divisor with a zero top limb is not normalized for knuth (its
+        ;; q-hat loop would spin ~2^32 times; found in review)
+        na (if (> s 0) (fin (mag-shl a s) 1) a)
+        nb (if (< s 0) (fin (mag-shl b (- 0 s)) 1) b)
         st0 (if (= 0 (ag (fin (divrem-mag na nb true) 1) 0)) 0 1)
         qv (to-i64 (fin (divrem-mag na nb false) 1))   ; < 2^64 as a u64
         big? (< qv 0)
