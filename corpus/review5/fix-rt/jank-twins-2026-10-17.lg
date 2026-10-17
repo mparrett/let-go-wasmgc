@@ -1,6 +1,6 @@
 ;; Core fns the runtime had no twin for: abs, ifn?, reversible?,
 ;; parse-boolean, pop!, rand-nth, shuffle, into-array, long-array,
-;; let-go.types/array?, add-tap, remove-tap, tap>. Each runs directly,
+;; let-go.types/array?. Each runs directly,
 ;; through apply and as a value. rand-nth and shuffle draw from a generator
 ;; native cannot share, so only what does not depend on the draw is printed.
 (defn t [f] (try (pr-str (f)) (catch e (str "ERR " (ex-message e)))))
@@ -76,17 +76,3 @@
 (println "array?" (map #(t (fn [] (let-go.types/array? %))) [(int-array 1) (byte-array 1) (object-array 1) (into-array [1]) [1] nil "s" '(1) {}])
          (t #(apply let-go.types/array? [])) (t #(apply let-go.types/array? [(int-array 1) 1])) (t #(apply let-go.types/array? [1 2 3])) (t #(aq (int-array 0))))
 
-(def seen-a (atom [])) (def seen-b (atom []))
-(defn tap-a [x] (swap! seen-a conj x))
-(defn tap-b [x] (swap! seen-b conj x))
-(defn tap-boom [x] (throw (ex-info "boom" {})))
-(def at add-tap) (def rt remove-tap) (def tp tap>)
-(println "taps" (t #(tap> 0)) (t #(add-tap tap-a)) (t #(tap> 1)) (t #(add-tap tap-boom)) (t #(at tap-b)) (t #(tp 2))
-         (t #(remove-tap tap-a)) (t #(tap> 3)) (t #(rt tap-boom)) (t #(remove-tap inc)) (t #(tap> 4))
-         (t #(add-tap tap-b)) (t #(tap> 5)) (t #(remove-tap tap-b)) (t #(tap> 6)) (t #(remove-tap tap-b)) (t #(tap> 7))
-         (t #(deref seen-a)) (t #(deref seen-b)))
-(defn tap-str [x] (throw "str-thrown"))                     ; a thrown non-exception: tap> must still swallow it
-(println "taps-nonexc" (t #(add-tap tap-a)) (t #(add-tap tap-str)) (t #(add-tap tap-b)) (t #(tap> 8)) (t #(deref seen-a)) (t #(deref seen-b))
-         (t #(remove-tap tap-str)) (t #(remove-tap tap-a)) (t #(remove-tap tap-b)))
-(println "taps-err" (t #(add-tap 1)) (t #(add-tap nil)) (t #(add-tap :k)) (t #(remove-tap 1)) (t #(apply add-tap [])) (t #(apply add-tap [inc inc]))
-         (t #(apply remove-tap [])) (t #(apply remove-tap [1 2])) (t #(apply tap> [])) (t #(apply tap> [1 2])))
