@@ -1,0 +1,23 @@
+# Hooks for prek (or pre-commit): `prek install` once per checkout installs
+# both stages below. A hook already in .git/hooks (git-issue's pre-push) is
+# kept and still runs. Until every branch carries this file, install with
+# --allow-missing-config so commits on the others are not refused.
+default_install_hook_types: [pre-commit, pre-push]
+repos:
+  - repo: local
+    hooks:
+      - id: local-paths
+        name: no home or temp directory paths in staged lines
+        entry: checks/local-paths.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: publish-check
+        name: publish-check over the commits being pushed
+        entry: checks/publish-check-push.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+        stages: [pre-push]
