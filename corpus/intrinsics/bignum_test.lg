@@ -1,0 +1,214 @@
+;; wasm.bignum (rt/wasm/bignum.lg) against native lg's own BigInt and
+;; Ratio: every expectation is native arithmetic on the same operands, and
+;; both sides compare by their decimal text (native `str`, the module's
+;; `->string` / `rat->string`). The module is a library nothing calls yet,
+;; so this file is its only consumer; its dialect row is in
+;; xsofy_natives_test.lg's `dialect` deftest with the other P3.1 files.
+(ns bignum-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]
+            [wasm.seq :as sq]
+            [wasm.bignum :as b]))
+
+(defn- P "Native integer (Int or BigInt) or string -> runtime BigInt via parse." [x]
+  (b/parse (wasm/bytes-of-string (str x))))
+(defn- S [x] (wasm/string-of-bytes (b/->string x)))
+(defn- RS [r] (wasm/string-of-bytes (b/rat->string r)))
+
+(defn- pow2 [k] (reduce * 1N (repeat k 2N)))
+(def ^:private min64 -9223372036854775808)
+(def ^:private max64 9223372036854775807)
+
+(defn- wref? [x] (and (= (type x) (type (object-array 0))) (pos? (alength x)) (map? (aget x 0))))
+(defn- outcome
+  "[:ok text] or [:err message] for a thunk; the runtime raises an sq/Err
+   ref, native an ExecutionError."
+  [f]
+  (try [:ok (f)]
+       (catch Throwable e
+         [:err (if (and (wref? e) (wasm/is? sq/Err e))
+                 (wasm/string-of-bytes (wasm/get sq/Err 2 e))
+                 (ex-message e))])))
+
+;; Native error messages carry no prefix for these ops (NumQuot's error text).
+(defn- native-out [f] (outcome #(str (f))))
+
+(def ^:private boundaries
+  (let [base [0 1 2 3 7 10 65535 65536 2147483647 2147483648 2147483649
+              4294967295 4294967296 4294967297 max64 (pow2 63) (+ (pow2 63) 1)
+              (dec (pow2 64)) (pow2 64) (inc (pow2 64)) (dec (pow2 96)) (pow2 96)
+              (pow2 127) (dec (pow2 128)) 99999999999 1000000000 999999999
+              (reduce * 1N (repeat 30 10N)) (* 4294967295N 4294967295N 4294967295N)]]
+    (vec (distinct (concat base (map - base) [min64 (dec' min64)])))))
+
+(defn- check-binops [pairs]
+  (doseq [[x y] pairs]
+    (let [X (P x) Y (P y) bx (bigint x) by (bigint y)]
+      (is (= (str (+ bx by)) (S (b/add X Y))) (str "add " x " " y))
+      (is (= (str (- bx by)) (S (b/sub X Y))) (str "sub " x " " y))
+      (is (= (str (* bx by)) (S (b/mul X Y))) (str "mul " x " " y))
+      (is (= (compare bx by) (b/compare X Y)) (str "compare " x " " y))
+      (if (= 0 by)
+        (doseq [op [b/quot b/rem b/mod]]
+          (is (= [:err "divide by zero"] (outcome #(S (op X Y)))) (str "div by zero " x)))
+        (let [r (mod bx (abs by))]
+          (is (= (str (quot bx by)) (S (b/quot X Y))) (str "quot " x " " y))
+          (is (= (str (rem bx by)) (S (b/rem X Y))) (str "rem " x " " y))
+          (is (= (str (mod bx by)) (S (b/mod X Y))) (str "mod " x " " y))
+          (is (= (str r) (S (b/emod X Y))) (str "emod " x " " y))
+          (is (= (str (quot (- bx r) by)) (S (b/ediv X Y))) (str "ediv " x " " y)))))))
+
+(deftest from-to-i64
+  (doseq [x [0 1 -1 2147483647 2147483648 -2147483648 -2147483649 4294967295 4294967296
+             -4294967296 max64 min64 (inc min64) (dec max64)]]
+    (is (= (str x) (S (b/from-i64 x))) (str x))
+    (is (= x (b/to-i64 (b/from-i64 x))) (str x))
+    (is (b/fits-i64? (b/from-i64 x)) (str x)))
+  (testing "fits-i64? at the edges, and to-i64's low-64-bit wrap beyond them"
+    (doseq [x [(pow2 63) (dec' min64) (pow2 64) (- (pow2 64)) (pow2 100) (inc (pow2 64))]]
+      (is (not (b/fits-i64? (P x))) (str x)))
+    (is (= 0 (b/to-i64 (P (pow2 64)))))
+    (is (= min64 (b/to-i64 (P (pow2 63)))))
+    (is (= 1 (b/to-i64 (P (inc (pow2 64))))))
+    (is (= -1 (b/to-i64 (P (- (inc (pow2 64)))))))))
+
+(deftest predicates
+  (doseq [x [0 5 -5 (pow2 70) (- (pow2 70))]]
+    (let [X (P x)]
+      (is (= (zero? x) (b/zero? X)))
+      (is (= (neg? x) (b/neg? X)))
+      (is (= (compare x 0) (b/signum X)))
+      (is (= (str (- x)) (S (b/negate X))))
+      (is (= (str (abs (bigint x))) (S (b/abs X)))))))
+
+(deftest boundary-arithmetic
+  (testing "carries and borrows across limbs at 2^31, 2^32, 2^63, 2^64, MinInt64, every sign"
+    (check-binops (for [x boundaries y boundaries] [x y]))))
+
+(def ^:private knuth-cases
+  ;; |u| / |v| with Algorithm D's corrections, found by a model of the
+  ;; division run over crafted operands: :ref1 / :ref2 the q-hat estimate
+  ;; was too large by one / two and the two-limb test fixed it; :addback
+  ;; q-hat survived that test one too large and the add-back step ran;
+  ;; :cap the top limbs were equal, q-hat clamped to 2^32-1; :top31 the
+  ;; divisor's top limb is just above 2^31 (no normalizing shift)
+  [[:ref1 170141183535065848891063257303245898218N 39614081284802284907336302593N]
+   [:ref1 39614081277631258723199592439N 9223372041964930760N]
+   [:ref1 18888563891059102026384722976N 4397836491498192895N]
+   [:ref2 39614081275578912844711723010N 9223372045444710398N]
+   [:ref2 39614081312472400979245924352N 9223372054034644991N]
+   [:addback 730750819346016192468350368236198187251888291842N 170141183698153719274480316505105891326N]
+   [:addback 83841475074203097065447983051287006329N 19520864610961629468111696774N]
+   [:addback 170141183539697394236728269259688378368N 39614081284802284911631269886N]
+   [:cap 44317567492089635976261146881N 10318487765603319807N]
+   [:cap 39614081284337295912403777236N 9223372045444710399N]])
+
+(deftest knuth-corrections
+  (doseq [[tag u v] knuth-cases
+          su [1 -1] sv [1 -1]]
+    (testing (str tag)
+      (check-binops [[(* su u) (* sv v)]])))
+  (testing "u = q*v - 1 always takes the add-back (q*v's low limb pushes q-hat to q)"
+    (doseq [v [(+ (pow2 95) (pow2 64) 12345) (+ (pow2 127) 1) (dec (pow2 96))]
+            q [1 2 4294967295 (pow2 31)]]
+      (check-binops [[(dec (* q v)) v] [(- (dec (* q v))) v]]))))
+
+(deftest parse-and-print
+  (testing "parse accepts what big.Int.SetString(s, 10) accepts (native bigint)"
+    (doseq [s ["0" "-0" "+0" "+5" "-5" "007" "-007" "000000000000000000000000000000001"
+               "123456789012345678901234567890" "-99999999999999999999" "4294967296" "18446744073709551616"
+               "" "+" "-" "+-5" "--5" "5-" " 5" "5 " "1_0" "0x10" "1e5" "12a" "1.0" "٣"]]
+      (let [native (try (str (bigint s)) (catch Throwable _ nil))
+            mine (let [x (b/parse (wasm/bytes-of-string s))] (if (wasm/null? x) nil (S x)))]
+        (is (= native mine) (pr-str s)))))
+  (testing "print -> parse -> print round trips, every chunk boundary of 10^9"
+    (doseq [x (concat boundaries [(pow2 1000) (- (pow2 1000)) (reduce * 1N (repeat 50 10N))
+                                  (dec (reduce * 1N (repeat 50 10N))) 1000000001 (* 1000000000N 1000000000N)])]
+      (is (= (str x) (S (P x))))
+      (is (= (str x) (S (P (S (P x)))))))))
+
+(deftest float-conversion
+  (testing "to-f64 rounds to nearest even, as big.Int.Float64 (native double)"
+    (doseq [x (concat boundaries
+                      [(inc (pow2 53)) (+ (pow2 53) 3) (+ (pow2 54) 2) (+ (pow2 54) 6)
+                       (* (inc (pow2 53)) (pow2 100)) (inc (* (inc (pow2 53)) (pow2 100)))
+                       (dec (pow2 1024)) (- (pow2 1024) (pow2 970)) (- (pow2 1024) (pow2 970) 1)
+                       (pow2 1023) (pow2 2000) 123456789012345678901234567890N])
+            s [1 -1]]
+      (let [x (* s (bigint x))] (is (= (double x) (b/to-f64 (P x))) (str x))))))
+
+(deftest gcd-test
+  (let [g (fn [a b] (loop [a (abs (bigint a)) b (abs (bigint b))] (if (zero? b) a (recur b (rem a b)))))]
+    (doseq [[x y] [[0 0] [0 5] [5 0] [-12 18] [12 -18] [(pow2 100) (pow2 64)]
+                   [(* 3 5 7 (pow2 70)) (* 5 7 11 (pow2 40))] [min64 (pow2 63)] [1 (pow2 200)]
+                   [(* 99999999999N 99999999977N) (* 99999999977N 1000000007N)]]]
+      (is (= (str (g x y)) (S (b/gcd (P x) (P y)))) (str x " " y)))))
+
+(deftest ratio
+  (testing "rat-make normalizes like big.Rat: lowest terms, positive denominator"
+    (doseq [[n d] [[1 2] [2 4] [-2 4] [2 -4] [-2 -4] [4 2] [-4 2] [0 5] [0 -5] [6 -4]
+                   [(pow2 70) (pow2 64)] [(pow2 64) (- (pow2 70))] [(* 3 (pow2 80)) (* 9 (pow2 33))]
+                   [min64 -1] [1 min64] [7 1] [-7 -1]]]
+      (let [r (b/rat-make (P n) (P d)) q (/ (bigint n) (bigint d))]
+        (is (= (str q) (RS r)) (str n "/" d))
+        (is (= (integer? q) (b/rat-integer? r)) (str n "/" d))
+        (is (= (str (if (integer? q) q (numerator q))) (S (b/rat-num r))))
+        (is (= (str (if (integer? q) 1 (denominator q))) (S (b/rat-den r))))
+        (is (= (double q) (b/rat->f64 r)) (str n "/" d)))))
+  (testing "zero denominator raises divide by zero, as (/ 1 0)"
+    (is (= [:err "divide by zero"] (outcome #(b/rat-make (P 1) (P 0)))))
+    (is (= [:err "divide by zero"] (outcome #(b/rat-div (b/rat-make (P 1) (P 2)) (b/rat-make (P 0) (P 3)))))))
+  (testing "arithmetic and compare against native Ratio"
+    (let [vals [[1 3] [1 6] [-2 3] [5 1] [0 1] [7 -9] [(pow2 65) 3] [1 (pow2 65)] [-22 7]]]
+      (doseq [[a bd] vals [c d] vals]
+        (let [x (/ (bigint a) (bigint bd)) y (/ (bigint c) (bigint d))
+              X (b/rat-make (P a) (P bd)) Y (b/rat-make (P c) (P d))]
+          (is (= (str (+ x y)) (RS (b/rat-add X Y))) (str x " + " y))
+          (is (= (str (- x y)) (RS (b/rat-sub X Y))) (str x " - " y))
+          (is (= (str (* x y)) (RS (b/rat-mul X Y))) (str x " * " y))
+          (is (= (compare x y) (b/rat-compare X Y)) (str x " cmp " y))
+          (if (zero? y)
+            (is (= [:err "divide by zero"] (outcome #(b/rat-div X Y))))
+            (is (= (str (/ x y)) (RS (b/rat-div X Y))) (str x " / " y)))))))
+  (testing "rat->f64 rounds as big.Rat.Float64: ties, subnormals, underflow, overflow"
+    (doseq [[n d] [[1 3] [2 3] [1 10] [(inc (pow2 54)) 2] [(+ (pow2 54) 3) 2] [(inc (* 2 (pow2 53))) 2]
+                   [1 (pow2 1074)] [1 (pow2 1075)] [3 (pow2 1076)] [1 (inc (pow2 1075))] [1 (pow2 1080)]
+                   [(dec (pow2 60)) (pow2 1100)] [1 (* 3 (pow2 1050))] [(pow2 1030) 3] [(pow2 1023) 1]
+                   [1 (reduce * 1N (repeat 330 10N))] [(reduce * 1N (repeat 400 10N)) 7]
+                   [(inc (pow2 2000)) (pow2 1990)] [355 113] [1 (pow2 1022)] [(dec (pow2 53)) (pow2 1075)]
+                   ;; the divisor shifted up by a whole limb: its top limb is 0 unless
+                   ;; trimmed, and Knuth's q-hat loop then spins ~2^32 times (PR #49 review)
+                   [(+ (pow2 127) (pow2 100) 12345) (inc (pow2 32))] [(+ (pow2 200) 1) (inc (pow2 64))]
+                   [(pow2 300) (+ (pow2 96) (pow2 33) 1)]]
+            s [1 -1]]
+      (let [q (/ (* s (bigint n)) (bigint d))]
+        (is (= (double q) (b/rat->f64 (b/rat-make (P (* s n)) (P d)))) (str (* s n) "/" d))))))
+
+;; A fixed-seed LCG (native Ints, no overflow): the same operands every run.
+(defn- lcg [s] (mod (+ (* s 1103515245) 12345) 2147483648))
+
+(defn- rand-big
+  "[value next-seed]: 0..7 limbs, each 0, 1, 2^31-1, 2^31, 2^32-1 or random,
+   and a random sign."
+  [s]
+  (let [s (lcg s) k (mod (quot s 256) 8)]
+    (loop [i 0 s s acc 0N]
+      (if (< i k)
+        (let [s1 (lcg s) s2 (lcg s1)
+              l (case (mod (quot s1 4096) 8)
+                  0 0 1 1 2 2147483647 3 2147483648 4 4294967295
+                  (+ (* (mod (quot s1 64) 65536) 65536) (mod (quot s2 64) 65536)))]
+          (recur (inc i) s2 (+ (* acc 4294967296N) l)))
+        (let [s (lcg s)] [(if (odd? (quot s 1024)) (- acc) acc) s])))))
+
+(deftest randomized-sweep
+  (let [pairs (loop [i 0 s 20261016 out []]
+                (if (< i 400)
+                  (let [[x s] (rand-big s) [y s] (rand-big s)] (recur (inc i) s (conj out [x y])))
+                  out))]
+    (check-binops pairs)
+    (doseq [[x y] pairs]
+      (is (= (str x) (S (P (S (P x))))))
+      (is (= (double x) (b/to-f64 (P x))) (str x))
+      (when-not (zero? y)
+        (is (= (double (/ (bigint x) (bigint y))) (b/rat->f64 (b/rat-make (P x) (P y)))) (str x "/" y))))))

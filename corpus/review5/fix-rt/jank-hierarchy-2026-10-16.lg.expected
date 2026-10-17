@@ -1,0 +1,23 @@
+make {:parents {}, :ancestors {}, :descendants {}} true
+derive-global nil nil nil nil nil nil
+parents1 #{:h/t} #{:h/p-1 :h/p-2} #{ns/p-0} nil nil #{:h/record} #{:h/num} nil nil nil nil
+ancestors1 #{:h/t :h/p-1 :h/p-2 ns/p-0} #{:h/p-1 :h/p-2 ns/p-0} nil nil #{:h/num}
+descendants1 #{:h/t :h/leaf :h/p-1} #{:h/t :h/leaf} nil nil #{:h/test-record} nil nil
+isa-global true true false true true true true true false false
+isa-vec true false false true false
+diamond-parents #{:h/c :h/b} #{:h/a} #{} #{} #{:h/d} nil nil nil nil
+diamond-ancestors true #{:h/a} #{} true #{} nil
+diamond-descendants #{:h/leaf} #{:h/leaf :h/d} true nil nil
+diamond-isa true true false false false false false
+derive-h {:parents {:h/rect #{:h/shape}}, :ancestors {:h/rect #{:h/shape}}, :descendants {:h/shape #{:h/rect}}}
+derive-h2 {:parents {:h/rect #{:h/shape}, :h/square #{:h/rect}}, :ancestors {:h/rect #{:h/shape}, :h/square #{:h/rect :h/shape}}, :descendants {:h/shape #{:h/rect :h/square}, :h/rect #{:h/square}}}
+derive-h3 true {:parents {:rect #{:shape}}, :ancestors {:rect #{:shape}}, :descendants {:shape #{:rect}}} {:parents {n/a #{n/b}}, :ancestors {n/a #{n/b}}, :descendants {n/b #{n/a}}} {:parents {:h/x #{:h/y}}, :ancestors {:h/x #{:h/y}}, :descendants {:h/y #{:h/x}}}
+underive-h {:parents {:h/rect #{:h/shape}}, :ancestors {:h/rect #{:h/shape}}, :descendants {:h/shape #{:h/rect}}} true true true
+underive-diamond true {:parents {:h/b #{:h/a}, :h/c #{:h/a}}, :ancestors {:h/b #{:h/a}, :h/c #{:h/a}}, :descendants {:h/a #{:h/c :h/b}}}
+underive-global nil nil false nil nil nil nil #{:h/p-1 :h/p-2 ns/p-0}
+errors-derive ERR derive requires non-nil tag and parent ERR derive requires non-nil tag and parent ERR derive tag must be a namespaced symbol/keyword or type ERR derive tag must be a namespaced symbol/keyword or type ERR derive parent must be a namespaced symbol/keyword ERR derive parent must be a namespaced symbol/keyword ERR derive parent must be a namespaced symbol/keyword ERR derive parent must be a namespaced symbol/keyword ERR cyclic derivation ERR cyclic derivation
+errors-derive-h ERR cyclic derivation ERR invalid hierarchy ERR invalid hierarchy ERR invalid hierarchy ERR invalid hierarchy ERR invalid hierarchy ERR invalid hierarchy ERR derive requires non-nil tag and parent
+errors-underive-h ERR invalid hierarchy ERR invalid hierarchy ERR invalid hierarchy ERR invalid hierarchy
+arity ERR wrong number of arguments 0 ERR wrong number of arguments 1 ERR wrong number of arguments 4 ERR wrong number of arguments 0 ERR wrong number of arguments 3 ERR wrong number of arguments 1 ERR wrong number of arguments 1 ERR wrong number of arguments 1 ERR wrong number of arguments 0 ERR wrong number of arguments 3
+values nil true #{:h/w} (#{:h/w} #{:h/p-1 :h/p-2} nil) true
+nil invalid hierarchy

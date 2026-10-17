@@ -298,6 +298,18 @@
 
 (defn ^{:twin "core/float?"} float? ([] (raise-arity 0)) ([x] (sq/bool (= 22 (sq/kind x)))) ([x y] (raise-arity 2)))
 (defn ^{:twin "core/int?"} int? ([] (raise-arity 0)) ([x] (sq/bool (int-val? x))) ([x y] (raise-arity 2)))
+;; Natively any arity other than 1 is false for both. double? cannot tell
+;; (float x) apart: the Float32 stand-in is a Float here (see `float`).
+(defn ^{:twin "core/double?"} double?* ([] (sq/bool false)) ([x] (sq/bool (= 22 (sq/kind x)))) ([x y] (sq/bool false))
+  ([x y & more] (sq/bool false)))
+(defn ^{:twin "core/NaN?"} NaN?*                          ; CoreIsNaN: Ints are never NaN, non-numbers raise
+  ([] (sq/bool false))
+  ([x] (let [k (sq/kind x)]
+         (cond (= k 22) (sq/bool (nan? (s/unbox-float x)))
+               (= k 1) (sq/bool false)
+               :else (raise-str (s/str (lit (wasm/bytes-of-string "NaN? requires a number, got ")) (tn x))))))
+  ([x y] (sq/bool false))
+  ([x y & more] (sq/bool false)))
 ;; No BigInt in the runtime; any arity other than 1 is false natively too.
 (defn ^{:twin "let-go.types/bigint?"} bigint? ([] (sq/bool false)) ([x] (sq/bool false)) ([x y] (sq/bool false)))
 
@@ -376,6 +388,34 @@
            (sq/box-int (bit-and (sq/unbox-int a) (bit-xor (sq/unbox-int b) -1)))
            (c/raise (wasm/bytes-of-string "bit-and-not expected Int"))))
   ([a b x] (c/raise (wasm/bytes-of-string "bit-and-not expects 2 args"))))
+
+
+;; bit-set & co. (CoreBitSet, CoreBitClear, CoreBitFlip, CoreBitTest):
+;; exactly 2 Ints. The index is uint(b), so a negative or >= 64 index
+;; shifts the mask out to 0 (a no-op, or false for bit-test).
+(defn- bitn [op a b]
+  (if (if (int-val? a) (int-val? b) false)
+    (let [x (sq/unbox-int a) n (sq/unbox-int b)
+          mask (if (if (>= n 0) (< n 64) false) (wasm/i64-shl 1 n) 0)]
+      (cond (= op 0) (sq/box-int (bit-or x mask))
+            (= op 1) (sq/box-int (bit-and x (bit-xor mask -1)))
+            (= op 2) (sq/box-int (bit-xor x mask))
+            :else (sq/bool (if (= 0 (bit-and x mask)) false true))))
+    (c/raise (cond (= op 0) (wasm/bytes-of-string "bit-set expected Int")
+                   (= op 1) (wasm/bytes-of-string "bit-clear expected Int")
+                   (= op 2) (wasm/bytes-of-string "bit-flip expected Int")
+                   :else (wasm/bytes-of-string "bit-test expected Int")))))
+
+(defn- bitn-arity [op]
+  (c/raise (cond (= op 0) (wasm/bytes-of-string "bit-set expects 2 args")
+                 (= op 1) (wasm/bytes-of-string "bit-clear expects 2 args")
+                 (= op 2) (wasm/bytes-of-string "bit-flip expects 2 args")
+                 :else (wasm/bytes-of-string "bit-test expects 2 args"))))
+
+(defn ^{:twin "core/bit-set"} bit-set* ([] (bitn-arity 0)) ([a] (bitn-arity 0)) ([a b] (bitn 0 a b)) ([a b x & more] (bitn-arity 0)))
+(defn ^{:twin "core/bit-clear"} bit-clear* ([] (bitn-arity 1)) ([a] (bitn-arity 1)) ([a b] (bitn 1 a b)) ([a b x & more] (bitn-arity 1)))
+(defn ^{:twin "core/bit-flip"} bit-flip* ([] (bitn-arity 2)) ([a] (bitn-arity 2)) ([a b] (bitn 2 a b)) ([a b x & more] (bitn-arity 2)))
+(defn ^{:twin "core/bit-test"} bit-test* ([] (bitn-arity 3)) ([a] (bitn-arity 3)) ([a b] (bitn 3 a b)) ([a b x & more] (bitn-arity 3)))
 
 (defn ^{:twin "core/bit-or"} bit-or* ([] (bit-arity 0)) ([a] (bit-arity 0)) ([a b] (bit2 0 a b)) ([a b x] (bit-arity 0)))
 (defn ^{:twin "core/bit-xor"} bit-xor* ([] (bit-arity 1)) ([a] (bit-arity 1)) ([a b] (bit2 1 a b)) ([a b x] (bit-arity 1)))
