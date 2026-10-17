@@ -126,6 +126,7 @@ P12.37	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-rtlib-check.s
 P12.38	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-xsofy-check.sh corpus/dump-world.lg xsofy
 P12.39	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_ir.lg src/lower_llvm_refcheck.lg checks/llvm-refs-check.sh corpus/llvm/ corpus/poly/ corpus/control/
 LLVM.RTLIB.REUSE	src/ rt/llvm/ checks/llvm-rtlib-reuse-check.sh checks/llvm-rtlib-reuse-check.lg checks/native-run.sh
+LLVM.JANK.ADAPTER	oracle src/ checks/jank-llvm-check.sh checks/jank-reader-check.sh checks/jank-reader-check.lg checks/fixtures/jank-reader/ checks/run-tests.sh checks/jank-suite.sh
 LLVM.ORC	host/native/ src/ checks/native-run.sh checks/build-orc-runner.sh checks/llvm-orc-check.sh checks/fixtures/orc/
 LLVM.ANALYSIS.REUSE	src/ rt/llvm/ host/native/ checks/llvm-analysis-reuse-check.sh checks/llvm-analysis-input-check.sh checks/llvm-analysis-input-check.lg checks/fixtures/analysis-reuse/
 P12.40	src/ checks/llvm-funnel-lint.lg checks/llvm-funnel-check.sh

@@ -35,6 +35,7 @@ row P12.40 slot checks/llvm-funnel-check.sh
 row LLVM.RTLIB.REUSE slot bash checks/llvm-rtlib-reuse-check.sh
 row LLVM.ANALYSIS.REUSE slot bash checks/llvm-analysis-reuse-check.sh
 row LLVM.ORC slot bash checks/llvm-orc-check.sh
+row LLVM.JANK.ADAPTER slot bash checks/jank-llvm-check.sh
 if [ "${GC_LANE:-1}" = 1 ]; then
   row gc-corpora checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
   row P7.0 checks/run-corpus.sh corpus/eval/*/
