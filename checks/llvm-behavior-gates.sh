@@ -36,6 +36,8 @@ row LLVM.RTLIB.REUSE slot bash checks/llvm-rtlib-reuse-check.sh
 row LLVM.ANALYSIS.REUSE slot bash checks/llvm-analysis-reuse-check.sh
 row LLVM.ORC slot bash checks/llvm-orc-check.sh
 row LLVM.JANK.ADAPTER slot bash checks/jank-llvm-check.sh
+row LLVM.RUNTIME.LOOKUP slot env LW_TARGET=llvm bash checks/runtime-var-lookup-check.sh
+row LLVM.CACHE.PACKAGING slot bash checks/self-compile-deps-check.sh
 if [ "${GC_LANE:-1}" = 1 ]; then
   row gc-corpora checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
   row P7.0 checks/run-corpus.sh corpus/eval/*/
