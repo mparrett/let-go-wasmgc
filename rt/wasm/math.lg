@@ -524,3 +524,20 @@
                :else (raise-str (s/str (lit (wasm/bytes-of-string "cannot abs ")) (tn x))))))
   ([x y] (raise-arity 2))
   ([x y & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
+
+;; random-uuid (lang.go:3226): 16 random bytes as version 4, variant 10, in
+;; the canonical text; native ignores its arguments. The bytes come from
+;; rand's generator, one nibble per draw, not from a crypto source.
+(defn- hex-digit [d] (if (< d 10) (+ d 48) (+ d 87)))
+(defn- random-uuid-bytes []
+  (let [out (wasm/bytes-new 36)]
+    (loop [i 0]
+      (when (< i 36)
+        (wasm/bset! out i (cond (if (= i 8) true (if (= i 13) true (if (= i 18) true (= i 23)))) 45
+                                (= i 14) 52                                       ; version 4
+                                (= i 19) (hex-digit (bit-or 8 (bit-and (next-rand) 3)))  ; variant 10
+                                :else (hex-digit (bit-and (next-rand) 15))))
+        (recur (inc i))))
+    (c/mk-uuid out)))
+(defn ^{:twin "core/random-uuid"} random-uuid*
+  ([] (random-uuid-bytes)) ([a] (random-uuid-bytes)) ([a b] (random-uuid-bytes)) ([a b & more] (random-uuid-bytes)))

@@ -54,18 +54,20 @@
 ;; forced then its value, state (0 pending, 1 value, 2 threw, 3 running), the error.
 (wasm/defstruct Promise [[:mut :ref] [:mut :i32]])
 (wasm/defstruct Delay [[:mut :ref] [:mut :i32] [:mut :ref]])
+;; A UUID (vm/uuid.go): its canonical lowercase 8-4-4-4-12 text, as a Str.
+(wasm/defstruct UUID [:ref])
 ;; The one runtime global (D39): the gensym counter, the interned types and
 ;; (P6.7) the roots alter-var-root gave vars the module does not hold (a
 ;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
 ;; stand-in's "#'ns/name" text to the root, which var-value reads first.
 (wasm/defstruct Globals [[:mut :i64] :ref [:mut :ref]])
-(def globals (wasm/new Globals 0 (wasm/array-new pv/Node 42 (wasm/null)) (wasm/null)))
+(def globals (wasm/new Globals 0 (wasm/array-new pv/Node 43 (wasm/null)) (wasm/null)))
 
 ;; Kinds as this namespace sees them: wasm.seq/kind, with its foreign kind 18
 ;; refined into the collections seq.lg cannot name.
 ;;  30 map  31 set  32 TransientMap  33 TransientSet  34 TransientVector  35 Type
 ;;  36 keyword/symbol with meta  37 a typed array (wasm.arrays)
-;;  38 SortedMap  39 SortedSet (wasm.sorted)  40 Promise  41 Delay
+;;  38 SortedMap  39 SortedSet (wasm.sorted)  40 Promise  41 Delay  42 UUID
 (defn ckind [x]
   (let [k (sq/kind x)]
     (if (= k 18)
@@ -81,6 +83,7 @@
             (wasm/is? so/SSet x) 39
             (wasm/is? Promise x) 40
             (wasm/is? Delay x) 41
+            (wasm/is? UUID x) 42
             :else 18)
       k)))
 
@@ -162,6 +165,7 @@
           (= k 39) (wasm/bytes-of-string "let-go.lang.PersistentTreeSet")
           (= k 40) (wasm/bytes-of-string "let-go.lang.Promise")
           (= k 41) (wasm/bytes-of-string "let-go.lang.Delay")
+          (= k 42) (wasm/bytes-of-string "let-go.lang.UUID")
           :else (wasm/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -935,6 +939,66 @@
   ([t x & more] (raise (wasm/bytes-of-string "pop! expects 1 arg"))))
 
 ;; ---------------------------------------------------------------------------
+;; UUIDs (vm/uuid.go, lang.go:9393). ParseUUID lowercases, then takes the
+;; strict 8-4-4-4-12 hex form, or the lenient one: five non-empty hex groups,
+;; each left-padded with zeros to its width, the fourth alone cut to its
+;; last 4 digits when longer. Lowercasing is ASCII only here; a non-ASCII
+;; byte is never a hex digit, so the answer (nil) is the same.
+
+(defn mk-uuid "A UUID of canonical text bytes bs (already validated)." [bs] (wasm/new UUID (s/mk-str bs)))
+
+(defn- hex-b? [c] (if (if (>= c 48) (<= c 57) false) true (if (>= c 97) (<= c 102) false)))
+(defn- uuid-dash? [i] (if (= i 8) true (if (= i 13) true (if (= i 18) true (= i 23)))))
+(defn- uuid-width [i] (cond (= i 0) 8 (= i 4) 12 :else 4))
+
+(defn- lower-bytes [bs]
+  (let [n (wasm/alen bs) out (wasm/bytes-new n)]
+    (loop [i 0]
+      (if (< i n)
+        (let [c (wasm/bget bs i)] (wasm/bset! out i (if (if (>= c 65) (<= c 90) false) (+ c 32) c)) (recur (inc i)))
+        out))))
+
+(defn- uuid-strict? [bs]
+  (if (= 36 (wasm/alen bs))
+    (loop [i 0]
+      (if (< i 36)
+        (let [c (wasm/bget bs i)]
+          (if (if (uuid-dash? i) (= c 45) (hex-b? c)) (recur (inc i)) false))
+        true))
+    false))
+
+(defn- uuid-dashes [bs]
+  (let [n (wasm/alen bs)] (loop [i 0 d 0] (if (< i n) (recur (inc i) (if (= 45 (wasm/bget bs i)) (inc d) d)) d))))
+
+(defn- uuid-lenient "normalizeLenientUUID: the canonical bytes, or null." [bs]
+  (if (= 4 (uuid-dashes bs))
+    (let [n (wasm/alen bs) out (wasm/bytes-new 36)]
+      (loop [i 0] (when (< i 36) (wasm/bset! out i (if (uuid-dash? i) 45 48)) (recur (inc i))))
+      ;; group g spans [st, e) of bs; it lands right-aligned in out's [os, os + w)
+      (loop [g 0 st 0 os 0]
+        (if (= g 5)
+          out
+          (let [e (loop [j st] (if (if (< j n) (if (= 45 (wasm/bget bs j)) false true) false) (recur (inc j)) j))
+                len (- e st) w (uuid-width g)
+                hex (loop [j st] (if (< j e) (if (hex-b? (wasm/bget bs j)) (recur (inc j)) false) true))]
+            (if (if (= len 0) true (if hex (if (> len w) (if (= g 3) false true) false) true))
+              (wasm/null)
+              (let [tk (if (> len w) w len)]
+                (loop [j 0] (when (< j tk) (wasm/bset! out (+ os (+ (- w tk) j)) (wasm/bget bs (+ (- e tk) j))) (recur (inc j))))
+                (recur (inc g) (inc e) (+ os (inc w)))))))))
+    (wasm/null)))
+
+(defn ^{:twin "core/parse-uuid"} parse-uuid*
+  ([] (raise (wasm/bytes-of-string "parse-uuid expects 1 arg")))
+  ([x] (if (= 17 (sq/kind x))
+         (let [lb (lower-bytes (s/str-bytes x))
+               cb (if (uuid-strict? lb) lb (uuid-lenient lb))]
+           (if (wasm/null? cb) (wasm/null) (mk-uuid cb)))
+         (raise-not-supported (lit (wasm/bytes-of-string "parse-uuid expects a string, got ")) x)))
+  ([x y] (raise (wasm/bytes-of-string "parse-uuid expects 1 arg")))
+  ([x y & more] (raise (wasm/bytes-of-string "parse-uuid expects 1 arg"))))
+
+;; ---------------------------------------------------------------------------
 ;; Promise and delay (P6.7; lang.go:8007-8043, 8312-8330, vm/promise.go,
 ;; vm/delay.go). A module has one thread, so deref of an undelivered
 ;; promise, which blocks forever natively (nothing else can deliver), is a
@@ -1407,6 +1471,7 @@
                           (if (= 0 (wasm/get Delay 1 x)) (lit (wasm/bytes-of-string ":pending"))
                               (s/value-string (if (= 1 (wasm/get Delay 1 x)) (wasm/get Delay 0 x) (wasm/null))))
                           (lit (wasm/bytes-of-string ">")))
+          (= k 42) (s/str (lit (wasm/bytes-of-string "#uuid \"")) (wasm/get UUID 0 x) (lit (wasm/bytes-of-string "\"")))
           :else (wasm/trap "wasm.core: printing this value is not implemented"))))
 
 (defn- pr-hook [self x] (s/value-string x))
@@ -1437,13 +1502,16 @@
                  ;; Meta'd symbols stay identity, as native compares them.
                  (if (= 2 (standin a)) (= 2 (standin b)) false)
                  (sq/equiv? (wasm/get MetaNamed 0 a) (wasm/get MetaNamed 0 b))
+                 (if (= 42 (ckind a)) (= 42 (ckind b)) false) (sq/equiv? (wasm/get UUID 0 a) (wasm/get UUID 0 b))
                  :else (wasm/ref-eq a b))))
 ;; None of these is Hashable natively: FNV-1a of String() (hash.go:31), so a
 ;; meta'd keyword hashes as ":a" text, apart from the bare keyword, a type as
 ;; its name and a transient as "<transient-map count=N>".
 (defn- foreign-hash [self x]                             ; the sorted colls are Hashable, as a hash-map/set
   (let [k (ckind x)]
-    (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x)) :else (sq/hash (s/value-string x)))))
+    (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x))
+          (= k 42) (sq/hash (wasm/get UUID 0 x))           ; UUID.Hash: FNV of the bare text, as that String's
+          :else (sq/hash (s/value-string x)))))
 (defn- tn-hook [self x] (tn x))                          ; wasm.arrays names argument types through this
 
 (defn install!

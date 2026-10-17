@@ -634,13 +634,14 @@
 ;; P10.6: natives let-go's IR builder and passes reach when carried as a
 ;; program (checks/ir-pipeline.sh). -copy-form-source! carries the reader's
 ;; position of one form to another natively; the module keeps no position
-;; table (wasm.ir/form-source-info), so it is the second form. The three
-;; kinds the module lacks (D15: ratios; decimals, UUIDs) answer false.
+;; table (wasm.ir/form-source-info), so it is the second form. The two
+;; kinds the module lacks (D15: ratios, decimals) answer false; uuid? is
+;; wasm.core's UUID (CoreIsUUID: any arity but one is false).
 (defn ^{:twin "core/-copy-form-source!"} copy-form-source! [from to] to)
 (defn ^{:twin "core/boolean?"} boolean? [x] (or (= true x) (= false x)))
 (defn ^{:twin "core/decimal?"} decimal? [x] false)
 (defn ^{:twin "core/ratio?"} ratio? [x] false)
-(defn ^{:twin "core/uuid?"} uuid? [x] false)
+(defn ^{:twin "core/uuid?"} uuid? [& args] (and (= 1 (count args)) (= 42 (c/ckind (first args)))))
 (defn ^{:twin "core/ns-aliases"} ns-aliases                ; CoreNsAliases (lang.go:7797): {alias-sym ns}
   [x]
   (reduce (fn [m kv] (assoc m (symbol (key kv)) (ns-of (val kv))))
