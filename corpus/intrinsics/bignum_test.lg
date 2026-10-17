@@ -1,4 +1,4 @@
-;; core.bignum (rt/core/bignum.lg) against native lg's own BigInt and
+;; let-go.lang.bignum (rt/let-go/lang/bignum.lg) against native lg's own BigInt and
 ;; Ratio: every expectation is native arithmetic on the same operands, and
 ;; both sides compare by their decimal text (native `str`, the library's
 ;; `->string` / `rat->string`). The library is plain Clojure that nothing
@@ -6,7 +6,7 @@
 (ns bignum-test
   (:require [test :refer [deftest is testing]]
             [check :as check]
-            [core.bignum :as b]))
+            [let-go.lang.bignum :as b]))
 
 (defn- P "Native integer (Int or BigInt) or string -> library BigInt via parse." [x]
   (b/parse (str x)))
