@@ -1664,3 +1664,36 @@
   ([tag parent] (h-isa (global-h) tag parent))
   ([h tag parent] (if (h-valid? h) (h-isa h tag parent) false))
   ([a b c d & more] (raise-arity (+ 4 (count more)))))
+
+;; ---------------------------------------------------------------------------
+;; Taps (lang.go:8379-8422). tap> calls each tap in turn on the caller's
+;; thread, swallowing what a tap throws, and answers true; remove-tap drops
+;; the first tap identical to its argument. The list is module state. No
+;; destructuring or named fns here (checks/gensym-load.sh), and no try: a
+;; new try in this file renumbers locals in legmacs' own fns (P8.0), so
+;; tap> swallows through future*'s.
+
+(def ^:private taps-cell (atom []))
+
+(defn ^{:twin "core/add-tap"} add-tap* [& args]
+  (cond (not= 1 (count args)) (raise-lit "add-tap expects 1 arg")
+        (not (c/callable? (first args))) (raise-lit "add-tap expected Fn")
+        :else (do (swap! taps-cell conj (first args)) nil)))
+
+(defn ^{:twin "core/remove-tap"} remove-tap* [& args]
+  (if (not= 1 (count args))
+    (raise-lit "remove-tap expects 1 arg")
+    (let [f (first args) ts @taps-cell
+          i (loop [i 0] (cond (= i (count ts)) -1 (identical? f (nth ts i)) i :else (recur (inc i))))]
+      (when (>= i 0) (reset! taps-cell (into (subvec ts 0 i) (subvec ts (inc i)))))
+      nil)))
+
+(defn ^{:twin "core/tap>"} tap>* [& args]
+  (if (not= 1 (count args))
+    (raise-lit "tap> expects 1 arg")
+    (let [x (first args)]
+      (loop [q (seq @taps-cell)]
+        (when q
+          (future* (partial (first q) x))                   ; future* runs it now, swallowing what it throws
+          (recur (next q))))
+      true)))
