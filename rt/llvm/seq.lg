@@ -74,7 +74,7 @@
 ;; runtime error; message bytes; message once caught; ex-data) plus a cause.
 (arch/defstruct MapEntry [:ref :ref])              ; key, val
 ;; Field 1 of Atom and Volatile is the identity id, as Fn's field 7.
-(arch/defstruct Atom [[:mut :ref] [:mut :i64]])
+(arch/defstruct Atom [[:mut :ref] [:mut :i64] [:mut :ref] [:mut :ref] [:mut :i64] [:mut :ref]]) ; value, identity hash, meta, validator, generation, watches
 (arch/defstruct Volatile [[:mut :ref] [:mut :i64]])
 (arch/defstruct Err [:i32 :ref :ref :ref :ref])    ; kind, msg bytes, caught msg bytes, data, cause
 ;; Foreign-kind hooks (kind 18: maps from phm, sets from phs, anything else),
@@ -1080,7 +1080,22 @@
       (sequential-kind? ka) (walk-equal? (to-seq a) (to-seq b))
       :else false)))
 
-(defn ^{:twin "core/="} equals [a b] (bool (equiv? a b)))
+(defn equals-seq [xs]
+  (let [s (seq xs)]
+    (if (arch/null? s)
+      (raise-b (arch/bytes-of-string "wrong number of arguments 0"))
+      (let [a (s-first s)]
+        (loop [more (s-next s)]
+          (if (arch/null? more)
+            (bool true)
+            (if (equiv? a (s-first more))
+              (recur (s-next more))
+              (bool false))))))))
+
+(defn ^{:twin "core/="} equals
+  ([] (raise-b (arch/bytes-of-string "wrong number of arguments 0")))
+  ([a] (bool true))
+  ([a b] (bool (equiv? a b))))
 
 ;; ---------------------------------------------------------------------------
 ;; Float bits (moved from llvm.str at P2.9, since Float hashing needs it and

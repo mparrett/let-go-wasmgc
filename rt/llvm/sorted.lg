@@ -9,9 +9,9 @@
 ;; mutually comparable keys. Insertion is O(n). Keys native cannot compare
 ;; fall back to hash order on both sides (rbNode.insert/find/delete); where
 ;; such keys are mixed with comparable ones the tree's shape decides native's
-;; order and this array's may differ (named limit). Only the default
-;; comparator exists: sorted-map-by / sorted-set-by and rseq/subseq are not
-;; here.
+;; order and this array's may differ (named limit). Both the default
+;; comparator and custom callable comparators are supported; rseq/subseq
+;; are not implemented here.
 ;;
 ;; The comparator is llvm.core's (compare* with the hash fallback), which this
 ;; namespace cannot require (llvm.core requires it): llvm.core/install! sets
@@ -27,29 +27,34 @@
             [llvm.phm :as m]
             [llvm.phs :as hs]))
 
-;; items: a pv/Node array in key order (a map's are MapEntry), meta (null = none)
-(arch/defstruct SMap [:ref :ref])
-(arch/defstruct SSet [:ref :ref])
+;; items: key-ordered pv/Node array, meta, comparator (null = default).
+(arch/defstruct SMap [:ref :ref :ref])
+(arch/defstruct SSet [:ref :ref :ref])
 ;; The one runtime global (D39): the Fn (f a b) -> Int ordering two keys.
 (arch/defstruct SGlobals [[:mut :ref]])
 (def globals (arch/new SGlobals (arch/null)))
 
 (defn set-compare-hook! [f] (arch/set! SGlobals 0 globals f))
-(defn- cmp [a b] (sq/unbox-int (sq/invoke2 (arch/get SGlobals 0 globals) a b)))
+(defn- cmp [f a b] (sq/unbox-int (sq/invoke2 (if (arch/null? f) (arch/get SGlobals 0 globals) f) a b)))
 
 (defn smap? [x] (if (arch/null? x) false (arch/is? SMap x)))
 (defn sset? [x] (if (arch/null? x) false (arch/is? SSet x)))
 
 (defn- no-items [] (arch/array-new pv/Node 0 (arch/null)))
-(defn empty-smap [] (arch/new SMap (no-items) (arch/null)))   ; EmptySortedMap
-(defn empty-sset [] (arch/new SSet (no-items) (arch/null)))   ; EmptySortedSet
+(defn empty-smap [] (arch/new SMap (no-items) (arch/null) (arch/null)))   ; EmptySortedMap
+(defn empty-sset [] (arch/new SSet (no-items) (arch/null) (arch/null)))   ; EmptySortedSet
+
+(defn empty-smap-by [f] (arch/new SMap (no-items) (arch/null) f))
+(defn empty-sset-by [f] (arch/new SSet (no-items) (arch/null) f))
+(defn smap-comparator [x] (arch/get SMap 2 x))
+(defn sset-comparator [x] (arch/get SSet 2 x))
 
 (defn- m-items [x] (arch/get SMap 0 x))
 (defn- s-items [x] (arch/get SSet 0 x))
 (defn smeta [x] (arch/get SMap 1 x))
 (defn ssmeta [x] (arch/get SSet 1 x))
-(defn smap-with-meta [x mt] (arch/new SMap (m-items x) mt))
-(defn sset-with-meta [x mt] (arch/new SSet (s-items x) mt))
+(defn smap-with-meta [x mt] (arch/new SMap (m-items x) mt (smap-comparator x)))
+(defn sset-with-meta [x mt] (arch/new SSet (s-items x) mt (sset-comparator x)))
 
 ;; ---------------------------------------------------------------------------
 ;; The ordered array
@@ -59,13 +64,13 @@
 
 ;; Index of k in items, else -(insertion point)-1. Native compares
 ;; cmp(key, node.key) on the way down; so does this.
-(defn- search [items is-map k]
+(defn- search [items is-map f k]
   (loop [lo 0 hi (dec (arch/alen items))]
     (if (> lo hi)
       (- -1 lo)
       (let [mid (unsigned-bit-shift-right (+ lo hi) 1)
             x (arch/aget pv/Node items mid)
-            c (cmp k (if is-map (entry-key x) x))]
+            c (cmp f k (if is-map (entry-key x) x))]
         (cond (< c 0) (recur lo (dec mid))
               (> c 0) (recur (inc mid) hi)
               :else mid)))))
@@ -97,20 +102,20 @@
 ;; assocImpl: an equal key keeps the stored key and takes the new value; the
 ;; result never carries meta (sorted_map.go:324).
 (defn smap-assoc [x k v]
-  (let [items (m-items x) i (search items true k)]
+  (let [items (m-items x) i (search items true (smap-comparator x) k)]
     (if (>= i 0)
-      (arch/new SMap (replace-at items i (arch/new sq/MapEntry (entry-key (arch/aget pv/Node items i)) v)) (arch/null))
-      (arch/new SMap (insert-at items (- -1 i) (arch/new sq/MapEntry k v)) (arch/null)))))
+      (arch/new SMap (replace-at items i (arch/new sq/MapEntry (entry-key (arch/aget pv/Node items i)) v)) (arch/null) (smap-comparator x))
+      (arch/new SMap (insert-at items (- -1 i) (arch/new sq/MapEntry k v)) (arch/null) (smap-comparator x)))))
 
 (defn smap-dissoc [x k]                                  ; Dissoc: a missing key gives x itself, else no meta
-  (let [items (m-items x) i (search items true k)]
-    (if (< i 0) x (arch/new SMap (remove-at items i) (arch/null)))))
+  (let [items (m-items x) i (search items true (smap-comparator x) k)]
+    (if (< i 0) x (arch/new SMap (remove-at items i) (arch/null) (smap-comparator x)))))
 
 (defn smap-get [x k nf]
-  (let [items (m-items x) i (search items true k)]
+  (let [items (m-items x) i (search items true (smap-comparator x) k)]
     (if (< i 0) nf (entry-val (arch/aget pv/Node items i)))))
 
-(defn smap-contains? [x k] (>= (search (m-items x) true k) 0))
+(defn smap-contains? [x k] (>= (search (m-items x) true (smap-comparator x) k) 0))
 
 (defn smap-seq "A MapSeq of the entries in key order, null when empty." [x]
   (sq/arr-seq (m-items x) 0))
@@ -157,14 +162,14 @@
 (defn sset-count [x] (arch/alen (s-items x)))
 
 (defn sset-conj [x v]
-  (let [items (s-items x) i (search items false v)]
-    (if (>= i 0) x (arch/new SSet (insert-at items (- -1 i) v) (ssmeta x)))))
+  (let [items (s-items x) i (search items false (sset-comparator x) v)]
+    (if (>= i 0) x (arch/new SSet (insert-at items (- -1 i) v) (ssmeta x) (sset-comparator x)))))
 
 (defn sset-disj [x v]
-  (let [items (s-items x) i (search items false v)]
-    (if (< i 0) x (arch/new SSet (remove-at items i) (ssmeta x)))))
+  (let [items (s-items x) i (search items false (sset-comparator x) v)]
+    (if (< i 0) x (arch/new SSet (remove-at items i) (ssmeta x) (sset-comparator x)))))
 
-(defn sset-contains? [x v] (>= (search (s-items x) false v) 0))
+(defn sset-contains? [x v] (>= (search (s-items x) false (sset-comparator x) v) 0))
 
 (defn sset-get [x v nf] (if (sset-contains? x v) v nf))  ; ValueAtOr returns the key asked with
 

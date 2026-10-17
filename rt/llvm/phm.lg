@@ -360,7 +360,10 @@
 (defn- m-okvs [m] (arch/get HMap 2 m))
 (defn- ordered? [m] (arch/null? (m-root m)))               ; :629
 
-(defn empty-map [] (mk 0 (arch/null) (slots 0)))           ; EmptyPersistentMap :720
+;; Only the canonical empty constructor is shared. Draining and transient
+;; conversion keep their fresh mk allocations, observable through identical?.
+(def shared-empty-map (arch/new HMap 0 (arch/null) (arch/array-new HSlots 0 (arch/null)) -1 (arch/null)))
+(defn empty-map [] shared-empty-map)                     ; EmptyPersistentMap :720
 
 (defn empty-hamt-map
   "A HAMT-mode empty map (non-null empty root): emptySetImpl

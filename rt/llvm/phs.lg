@@ -28,7 +28,8 @@
 (defn swith-meta [s meta] (arch/new HSet (impl s) (arch/get HSet 1 s) meta))
 (defn- carry-meta [s r] (if (if (arch/ref-eq s r) true (arch/null? (smeta s))) r (swith-meta r (smeta s))))
 
-(defn empty-set [] (mkset (m/empty-hamt-map)))            ; EmptyPersistentSet :32
+(def shared-empty-set (arch/new HSet (m/empty-hamt-map) -1 (arch/null)))
+(defn empty-set [] shared-empty-set)                    ; EmptyPersistentSet :32
 
 (defn scount [s] (m/mcount (impl s)))
 

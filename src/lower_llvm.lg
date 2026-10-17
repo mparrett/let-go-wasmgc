@@ -121,15 +121,31 @@
   (let [r (src-of nid)]
     (when (= :load-var (ir/op r *f*)) (ir/aux r *f*))))
 
+(defn ll-builtin-type-id [x]
+  (when (= (type x) (type (type 1)))
+    (some (fn [[id entry]] (when (= (str x) (:name entry)) id))
+          (map-indexed vector (llvm-poly/ll-type-table)))))
+
+(defn ll-native-type-const? [v]
+  (and (var? v) (not (:dynamic (meta v)))
+       (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
+       (some? (ll-builtin-type-id (try @v (catch e nil))))))
+
 (defn ll-const-val
   "[v] for a constant value, else nil (fn templates and Var objects are
    handled as closures and :def targets)."
   [nid]
   (if-let [c (int-const-val nid)]
     [c]
-    (let [r (src-of nid)]
-      (when (and (= :const (ir/op r *f*)) (not (template? r)))
-        (let [a (ir/aux r *f*) v (if (typed-aux? a) (nth a 2) a)]
+    (let [r (src-of nid) op (ir/op r *f*) a (ir/aux r *f*)]
+      (cond
+        ;; Host constants such as Long/MAX_VALUE and Double/NaN follow the
+        ;; same scalar-constant contract as the Wasm lane. Program globals,
+        ;; dynamic vars and explicitly altered native roots are not literals.
+        (and (= op :load-var) *rt* (not (table-var? a))
+             (not (rooted? a)) (or (native-scalar-const? a) (ll-native-type-const? a))) [@a]
+        (and (= :const op) (not (template? r)))
+        (let [v (if (typed-aux? a) (nth a 2) a)]
           (when-not (var? v) [v]))))))
 
 ;; core vars the llvm runtime implements as one of its top-level defs
@@ -141,6 +157,7 @@
         (and *rt* (= v #'*in-wasm*)) (lw-rt/rt-var 'host 'in-wasm)
         (and *rt* (= v #'*assert*)) (lw-rt/rt-var 'host 'assert-on)
         (and *rt* (= v #'*compiling-aot*)) (lw-rt/rt-var 'host 'compiling-aot)
+        (and *rt* (= v #'core/*agent-errors*)) (lw-rt/rt-var 'core 'agent-errors)
         :else v))
 
 (defn ll-table-var? [v] (and v (table-var? (ll-var-alias v))))
@@ -151,7 +168,7 @@
    chain link. A var-table var is read where its :load-var sits."
   [nid]
   (or (some? (ll-const-val nid))
-      (let [v (ll-callee-var nid)] (and (some? v) (not (ll-table-var? v))))
+      (let [v (ll-callee-var nid)] (and (some? v) (not= v #'*ns*) (not (ll-table-var? v))))
       (closure-hidden? nid)
       ;; a class symbol (consumed by catch-matches?) and a Var object (by :def)
       (symbol-const? nid) (var-const? nid)))
@@ -173,7 +190,7 @@
   "The operand for value nid, in its own representation."
   (or (get @(:env *ll*) nid)
       (let [v (ll-callee-var nid)]
-        (when (and v (not (ll-table-var? v))) (ll-var-value v)))
+        (when (and v (not= v #'*ns*) (not (ll-table-var? v))) (ll-var-value v)))
       (if (= :block-arg (ir/op nid *f*))
         (ll-fail "block-arg with no binding" {:nid nid})
         (str "%v" nid))))
@@ -245,9 +262,13 @@
       (not= want :box) (ll-fail "a constant where a code pointer is needed" {:nid nid :value (pr-str v)})
       (string? v) (ll-str-const! v)
       (char? v) (ll-char-const! v)
+      (and *rt* (some? (ll-builtin-type-id v)))
+      (str "ptrtoint (ptr " (lir/ref (str "lg_type." (ll-builtin-type-id v))) " to " (ll-word) ")")
       ;; keywords, symbols, collections, vars, regexes: built once by the
       ;; runtime at startup (const-global!, as the WasmGC lane builds them)
-      *rt* (let [g (if-let [rs (regex-standin v)] (const-global! rs) (const-global! v)) r (ll-fresh "%k")]
+      *rt* (let [g (if-let [rs (regex-standin v)]
+                    (const-global! rs [:regex *fname* (src-of nid)])
+                    (const-global! v)) r (ll-fresh "%k")]
              (ll-emit! "  " r " = load " (ll-word) ", ptr " (lir/ref (str "var" g)))
              r)
       :else (ll-fail "a constant that needs the runtime" {:value (pr-str v)}))
@@ -513,6 +534,11 @@
                    (map vector args (:params sig))))
     (swap! *abi-notes* update :viol (fnil conj #{}) [v (count args)])))
 
+;; Internal forms used by a program Var's root accessor, not its visible
+;; value getter. LLVM lowers these directly to the root slot.
+(defn llvm-read-root [k] nil)
+(defn llvm-write-root! [k x] nil)
+
 (defn ll-call-plan*
   [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*)
@@ -534,6 +560,8 @@
       (and *rt* (= prim :div)) (to (lw-rt/rt-var 'math 'div))
       (and *rt* (ll-op-vars prim) (some #{:box :float} kinds)) (to (ll-op-vars prim))
       (= op :try) (ll-try-plan nid)
+      (and *rt* (= op :load-var) (= (ir/aux nid *f*) #'*ns*))
+      (to (lw-rt/rt-var 'natives 'current-ns))
       (not= :call op) nil
       (= v #'throw) {:sig {:name "lg_throw" :params [:box] :ret :box} :args args}
       ;; wasm/call-ref: a call through a funcref, typed by its func decl
@@ -547,15 +575,16 @@
       ;; runtime's handle stacks, which printing follows
       (and *rt* (#{#'push-out! #'pop-out! #'push-err! #'pop-err!} v))
       (to (lw-rt/rt-var 'host (symbol (name (symbol v)))))
-      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var!} v) (and v (lw-rt/intrinsic? v))
+      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var! #'llvm-read-root #'llvm-write-root!} v) (and v (lw-rt/intrinsic? v))
           (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))))
       nil
       (or (nil? v) (ll-table-var? v))
       (let [argc (count args)]
-        (when (> argc ll-max-invoke)
-          (ll-fail (str "unsupported call through a fn value with more than " ll-max-invoke " args") {:argc argc}))
-        {:sig {:invoke argc :name (str "lg_invoke" argc) :params (vec (repeat (inc argc) :box)) :ret :box}
-         :args refs})
+        (if (> argc ll-max-invoke)
+          {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box}
+           :args [(first refs)] :rest args :empty-rest :list :apply-list true}
+          {:sig {:invoke argc :name (str "lg_invoke" argc) :params (vec (repeat (inc argc) :box)) :ret :box}
+           :args refs}))
       ;; the runtime's own dispatch reads a fixed code slot and knows no
       ;; FnV: its invoke helpers become lg_invoke<n>, as rt-overrides makes
       ;; them $rt_invokeN on the GC lane
@@ -725,6 +754,11 @@
 (defn ll-prim! [nid op refs]
   (let [n (count refs)]
     (cond
+      (and (= op :eq) (= 2 n) (every? #(= :bool (ll-arg-kind %)) refs))
+      (let [a (ll-arg (first refs) :bool) b (ll-arg (second refs) :bool)
+            v (str "%v" nid)]
+        (ll-emit! "  " v " = icmp eq i1 " a ", " b)
+        (ll-def! nid :bool v))
       ;; f64, Go float semantics, no checks (prim-wat)
       (ll-float-op? op (map ll-arg-kind refs))
       (let [xs (doall (map #(ll-arg % :float) refs)) v (str "%v" nid)]
@@ -740,7 +774,7 @@
                     (ll-def! nid :bool v))))
       (and (ll-checked-op op) (= 2 n)) (let [[a b] (map ll-int-arg refs)] (ll-checked! nid (ll-checked-op op) a b))
       (and (#{:inc :dec} op) (= 1 n)) (ll-checked! nid (if (= op :inc) "sadd" "ssub") (ll-int-arg (first refs)) "1")
-      (and (ll-cmp op) (= 2 n) (not (and (= op :eq) (not-every? #(= :int (ty %)) refs))))
+      (and (ll-cmp op) (= 2 n) (not (and (= op :eq) (not-every? #(= :int (ll-arg-kind %)) refs))))
       (let [[a b] (map ll-int-arg refs)] (ll-icmp! nid (ll-cmp op) a b))
       (and (#{:zero? :pos? :neg?} op) (= 1 n))
       (ll-icmp! nid ({:zero? "eq" :pos? "sgt" :neg? "slt"} op) (ll-int-arg (first refs)) "0")
@@ -798,7 +832,7 @@
   (ll-emit! "  call void @lg_print_nl()")
   (ll-bind! nid (ll-coerce! :box (ty nid) "0")))
 
-(declare ll-closure! ll-gvar ll-catch-matches!)
+(declare ll-closure! ll-gvar ll-var-ptr! ll-root-var! ll-catch-matches!)
 
 (defn ll-inst! [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)]
@@ -817,20 +851,21 @@
         (ll-def! nid k v))
       (= op :load-var)
       (let [r (ll-fresh "%g")]
-        (ll-emit! "  " r " = load " (ll-word) ", ptr " (ll-gvar aux))
+        (ll-emit! "  " r " = load " (ll-word) ", ptr " (ll-var-ptr! aux))
         (ll-def! nid :box r))
       (= op :def)
       (let [[vr val] refs v (const-val vr)]
-        (when-not (and (table-var? v) (top-level-fname? *fname*))
+        (when-not (table-var? v)
           (ll-fail "unsupported op :def" {:var v}))
-        (when val (ll-emit! "  store " (ll-typed val :box) ", ptr " (ll-gvar v)))
-        (ll-bind! nid (ll-coerce! :box (ty nid) "0")))
+        (when val (ll-emit! "  store " (ll-typed val :box) ", ptr " (ll-var-ptr! v)))
+        (ll-bind! nid (ll-arg vr (ty nid))))
       (var-const? nid) nil
       (= op :call)
       (let [v (ll-callee-var (first refs))]
         (cond (ll-leaf-var? v) (ll-println! nid (rest refs))
               (= v #'catch-matches?) (ll-catch-matches! nid (rest refs))
               (#{#'push-var! #'pop-var!} v) (ll-binding-var! nid v (rest refs))
+              (#{#'llvm-read-root #'llvm-write-root!} v) (ll-root-var! nid v (rest refs))
               ;; seq/float-bits is the stand-in for f64-bits (D28/D45): the raw
               ;; bits, NaN payloads included (rt-overrides' i64.reinterpret_f64)
               (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits)))
@@ -1015,10 +1050,14 @@
               (ll-label! slow)))
         ps (if cr? (rest (:params sig)) (:params sig))
         pre (:pre plan)
-        argv (doall (concat (map (fn [[k o] t] (str (ll-type t) " " (ll-coerce! k t o))) pre ps)
+        argv (if (:apply-list plan)
+               [(ll-typed (first args) :box)
+                (str (ll-type :box) " " (ll-rest-list! (:rest plan) :list))
+                (str "i64 " (count (:rest plan)))]
+               (doall (concat (map (fn [[k o] t] (str (ll-type t) " " (ll-coerce! k t o))) pre ps)
                             (map ll-typed args (drop (count pre) ps))
                             (when (:rest plan)
-                              [(str (ll-type :box) " " (ll-rest-list! (:rest plan) (:empty-rest plan)))])))]
+                              [(str (ll-type :box) " " (ll-rest-list! (:rest plan) (:empty-rest plan)))]))))]
     (if (ll-returns-call? b n c)
       (ll-tail! callee (cons "ptr %k" argv))
       (let [cont [b (inc n)] saved (ll-saved cont) rt (ll-record-type cont)
@@ -1182,34 +1221,61 @@
 
 (defn ll-gvar [v] (lir/ref (str "var" (var-global (ll-var-alias v)))))
 
+(defn ll-root-var! [nid op args]
+  (let [k (first (ll-const-val (first args)))
+        v (when (keyword? k) (resolve (symbol (namespace k) (name k))))]
+    (when-not (and v (q-var-global v))
+      (ll-fail "root accessor requires a program Var" {:var k}))
+    (if (= op #'llvm-read-root)
+      (let [r (ll-fresh "%root")]
+        (ll-emit! "  " r " = load " (ll-word) ", ptr " (ll-gvar v))
+        (ll-def! nid :box r))
+      (let [x (ll-arg (second args) :box)]
+        (ll-emit! "  store " (ll-word) " " x ", ptr " (ll-gvar v))
+        (ll-def! nid :box x)))))
+
+(defn ll-binding-head! [v]
+  (let [nm (str "binding." (var-global (ll-var-alias v)))]
+    (ll-global! (ll-glob nm "internal global" (ll-word) "0"))
+    (lir/ref nm)))
+
+(defn ll-var-ptr!
+  "Address of the visible value: top dynamic binding, or the root slot.
+   GEP is not inbounds, so computing the unused field address from nil is
+   valid; only the selected address is ever dereferenced."
+  [v]
+  (let [root (ll-gvar v)]
+    (if-not *rt* root
+      (let [head (ll-fresh "%bh") empty? (ll-fresh "%be") addr (ll-fresh "%ba")]
+        (ll-emit! "  " head " = load " (ll-word) ", ptr " (ll-binding-head! v))
+        (ll-emit! "  " empty? " = icmp eq " (ll-word) " " head ", 0")
+        (let [bound (ll-field-ptr! (ll-sty "$List") (ll-ptr! head) 1)]
+          (ll-emit! "  " addr " = select i1 " empty? ", ptr " root ", ptr " bound))
+        addr))))
+
 (defn ll-binding-var!
   "binding-out's push-var!/pop-var! (a binding of a program var, k its
-   :ns/name): save the var's global on @lg_bind_stack (one List for every
-   var, since bindings nest) and set it; pop restores it. Single-threaded,
-   as the GC lane's (binding-call-wat)."
+   :ns/name): push/pop that Var's binding stack, leaving its root intact.
+   Separate stacks also permit macros to pop different Vars in push order."
   [nid v args]
   (let [k (first (ll-const-val (first args)))
         vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
         g (when vr (var-global vr))
         _ (when-not g (ll-fail (str "binding of " k " is not supported (not a var-table var)") {:var (str vr)}))
-        gv (lir/ref (str "var" g)) w (ll-word) sty (ll-sty "$List") bs (lir/ref-bare "lg_bind_stack")]
+        w (ll-word) sty (ll-sty "$List") bs (ll-binding-head! vr)]
     (if (= v #'push-var!)
       (let [val (ll-arg (second args) :box)
-            p (ll-alloc! sty (ll-tid "$List")) old (ll-fresh "%bo") stk (ll-fresh "%bs")]
-        (ll-emit! "  " old " = load " w ", ptr " gv)
+            p (ll-alloc! sty (ll-tid "$List")) stk (ll-fresh "%bs")]
         (ll-emit! "  " stk " = load " w ", ptr " bs)
-        (ll-emit! "  store " w " " old ", ptr " (ll-field-ptr! sty p 1))
+        (ll-emit! "  store " w " " val ", ptr " (ll-field-ptr! sty p 1))
         (ll-emit! "  store " w " " stk ", ptr " (ll-field-ptr! sty p 2))
         (ll-emit! "  store i64 1, ptr " (ll-field-ptr! sty p 3))
         (ll-emit! "  store " w " 0, ptr " (ll-field-ptr! sty p 4))
-        (ll-emit! "  store " w " " (ll-word-of! p) ", ptr " bs)
-        (ll-emit! "  store " w " " val ", ptr " gv))
-      (let [stk (ll-fresh "%bs") f (ll-fresh "%bf") r (ll-fresh "%br")]
+        (ll-emit! "  store " w " " (ll-word-of! p) ", ptr " bs))
+      (let [stk (ll-fresh "%bs") r (ll-fresh "%br")]
         (ll-emit! "  " stk " = load " w ", ptr " bs)
         (let [sp (ll-ptr! stk)]
-          (ll-emit! "  " f " = load " w ", ptr " (ll-field-ptr! sty sp 1))
           (ll-emit! "  " r " = load " w ", ptr " (ll-field-ptr! sty sp 2)))
-        (ll-emit! "  store " w " " f ", ptr " gv)
         (ll-emit! "  store " w " " r ", ptr " bs)))
     (ll-bind! nid (ll-coerce! :box (ty nid) "0"))))
 
@@ -1747,7 +1813,9 @@
         inits (ll-init-chain (ll-init-steps unit-refs live?))
         gvars (distinct (concat (vals *var-globals*)
                                 (when *rt* (filter live? (map :name rt-gs)))
-                                (when *rt* (filter live? (:const-order @*rt*)))))]
+                                (when *rt* (filter live? (:const-order @*rt*)))))
+        binding-roots (sort (filter #(str/starts-with? % "binding.")
+                                   (mapcat :defs kept-globals)))]
     ;; named types come first: a constant GEP needs its type sized when parsed
     (str "target datalayout = \"" (:datalayout (:target pre)) "\"\n"
          "target triple = \"" (:triple (:target pre)) "\"\n"
@@ -1757,12 +1825,17 @@
          (str/join "\n" (sort (distinct (map lir/render (mapcat :types kept))))) "\n\n"
          (str/join "\n" (map lir/render (ll-object-globals))) "\n"
          (str/join "\n" (for [g (sort gvars)] (lir/render (ll-glob (str "var" g) "internal global" w "0")))) "\n"
-         ;; the collector's global roots: every var global, the handler chain and
-         ;; the binding stack (ll-binding-var!)
-         (let [roots (concat (for [g (sort gvars)] (str "ptr " (lir/ref (str "var" g)))) ["ptr @lg_handler" "ptr @lg_bind_stack"])]
+         ;; Static type objects are outside the heap, so root their mutable
+         ;; method-table slots directly. Only name globals retained by shaking.
+         (let [roots (concat (for [g (sort gvars)] (str "ptr " (lir/ref (str "var" g))))
+                             (map #(str "ptr " (lir/ref %)) binding-roots)
+                             (map (fn [g]
+                                    (str "ptr getelementptr (" (ll-sty (lw-rt/type-name (resolve 'llvm.core/TypeVal)))
+                                         ", ptr " (lir/ref g) ", i32 0, i32 4)"))
+                                  (sort (filter #(str/starts-with? % "lg_type.") (mapcat :defs kept-globals))))
+                             ["ptr @lg_handler"])]
            (str/join "\n" (map lir/render
-                               [(assoc-in (ll-glob "lg_bind_stack" "internal global" w "0") [:llvm/global :bare] true)
-                                (assoc-in (ll-glob "lg_gc_globals" "constant" (str "[" (count roots) " x ptr]") (str "[" (str/join ", " roots) "]")) [:llvm/global :bare] true)
+                               [(assoc-in (ll-glob "lg_gc_globals" "constant" (str "[" (count roots) " x ptr]") (str "[" (str/join ", " roots) "]")) [:llvm/global :bare] true)
                                 (assoc-in (ll-glob "lg_gc_nglobals" "constant" "i32" (str (count roots))) [:llvm/global :bare] true)])))
          "\n"
          (str/join "\n" (map lir/render (ll-type-descs))) "\n"
@@ -1793,7 +1866,8 @@
    lowered line (the lg binary and lower_wasm.lg are in the shared key)."
   []
   (str (apply str (map #(slurp (str lw-rt/src-dir "/" %))
-                       ["lower_llvm.lg" "lower_llvm_rt.lg" "lower_llvm_profile.lg" "lower_llvm_poly.lg"]))
+                       ["lower_llvm.lg" "lower_llvm_rt.lg" "lower_llvm_profile.lg" "lower_llvm_poly.lg"
+                        "lower_llvm_ir.lg" "lower_llvm_cache.lg"]))
        "|profile=" (pr-str (llvm-profile))))
 
 (defn- ll-snap-key? [k]

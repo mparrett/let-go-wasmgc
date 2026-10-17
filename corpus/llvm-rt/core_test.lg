@@ -9,12 +9,18 @@
 ;; embed a heap address compare by "both throw".
 (ns core-test
   (:require [test :refer [deftest is testing]]
+            [check :as check]
+            [numeric.limbs :as limbs]
+            [numeric.bigint :as bi]
+            [numeric.ratio :as rat]
             [llvm.arch :as arch]
             [llvm.pvec :as pv]
+            [llvm.arrays :as arr]
             [llvm.seq :as sq]
             [llvm.str :as s]
             [llvm.phm :as m]
             [llvm.phs :as hs]
+            [llvm.sorted :as sorted]
             [llvm.core :as c]
             [llvm.reader :as rd]
             [llvm.host :as h]
@@ -199,10 +205,49 @@
   (same (conj #{1} 1 2) (c/conj (W #{1}) (W 1) (W 2)))
   (same (apply conj [] (range 40)) (c/conj-seq (W []) (sq/range (W 40))))
   (same-pr (reduce conj #{} (range 40)) (c/conj-seq (W #{}) (sq/range (W 40))))
-  (same-pr (reduce conj {} (map vector (range 20) (range 20))) (c/conj-seq (W {}) (W (map vector (range 20) (range 20))))))
+  (same-pr (reduce conj {} (map vector (range 20) (range 20))) (c/conj-seq (W {}) (W (map vector (range 20) (range 20)))))
+  ;; Retain every version: later mutations must not change earlier values.
+  ;; A hash-map model avoids the pinned native sorted tree's persistence bug.
+  (let [result
+        (check/check
+          (check/for-all [descending (check/gen-bool)
+                          ops (check/gen-vector (check/gen-tuple (check/gen-bool)
+                                                                (check/gen-int -8 8)
+                                                                (check/gen-int -20 20)) 0 30)]
+            (let [cmp (if descending (fn [a b] (compare b a)) compare)
+                  f (clo cmp)
+                  states (reduce
+                           (fn [history [remove? k v]]
+                             (let [[wm ws model] (peek history)]
+                               (conj history
+                                 (if remove?
+                                   [(sorted/smap-dissoc wm (W k)) (sorted/sset-disj ws (W k)) (dissoc model k)]
+                                   [(sorted/smap-assoc wm (W k) (W v)) (sorted/sset-conj ws (W k)) (assoc model k v)]))))
+                           [[(sorted/empty-smap-by f) (sorted/empty-sset-by f) {}]] ops)]
+              (every? (fn [[wm ws model]]
+                        (let [ks (vec (sort cmp (keys model)))]
+                          (and (= (mapv #(vector % (get model %)) ks)
+                                  (mapv vec (<-w (sorted/smap-seq wm))))
+                               (= ks (vec (<-w (sorted/sset-seq ws)))))))
+                      states)))
+          {:seed 20261017 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result))))
 
 (deftest update-nth-subvec-peek-pop
   (c/install!)
+  (let [result (check/check
+                 (check/for-all [kind (check/gen-elements [:byte :int :long :double :float :object])
+                                 xs (check/gen-vector (check/gen-int -500 500) 0 40)
+                                 value (check/gen-int -500 500)]
+                   (let [a (into-array kind xs) wa (arr/into-array (W kind) (W xs))
+                         b (aclone a) wb (arr/aclone wa)]
+                     (when (seq xs) (aset a 0 value) (arr/aset wa (W 0) (W value)))
+                     (and (= (vec a) (<-w (arr/vec wa)))
+                          (= (vec b) (<-w (arr/vec wb)))
+                          (= (mapv float? (vec a)) (mapv float? (<-w (arr/vec wa))))
+                          (= (str a) (<-w (arr/print-arr wa))))))
+                 {:seed 20261022 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [coll kinds i [0 1 5 -1]]
     (same (nth coll i :nf) (c/nth (W coll) (W i) (W :nf)))
     (same (nth coll i) (c/nth (W coll) (W i))))
@@ -274,6 +319,21 @@
 
 (deftest predicates-logic-type
   (c/install!)
+  (let [t (c/make-user-type (W "Probe") (W ["x"]))
+        other (c/make-user-type (W "Probe") (W ["x"]))
+        a (c/make-user-instance t (W [7]))
+        b (c/make-user-instance t (W [7]))]
+    (is (arch/ref-eq t (c/type-of a)))
+    (is (c/instance-of? t a))
+    (is (not (c/instance-of? other a)))
+    (is (not (<-w (c/map? a))))
+    (is (not (sq/equiv? a b)))
+    (is (sq/equiv? a a))
+    (is (= 7 (<-w (c/user-field a (W "x") nil))))
+    (is (= 7 (<-w (c/user-field a (W "-x") (W "x")))))
+    (is (= [:err "no field -missing on deftype Probe"]
+           (res (fn [] (c/user-field a (W "-missing") (W "missing"))))))
+    (is (= :missing (<-w (c/get a (W :x) (W :missing))))))
   (doseq [x (concat kinds [inc])                           ; real seq kinds: the next loop
           [np mp] pred-pairs]
     (is (= (np x) (<-w (mp (W x)))) (str np " " (pr-str x))))
@@ -332,6 +392,125 @@
 
 (deftest numbers-arities-and-unary
   (c/install!)
+  (let [value (fn [xs] (reduce (fn [n x] (+' (*' n 1073741824) x)) 0 (rseq xs)))
+        signed-value (fn [x] (*' (.-sign x) (value (.-limbs x))))
+        exact-value (fn [x]
+                      (cond (instance? rat/Ratio x) (/ (signed-value (.-numerator x))
+                                                       (signed-value (.-denominator x)))
+                            (instance? bi/BigInt x) (signed-value x)
+                            :else x))
+        canonical? (fn [xs] (and (vector? xs)
+                                (or (empty? xs) (pos? (peek xs)))
+                                (every? #(and (integer? %) (<= 0 %) (< % 1073741824)) xs)))
+        agrees? (fn [a b]
+                  (let [x (value a) y (value b)
+                        na (limbs/normalize a) nb (limbs/normalize b)
+                        sum (limbs/add na nb) product (limbs/multiply na nb)
+                        divisor-gcd (limbs/gcd na nb)
+                        expected-gcd (loop [x x y y] (if (zero? y) x (recur y (rem x y))))
+                        division (when (pos? y) (limbs/div-rem na nb))
+                        difference (if (>= x y) (limbs/subtract na nb) (limbs/subtract nb na))]
+                    (and (every? canonical? [na nb sum product difference divisor-gcd])
+                         (= expected-gcd (value divisor-gcd))
+                         (or (zero? y)
+                             (let [[q r] division]
+                               (and (canonical? q) (canonical? r)
+                                    (= (quot x y) (value q)) (= (rem x y) (value r))
+                                    (= x (+' (*' y (value q)) (value r)))
+                                    (< (value r) y))))
+                         (= x (value na)) (= y (value nb))
+                         (= (compare x y) (limbs/compare-magnitude na nb))
+                         (= (+' x y) (value sum)) (= (*' x y) (value product))
+                         (= (if (>= x y) (-' x y) (-' y x)) (value difference))
+                         (= x (value a)) (= y (value b)))))
+        signed-agree? (fn [a b sa sb]
+                        (let [a (bi/make-value sa a) b (bi/make-value sb b)
+                              x (signed-value a) y (signed-value b)
+                              results [(bi/add a b) (bi/subtract a b) (bi/multiply a b) (bi/negate a)]
+                              canonical-signed? (fn [v]
+                                                  (and (instance? bi/BigInt v)
+                                                       (canonical? (.-limbs v))
+                                                       (= (.-sign v) (compare (signed-value v) 0))))]
+                          (and (every? canonical-signed? (conj results a b))
+                               (= (when (<= -9223372036854775808 x 9223372036854775807) x)
+                                  (bi/to-long a))
+                               (= [(+' x y) (-' x y) (*' x y) (-' x)] (mapv signed-value results))
+                               (= (compare x y) (bi/compare-value a b))
+                               (or (zero? y)
+                                   (let [qr (bi/div-rem a b)
+                                         r (rat/make-value a b) expected (/ x y)
+                                         other (rat/make-value b (bi/from-long 3)) other-value (/ y 3)]
+                                     (and (every? canonical-signed? qr)
+                                          (= [(+ expected other-value) (- expected other-value)
+                                              (* expected other-value) (/ expected other-value) (- expected)]
+                                             (mapv exact-value [(rat/add r other) (rat/subtract r other)
+                                                                (rat/multiply r other) (rat/divide r other)
+                                                                (rat/negate r)]))
+                                          (= (compare expected other-value) (rat/compare-value r other))
+                                          (cond
+                                            (ratio? expected)
+                                            (and (instance? rat/Ratio r)
+                                                 (pos? (.-sign (.-denominator r)))
+                                                 (= [1] (limbs/gcd (.-limbs (.-numerator r))
+                                                                  (.-limbs (.-denominator r))))
+                                                 (= expected (/ (signed-value (.-numerator r))
+                                                                (signed-value (.-denominator r)))))
+                                            (<= -9223372036854775808 expected 9223372036854775807)
+                                            (and (int? r) (= expected r))
+                                            :else (and (instance? bi/BigInt r) (= expected (signed-value r))))
+                                          (= [(quot x y) (rem x y)] (mapv signed-value qr))))))))
+        shifts-agree? (fn [a bits]
+                        (let [a (limbs/normalize a) x (value a)
+                              factor (reduce *' 1 (repeat bits 2))
+                              left (limbs/shift-left a bits)
+                              right (limbs/shift-right a bits)]
+                          (and (canonical? left) (canonical? right)
+                               (= (*' x factor) (value left))
+                               (= (quot x factor) (value right))
+                               (= a (limbs/shift-right left bits)))))
+        result (check/check
+                 (check/for-all [a (check/gen-vector (check/gen-int 0 1073741823) 0 8)
+                                 b (check/gen-vector (check/gen-int 0 1073741823) 0 8)
+                                 bits (check/gen-int 0 300)
+                                 sa (check/gen-elements [-1 1])
+                                 sb (check/gen-elements [-1 1])]
+                   (and (agrees? a b) (shifts-agree? a bits) (signed-agree? a b sa sb)))
+                 {:seed 20261024 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result))
+    (doseq [a [[] [0 0] [1] [1073741823] [1073741823 1073741823 1073741823] [0 0 1]]
+            b [[] [1] [1073741823] [0 1] [0 0 1]]]
+      (is (agrees? a b)))
+    (doseq [a [[] [1] [1073741823 1073741823 7] [0 0 8]]
+            b [[] [1] [1073741823] [0 0 8]]
+            sa [-1 1] sb [-1 1]]
+      (is (signed-agree? a b sa sb)))
+    (doseq [n [-9223372036854775808 -1073741824 -1 0 1 1073741824 9223372036854775807]]
+      (is (= n (signed-value (bi/from-long n))))
+      (is (= n (bi/to-long (bi/from-long n)))))
+    (is (= (- 1/2 -9223372036854775808)
+           (exact-value (rat/subtract (rat/make-value (bi/from-long 1) (bi/from-long 2))
+                                      -9223372036854775808))))
+    (doseq [a [[] [0 0] [1] [1073741823] [0 0 1] (vec (repeat 33 1073741823))]
+            bits [0 1 29 30 31 59 60 61 990 1000]]
+      (is (shifts-agree? a bits)))
+    (is (try (limbs/shift-left [1] -1) false (catch e true)))
+    (is (try (limbs/shift-right [1] -1) false (catch e true)))
+    ;; Exercise carry, borrow and transient writes across vector tree nodes.
+    (doseq [n [31 32 33]
+            :let [a (vec (repeat n 1073741823))
+                  power (conj (vec (repeat n 0)) 1)]
+            b [[1] a power]]
+      (is (agrees? a b)))
+    (is (try (limbs/subtract [] [1]) false (catch e true))))
+  (is (try (limbs/div-rem [1] []) false (catch e true)))
+  (is (try (limbs/div-rem [] []) false (catch e true)))
+  (is (try (rat/make-value (bi/from-long 1) (bi/from-long 0)) false (catch e true)))
+  (let [result (check/check
+                 (check/for-all [xs (check/gen-vector
+                                     (check/gen-elements [nil false :x -1 0 1 1.0 2 ##NaN]) 0 30)]
+                   (= (apply == xs) (<-w (c/num-eq-seq (W xs)))))
+                 {:seed 20261023 :num-tests 200})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [a operands]
     (same ((:- nat) a) (c/sub (W a)))
     (same ((:+ nat) a) (c/add (W a)))
@@ -357,6 +536,22 @@
     (same (apply >= xs) (c/cmp-seq 3 (W (apply list xs))))
     (same (apply max xs) (c/max-seq false (W (apply list xs))))
     (same (apply min xs) (c/max-seq true (W (apply list xs)))))
+  (doseq [x [0 1 -1 -9223372036854775808 9223372036854775807 nil 1.5]]
+    (same (apply bit-not [x]) (c/bit-not* (W x)))
+    (same (apply bit-and-not [x 15]) (c/bit-and-not* (W x) (W 15))))
+  (let [result
+        (check/check
+          (check/for-all [hi (check/gen-int -2147483648 2147483647)
+                          lo (check/gen-int 0 2147483647)
+                          mask (check/gen-int -2147483648 2147483647)]
+            (let [x (bit-or (bit-shift-left hi 32) lo)
+                  wx (W x) wm (W mask)]
+              (and (= (bit-not x) (<-w (c/bit-not* wx)))
+                   (= x (<-w (c/bit-not* (c/bit-not* wx))))
+                   (= (bit-and-not x mask) (<-w (c/bit-and-not* wx wm)))
+                   (= 0 (bit-and mask (<-w (c/bit-and-not* wx wm)))))))
+          {:seed 20261019 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [[a b] [[12 10] [-1 255] [12 nil] [1.5 1]]]
     (same (bit-and a b) (c/bit-and* (W a) (W b))))
   (same (apply bit-and [1]) (c/bit-and* (W 1)))
@@ -372,6 +567,10 @@
 
 (deftest equality-compare-hash
   (c/install!)
+  (doseq [xs [[] [1] [##NaN ##NaN] [##NaN ##NaN ##NaN]
+              [1 1 1 1 1] [1 1 2 1 1 1 1] ['() [] [] '() {}]
+              (repeat 100 7) (concat (repeat 99 7) [8])]]
+    (same (apply not= xs) (c/not-eq-seq (W xs))))
   (doseq [a kinds b kinds]
     (same (= a b) (sq/equals (W a) (W b))))
   (doseq [x (remove #(= [] %) kinds)]                     ; [] hashes as ArrayVector natively, PersistentVector here (D18)
@@ -437,6 +636,86 @@
 
 (deftest metadata
   (c/install!)
+  ;; Retain original instances and metadata copies as distinct map keys.
+  ;; Check generated values against an index model, not native hash numbers.
+  (let [result
+        (check/check
+          (check/for-all [values (check/gen-vector
+                                  (check/gen-elements [nil -100 0 100 "hello" [1 2] {:nested 3}]) 1 12)
+                          metadata (check/gen-elements [nil 5 {:copied true}])]
+            (let [t (c/make-user-type (W "Probe") (W ["x"]))
+                  originals (mapv #(c/make-user-instance t (W [%])) values)
+                  original-hashes (mapv #(<-w (sq/hash %)) originals)
+                  copies (mapv #(c/with-meta % (W metadata)) originals)
+                  hashes (into original-hashes (mapv #(<-w (sq/hash %)) copies))]
+              (and
+                (every? (fn [[v a b]]
+                          (and (not (arch/ref-eq a b))
+                               (not (sq/equiv? a b))
+                               (= nil (<-w (c/meta a)))
+                               (= metadata (<-w (c/meta b)))
+                               (= v (<-w (c/user-field b (W "x") nil)))
+                               (arch/ref-eq t (c/type-of b))))
+                        (map vector values originals copies))
+                (let [entries (vec (concat originals copies))
+                      table (reduce (fn [table [i x]] (m/massoc table x (W i)))
+                                    (m/empty-map) (map-indexed vector entries))]
+                  (every? (fn [[i x]]
+                            (and (= i (<-w (m/mget table x nil)))
+                                 (= (nth hashes i) (<-w (sq/hash x)))))
+                          (map-indexed vector entries))))))
+          {:seed 20261018 :num-tests 100})]
+    (is (= :pass (:result result)) (pr-str result)))
+  ;; Mutating either metadata alias updates shared slots without changing identity.
+  (let [result
+        (check/check
+          (check/for-all [updates (check/gen-vector
+                                   (check/gen-tuple (check/gen-bool) (check/gen-int 0 1)
+                                                    (check/gen-elements [nil -7 0 42 "field" [1 2] {:v 3}])) 0 30)]
+            (let [names ["x" "y"] t (c/make-user-type (W "Mutable") (W names))
+                  a (c/make-user-instance t (W [nil nil]))
+                  b (c/with-meta a (W {:copy true}))
+                  ha (<-w (sq/hash a)) hb (<-w (sq/hash b))]
+              (second
+                (reduce (fn [[model valid] [copy? index value]]
+                          (c/set-user-field! (if copy? b a) (W (nth names index)) (W value))
+                          (let [model (assoc model index value)]
+                            [model (and valid
+                                        (= model (mapv #(<-w (c/user-field-at a %)) [0 1]))
+                                        (= model (mapv #(<-w (c/user-field-at b %)) [0 1]))
+                                        (= ha (<-w (sq/hash a))) (= hb (<-w (sq/hash b)))
+                                        (= {:copy true} (<-w (c/meta b))))]))
+                        [[nil nil] true] updates))))
+          {:seed 20261020 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result)))
+  ;; Same-named type versions and nil own independent tables; aliases see updates.
+  (let [result
+        (check/check
+          (check/for-all [updates (check/gen-vector
+                                   (check/gen-tuple (check/gen-int 0 2) (check/gen-int 0 1)
+                                                    (check/gen-int -100 100)) 0 20)]
+            (let [types (conj (mapv (fn [_] (c/make-user-type (W "Version") (W []))) [0 1]) (arch/null))
+                  instances (mapv #(if (arch/null? %) % (c/make-user-instance % (W []))) types)
+                  copies (mapv #(if (arch/null? %) % (c/with-meta % (W {:copy true}))) instances)
+                  keys ["probe/first" "probe/second"]]
+              ;; Nil's table is shared across trials; establish its model state.
+              (doseq [key keys] (c/install-type-method! (arch/null) (W key) (clo (fn [_] 0))))
+              (second
+                (reduce (fn [[model valid] [index method value]]
+                          (c/install-type-method! (nth types index) (W (nth keys method)) (clo (fn [_] value)))
+                          (let [model (assoc model [index method] value)]
+                            [model (and valid
+                              (every? (fn [[i k]]
+                                        (every? (fn [x]
+                                                  (let [f (c/type-method x (W (nth keys k)))]
+                                                    (if (contains? model [i k])
+                                                      (= (get model [i k]) (<-w (sq/invoke1 f x)))
+                                                      (arch/null? f))))
+                                                [(nth instances i) (nth copies i)]))
+                                      [[0 0] [0 1] [1 0] [1 1] [2 0] [2 1]]))]))
+                        [{[2 0] 0 [2 1] 0} true] updates))))
+          {:seed 20261021 :num-tests 100})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [x kinds mt [{:a 1} nil 5]]
     (same (meta (with-meta x mt)) (c/meta (c/with-meta (W x) (W mt))))
     (if (or (keyword? x) (symbol? x))
@@ -483,7 +762,7 @@
                                                     (arch/null) (arch/null) (arch/new sq/FnInfo 0 1 (arch/null)) 0)
                                           (W {}))
                              2 (W 1) (W 2) nil nil))
-  (is (string/starts-with? (second (res #(c/with-meta (c/atom (W 1)) (W {:a 1})))) "lower-wasm: ") "with-meta on an atom: named limit")
+  (same (meta (with-meta (atom 1) {:a 1})) (c/meta (c/with-meta (c/atom (W 1)) (W {:a 1}))))
   (same (meta (with-meta (range 3) {:a 1})) (c/meta (c/with-meta (sq/range (W 3)) (W {:a 1}))))
   (same (meta (with-meta (cons 1 nil) {:a 1})) (c/meta (c/with-meta (sq/cons (W 1) (W nil)) (W {:a 1}))))
   (same (meta (with-meta (seq [1 2]) {:a 1})) (c/meta (c/with-meta (sq/seq (W [1 2])) (W {:a 1}))))
@@ -792,5 +1071,5 @@
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
           [(second d) sym])]
     (is (< 100 (count defns)))
-    (is (= '[globals] (mapv second globals)) "one runtime global: gensym counter + type table")
+    (is (= '[user-globals globals agent-errors] (mapv second globals)) "runtime globals: user identity, shared core state and agent errors")
     (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))

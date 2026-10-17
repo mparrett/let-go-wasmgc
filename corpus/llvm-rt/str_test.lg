@@ -10,6 +10,7 @@
 ;; string_split_test (literal separators) from corpus/core-tests.txt.
 (ns str-test
   (:require [test :refer [deftest is testing]]
+            [check :as check]
             [llvm.arch :as arch]
             [llvm.pvec :as pv]
             [llvm.seq :as sq]
@@ -274,9 +275,33 @@
     (same (triml x) (s/triml (->w x)))
     (same (trimr x) (s/trimr (->w x))))
   (same (string/trim " q ") (s/trim (->w " q ")))
-  (doseq [x ["abcXYZ1" "" "Hello, World!"]]
+  (doseq [x ["abcXYZ1" "" "Hello, World!" "֎" "αβγΣς" "Հայերեն" "ქართული" "𐐀𐐨" "İıſKÅµÿ" "中😀"]]
     (same (upper-case x) (s/upper-case (->w x)))
     (same (lower-case x) (s/lower-case (->w x))))
+  ;; Exercise each generated range boundary and its first alternating gap.
+  (let [vars (ns-interns 'llvm.str)
+        field (get vars 'case-field)
+        rune (get vars 'case-rune)]
+    (doseq [data [@(get vars 'case-upper-data) @(get vars 'case-lower-data)]
+            at (range 0 (arch/alen data) 16)
+            r [(dec (field data at)) (field data at) (inc (field data at))
+               (field data (+ at 4)) (inc (field data (+ at 4)))]]
+      (is (= (int (first (upper-case (str (char r))))) (rune r true)))
+      (is (= (int (first (lower-case (str (char r))))) (rune r false)))))
+  ;; One generated property covers mixed scripts, lengths and case directions.
+  ;; Keep scalar generation independent of the runtime's compressed tables.
+  (let [scalar (check/fmap #(char (if (>= % 0xd800) (+ % 0x800) %))
+                           (check/gen-int 0 (- 0x10ffff 0x800)))
+        chars (check/gen-frequency
+                [[1 scalar]
+                 [1 (check/gen-elements (vec "aZé֎αΣςՀայქართული𐐀𐐨İıſKÅµÿ中😀"))]])
+        result (check/check
+                 (check/for-all [cs (check/gen-vector chars 0 24)]
+                   (let [x (apply str cs)]
+                     (and (= (upper-case x) (<-w (s/upper-case (->w x))))
+                          (= (lower-case x) (<-w (s/lower-case (->w x)))))))
+                 {:seed 20261016 :num-tests 300})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [x [:k 'S 1.5 "aB" \c]]
     (same (string/upper-case x) (s/string-upper-case (->w x))))
   (same (string/upper-case nil) (s/string-upper-case (->w nil)))
@@ -450,7 +475,8 @@
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
           [nm sym])]
     (is (< 80 (count defns)))
-    (is (= '[globals] (mapv second globals)) "one runtime global: intern table + print hook")
+    (is (= '[globals case-upper-data case-lower-data] (mapv second globals))
+        "intern table/print hook and immutable Unicode case tables")
     (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))
     (is (empty? (mapcat (fn [[_ _ b]] (non-literal-bytes-of-string b)) expanded))
         "bytes-of-string only on literals (D27)")
