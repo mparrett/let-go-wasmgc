@@ -10,6 +10,9 @@
 (ns core-test
   (:require [test :refer [deftest is testing]]
             [check :as check]
+            [numeric.limbs :as limbs]
+            [numeric.bigint :as bi]
+            [numeric.ratio :as rat]
             [llvm.arch :as arch]
             [llvm.pvec :as pv]
             [llvm.arrays :as arr]
@@ -389,6 +392,125 @@
 
 (deftest numbers-arities-and-unary
   (c/install!)
+  (let [value (fn [xs] (reduce (fn [n x] (+' (*' n 1073741824) x)) 0 (rseq xs)))
+        signed-value (fn [x] (*' (.-sign x) (value (.-limbs x))))
+        exact-value (fn [x]
+                      (cond (instance? rat/Ratio x) (/ (signed-value (.-numerator x))
+                                                       (signed-value (.-denominator x)))
+                            (instance? bi/BigInt x) (signed-value x)
+                            :else x))
+        canonical? (fn [xs] (and (vector? xs)
+                                (or (empty? xs) (pos? (peek xs)))
+                                (every? #(and (integer? %) (<= 0 %) (< % 1073741824)) xs)))
+        agrees? (fn [a b]
+                  (let [x (value a) y (value b)
+                        na (limbs/normalize a) nb (limbs/normalize b)
+                        sum (limbs/add na nb) product (limbs/multiply na nb)
+                        divisor-gcd (limbs/gcd na nb)
+                        expected-gcd (loop [x x y y] (if (zero? y) x (recur y (rem x y))))
+                        division (when (pos? y) (limbs/div-rem na nb))
+                        difference (if (>= x y) (limbs/subtract na nb) (limbs/subtract nb na))]
+                    (and (every? canonical? [na nb sum product difference divisor-gcd])
+                         (= expected-gcd (value divisor-gcd))
+                         (or (zero? y)
+                             (let [[q r] division]
+                               (and (canonical? q) (canonical? r)
+                                    (= (quot x y) (value q)) (= (rem x y) (value r))
+                                    (= x (+' (*' y (value q)) (value r)))
+                                    (< (value r) y))))
+                         (= x (value na)) (= y (value nb))
+                         (= (compare x y) (limbs/compare-magnitude na nb))
+                         (= (+' x y) (value sum)) (= (*' x y) (value product))
+                         (= (if (>= x y) (-' x y) (-' y x)) (value difference))
+                         (= x (value a)) (= y (value b)))))
+        signed-agree? (fn [a b sa sb]
+                        (let [a (bi/make-value sa a) b (bi/make-value sb b)
+                              x (signed-value a) y (signed-value b)
+                              results [(bi/add a b) (bi/subtract a b) (bi/multiply a b) (bi/negate a)]
+                              canonical-signed? (fn [v]
+                                                  (and (instance? bi/BigInt v)
+                                                       (canonical? (.-limbs v))
+                                                       (= (.-sign v) (compare (signed-value v) 0))))]
+                          (and (every? canonical-signed? (conj results a b))
+                               (= (when (<= -9223372036854775808 x 9223372036854775807) x)
+                                  (bi/to-long a))
+                               (= [(+' x y) (-' x y) (*' x y) (-' x)] (mapv signed-value results))
+                               (= (compare x y) (bi/compare-value a b))
+                               (or (zero? y)
+                                   (let [qr (bi/div-rem a b)
+                                         r (rat/make-value a b) expected (/ x y)
+                                         other (rat/make-value b (bi/from-long 3)) other-value (/ y 3)]
+                                     (and (every? canonical-signed? qr)
+                                          (= [(+ expected other-value) (- expected other-value)
+                                              (* expected other-value) (/ expected other-value) (- expected)]
+                                             (mapv exact-value [(rat/add r other) (rat/subtract r other)
+                                                                (rat/multiply r other) (rat/divide r other)
+                                                                (rat/negate r)]))
+                                          (= (compare expected other-value) (rat/compare-value r other))
+                                          (cond
+                                            (ratio? expected)
+                                            (and (instance? rat/Ratio r)
+                                                 (pos? (.-sign (.-denominator r)))
+                                                 (= [1] (limbs/gcd (.-limbs (.-numerator r))
+                                                                  (.-limbs (.-denominator r))))
+                                                 (= expected (/ (signed-value (.-numerator r))
+                                                                (signed-value (.-denominator r)))))
+                                            (<= -9223372036854775808 expected 9223372036854775807)
+                                            (and (int? r) (= expected r))
+                                            :else (and (instance? bi/BigInt r) (= expected (signed-value r))))
+                                          (= [(quot x y) (rem x y)] (mapv signed-value qr))))))))
+        shifts-agree? (fn [a bits]
+                        (let [a (limbs/normalize a) x (value a)
+                              factor (reduce *' 1 (repeat bits 2))
+                              left (limbs/shift-left a bits)
+                              right (limbs/shift-right a bits)]
+                          (and (canonical? left) (canonical? right)
+                               (= (*' x factor) (value left))
+                               (= (quot x factor) (value right))
+                               (= a (limbs/shift-right left bits)))))
+        result (check/check
+                 (check/for-all [a (check/gen-vector (check/gen-int 0 1073741823) 0 8)
+                                 b (check/gen-vector (check/gen-int 0 1073741823) 0 8)
+                                 bits (check/gen-int 0 300)
+                                 sa (check/gen-elements [-1 1])
+                                 sb (check/gen-elements [-1 1])]
+                   (and (agrees? a b) (shifts-agree? a bits) (signed-agree? a b sa sb)))
+                 {:seed 20261024 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result))
+    (doseq [a [[] [0 0] [1] [1073741823] [1073741823 1073741823 1073741823] [0 0 1]]
+            b [[] [1] [1073741823] [0 1] [0 0 1]]]
+      (is (agrees? a b)))
+    (doseq [a [[] [1] [1073741823 1073741823 7] [0 0 8]]
+            b [[] [1] [1073741823] [0 0 8]]
+            sa [-1 1] sb [-1 1]]
+      (is (signed-agree? a b sa sb)))
+    (doseq [n [-9223372036854775808 -1073741824 -1 0 1 1073741824 9223372036854775807]]
+      (is (= n (signed-value (bi/from-long n))))
+      (is (= n (bi/to-long (bi/from-long n)))))
+    (is (= (- 1/2 -9223372036854775808)
+           (exact-value (rat/subtract (rat/make-value (bi/from-long 1) (bi/from-long 2))
+                                      -9223372036854775808))))
+    (doseq [a [[] [0 0] [1] [1073741823] [0 0 1] (vec (repeat 33 1073741823))]
+            bits [0 1 29 30 31 59 60 61 990 1000]]
+      (is (shifts-agree? a bits)))
+    (is (try (limbs/shift-left [1] -1) false (catch e true)))
+    (is (try (limbs/shift-right [1] -1) false (catch e true)))
+    ;; Exercise carry, borrow and transient writes across vector tree nodes.
+    (doseq [n [31 32 33]
+            :let [a (vec (repeat n 1073741823))
+                  power (conj (vec (repeat n 0)) 1)]
+            b [[1] a power]]
+      (is (agrees? a b)))
+    (is (try (limbs/subtract [] [1]) false (catch e true))))
+  (is (try (limbs/div-rem [1] []) false (catch e true)))
+  (is (try (limbs/div-rem [] []) false (catch e true)))
+  (is (try (rat/make-value (bi/from-long 1) (bi/from-long 0)) false (catch e true)))
+  (let [result (check/check
+                 (check/for-all [xs (check/gen-vector
+                                     (check/gen-elements [nil false :x -1 0 1 1.0 2 ##NaN]) 0 30)]
+                   (= (apply == xs) (<-w (c/num-eq-seq (W xs)))))
+                 {:seed 20261023 :num-tests 200})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [a operands]
     (same ((:- nat) a) (c/sub (W a)))
     (same ((:+ nat) a) (c/add (W a)))

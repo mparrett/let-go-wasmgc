@@ -1,0 +1,54 @@
+;; Reduced exact fractions. Integral results follow the pinned engine's
+;; Int/BigInt simplification rules, rather than retaining a denominator of one.
+(ns numeric.ratio
+  (:require [numeric.limbs :as mag]
+            [numeric.bigint :as bi]))
+
+(deftype Ratio [numerator denominator])
+
+(defn make-value [numerator denominator]
+  (when (zero? (.-sign denominator))
+    (throw (ex-info "divide by zero" {})))
+  (if (zero? (.-sign numerator)) 0
+    (let [a (.-limbs numerator) b (.-limbs denominator)
+          common (mag/gcd a b)
+          n (bi/make-value (* (.-sign numerator) (.-sign denominator))
+                          (first (mag/div-rem a common)))
+          d (first (mag/div-rem b common))]
+      (if (= d [1])
+        (let [small (bi/to-long n)] (if (nil? small) n small))
+        (Ratio. n (bi/make-value 1 d))))))
+
+(defn- parts [x]
+  (if (instance? Ratio x) [(.-numerator x) (.-denominator x)]
+    [(if (instance? bi/BigInt x) x (bi/from-long x)) (bi/from-long 1)]))
+
+(defn negate [x]
+  ;; A previous rational result may have simplified to Int or BigInt.
+  ;; Preserve their distinct unary negation behavior (Int's MinInt64 wraps).
+  (cond (instance? Ratio x) (make-value (bi/negate (.-numerator x)) (.-denominator x))
+        (instance? bi/BigInt x) (bi/negate x)
+        :else (- x)))
+
+(defn add [a b]
+  (let [[an ad] (parts a) [bn bd] (parts b)]
+    (make-value (bi/add (bi/multiply an bd) (bi/multiply bn ad))
+                (bi/multiply ad bd))))
+
+(defn subtract [a b]
+  ;; Do not negate a simplified machine integer before exact subtraction.
+  (let [[an ad] (parts a) [bn bd] (parts b)]
+    (make-value (bi/subtract (bi/multiply an bd) (bi/multiply bn ad))
+                (bi/multiply ad bd))))
+
+(defn multiply [a b]
+  (let [[an ad] (parts a) [bn bd] (parts b)]
+    (make-value (bi/multiply an bn) (bi/multiply ad bd))))
+
+(defn divide [a b]
+  (let [[an ad] (parts a) [bn bd] (parts b)]
+    (make-value (bi/multiply an bd) (bi/multiply ad bn))))
+
+(defn compare-value [a b]
+  (let [[an ad] (parts a) [bn bd] (parts b)]
+    (bi/compare-value (bi/multiply an bd) (bi/multiply bn ad))))
