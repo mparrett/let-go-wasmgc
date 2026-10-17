@@ -316,6 +316,21 @@
 
 (deftest predicates-logic-type
   (c/install!)
+  (let [t (c/make-user-type (W "Probe") (W ["x"]))
+        other (c/make-user-type (W "Probe") (W ["x"]))
+        a (c/make-user-instance t (W [7]))
+        b (c/make-user-instance t (W [7]))]
+    (is (arch/ref-eq t (c/type-of a)))
+    (is (c/instance-of? t a))
+    (is (not (c/instance-of? other a)))
+    (is (not (<-w (c/map? a))))
+    (is (not (sq/equiv? a b)))
+    (is (sq/equiv? a a))
+    (is (= 7 (<-w (c/user-field a (W "x") nil))))
+    (is (= 7 (<-w (c/user-field a (W "-x") (W "x")))))
+    (is (= [:err "no field -missing on deftype Probe"]
+           (res (fn [] (c/user-field a (W "-missing") (W "missing"))))))
+    (is (= :missing (<-w (c/get a (W :x) (W :missing))))))
   (doseq [x (concat kinds [inc])                           ; real seq kinds: the next loop
           [np mp] pred-pairs]
     (is (= (np x) (<-w (mp (W x)))) (str np " " (pr-str x))))
@@ -399,6 +414,22 @@
     (same (apply >= xs) (c/cmp-seq 3 (W (apply list xs))))
     (same (apply max xs) (c/max-seq false (W (apply list xs))))
     (same (apply min xs) (c/max-seq true (W (apply list xs)))))
+  (doseq [x [0 1 -1 -9223372036854775808 9223372036854775807 nil 1.5]]
+    (same (apply bit-not [x]) (c/bit-not* (W x)))
+    (same (apply bit-and-not [x 15]) (c/bit-and-not* (W x) (W 15))))
+  (let [result
+        (check/check
+          (check/for-all [hi (check/gen-int -2147483648 2147483647)
+                          lo (check/gen-int 0 2147483647)
+                          mask (check/gen-int -2147483648 2147483647)]
+            (let [x (bit-or (bit-shift-left hi 32) lo)
+                  wx (W x) wm (W mask)]
+              (and (= (bit-not x) (<-w (c/bit-not* wx)))
+                   (= x (<-w (c/bit-not* (c/bit-not* wx))))
+                   (= (bit-and-not x mask) (<-w (c/bit-and-not* wx wm)))
+                   (= 0 (bit-and mask (<-w (c/bit-and-not* wx wm)))))))
+          {:seed 20261019 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [[a b] [[12 10] [-1 255] [12 nil] [1.5 1]]]
     (same (bit-and a b) (c/bit-and* (W a) (W b))))
   (same (apply bit-and [1]) (c/bit-and* (W 1)))
@@ -414,6 +445,10 @@
 
 (deftest equality-compare-hash
   (c/install!)
+  (doseq [xs [[] [1] [##NaN ##NaN] [##NaN ##NaN ##NaN]
+              [1 1 1 1 1] [1 1 2 1 1 1 1] ['() [] [] '() {}]
+              (repeat 100 7) (concat (repeat 99 7) [8])]]
+    (same (apply not= xs) (c/not-eq-seq (W xs))))
   (doseq [a kinds b kinds]
     (same (= a b) (sq/equals (W a) (W b))))
   (doseq [x (remove #(= [] %) kinds)]                     ; [] hashes as ArrayVector natively, PersistentVector here (D18)
@@ -479,6 +514,86 @@
 
 (deftest metadata
   (c/install!)
+  ;; Retain original instances and metadata copies as distinct map keys.
+  ;; Check generated values against an index model, not native hash numbers.
+  (let [result
+        (check/check
+          (check/for-all [values (check/gen-vector
+                                  (check/gen-elements [nil -100 0 100 "hello" [1 2] {:nested 3}]) 1 12)
+                          metadata (check/gen-elements [nil 5 {:copied true}])]
+            (let [t (c/make-user-type (W "Probe") (W ["x"]))
+                  originals (mapv #(c/make-user-instance t (W [%])) values)
+                  original-hashes (mapv #(<-w (sq/hash %)) originals)
+                  copies (mapv #(c/with-meta % (W metadata)) originals)
+                  hashes (into original-hashes (mapv #(<-w (sq/hash %)) copies))]
+              (and
+                (every? (fn [[v a b]]
+                          (and (not (arch/ref-eq a b))
+                               (not (sq/equiv? a b))
+                               (= nil (<-w (c/meta a)))
+                               (= metadata (<-w (c/meta b)))
+                               (= v (<-w (c/user-field b (W "x") nil)))
+                               (arch/ref-eq t (c/type-of b))))
+                        (map vector values originals copies))
+                (let [entries (vec (concat originals copies))
+                      table (reduce (fn [table [i x]] (m/massoc table x (W i)))
+                                    (m/empty-map) (map-indexed vector entries))]
+                  (every? (fn [[i x]]
+                            (and (= i (<-w (m/mget table x nil)))
+                                 (= (nth hashes i) (<-w (sq/hash x)))))
+                          (map-indexed vector entries))))))
+          {:seed 20261018 :num-tests 100})]
+    (is (= :pass (:result result)) (pr-str result)))
+  ;; Mutating either metadata alias updates shared slots without changing identity.
+  (let [result
+        (check/check
+          (check/for-all [updates (check/gen-vector
+                                   (check/gen-tuple (check/gen-bool) (check/gen-int 0 1)
+                                                    (check/gen-elements [nil -7 0 42 "field" [1 2] {:v 3}])) 0 30)]
+            (let [names ["x" "y"] t (c/make-user-type (W "Mutable") (W names))
+                  a (c/make-user-instance t (W [nil nil]))
+                  b (c/with-meta a (W {:copy true}))
+                  ha (<-w (sq/hash a)) hb (<-w (sq/hash b))]
+              (second
+                (reduce (fn [[model valid] [copy? index value]]
+                          (c/set-user-field! (if copy? b a) (W (nth names index)) (W value))
+                          (let [model (assoc model index value)]
+                            [model (and valid
+                                        (= model (mapv #(<-w (c/user-field-at a %)) [0 1]))
+                                        (= model (mapv #(<-w (c/user-field-at b %)) [0 1]))
+                                        (= ha (<-w (sq/hash a))) (= hb (<-w (sq/hash b)))
+                                        (= {:copy true} (<-w (c/meta b))))]))
+                        [[nil nil] true] updates))))
+          {:seed 20261020 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result)))
+  ;; Same-named type versions and nil own independent tables; aliases see updates.
+  (let [result
+        (check/check
+          (check/for-all [updates (check/gen-vector
+                                   (check/gen-tuple (check/gen-int 0 2) (check/gen-int 0 1)
+                                                    (check/gen-int -100 100)) 0 20)]
+            (let [types (conj (mapv (fn [_] (c/make-user-type (W "Version") (W []))) [0 1]) (arch/null))
+                  instances (mapv #(if (arch/null? %) % (c/make-user-instance % (W []))) types)
+                  copies (mapv #(if (arch/null? %) % (c/with-meta % (W {:copy true}))) instances)
+                  keys ["probe/first" "probe/second"]]
+              ;; Nil's table is shared across trials; establish its model state.
+              (doseq [key keys] (c/install-type-method! (arch/null) (W key) (clo (fn [_] 0))))
+              (second
+                (reduce (fn [[model valid] [index method value]]
+                          (c/install-type-method! (nth types index) (W (nth keys method)) (clo (fn [_] value)))
+                          (let [model (assoc model [index method] value)]
+                            [model (and valid
+                              (every? (fn [[i k]]
+                                        (every? (fn [x]
+                                                  (let [f (c/type-method x (W (nth keys k)))]
+                                                    (if (contains? model [i k])
+                                                      (= (get model [i k]) (<-w (sq/invoke1 f x)))
+                                                      (arch/null? f))))
+                                                [(nth instances i) (nth copies i)]))
+                                      [[0 0] [0 1] [1 0] [1 1] [2 0] [2 1]]))]))
+                        [{[2 0] 0 [2 1] 0} true] updates))))
+          {:seed 20261021 :num-tests 100})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [x kinds mt [{:a 1} nil 5]]
     (same (meta (with-meta x mt)) (c/meta (c/with-meta (W x) (W mt))))
     (if (or (keyword? x) (symbol? x))
@@ -525,7 +640,7 @@
                                                     (arch/null) (arch/null) (arch/new sq/FnInfo 0 1 (arch/null)) 0)
                                           (W {}))
                              2 (W 1) (W 2) nil nil))
-  (is (string/starts-with? (second (res #(c/with-meta (c/atom (W 1)) (W {:a 1})))) "lower-wasm: ") "with-meta on an atom: named limit")
+  (same (meta (with-meta (atom 1) {:a 1})) (c/meta (c/with-meta (c/atom (W 1)) (W {:a 1}))))
   (same (meta (with-meta (range 3) {:a 1})) (c/meta (c/with-meta (sq/range (W 3)) (W {:a 1}))))
   (same (meta (with-meta (cons 1 nil) {:a 1})) (c/meta (c/with-meta (sq/cons (W 1) (W nil)) (W {:a 1}))))
   (same (meta (with-meta (seq [1 2]) {:a 1})) (c/meta (c/with-meta (sq/seq (W [1 2])) (W {:a 1}))))
@@ -834,5 +949,5 @@
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
           [(second d) sym])]
     (is (< 100 (count defns)))
-    (is (= '[globals] (mapv second globals)) "one runtime global: gensym counter + type table")
+    (is (= '[user-globals globals agent-errors] (mapv second globals)) "runtime globals: user identity, shared core state and agent errors")
     (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))

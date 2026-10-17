@@ -19,7 +19,7 @@
 ;;   - :nss, the namespaces that exist: native's at start (`builtin-nss`,
 ;;     what (all-ns) lists in a fresh lg 4e769212 program) plus every one an
 ;;     in-ns or alias creates;
-;;   - :cells, one per var made by intern (a plain Symbol `#'ns/name`): its
+;;   - :cells, one per var made by intern (a metadata-wrapped Symbol `#'ns/name`): its
 ;;     root, meta and dynamic-binding stack, so intern, var-get,
 ;;     alter-var-root, alter-meta!, push-binding!/pop-binding!, ns-publics,
 ;;     resolve and find-var agree with each other.
@@ -161,6 +161,16 @@
                     :else (raise-lit (str "unknown array type: " t))))
             :else (arr/object-array n)))))
 
+(defn ^{:twin "core/set-field!"} set-field* [& args]
+  (when-not (= 3 (count args))
+    (raise-lit (str "set-field! expected 3 arguments, got " (count args))))
+  (let [x (first args) field (second args) value (nth args 2)]
+    (when-not (= 42 (c/ckind x))
+      (raise-lit (str "set-field! expected a deftype instance, got " (tname x))))
+    (when-not (= 21 (sq/kind field))
+      (raise-lit "set-field! expected a Symbol field name"))
+    (c/set-user-field! x (str field) value)))
+
 ;; ---------------------------------------------------------------------------
 ;; The ns and var table (see the header)
 
@@ -220,16 +230,22 @@
       (raise-lit (str prefix "expected Symbol or Namespace, got " (tname x))))))
 
 (defn- cell-key [x]
-  "\"ns/name\" for a var stand-in: the backend's meta'd Symbol #'ns/name
-   (kind 36), or a plain Symbol intern made (it has a cell); else nil."
-  (let [k (c/ckind x)]
-    (when (or (= k 21) (= k 36))
-      (let [t (str x)]
-        (when (string/starts-with? t "#'")
-          (let [key (subs t 2)]
-            (when (or (= k 36) (contains? (:cells (table)) key)) key)))))))
+  "The namespace/name of a Var stand-in; ordinary symbols are not Vars."
+  (when (= 2 (c/standin x)) (subs (str x) 2)))
 
 (defn- cell [key] (get (:cells (table)) key))
+(defn- cell-value [cl] (if (seq (:stack cl)) (first (:stack cl)) (:val cl)))
+
+(defn ^{:twin "core/symbol"} symbol-value
+  ([x]
+   (if-let [key (cell-key x)]
+     (let [i (string/index-of key "/")
+           nsn (subs key 0 i)
+           public (or (some (fn [[alias internal]] (when (= internal nsn) alias))
+                            (nsaliases)) nsn)]
+       (s/symbol public (subs key (inc i))))
+     (s/symbol x)))
+  ([ns nm] (s/symbol ns nm)))
 
 (defn- native-var?
   "A stand-in of a var of a builtin namespace (a Go native's or an lg core
@@ -282,6 +298,12 @@
            (raise-lit "alias expected Symbol")))
   ([a n x & more] (raise-arity (+ 3 (count more)))))
 
+(defn ^{:twin "core/create-ns"} create-ns* [& args]
+  (when-not (= 1 (count args)) (raise-lit "create-ns expects 1 arg"))
+  (let [x (first args)]
+    (when-not (= 21 (sq/kind x)) (raise-lit "create-ns expects a symbol"))
+    (ns-of (add-ns! (canon (str x))))))
+
 (defn ^{:twin "core/intern"} intern [& args]              ; CoreInternf (lang.go:9262)
   (let [n (count args)]
     (if (or (< n 2) (> n 3))
@@ -292,7 +314,11 @@
                                             (if (ns-exists? nm) nm (raise-lit "namespace not found")))
                      :else (raise-lit "intern expects a namespace or symbol"))]
         (when-not (= 21 (sq/kind sym)) (raise-lit "intern expects a symbol name"))
-        (let [key (str nm "/" sym) v (symbol (str "#'" key)) old (cell key)]
+        (let [key (str nm "/" sym)
+              v (with-meta (s/symbol (str "#'" key))
+                  {:lw/var (fn [] (cell-value (cell key)))
+                   :lw/meta (fn [] (:meta (cell key)))})
+              old (cell key)]
           (cond (nil? old) (swap! registry assoc-in [:cells key] {:var v :ns nm :name sym :val (when (= n 3) (nth args 2)) :meta nil :stack ()})
                 (= n 3) (swap! registry assoc-in [:cells key :val] (nth args 2)))
           (:var (cell key)))))))
@@ -371,7 +397,6 @@
          (raise-lit "resolve expected Symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
-(defn- cell-value [cl] (if (seq (:stack cl)) (first (:stack cl)) (:val cl)))
 
 (defn ^{:twin "core/var-get"} var-get [& args]             ; CoreVarGet (lang.go:9177)
   (if (not= 1 (count args))
@@ -379,6 +404,7 @@
     (let [v (first args) key (cell-key v)]
       (cond (nil? key) (raise-lit "var-get expects a Var")
             (contains? (cell key) :val) (cell-value (cell key))
+            (c/var-root-accessor v) (c/var-value v)
             (native-var? v key) (c/var-value v)          ; its altered root, or the stand-in's value (or limit)
             :else (program-var-limit "var-get" v)))))
 
@@ -395,9 +421,15 @@
     (let [[v f & more] args key (cell-key v)]
       (cond (nil? key) (raise-lit "alter-var-root expects a Var")
             (not (c/callable? f)) (raise-lit "alter-var-root expects a function")
+            (c/var-root-accessor v)
+            (let [root (c/var-root-accessor v) old (root) nv (apply f old more)]
+              (root nv)
+              (c/notify-watches! v old nv)
+              nv)
             (and (cell key) (contains? (cell key) :val))
-            (let [nv (apply f (:val (cell key)) more)]
+            (let [old (:val (cell key)) nv (apply f old more)]
               (swap! registry assoc-in [:cells key :val] nv)
+              (c/notify-watches! v old nv)
               nv)
             ;; a native's var (legmacs wraps #'future* and #'go*): the old
             ;; root is the stand-in's value when the module has one, else a
@@ -408,7 +440,9 @@
                         (c/var-value v)
                         (try (c/var-value v) (catch Exception e (fn [& _] (throw e)))))
                   nv (apply f old more)]
-              (c/set-var-root! v nv))
+              (c/set-var-root! v nv)
+              (c/notify-watches! v old nv)
+              nv)
             :else (program-var-limit "alter-var-root" v)))))
 
 (defn ^{:twin "core/alter-meta!"} alter-meta! [& args]     ; alterMeta (lang.go:3730)

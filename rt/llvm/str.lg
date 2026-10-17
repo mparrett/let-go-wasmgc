@@ -714,7 +714,7 @@
                  (if (= 17 (sq/kind nm)) false true) (sq/raise-typed (arch/bytes-of-string "keyword name must be a string, got ") nm)
                  :else (kw-of-bytes (join-ns ns nm)))))
 
-(defn ^{:twin "core/symbol"} symbol                                             ; CoreSymbolf (lang.go:5879)
+(defn symbol                                             ; CoreSymbolf (lang.go:5879)
   ([x] (let [k (sq/kind x)]
          (cond (= k 0) (raise-lit (arch/bytes-of-string "symbol expected String, Symbol, Keyword, or Var"))
                (= k 21) x
@@ -739,7 +739,7 @@
                        (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to char"))))
           :else (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to char")))))
 
-(defn ^{:twin "core/int"} int [x]                                            ; intf (lang.go:3003)
+(defn ^{:twin ["core/int" "core/->Integer" "core/Integer."]} int [x]         ; intf and compatibility aliases
   (let [k (sq/kind x)]
     (cond (= k 1) (let [n (sq/unbox-int x)]
                     (if (if (< n -2147483648) true (> n 2147483647)) (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to int")) x))

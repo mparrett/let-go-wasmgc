@@ -322,7 +322,7 @@
                              (str "{ " w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }"))
                     #(ll-glob (str "lg_type." id) "internal global" (ll-sty tv)
                              (str "{ " w " " (ll-tid tv) ", " w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
-                                  w " ptrtoint (ptr " (lir/ref (str "lg_tanc." id)) " to " w "), " w " 0, i64 0 }"))])))
+                                  w " ptrtoint (ptr " (lir/ref (str "lg_tanc." id)) " to " w "), " w " 0, i64 0, " w " 0 }"))])))
              (map-indexed vector t))
      (map (fn [f] #(assoc-in (f) [:llvm/global :bare] true))
           [#(ll-glob "lg_tinfo_types" "internal constant" (str "[" (count t) " x " w "]")

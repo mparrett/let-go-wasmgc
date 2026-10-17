@@ -349,7 +349,18 @@
    In the module, find-var: ns-interns there knows only the registry's
    namespaces, not the program's own (lw-ext, carried in, is in the program
    table), and find-var reads both (rt/wasm/natives.lg lookup)."
-  [ns-sym nm] (if *in-wasm* (find-var (symbol (str ns-sym) (str nm))) (get (ns-interns ns-sym) nm)))
+  [ns-sym nm]
+  (if *in-wasm*
+    (find-var (symbol (str ns-sym) (str nm)))
+    ;; ns-interns copies every var into a persistent map. Runtime indexing
+    ;; calls this thousands of times; find-var reads one local var directly,
+    ;; including private vars, without following refers. Validate the namespace
+    ;; first to retain the missing-namespace error. Keep the map semantics for
+    ;; Namespace objects (including detached ones) and unusual lookup keys.
+    (if (and (symbol? ns-sym) (nil? (namespace ns-sym))
+             (symbol? nm) (nil? (namespace nm)))
+      (do (the-ns ns-sym) (find-var (symbol (str ns-sym) (str nm))))
+      (get (ns-interns ns-sym) nm))))
 
 (defn rt-var
   "The var nm of the target runtime's namespace n, or nil."
@@ -423,9 +434,18 @@
 
 (def defn-by-var (into {} (for [d defns] [(:var d) d])))
 
+;; P2.12: lg defns the backend adds where rt/ has no form for a native's
+;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
+;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
+(def ext-path (if llvm-target? (str rt-dir "/ext.lg") (str src-dir "/lw_ext.lg")))
+(if snapshot (restore-ext! snapshot) (load-string (slurp ext-path)))
+(in-ns 'lw-rt)
+
+(def ext-forms (if snapshot (:ext-forms snapshot) (read-forms ext-path)))
+
 (def globals
   ;; runtime top-level defs that are not declarations: [{:var :ns :init form}]
-  (vec (for [[_ ns-sym forms] file-forms
+  (vec (for [[_ ns-sym forms] (conj file-forms [ext-path 'lw-ext ext-forms])
              :when (not= ns-sym intrinsics-ns)
              form forms
              :when (and (seq? form) (= 'def (first form)))
@@ -500,7 +520,7 @@
 (def letgo-commit "e9789b7d")
 ;; LETGO (exported by checks/env.sh), else $LW_ROOT/let-go, else a sibling of
 ;; the current directory; embedded-forms says so loudly when it cannot read it.
-(def letgo-dir (or (os/getenv "LETGO") (when-let [r (os/getenv "LW_ROOT")] (str r "/let-go")) "../let-go"))
+(def letgo-dir (or (not-empty (os/getenv "LETGO")) (when-let [r (not-empty (os/getenv "LW_ROOT"))] (str r "/let-go")) "../let-go"))
 
 ;; LW_LETGO_CORE (D208): a directory holding pkg/rt/core's files at
 ;; letgo-commit, read with slurp in place of `git show`. The backend carried
@@ -528,9 +548,22 @@
   ([v] (lg-defined? v 'core))
   ([v ns-sym] (let [m (meta v)] (and (= (str "<embedded:" ns-sym ">") (:file m)) (:line m)))))
 
+(defn embedded-fn-form
+  "Normalize embedded anonymous (def name (fn ...)) functions for source
+   indexing. Aliases, arbitrary initializers and named local fns stay out."
+  [form]
+  (when (seq? form)
+    (cond (#{'defn 'defn-} (first form)) form
+          (= 'def (first form))
+          (let [value (last form)]
+            (when (and (seq? value) (#{'fn 'fn*} (first value))
+                       (not (symbol? (second value))))
+              (apply list 'defn (second form) (rest value)))))))
+
 (defn embedded-defns [ns-sym forms]
-  (into {} (for [form forms
-                 :when (and (seq? form) (#{'defn 'defn-} (first form)))
+  (into {} (for [raw forms
+                 :let [form (embedded-fn-form raw)]
+                 :when form
                  :let [[nm _] (strip-meta-name (second form))
                        ;; the module has no string entry in its program table
                        v (or (ns-var ns-sym nm) (when *in-wasm* (find-var (symbol (str ns-sym) (str nm)))))
@@ -547,15 +580,8 @@
   (merge (embedded-defns 'core core-forms)
          (embedded-defns 'string (if snapshot (:string-forms snapshot) (embedded-forms "string.lg" 'string)))))
 
-;; P2.12: lg defns the backend adds where rt/ has no form for a native's
-;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
-;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
-(def ext-path (if llvm-target? (str rt-dir "/ext.lg") (str src-dir "/lw_ext.lg")))
-(if snapshot (restore-ext! snapshot) (load-string (slurp ext-path)))
-(in-ns 'lw-rt)
-
 (def ext-defns
-  (into {} (for [form (if snapshot (:ext-forms snapshot) (read-forms ext-path))
+  (into {} (for [form ext-forms
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
                        v (ns-var 'lw-ext nm)]
@@ -584,6 +610,8 @@
    #'core/array-map #'lw-ext/array-map-v #'core/hash-map #'lw-ext/hash-map-v #'core/dissoc! #'lw-ext/dissoc!-v
    #'core/map-entry? #'lw-ext/map-entry?-v #'core/lazy-seq? #'lw-ext/lazy-seq?-v
    #'core/shutdown-agents #'lw-ext/shutdown-agents-v
+   ;; Pinned core defines send-off as the same synchronous function as send.
+   #'core/send-off #'core/send
    (native-var 'let-go.core/str-replace-first) #'lw-ext/str-replace-first-rx-v
    ;; P2.14: regexes (lw_ext.lg's engine); a String separator/match still
    ;; reaches the runtime's split / str-replace

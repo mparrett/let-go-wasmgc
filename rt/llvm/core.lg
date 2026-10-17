@@ -26,7 +26,7 @@
   (:refer-clojure :exclude [assoc dissoc get contains? conj nth peek pop transient persistent! conj! assoc! dissoc!
                             key val subvec max min mod number? map? set? seq? sorted? vector?
                             list? fn? nil? string? keyword? symbol? coll? sequential? atom deref reset! swap!
-                            compare-and-set! volatile! vreset! vswap! with-meta meta gensym apply*
+                            compare-and-set! get-validator add-watch remove-watch volatile! vreset! vswap! with-meta meta gensym apply*
                             promise deliver delay* force delay? realized?
                             ex-info ex-data ex-message ex-cause sort read-string slurp open compare])
   (:require [llvm.arch :as arch]
@@ -46,7 +46,13 @@
 ;; A Type (spec §1): a let-go ValueType, interned per type id. Fields: name
 ;; bytes, id, ancestry (a pv/Node of Types, nearest first, by C3 at build
 ;; time), method table (null until a protocol is extended to it), table epoch.
-(arch/defstruct TypeVal [:ref :i64 :ref [:mut :ref] [:mut :i64]])
+(arch/defstruct TypeVal [:ref :i64 :ref [:mut :ref] [:mut :i64] :ref])
+;; User instances have a real type, shared field array, metadata, and a stable
+;; allocation token. The token is independent of compiler names and gensyms.
+(arch/defstruct UserInstance [:ref :ref :ref :i64])
+(arch/defstruct UserGlobals [[:mut :i64] [:mut :ref]]) ; identity counter, nil protocol methods
+(def user-globals (arch/new UserGlobals 0 (arch/null)))
+(arch/defstruct WatchTable [[:mut :ref]]) ; alternating keys/functions, shared by atom with-meta copies
 (arch/defstruct MetaEnv [:ref :ref])              ; a with-meta'd fn's env: inner fn, meta (vm.NewMetaFn)
 ;; A keyword or symbol with meta: let-go's is a distinct value that is still
 ;; keyword?/symbol? and prints as the name, but is = only to itself and
@@ -57,13 +63,16 @@
 ;; forced then its value, state (0 pending, 1 value, 2 threw, 3 running), the error.
 (arch/defstruct Promise [[:mut :ref] [:mut :i32]])
 (arch/defstruct Delay [[:mut :ref] [:mut :i32] [:mut :ref]])
-;; The one runtime global (D39): the gensym counter, the interned Types (by
+;; Shared core state (D39): the gensym counter, the interned Types (by
 ;; type id, as many as the build's type table has: arch/type-count) and
 ;; (P6.7) the roots alter-var-root gave vars the module does not hold (a
 ;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
 ;; stand-in's "#'ns/name" text to the root, which var-value reads first.
-(arch/defstruct Globals [[:mut :i64] :ref [:mut :ref]])
-(def globals (arch/new Globals 0 (arch/array-new pv/Node (arch/type-count) (arch/null)) (arch/null)))
+(arch/defstruct Globals [[:mut :i64] :ref [:mut :ref] [:mut :ref]])
+(def globals (arch/new Globals 0 (arch/array-new pv/Node (arch/type-count) (arch/null)) (arch/null) (arch/null)))
+;; Pinned core's synchronous agents share one private atom of action errors.
+;; Keep it as a runtime global so compiled embedded functions share state.
+(def agent-errors (arch/new sq/Atom (m/empty-map) 0 nil nil 0 nil))
 
 ;; Kinds as this namespace sees them: llvm.seq/kind, with its foreign kind 18
 ;; refined into the collections seq.lg cannot name.
@@ -85,6 +94,7 @@
             (arch/is? so/SSet x) 39
             (arch/is? Promise x) 40
             (arch/is? Delay x) 41
+            (arch/is? UserInstance x) 42
             :else 18)
       k)))
 
@@ -108,6 +118,11 @@
 ;; var's current value (lower-wasm's var-const-form; for a var the program
 ;; does not define it raises that named limit). meta hides the key.
 (defn- lw-var-kw [] (s/kw-of-bytes (arch/bytes-of-string "lw/var")))
+(defn- lw-root-kw [] (s/kw-of-bytes (arch/bytes-of-string "lw/root")))
+(defn var-root-accessor [v]
+  (if (= 2 (standin v))
+    (m/mget (arch/get MetaNamed 1 v) (lw-root-kw) (arch/null))
+    (arch/null)))
 (declare raise)
 (defn- var-key [v]                                        ; the stand-in's text, "#'ns/name", as a String
   (let [y (arch/get MetaNamed 0 v) ns (arch/get sq/Sym 0 y)]
@@ -166,6 +181,7 @@
           (= k 39) (arch/bytes-of-string "let-go.lang.PersistentTreeSet")
           (= k 40) (arch/bytes-of-string "let-go.lang.Promise")
           (= k 41) (arch/bytes-of-string "let-go.lang.Delay")
+          (= k 42) (arch/get TypeVal 0 (arch/get UserInstance 0 x))
           :else (arch/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -208,16 +224,82 @@
     (if (arch/null? t)
       (let [n (arch/type-anc-count id) anc (arch/array-new pv/Node n (arch/null))]
         (loop [j 0] (when (< j n) (arch/aset! pv/Node anc j (type-of-id (arch/type-anc id j))) (recur (inc j))))
-        (let [nt (arch/new TypeVal (arch/type-name-bytes id) id anc (arch/null) 0)]
+        (let [nt (arch/new TypeVal (arch/type-name-bytes id) id anc (arch/null) 0 (arch/null))]
           (arch/aset! pv/Node tab id nt)
           nt))
       t)))
+
+(defn make-user-type [nm fields]
+  (let [anc (arch/array-new pv/Node 1 (type-of-id 42))]
+    (arch/new TypeVal (s/str-bytes nm) -1 anc (arch/null) 0 fields)))
+
+(defn install-type-method! [t key method]
+  (let [table (if (arch/null? t) (arch/get UserGlobals 1 user-globals) (arch/get TypeVal 3 t))
+        updated (m/massoc (if (arch/null? table) (m/empty-map) table) key method)]
+    (if (arch/null? t)
+      (arch/set! UserGlobals 1 user-globals updated)
+      (do (arch/set! TypeVal 3 t updated)
+          (arch/set! TypeVal 4 t (arch/i64-add (arch/get TypeVal 4 t) 1))))
+    (arch/null)))
+
+(defn- new-user-instance [t fields mt]
+  (let [id (arch/i64-add (arch/get UserGlobals 0 user-globals) 1)]
+    (arch/set! UserGlobals 0 user-globals id)
+    (arch/new UserInstance t fields mt id)))
+
+(defn make-user-instance [t fields]
+  (let [n (pv/vcount (arch/get TypeVal 5 t))
+        supplied (pv/vcount fields)
+        slots (arch/array-new pv/Node n (arch/null))]
+    (loop [i 0]
+      (when (if (< i n) (< i supplied) false)
+        (arch/aset! pv/Node slots i (pv/vnth fields i))
+        (recur (inc i))))
+    (new-user-instance t slots (arch/null))))
+
+(defn user-field-at [x index]
+  (arch/aget pv/Node (arch/get UserInstance 1 x) index))
+
+(defn user-field [x nm fallback]
+  (let [t (arch/get UserInstance 0 x)
+        names (arch/get TypeVal 5 t)
+        fields (arch/get UserInstance 1 x)
+        n (pv/vcount names)]
+    ;; Native checks the literal member first, then strips a leading '-'.
+    (loop [pass 0 i 0]
+      (if (< i n)
+        (if (sq/equiv? (pv/vnth names i) (if (= pass 0) nm fallback))
+          (arch/aget pv/Node fields i)
+          (recur pass (inc i)))
+        (if (if (= pass 0) (if (arch/null? fallback) false true) false)
+          (recur 1 0)
+          (raise-str (s/str (s/str (lit (arch/bytes-of-string "no field ")) nm
+                                         (lit (arch/bytes-of-string " on deftype ")))
+                            (lit (arch/get TypeVal 0 t)))))))))
+
+(defn set-user-field! [x nm value]
+  (let [t (arch/get UserInstance 0 x) names (arch/get TypeVal 5 t)
+        fields (arch/get UserInstance 1 x) n (pv/vcount names)]
+    (loop [i 0]
+      (cond (>= i n)
+            (raise-str (s/str (s/str (lit (arch/bytes-of-string "no field ")) nm
+                                    (lit (arch/bytes-of-string " on deftype ")))
+                             (lit (arch/get TypeVal 0 t))))
+            (sq/equiv? (pv/vnth names i) nm)
+            (do (arch/aset! pv/Node fields i value) value)
+            :else (recur (inc i))))))
 
 (defn ^{:twin "core/type"} type-of [x]
   (cond
     (arch/null? x) (arch/null)
     (= 2 (standin x)) (type-of (var-value x))             ; native: a Var's type is its value's
+    (= 42 (ckind x)) (arch/get UserInstance 0 x)
     :else (type-of-id (dispatch-id x))))
+
+(defn type-method [x key]
+  (let [t (type-of x)
+        table (if (arch/null? t) (arch/get UserGlobals 1 user-globals) (arch/get TypeVal 3 t))]
+    (if (arch/null? table) (arch/null) (m/mget table key (arch/null)))))
 
 (defn ^{:twin "core/instance?"} instance-of? [t x]
   (if (arch/null? x)
@@ -494,6 +576,16 @@
   ([a b c] (sq/bool (if (num-equiv? a b) (num-equiv? a c) false)))
   ([a b c d] (sq/bool (if (num-equiv? a b) (if (num-equiv? a c) (num-equiv? a d) false) false))))
 
+(defn num-eq-seq [xs]
+  (let [s (sq/seq xs)]
+    (if (arch/null? s)
+      (T)
+      (let [a (sq/first s)]
+        (loop [more (sq/next s)]
+          (cond (arch/null? more) (T)
+                (num-equiv? a (sq/first more)) (recur (sq/next more))
+                :else (F)))))))
+
 ;; not= (lang.go:1964): fewer than 2 args is false; two NaNs are not "not="
 ;; (a quirk: (not= ##NaN ##NaN) is false although (= ##NaN ##NaN) is too).
 (defn ^{:twin "core/not="} not-eq
@@ -501,6 +593,15 @@
   ([a b] (sq/bool (if (if (nan-value? a) (nan-value? b) false) false (if (sq/equiv? a b) false true))))
   ([a b c] (sq/bool (if (if (sq/equiv? a b) (sq/equiv? a c) false) false true)))
   ([a b c d] (sq/bool (if (if (sq/equiv? a b) (if (sq/equiv? a c) (sq/equiv? a d) false) false) false true))))
+
+(defn not-eq-seq [xs]
+  (let [s (sq/seq xs)]
+    (if (arch/null? s)
+      (F)
+      (let [more (sq/next s)]
+        (cond (arch/null? more) (F)
+              (arch/null? (sq/next more)) (not-eq (sq/first s) (sq/first more))
+              :else (sq/bool (if (sq/truthy? (sq/equals-seq s)) false true)))))))
 
 (defn- pick [lt? m x]                                     ; one step of CoreMax/CoreMin
   (cond (nan-value? m) m
@@ -562,6 +663,25 @@
            (raise (arch/bytes-of-string "bit-and expected Int"))))
   ([a b c] (raise (arch/bytes-of-string "bit-and expects 2 args"))))
 
+(defn bit-not*-seq [xs]
+  (raise (arch/bytes-of-string "bit-not expects 1 arg")))
+(defn ^{:twin "core/bit-not"} bit-not*
+  ([] (bit-not*-seq nil))
+  ([x] (if (= 1 (sq/kind x))
+         (sq/box-int (bit-not (sq/unbox-int x)))
+         (raise (arch/bytes-of-string "bit-not expected Int"))))
+  ([x y] (bit-not*-seq nil)))
+
+(defn bit-and-not*-seq [xs]
+  (raise (arch/bytes-of-string "bit-and-not expects 2 args")))
+(defn ^{:twin "core/bit-and-not"} bit-and-not*
+  ([] (bit-and-not*-seq nil))
+  ([x] (bit-and-not*-seq nil))
+  ([x y] (if (if (= 1 (sq/kind x)) (= 1 (sq/kind y)) false)
+           (sq/box-int (bit-and-not (sq/unbox-int x) (sq/unbox-int y)))
+           (raise (arch/bytes-of-string "bit-and-not expected Int"))))
+  ([x y z] (bit-and-not*-seq nil)))
+
 ;; compare (vm.DefaultCompare, compare.go:44): llvm.str's compare* for the
 ;; same-kind scalar pairs, vectors and map entries lexicographically, and
 ;; let-go's message for anything else (str.lg cannot raise).
@@ -611,6 +731,30 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Predicates and logic
+
+(defn ^{:twin "core/any?"} any-value?
+  ([] (raise-arity 0))
+  ([x] (sq/bool true))
+  ([x y & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
+
+;; CoreIsIFn includes vars and promises, but excludes MapEntry even though
+;; the latter shares the language type name used by an ArrayVector.
+(defn ^{:twin "core/ifn?"} ifn-value?
+  ([] (sq/bool false))
+  ([x] (let [k (ckind x)]
+         (sq/bool
+           (cond (= k 16) true
+                 (= k 11) true
+                 (= k 20) true
+                 (= k 21) true
+                 (= k 30) true
+                 (= k 31) true
+                 (= k 38) true
+                 (= k 39) true
+                 (= k 40) true
+                 (= k 36) (if (= 1 (standin x)) false true)
+                 :else false))))
+  ([x y & more] (sq/bool false)))
 
 (defn ^{:twin "core/not"} lnot [x] (sq/bool (if (sq/truthy? x) false true)))
 (defn ^{:twin "core/map?"} map? [x] (let [k (ckind x)] (sq/bool (if (= k 30) true (= k 38)))))
@@ -998,14 +1142,50 @@
           :else (sq/realized? x))))
 
 ;; ---------------------------------------------------------------------------
-;; State: atom (validators, watches and :meta are named limits) and volatile
+ ;; State: atom metadata and validators; generation guards reentrant swap callbacks.
+
+(defn- atom-validate [a v]
+  (let [f (arch/get sq/Atom 3 a)]
+    (when (if (arch/null? f) false true)
+      (when (if (sq/truthy? (invoke-args f 1 v nil nil nil)) false true)
+        (raise (arch/bytes-of-string "validator rejected reference state"))))))
+
+(defn- atom-option [a k v]
+  (cond (sq/equiv? k (s/kw-of-bytes (arch/bytes-of-string "meta")))
+        (do (if (arch/null? v) nil
+              (let [kind (ckind v)]
+                (if (if (= kind 30) true (= kind 38)) nil
+                  (raise (arch/bytes-of-string "atom :meta must be nil or map")))))
+            (arch/set! sq/Atom 2 a v))
+        (sq/equiv? k (s/kw-of-bytes (arch/bytes-of-string "validator")))
+        (do (if (if (arch/null? v) true (callable? v)) nil
+              (raise (arch/bytes-of-string "atom :validator must be nil or function")))
+            (arch/set! sq/Atom 3 a v)))
+  a)
+
+(defn- atom-ready [a]
+  (atom-validate a (arch/get sq/Atom 0 a))
+  a)
+
+(defn atom-seq [xs]
+  (let [s (sq/seq xs)]
+    (when (arch/null? s) (raise-arity 0))
+    (let [a (arch/new sq/Atom (sq/first s) 0 nil nil 0 nil)]
+      (loop [opts (sq/next s)]
+        (if (arch/null? opts)
+          (atom-ready a)
+          (let [tail (sq/next opts)]
+            (when (arch/null? tail) (raise (arch/bytes-of-string "atom options must be key/value pairs")))
+            (atom-option a (sq/first opts) (sq/first tail))
+            (recur (sq/next tail))))))))
 
 (defn ^{:twin "core/atom"} atom
-  ([x] (arch/new sq/Atom x 0))
+  ([] (raise-arity 0))
+  ([x] (arch/new sq/Atom x 0 nil nil 0 nil))
   ([x k] (raise (arch/bytes-of-string "atom options must be key/value pairs")))
-  ([x k v] (arch/trap "lower-wasm: atom options (:meta, :validator) are not supported yet (P2.7 named limit)"))
+  ([x k v] (atom-ready (atom-option (atom x) k v)))
   ([x k v k2] (raise (arch/bytes-of-string "atom options must be key/value pairs")))
-  ([x k v k2 v2] (arch/trap "lower-wasm: atom options (:meta, :validator) are not supported yet (P2.7 named limit)")))
+  ([x k v k2 v2] (atom-ready (atom-option (atom-option (atom x) k v) k2 v2))))
 
 (defn ^{:twin "core/deref"} deref
   ([r] (let [k (sq/kind r)]
@@ -1026,16 +1206,53 @@
 (defn- atom-of [a who]
   (if (= 24 (sq/kind a)) a (raise who)))
 
+(defn ^{:twin "core/get-validator"} get-validator
+  ([] (raise (arch/bytes-of-string "get-validator expects 1 arg")))
+  ([a] (arch/get sq/Atom 3 (atom-of a (arch/bytes-of-string "get-validator expected Atom"))))
+  ([a b & more] (raise (arch/bytes-of-string "get-validator expects 1 arg"))))
+
+(defn- watch-table [a]
+  (if (= 24 (sq/kind a)) (arch/get sq/Atom 5 a)
+    (let [tables (arch/get Globals 3 globals)]
+      (if (arch/null? tables) (arch/null) (m/mget tables (var-key a) (arch/null))))))
+
+(defn- set-watch-table! [a table]
+  (if (= 24 (sq/kind a)) (arch/set! sq/Atom 5 a table)
+    (let [tables (arch/get Globals 3 globals)]
+      (arch/set! Globals 3 globals
+        (m/massoc (if (arch/null? tables) (m/empty-map) tables) (var-key a) table)))))
+
+(defn notify-watches! [a old v]
+  ;; Snapshot the entry vector before invoking callbacks. A callback may
+  ;; add/remove watches, without changing this notification's traversal.
+  (let [table (watch-table a)]
+    (when (if (arch/null? table) false true)
+      (let [entries (arch/get WatchTable 0 table)]
+        (loop [i 0]
+          (when (< i (pv/vcount entries))
+            (invoke-args (pv/vnth entries (inc i)) 4 (pv/vnth entries i) a old v)
+            (recur (+ i 2))))))))
+
+(defn- atom-store! [a v]
+  (let [old (arch/get sq/Atom 0 a)]
+    (arch/set! sq/Atom 0 a v)
+    (arch/set! sq/Atom 4 a (inc (arch/get sq/Atom 4 a)))
+    (notify-watches! a old v)
+    v))
+
 (defn ^{:twin "core/reset!"} reset! [a v]
-  (arch/set! sq/Atom 0 (atom-of a (arch/bytes-of-string "reset expected Atom")) v)
-  v)
+  (let [at (atom-of a (arch/bytes-of-string "reset expected Atom"))]
+    (atom-validate at v)
+    (atom-store! at v)))
 
 (defn- swap-n [a f n x y z]
   (let [at (atom-of a (arch/bytes-of-string "swap expected Atom"))]
     (if (callable? f) nil (raise (arch/bytes-of-string "swap expected Fn")))
-    (let [nv (invoke-args f (inc n) (arch/get sq/Atom 0 at) x y z)]
-      (arch/set! sq/Atom 0 at nv)
-      nv)))
+    (loop []
+      (let [generation (arch/get sq/Atom 4 at)
+            nv (invoke-args f (inc n) (arch/get sq/Atom 0 at) x y z)]
+        (atom-validate at nv)
+        (if (= generation (arch/get sq/Atom 4 at)) (atom-store! at nv) (recur))))))
 
 (defn- conj-1 [v a] (pv/vconj v a))
 (defn- conj-2 [v a b] (pv/vconj (pv/vconj v a) b))
@@ -1045,11 +1262,13 @@
 (defn- swap-v [a f xs]                                    ; xs: a pvec of the extra args
   (let [at (atom-of a (arch/bytes-of-string "swap expected Atom"))]
     (if (callable? f) nil (raise (arch/bytes-of-string "swap expected Fn")))
-    (let [args (loop [v (pv/vconj (pv/empty-vec) (arch/get sq/Atom 0 at)) i 0]
-                 (if (< i (pv/vcount xs)) (recur (pv/vconj v (pv/vnth xs i)) (+ i 1)) v))
-          nv (invoke-vec f args)]
-      (arch/set! sq/Atom 0 at nv)
-      nv)))
+    (loop []
+      (let [generation (arch/get sq/Atom 4 at)
+            args (loop [v (pv/vconj (pv/empty-vec) (arch/get sq/Atom 0 at)) i 0]
+                   (if (< i (pv/vcount xs)) (recur (pv/vconj v (pv/vnth xs i)) (+ i 1)) v))
+            nv (invoke-vec f args)]
+        (atom-validate at nv)
+        (if (= generation (arch/get sq/Atom 4 at)) (atom-store! at nv) (recur))))))
 
 ;; Natively variadic. A runtime-dialect fn has no rest arity, so 4..18 extra
 ;; args are fixed arities up to D150's cap of 20 params, applied through
@@ -1091,11 +1310,64 @@
           (= ka 22) (let [x (s/unbox-float a) y (s/unbox-float b)] (if (< x y) false (if (> x y) false (>= x y))))
           :else (arch/ref-eq a b))))
 
-(defn compare-and-set! [a old nv]
+(defn ^{:twin "core/compare-and-set!"} compare-and-set! [a old nv]
   (let [at (atom-of a (arch/bytes-of-string "compare-and-set! expected Atom"))]
+    (atom-validate at nv)
     (if (go-identical? (arch/get sq/Atom 0 at) old)
-      (do (arch/set! sq/Atom 0 at nv) (T))
+      (do (atom-store! at nv) (T))
       (F))))
+
+;; Native watches use Go interface keys: identity for heap values, scalar
+;; equality otherwise. In particular, vectors are not legal watch keys.
+(defn- watch-key-check! [key remove?]
+  (when (= 11 (sq/kind key))
+    (raise-str
+      (s/str (lit (if remove? (arch/bytes-of-string "hash of unhashable type: ")
+                              (arch/bytes-of-string "runtime error: hash of unhashable type ")))
+             (lit (if (= 0 (pv/vpkind key)) (arch/bytes-of-string "vm.ArrayVector")
+                                           (arch/bytes-of-string "vm.PersistentVector")))))))
+
+(defn- watch-ref [a msg]
+  (cond (= 24 (sq/kind a)) a
+        (= 2 (standin a)) a
+        :else (raise msg)))
+
+(defn ^{:twin "core/add-watch"} add-watch
+  ([] (raise (arch/bytes-of-string "add-watch expects 3 args")))
+  ([a] (raise (arch/bytes-of-string "add-watch expects 3 args")))
+  ([a key] (raise (arch/bytes-of-string "add-watch expects 3 args")))
+  ([a key f]
+   (when (if (callable? f) false true) (raise (arch/bytes-of-string "add-watch expected Fn")))
+   (let [at (watch-ref a (arch/bytes-of-string "add-watch expected Atom or Var"))]
+     (watch-key-check! key false)
+     (let [existing (watch-table at)
+           table (if (arch/null? existing) (arch/new WatchTable (pv/empty-vec)) existing)
+           entries (arch/get WatchTable 0 table)
+           updated (loop [i 0]
+                     (cond (>= i (pv/vcount entries)) (pv/vconj (pv/vconj entries key) f)
+                           (go-identical? key (pv/vnth entries i)) (pv/vassoc entries (inc i) f)
+                           :else (recur (+ i 2))))]
+       (arch/set! WatchTable 0 table updated)
+       (set-watch-table! at table)
+       a)))
+  ([a key f extra & more] (raise (arch/bytes-of-string "add-watch expects 3 args"))))
+
+(defn ^{:twin "core/remove-watch"} remove-watch
+  ([] (raise (arch/bytes-of-string "remove-watch expects 2 args")))
+  ([a] (raise (arch/bytes-of-string "remove-watch expects 2 args")))
+  ([a key]
+   (let [at (watch-ref a (arch/bytes-of-string "remove-watch expected Atom or Var"))]
+     (watch-key-check! key true)
+     (let [table (watch-table at)]
+       (when (if (arch/null? table) false true)
+         (let [entries (arch/get WatchTable 0 table)
+               updated (loop [i 0 out (pv/empty-vec)]
+                         (if (>= i (pv/vcount entries)) out
+                           (recur (+ i 2) (if (go-identical? key (pv/vnth entries i)) out
+                                           (pv/vconj (pv/vconj out (pv/vnth entries i)) (pv/vnth entries (inc i)))))))]
+           (arch/set! WatchTable 0 table updated)))
+       a)))
+  ([a key extra & more] (raise (arch/bytes-of-string "remove-watch expects 2 args"))))
 
 (defn ^{:twin "core/volatile!"} volatile! [x] (arch/new sq/Volatile x 0))
 
@@ -1155,24 +1427,33 @@
           (= k 31) (hs/swith-meta x mt)
           (= k 38) (so/smap-with-meta x mt)
           (= k 39) (so/sset-with-meta x mt)
+          (= k 42) (new-user-instance (arch/get UserInstance 0 x) (arch/get UserInstance 1 x) mt)
           (if (= k 2) true (= k 3)) (sq/list-with-meta x mt)
           (= k 16) (fn-with-meta x mt)
           (if (= k 20) true (= k 21)) (arch/new MetaNamed x mt)
           (= k 36) (arch/new MetaNamed (arch/get MetaNamed 0 x) mt)
-          (= k 24) (arch/trap "lower-wasm: with-meta on an atom (the backend's $Atom has no meta slot; P2.7 named limit)")
+          (= k 24) (arch/new sq/Atom (arch/get sq/Atom 0 x) 0 mt (arch/get sq/Atom 3 x) (arch/get sq/Atom 4 x) (arch/get sq/Atom 5 x))
           (if (>= k 32) (<= k 34) false) (arch/trap "lower-wasm: with-meta on a transient (P2.7 named limit)")
           :else x)))
 
 (defn ^{:twin "core/meta"} meta [x]
   (let [k (ckind x)]
-    (cond (= k 11) (pv/vmeta x)
+    (cond (= k 24) (arch/get sq/Atom 2 x)
+          (= k 11) (pv/vmeta x)
           (= k 30) (m/mmeta x)
           (= k 31) (hs/smeta x)
           (= k 38) (so/smeta x)
           (= k 39) (so/ssmeta x)
+          (= k 42) (arch/get UserInstance 2 x)
           (if (= k 2) true (= k 3)) (arch/get sq/List 3 x)
           (= k 16) (if (meta-fn? x) (arch/get MetaEnv 1 (arch/get sq/Fn 3 x)) (arch/null))
-          (= k 36) (if (= 2 (standin x)) (m/mdissoc (arch/get MetaNamed 1 x) (lw-var-kw)) (arch/get MetaNamed 1 x))
+          (= k 36) (if (= 2 (standin x))
+                     (let [mt (arch/get MetaNamed 1 x)
+                           reader (m/mget mt (s/kw-of-bytes (arch/bytes-of-string "lw/meta")) (arch/null))]
+                       (if (arch/null? reader)
+                         (m/mdissoc (m/mdissoc mt (lw-var-kw)) (lw-root-kw))
+                         (sq/invoke0 reader)))
+                     (arch/get MetaNamed 1 x))
           :else (arch/null))))
 
 ;; ---------------------------------------------------------------------------
@@ -1394,6 +1675,19 @@
                (s/str (lit nm) (lit (arch/bytes-of-string " "))))
            (lit (arch/bytes-of-string "0x0>")))))
 
+(defn- print-user-instance [x]
+  (let [t (arch/get UserInstance 0 x)
+        names (arch/get TypeVal 5 t)
+        fields (arch/get UserInstance 1 x)
+        n (pv/vcount names)]
+    (loop [i 0 acc (s/str (lit (arch/bytes-of-string "#<")) (lit (arch/get TypeVal 0 t)))]
+      (if (< i n)
+        (recur (inc i)
+               (s/str acc (lit (arch/bytes-of-string " "))
+                      (s/str (pv/vnth names i) (lit (arch/bytes-of-string "="))
+                             (s/value-string (arch/aget pv/Node fields i)))))
+        (s/str acc (lit (arch/bytes-of-string ">")))))))
+
 (defn- print-foreign [self x mb]
   (let [k (ckind x) mode (sq/unbox-int mb)]
     (cond (= k 30) (print-map x mode)
@@ -1413,6 +1707,7 @@
           (= k 34) (s/str (lit (arch/bytes-of-string "<transient-vector count="))
                           (sq/box-int (pv/vcount (arch/get TVec 0 x))) (lit (arch/bytes-of-string ">")))
           (= k 35) (lit (arch/get TypeVal 0 x))
+          (= k 42) (print-user-instance x)
           (= k 37) (arr/print-arr x)
           (= k 38) (so/smap-print x)
           (= k 39) (so/sset-print x)
@@ -1454,7 +1749,9 @@
 ;; its name and a transient as "<transient-map count=N>".
 (defn- foreign-hash [self x]                             ; the sorted colls are Hashable, as a hash-map/set
   (let [k (ckind x)]
-    (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x)) :else (sq/hash (s/value-string x)))))
+    (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x))
+          (= k 42) (sq/box-int (m/mix-finish (bit-and (arch/get UserInstance 3 x) 0xffffffff)))
+          :else (sq/hash (s/value-string x)))))
 (defn- tn-hook [self x] (tn x))                          ; llvm.arrays names argument types through this
 
 (defn install!

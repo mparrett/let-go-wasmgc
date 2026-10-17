@@ -3690,7 +3690,13 @@
                           sym (if (and (seq? raw) (= 'with-meta (first raw))) (second raw) raw)
                           v0 (when (symbol? sym) (try (resolve sym) (catch e nil)))
                           before (when (var? v0) (meta v0))
-                          r (orig form ctx)
+                          ;; The pinned builder tests val-form for truthiness,
+                          ;; confusing explicit nil/false with a declaration.
+                          ;; Quote those values so it emits the root store.
+                          build-form (if (and (> (count form) 2) (not (last form)))
+                                       (with-meta (apply list (concat (butlast form) [(list 'quote (last form))])) (meta form))
+                                       form)
+                          r (orig build-form ctx)
                           v (or v0 (when (symbol? sym) (try (resolve sym) (catch e nil))))]
                       (when (var? v)
                         (let [m (merge (meta v) {:name (symbol (name sym))} before (def-form-meta form))]
@@ -3794,10 +3800,18 @@
                       (cond (= k :ns) (assoc acc :ns (symbol (str "<ns " (ns-name x) ">")))
                             (plain-data? x) (assoc acc k x)
                             :else acc)))
-                  {} ks)]
+                  {} ks)
+        ;; LLVM program Vars expose root access separately from deref, whose
+        ;; getter observes dynamic bindings. Keep these callbacks private.
+        root (when (and (= :llvm *target*) (q-var-global v))
+               (let [k (keyword (symbol v))]
+                 (list 'fn*
+                       (list [] (list 'lower-wasm/llvm-read-root k))
+                       (list ['new-root] (list 'lower-wasm/llvm-write-root! k 'new-root)))))
+        mt (list (lw-rt/rt-sym 'core 'assoc) (const-form m) (const-form :lw/var) (var-value-form v))]
     (list (lw-rt/rt-sym 'core 'with-meta)
           (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (str "#'" (subs (str v) 2))))
-          (list (lw-rt/rt-sym 'core 'assoc) (const-form m) (const-form :lw/var) (var-value-form v)))))
+          (if root (list (lw-rt/rt-sym 'core 'assoc) mt (const-form :lw/root) root) mt))))
 
 (defn const-user-meta
   "P5.9 (review3 bug-05): the metadata a collection constant v carries into
@@ -3946,20 +3960,22 @@
 (defn const-global!
   "A runtime-built constant (keyword, symbol, vector, map, set, list): one
    global, built once by _rt_init (D63's placeholders made real)."
-  [v]
+  ([v] (const-global! v nil))
+  ([v origin]
   (let [mk (const-meta-key v)
         ;; P5.9: ^:a [1] and ^:b [1] print alike; the meta keeps them apart
         ;; a var keys by str (#'ns/name, the text pr-str gives any var it
         ;; can print): lg's pr-str sees through a var whose root is a
         ;; collection and fails on it (seq expected Seqable)
-        k (cond-> [(const-kind v) (if (var? v) (str v) (pr-str v))] mk (conj (pr-str mk)))]
+        k (cond-> [(const-kind v) (if (var? v) (str v) (pr-str v))]
+            mk (conj (pr-str mk)) origin (conj [:origin origin]))]
     (or (q-rt-const k)
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
           (when-not (and (nil? mk) (direct-const! (str "const_" i "__init") v))
             (rt-init-fn! (str "const_" i "__init") (lw-rt/rt-ns 'core) (const-form v)))
           (swap! *rt* update :const-order conj g)
-          g))))
+          g)))))
 
 (defn slot-kind [t] (case t (:i64 :i32 :i8) :int :f64 :float :ref :box :funcref :func))
 (defn slot-wt [t] (case t :i64 "i64" (:i32 :i8) "i32" :f64 "f64" :ref "(ref null eq)" :funcref "funcref"))
@@ -4057,6 +4073,48 @@
 (alter-var-root #'ir.passes.licm/pure-op?
                 (fn [orig] (fn [op] (and (orig op) (not (contains? may-raise-ops op))))))
 
+;; A non-throwing constructor is not loop-invariant: its allocation identity
+;; is observable. Keep collection-producing calls at their evaluation sites.
+;; CSE's unique call keys below do not protect LICM's separate call path.
+(def allocation-sensitive-calls
+  #{"vector" "vec" "list" "list*" "hash-map" "array-map" "hash-set"
+    "sorted-map" "sorted-set" "into" "concat" "cons" "conj" "assoc"
+    "dissoc" "merge" "keys" "vals" "rest" "next" "constantly"})
+(alter-var-root #'ir.passes.purity/total-pure-call?
+  (fn [orig]
+    (fn [f nid var-facts]
+      (and (orig f nid var-facts)
+           (or (not= *target* :llvm)
+               (let [callee (ir/resolve-single-source f (first (ir/refs nid f)))
+                     sym (symbol (ir/aux callee f))]
+                 (not (and (= "clojure.core" (namespace sym))
+                           (contains? allocation-sensitive-calls (name sym))))))))))
+
+;; LLVM must preserve native allocation of evaluated map/set literals.
+;; Quoted collections do not pass through these builders. Empty metadata-free
+;; literals retain the native shared-empty path; metadata still evaluates.
+(alter-var-root #'ir.build/build-set
+  (fn [orig]
+    (fn [form ctx]
+      (let [elements ((get (ns-interns 'ir.build) 'set-elements) form)]
+        (if (and (= *target* :llvm) (not (sorted? form))
+                 (or (seq elements) (seq (meta form))))
+          (ir.build/with-meta-call form ctx
+            (fn [plain inner]
+              (ir.build/build-form (apply list 'clojure.core/hash-set elements) inner)))
+          (orig form ctx))))))
+
+(alter-var-root #'ir.build/build-map
+  (fn [orig]
+    (fn [form ctx]
+      (let [entries ((get (ns-interns 'ir.build) 'map-entries) form)]
+        (if (and (= *target* :llvm) (not (sorted? form))
+                 (or (seq entries) (seq (meta form))))
+          (ir.build/with-meta-call form ctx
+            (fn [plain inner]
+              (ir.build/build-form (apply list 'clojure.core/array-map (mapcat identity entries)) inner)))
+          (orig form ctx))))))
+
 ;; P2.11 (F2/F5): CSE keyed :const insts by (op refs aux) with `=`, merging
 ;; [] with () and 0.0 with -0.0 inside one fn; and it merges equal :calls of
 ;; the "pure" builtins (vector, list, hash-map, conj, ex-info, ...), each of
@@ -4070,6 +4128,18 @@
                                     :const [op refs (strict-key aux)]
                                     :call [op refs aux nid]
                                     [op refs aux])))))
+
+;; The pinned constant folder uses nil to decline folding bit-not on a
+;; noninteger, but its unary path installs that nil as a constant. Keep the
+;; operation so lowering preserves the catchable operand error.
+(alter-var-root (get (ns-interns 'ir.passes.constfold) 'try-primitive)
+                (fn [orig] (fn [nid f]
+                             (let [action (orig nid f)]
+                               (if (and (= :bit-not (ir/op nid f))
+                                        (= :const (get-in action [:replace-with :op]))
+                                        (nil? (get-in action [:replace-with :aux])))
+                                 nil
+                                 action)))))
 
 ;; P2.11 (F4 corpus nan-arith): constfold's algebraic identities ((+ x 0),
 ;; (* x 1), (* x 0) -> 0, (- x 0), the bit-op ones) hold only for an int x:
@@ -4701,8 +4771,11 @@
 (defn rtlib-key []
   ;; D209: a restored driver read no runtime source; its snapshot holds them
   (hex32 (apply str (concat (if lw-rt/snapshot [(:text lw-rt/snapshot)] (map #(slurp (first %)) lw-rt/file-forms))
-                            (map #(slurp (str lw-rt/src-dir "/" %))
-                                 (if lw-rt/snapshot ["lower_wasm.lg" "lw_rt.lg"] ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"]))
+                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg"])
+                            ;; LLVM loads rt/llvm/ext.lg, including LW_RT_DIR
+                            ;; overrides. Hash that source rather than the GC
+                            ;; lane's lw_ext.lg. Snapshots already embed it.
+                            (when-not lw-rt/snapshot [(slurp lw-rt/ext-path)])
                             [(str "|lg=" @lg-binary-id)]
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
@@ -4838,11 +4911,13 @@
         (os/rename (str asked-f tmp) asked-f)
         (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
         (os/rename (str f tmp) f)
-        ;; a library for older sources is dead weight (~3.5 MB each); the
-        ;; rooted variants of the current one stay (D201). Another lg's
-        ;; library goes too, so alternating two lg builds rebuilds on each switch
+        ;; LLVM profiles and compiler generations are reusable content-keyed
+        ;; entries: switching A -> B -> A must not rebuild A. Keep these until
+        ;; the cache directory is explicitly cleared. Other targets retain
+        ;; their existing pruning policy; rooted variants of this key stay.
         (doseq [old (os/ls rtlib-dir)
-                :when (and (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
+                :when (and (not= *target* :llvm)
+                           (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
                                     (or (str/ends-with? old ".edn") (str/ends-with? old ".natives")))
                                ;; named before the target joined the key, so no prefix matches it
                                (re-matches #"rtlib-[0-9a-f]{8}\.edn" old)))]

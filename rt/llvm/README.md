@@ -16,7 +16,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 5 | `phm.lg` | `llvm.phm` | 1 2 3 | the persistent/transient map (array-map + HAMT), map hooks (slot 0) |
 | 6 | `phs.lg` | `llvm.phs` | 1 2 3 5 | the persistent/transient set, set hooks (slot 1) |
 | 7 | `arrays.lg` | `llvm.arrays` | 1-4 | let-go's typed arrays (`int-array` `byte-array` `aget` `aset` `alength` `aclone` `bytes`), the `Arr` struct, and the count/seq/print/get view llvm.core routes to it (kind 37) |
-| 8 | `sorted.lg` | `llvm.sorted` | 1-6 | `sorted-map` / `sorted-set` (default comparator) as key-ordered arrays: `SMap`, `SSet`, which llvm.core routes here (kinds 38, 39); the comparator is llvm.core's, through a hook `install!` sets |
+| 8 | `sorted.lg` | `llvm.sorted` | 1-6 | Sorted maps/sets as key-ordered arrays: `SMap`, `SSet` (kinds 38, 39), retaining a custom comparator or using the default core hook; updates copy the array |
 | 9 | `core.lg` | `llvm.core` | 1-8 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
 | 10 | `reader.lg` | `llvm.reader` | 1-9 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
 | 11 | `math.lg` | `llvm.math` | 1 3 4 9 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `rand-int`, math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
