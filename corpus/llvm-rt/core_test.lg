@@ -9,12 +9,15 @@
 ;; embed a heap address compare by "both throw".
 (ns core-test
   (:require [test :refer [deftest is testing]]
+            [check :as check]
             [llvm.arch :as arch]
             [llvm.pvec :as pv]
+            [llvm.arrays :as arr]
             [llvm.seq :as sq]
             [llvm.str :as s]
             [llvm.phm :as m]
             [llvm.phs :as hs]
+            [llvm.sorted :as sorted]
             [llvm.core :as c]
             [llvm.reader :as rd]
             [llvm.host :as h]
@@ -199,10 +202,49 @@
   (same (conj #{1} 1 2) (c/conj (W #{1}) (W 1) (W 2)))
   (same (apply conj [] (range 40)) (c/conj-seq (W []) (sq/range (W 40))))
   (same-pr (reduce conj #{} (range 40)) (c/conj-seq (W #{}) (sq/range (W 40))))
-  (same-pr (reduce conj {} (map vector (range 20) (range 20))) (c/conj-seq (W {}) (W (map vector (range 20) (range 20))))))
+  (same-pr (reduce conj {} (map vector (range 20) (range 20))) (c/conj-seq (W {}) (W (map vector (range 20) (range 20)))))
+  ;; Retain every version: later mutations must not change earlier values.
+  ;; A hash-map model avoids the pinned native sorted tree's persistence bug.
+  (let [result
+        (check/check
+          (check/for-all [descending (check/gen-bool)
+                          ops (check/gen-vector (check/gen-tuple (check/gen-bool)
+                                                                (check/gen-int -8 8)
+                                                                (check/gen-int -20 20)) 0 30)]
+            (let [cmp (if descending (fn [a b] (compare b a)) compare)
+                  f (clo cmp)
+                  states (reduce
+                           (fn [history [remove? k v]]
+                             (let [[wm ws model] (peek history)]
+                               (conj history
+                                 (if remove?
+                                   [(sorted/smap-dissoc wm (W k)) (sorted/sset-disj ws (W k)) (dissoc model k)]
+                                   [(sorted/smap-assoc wm (W k) (W v)) (sorted/sset-conj ws (W k)) (assoc model k v)]))))
+                           [[(sorted/empty-smap-by f) (sorted/empty-sset-by f) {}]] ops)]
+              (every? (fn [[wm ws model]]
+                        (let [ks (vec (sort cmp (keys model)))]
+                          (and (= (mapv #(vector % (get model %)) ks)
+                                  (mapv vec (<-w (sorted/smap-seq wm))))
+                               (= ks (vec (<-w (sorted/sset-seq ws)))))))
+                      states)))
+          {:seed 20261017 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result))))
 
 (deftest update-nth-subvec-peek-pop
   (c/install!)
+  (let [result (check/check
+                 (check/for-all [kind (check/gen-elements [:byte :int :long :double :float :object])
+                                 xs (check/gen-vector (check/gen-int -500 500) 0 40)
+                                 value (check/gen-int -500 500)]
+                   (let [a (into-array kind xs) wa (arr/into-array (W kind) (W xs))
+                         b (aclone a) wb (arr/aclone wa)]
+                     (when (seq xs) (aset a 0 value) (arr/aset wa (W 0) (W value)))
+                     (and (= (vec a) (<-w (arr/vec wa)))
+                          (= (vec b) (<-w (arr/vec wb)))
+                          (= (mapv float? (vec a)) (mapv float? (<-w (arr/vec wa))))
+                          (= (str a) (<-w (arr/print-arr wa))))))
+                 {:seed 20261022 :num-tests 150})]
+    (is (= :pass (:result result)) (pr-str result)))
   (doseq [coll kinds i [0 1 5 -1]]
     (same (nth coll i :nf) (c/nth (W coll) (W i) (W :nf)))
     (same (nth coll i) (c/nth (W coll) (W i))))

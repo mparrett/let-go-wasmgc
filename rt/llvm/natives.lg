@@ -78,16 +78,13 @@
   ([x y & more] false))
 
 (defn- empty-literal?
-  "Native's empty collections are shared values (EmptyPersistentMap/Set, the
-   empty list, a nil-backed ArrayVector), so two of them are identical?;
-   here each literal allocates. Named limit: an emptied map (dissoc of its
-   last key) is identical? to {} here and not natively."
+  "Native empty lists and nil-backed ArrayVectors share identity even when
+   their runtime wrappers differ. Maps and sets use actual shared empty
+   factory objects; drained or metadata-bearing empties retain their identity."
   [a]
   (let [k (c/ckind a)]
     (cond (= k 2) true
           (= k 11) (if (= 0 (pv/vpkind a)) (= 0 (pv/vcount a)) false)
-          (= k 30) (if (nil? (meta a)) (= 0 (count a)) false)
-          (= k 31) (if (nil? (meta a)) (= 0 (count a)) false)
           :else false)))
 
 ;; identicalValue (lang.go:140): Go == on comparable values (Int, Float,

@@ -6,14 +6,14 @@
 ;; pkg/rt/lang.go (buildArray :5046, CoreAgetf :9036, CoreAsetf :9074,
 ;; CoreAlengthf :9098, CoreAclonef :9111, CoreBytesf :9124).
 ;;
-;; An array is `Arr`: element kind (0 byte, 1 int, 2 object: ArrayByte/
-;; ArrayInt/ArrayObject) and the backing store (arch/Bytes, I64s, or for an
+;; An array is `Arr`: element kind (0 byte, 1 int, 2 object, 3 float)
+;; and the backing store (arch/Bytes, I64s, F64s, or for an
 ;; object array a llvm.pvec/PVec whose leaves are written in place by
 ;; pv/vset!), mutable and never resized. An object array keeps a PVec so that
 ;; `vec` of it can share the leaves: native's vec returns an ArrayVector over
 ;; the same []Value (lang.go:2077), so a later aset shows through the vector
-;; (transient_test's vec-object-array-alias). double-array and conj/empty
-;; (which make an object-array) are named limits. Loaded before llvm.core, which refines kind 18 to 37 for an Arr
+;; (transient_test's vec-object-array-alias). conj/empty (which make an
+;; object-array) remain named limits. Loaded before llvm.core, which refines kind 18 to 37 for an Arr
 ;; and routes type/count/seq/print/get/nth here; the messages that name an
 ;; argument's type ("aget expects array, got let-go.lang.Int") need
 ;; llvm.core's type-name, which this namespace reaches through the hook
@@ -23,14 +23,15 @@
 ;; Calling convention as seq.lg (D37); errors raise the backend's exception
 ;; value as llvm.core does (D68), msg = cmsg (natives called as values).
 (ns llvm.arrays
-  (:refer-clojure :exclude [aget aset alength aclone bytes int-array byte-array to-array object-array vec])
+  (:refer-clojure :exclude [aget aset alength aclone bytes int-array byte-array double-array into-array to-array object-array vec])
   (:require [llvm.arch :as arch]
             [llvm.pvec :as pv]
             [llvm.seq :as sq]
             [llvm.str :as s]))
 
 (arch/defarray I64s :i64)
-(arch/defstruct Arr [:i32 :ref])                 ; element kind 0 byte / 1 int, backing array
+(arch/defarray F64s :f64)
+(arch/defstruct Arr [:i32 :ref])                 ; element kind, backing array
 ;; The one runtime global (D39): the Fn (f x) -> Str giving a value's type
 ;; name, set by llvm.core/install!.
 (arch/defstruct AGlobals [[:mut :ref]])
@@ -45,6 +46,7 @@
 (defn aget* "Element i of Arr a, boxed (TypedArray.Get)." [a i]
   (cond (= 0 (akind a)) (sq/box-int (arch/bget (adata a) i))
         (= 1 (akind a)) (sq/box-int (arch/aget I64s (adata a) i))
+        (= 3 (akind a)) (s/box-float (arch/aget F64s (adata a) i))
         :else (pv/vnth (adata a) i)))
 
 (defn- lit [bs] (s/mk-str bs))
@@ -61,20 +63,28 @@
 (defn- nil-vec [n]                                     ; NewObjectArray: n nils
   (loop [i 0 v (pv/empty-vec)] (if (< i n) (recur (inc i) (pv/vconj v (arch/null))) (pv/varray v))))
 (defn- new-arr [k n]
-  (arch/new Arr k (cond (= k 0) (arch/bytes-new n) (= k 1) (arch/array-new I64s n 0) :else (nil-vec n))))
+  (arch/new Arr k (cond (= k 0) (arch/bytes-new n) (= k 1) (arch/array-new I64s n 0)
+                         (= k 3) (arch/array-new F64s n 0.0) :else (nil-vec n))))
+
+(defn- float-element [v prefix]
+  (cond (int-val? v) (arch/i64-to-f64 (sq/unbox-int v))
+        (= 22 (sq/kind v)) (s/unbox-float v)
+        :else (do (raise-got prefix v) 0.0)))
 
 ;; TypedArray.Set: a byte element keeps the low 8 bits (byte(n)); an object
 ;; element is stored as is.
 (defn- set-elem! [a i v]
   (if (= 2 (akind a))
     (pv/vset! (adata a) i v)
+  (if (= 3 (akind a))
+    (arch/aset! F64s (adata a) i (float-element v (arch/bytes-of-string "double-array expects numeric, got ")))
   (if (int-val? v)
     (if (= 0 (akind a))
       (arch/bset! (adata a) i (sq/unbox-int v))
       (arch/aset! I64s (adata a) i (sq/unbox-int v)))
     (raise-got (if (= 0 (akind a)) (arch/bytes-of-string "byte-array expects Int, got ")
                    (arch/bytes-of-string "int-array expects Int, got "))
-               v))))
+               v)))))
 
 (defn- build-sized [k n init fill?]
   (if (< n 0)
@@ -97,11 +107,13 @@
     (loop [i 0]
       (if (< i n)
         (let [x (pv/vnth v i)]
+          (if (= k 3)
+            (arch/aset! F64s (adata a) i (float-element x (arch/bytes-of-string "double-array element must be numeric, got ")))
           (if (int-val? x)
             (if (= k 0) (arch/bset! (adata a) i (sq/unbox-int x)) (arch/aset! I64s (adata a) i (sq/unbox-int x)))
             (raise-got (if (= k 0) (arch/bytes-of-string "byte-array element must be Int, got ")
                            (arch/bytes-of-string "int-array element must be Int, got "))
-                       x))
+                       x)))
           (recur (inc i)))
         a)))))
 
@@ -133,12 +145,37 @@
   ([x init] (build 2 x init true))
   ([x init c] (raise-arity 3)))
 
+(defn ^{:twin ["core/double-array" "core/float-array"]} double-array
+  ([] (raise-arity 0))
+  ([x] (build 3 x (arch/null) false))
+  ([x init] (build 3 x init true))
+  ([x init c] (raise-arity 3)))
+
 ;; to-array (lang.go:4217): seqOf, so an Int is "don't know how to create
 ;; ISeq from", not a size; nil and () give an empty array.
 (defn ^{:twin "core/to-array"} to-array [x]
   (if (if (int-val? x) true (scalar-kind? (sq/kind x)))
     (raise-got (arch/bytes-of-string "don't know how to create ISeq from ") x)
     (build-seq 2 x)))
+
+(defn ^{:twin "core/into-array"} into-array
+  ([] (raise-arity 0))
+  ([coll] (to-array coll))
+  ([t coll]
+   (if (= 20 (sq/kind t))
+     (let [bs (s/str-bytes (s/str t))
+           k (cond (sq/bytes-eq? bs (arch/bytes-of-string ":byte")) 0
+                   (sq/bytes-eq? bs (arch/bytes-of-string ":int")) 1
+                   (sq/bytes-eq? bs (arch/bytes-of-string ":long")) 1
+                   (sq/bytes-eq? bs (arch/bytes-of-string ":double")) 3
+                   (sq/bytes-eq? bs (arch/bytes-of-string ":float")) 3
+                   (sq/bytes-eq? bs (arch/bytes-of-string ":object")) 2
+                   :else -1)]
+       (if (< k 0)
+         (raise-str (s/str (lit (arch/bytes-of-string "unknown array type: ")) t))
+         (build k coll (arch/null) false)))
+     (build 2 coll (arch/null) false)))
+  ([t coll extra] (raise-arity 3)))
 
 ;; vec (lang.go:2063) is llvm.seq/vec except on an object array, whose
 ;; storage the vector shares (lang.go:2077).
@@ -201,7 +238,9 @@
              (let [b (new-arr k n)]
                (if (= 0 k)
                  (arch/array-copy arch/Bytes (adata b) 0 (adata a) 0 n)
-                 (arch/array-copy I64s (adata b) 0 (adata a) 0 n))
+                 (if (= 3 k)
+                   (arch/array-copy F64s (adata b) 0 (adata a) 0 n)
+                   (arch/array-copy I64s (adata b) 0 (adata a) 0 n)))
                b)))
          (raise-got (arch/bytes-of-string "aclone expects array, got ") a)))
   ([a b] (raise-arity 2)))
@@ -246,6 +285,7 @@
 (defn print-arr [a]
   (let [n (alen* a) k (akind a)]
     (loop [i 0 acc (lit (cond (= 0 k) (arch/bytes-of-string "#byte-array[") (= 1 k) (arch/bytes-of-string "#int-array[")
+                              (= 3 k) (arch/bytes-of-string "#double-array[")
                               :else (arch/bytes-of-string "#object-array[")))]
       (if (< i n)
         (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (arch/bytes-of-string " "))) acc)

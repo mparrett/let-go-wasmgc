@@ -39,7 +39,7 @@
   (if (odd? (count kvs))
     (llvm.core/raise (llvm.str/str-bytes (str "array-map requires an even number of arguments, got " (count kvs))))
     (if (nil? kvs) {} (llvm.core/assoc-seq {} kvs))))
-(defn hash-set-v [& xs] (into #{} xs))
+(defn hash-set-v [& xs] (if (seq xs) (into #{} xs) #{}))
 ;; P7.9 (review5 bug-06): native's uncaught report puts a `calling <f>`
 ;; layer over a CompileError that escapes a call made from top-level code
 ;; (eval itself, or a program fn that evals); the driver wraps those calls
@@ -927,15 +927,28 @@
         keep (fn [e] (if (nil? m) e (with-meta e m)))]
     (cond (nil? x) nil
           (map-entry?-v x) []
-          ;; Collection.Empty() is the shared EmptySorted* for the default comparator,
-          ;; the only one here (sorted-map-by is refused): no meta (sorted_map.go:413)
-          (= 38 (llvm.core/ckind x)) (llvm.sorted/empty-smap)
-          (= 39 (llvm.core/ckind x)) (llvm.sorted/empty-sset)
+          ;; Empty preserves ordering, but drops metadata (sorted_map.go).
+          (= 38 (llvm.core/ckind x)) (llvm.sorted/empty-smap-by (llvm.sorted/smap-comparator x))
+          (= 39 (llvm.core/ckind x)) (llvm.sorted/empty-sset-by (llvm.sorted/sset-comparator x))
           (vector? x) (keep [])
           (map? x) (keep {})
           (set? x) (keep #{})
           (seq? x) (keep ())
           :else nil)))
+
+(defn invoke-member-v [& args]
+  (cond (< (count args) 2) (raise-lit (str "wrong number of arguments " (count args)))
+        (not (symbol? (second args))) (raise-lit "method-invoke expected Symbol")
+        :else
+        (let [x (first args) nm (str (second args))]
+          (if (= 42 (llvm.core/ckind x))
+            (llvm.core/user-field x nm
+              (if (and (> (count nm) 1) (= "-" (subs nm 0 1))) (subs nm 1) nil))
+            (cond (and (= nm "reduce") (= 3 (count args)))
+                  (llvm.seq/reduce (nth args 2) x)
+                  (and (= nm "reduce") (= 4 (count args)))
+                  (llvm.seq/reduce (nth args 2) (nth args 3) x)
+                  :else (raise-lit "method-invoke expected Receiver"))))))
 
 (defn sorted-map-v
   "core/sorted-map (CoreSortedMap, lang.go:5611): pairs assoc'd in turn into
@@ -951,3 +964,28 @@
   [& xs]
   (loop [r (llvm.sorted/empty-sset) s (seq xs)]
     (if s (recur (llvm.sorted/sset-conj r (first s)) (next s)) r)))
+
+(defn- sorted-comparator [f]
+  (fn [a b]
+    (try
+      (let [r (f a b)]
+        (cond (true? r) -1
+              (false? r) (if (true? (f b a)) 1 0)
+              (number? r) (let [n (if (int? r) r (f64-to-i64-sat (llvm.str/unbox-float r)))]
+                            (cond (< n 0) -1 (> n 0) 1 :else 0))
+              :else (raise-lit "comparator returned non-numeric value")))
+      ;; Native tree insert/find/delete fall back on unsigned key hashes.
+      (catch e (compare (hash a) (hash b))))))
+
+(defn sorted-map-by-v [& args]
+  (cond (empty? args) (raise-lit "sorted-map-by requires a comparator")
+        (not (llvm.core/callable? (first args))) (raise-lit "sorted-map-by first arg must be a function")
+        (odd? (count (rest args))) (raise-lit "sorted-map-by requires even number of key-value arguments")
+        :else (loop [m (llvm.sorted/empty-smap-by (sorted-comparator (first args))) s (seq (rest args))]
+                (if s (recur (llvm.sorted/smap-assoc m (first s) (second s)) (nnext s)) m))))
+
+(defn sorted-set-by-v [& args]
+  (cond (empty? args) (raise-lit "sorted-set-by requires a comparator")
+        (not (llvm.core/callable? (first args))) (raise-lit "sorted-set-by first arg must be a function")
+        :else (loop [s (llvm.sorted/empty-sset-by (sorted-comparator (first args))) xs (seq (rest args))]
+                (if xs (recur (llvm.sorted/sset-conj s (first xs)) (next xs)) s))))

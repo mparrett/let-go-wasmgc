@@ -607,6 +607,10 @@
    #'core/concat* #'lw-ext/concat*-v
    ;; P5.1: rt/wasm/sorted.lg (variadic constructors over its fixed-arity ops)
    #'core/sorted-map #'lw-ext/sorted-map-v #'core/sorted-set #'lw-ext/sorted-set-v}
+  (when llvm-target?
+    {#'core/. (ns-var 'lw-ext 'invoke-member-v)
+     #'core/sorted-map-by (ns-var 'lw-ext 'sorted-map-by-v)
+     #'core/sorted-set-by (ns-var 'lw-ext 'sorted-set-by-v)})
   ;; D100: js/emit and js/url-param through the host imports, until rt/'s
   ;; host.lg twins call the intrinsics themselves (the requested patch
   ;; defines wasm.host/host-emit; then the runtime twins are used as is)
