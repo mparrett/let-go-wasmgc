@@ -1,7 +1,7 @@
 # Pinned sorted-map oracle caveat
 
 During preparation of consolidated custom-comparator regressions, the pinned
-binary `/Users/ndn/development/lg-bin/lg-e9789b7d53` produced this result:
+binary `$LW_ROOT/lg-bin/lg-e9789b7d53` produced this result:
 
 ```clojure
 (let [m (sorted-map-by < 3 :c 1 :a 2 :b)]

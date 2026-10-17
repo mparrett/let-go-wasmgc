@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root=/Users/ndn/development/let-go-wasmgc
-scratch=/private/var/folders/vk/rkcd0mjn591_03z0856412gh0000gn/T/tmp.oNxPyyVT6T
+root=.
+scratch=/private$TMPDIR/tmp.oNxPyyVT6T
 llvm=/opt/homebrew/opt/llvm/bin
 out=/tmp/llvm-user-type-gc-trace
 mkdir -p "$out"
-fixbits=$(/Users/ndn/development/lg-bin/lg-e9789b7d53 -source-paths "$root/src" "$root/checks/profile-field.lg" host fixnum-bits)
+fixbits=$($LW_ROOT/lg-bin/lg-e9789b7d53 -source-paths "$root/src" "$root/checks/profile-field.lg" host fixnum-bits)
 "$llvm/clang" -O2 -w "-DLG_FIXNUM_BITS=$fixbits" -DLG_GC_TRACE -c -emit-llvm "$root/host/native/gc.c" -o "$out/gc.bc"
 "$llvm/llvm-link" "$scratch/m.ll" "$scratch/rt.bc" "$out/gc.bc" "$scratch/posix.bc" -o "$out/all.bc"
 runner=$(bash "$root/checks/build-orc-runner.sh")
@@ -17,7 +17,7 @@ out=Path(sys.argv[1])
 lines=(out/'combined.log').read_text().splitlines(keepends=True)
 traces=[s for s in lines if s.startswith('gc: live ')]
 actual=''.join(s for s in lines if not s.startswith('gc: live '))
-expected=Path('/private/var/folders/vk/rkcd0mjn591_03z0856412gh0000gn/T/tmp.NTEpFoggD1/n.out').read_text()
+expected=Path('/private$TMPDIR/tmp.NTEpFoggD1/n.out').read_text()
 assert actual == expected, 'Traced execution differs from native output'
 end=next(i for i,s in enumerate(lines) if s.strip()=='50159888')
 start=max(i for i,s in enumerate(lines[:end]) if s.strip()=='21')
