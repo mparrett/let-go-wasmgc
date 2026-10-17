@@ -1,0 +1,12 @@
+;; Native Go XXH3 through the pinned let-go interop binding.
+(def input (byte-array (map (fn [i] (mod (* i 17) 256)) (range 1024))))
+(defn work [rounds]
+  (loop [i 0 acc 0]
+    (if (< i rounds)
+      (recur (inc i) (bit-xor acc (xxh3/HashSeed input i)))
+      acc)))
+(work 10)
+(let [start (System/nanoTime)
+      checksum (work 1000)
+      elapsed (- (System/nanoTime) start)]
+  (println checksum elapsed))

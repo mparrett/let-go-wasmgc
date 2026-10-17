@@ -2,7 +2,8 @@
 # --target llvm runner (spike, 2026-10-07): compile a program to LLVM IR, then
 # either build it with clang against host/native/rt.c, gc.c and run the binary,
 # or (LW_NATIVE_JIT=1) link the module with the host's bitcode and run it
-# under lli. Behaves like lg on stdout and exit status, for checks/oracle.sh.
+# under ORC with a persistent object cache (LW_NATIVE_JIT=lli retains lli).
+# Behaves like lg on stdout and exit status, for checks/oracle.sh.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$here/checks/env.sh"
@@ -44,9 +45,21 @@ fi
 cflags=(-O2 -w "-DLG_FIXNUM_BITS=$fixbits")
 host_c=("$here/host/native/rt.c" "$here/host/native/gc.c" "$here/host/native/posix.c")
 if [ -n "${LW_NATIVE_JIT:-}" ]; then
+  case "$LW_NATIVE_JIT" in
+    1|orc|lli) ;;
+    *) echo "LW_NATIVE_JIT must be 1, orc, or lli" >&2; exit 2 ;;
+  esac
   for c in "${host_c[@]}"; do "$llvm/clang" "${cflags[@]}" -c -emit-llvm "$c" -o "$t/$(basename "$c" .c).bc"; done
   "$llvm/llvm-link" "$t/m.ll" "$t/rt.bc" "$t/gc.bc" "$t/posix.bc" -o "$t/all.bc"
-  exec "$llvm/lli" -O2 "$t/all.bc" "$prog" "$@"
+  if [ "$LW_NATIVE_JIT" = lli ]; then
+    "$llvm/lli" -O2 "$t/all.bc" "$prog" "$@"
+    exit $?
+  fi
+  runner=${LW_ORC_RUNNER:-}
+  [ -n "$runner" ] || runner=$(bash "$here/checks/build-orc-runner.sh")
+  export LW_ORC_CACHE_DIR=${LW_ORC_CACHE_DIR:-$here/src/.orc}
+  "$runner" "$t/all.bc" "$prog" "$@"
+  exit $?
 fi
 "$llvm/clang" "${cflags[@]}" "${host_c[@]}" "$t/m.ll" -o "$t/m"
 "$t/m" "$prog" "$@"

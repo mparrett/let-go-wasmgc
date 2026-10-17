@@ -43,7 +43,7 @@ if [ ! -f "$compat/clojure/core-test/portability.lg" ]; then
   mkdir -p "$d" && git -C "$LETGO" archive "$commit" test/compat | tar -x -C "$d" || exit 2
 fi
 export JANK_PORTABILITY=$compat/clojure/core-test/portability.lg
-export NATIVE_RUNNER=$here/checks/jank-native.lg DRIVER_FLAGS=--read-clj
+export NATIVE_RUNNER=$here/checks/jank-native.lg DRIVER_FLAGS="--read-clj ${DRIVER_FLAGS:-}"
 
 if [ "$mode" = self-test ]; then
   fail=0; h=$here/corpus/jank-harness
@@ -66,8 +66,13 @@ if [ "$mode" = list ]; then
 fi
 
 out=${LW_JANK_OUT:-$(mktemp -d)}; mkdir -p "$out"
+export LW_TEST_LOG_DIR="$(cd "$out" && pwd)/failures"
 RESULTS_TSV=$out/results.tsv LETGO_TEST=$suite/clojure SRC_PATHS="$compat:$suite" \
-  "$here/checks/run-tests.sh" --corpus "$here/corpus/jank/files.tsv" ${filter:+--filter "$filter"} --bar 0 > "$out/run.log" 2>&1
+  "$here/checks/run-tests.sh" --corpus "$here/corpus/jank/files.tsv" ${filter:+--filter "$filter"} --bar 0 > "$out/run.log" 2>&1 || {
+    status=$?
+    cat "$out/run.log" >&2
+    exit "$status"
+  }
 tail -2 "$out/run.log"
 # the cause of each file that does not fully agree (columns: file deftests oracle passing ... first_failure cause)
 awk -F'\t' 'NR>1 && $4<$2 {

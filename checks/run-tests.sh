@@ -57,9 +57,15 @@
 # NATIVE_RUNNER replaces checks/native-test-runner.lg on the native side,
 # DRIVER_FLAGS adds driver flags on the backend side (checks/jank-suite.sh:
 # its own runner and --read-clj), and RESULTS_TSV keeps --corpus's table.
+# LW_TEST_LOG_DIR preserves failed workers' native/backend transcripts.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
+# Workers and individual files change directory. Resolve a relative backend
+# runner before that happens, and preserve it in corpus workers.
+if [ -n "${WASM_RUN:-}" ] && [ -f "$WASM_RUN" ]; then
+  export WASM_RUN=$(cd "$(dirname "$WASM_RUN")" && pwd)/$(basename "$WASM_RUN")
+fi
 LETGO_TEST=${LETGO_TEST:-$LW_ROOT/let-go/test}
 # exported: the --corpus workers read it inside their own bash -c
 export LW_TEST_TIMEOUT=${LW_TEST_TIMEOUT:-300}
@@ -90,8 +96,13 @@ if [ -n "$corpus" ]; then
   # build the runtime library cache once (an edited src/ or rt/ invalidates
   # it), before P workers would each rebuild it
   printf '(println 1)\n' >"$t/warm.lg"
-  "$here/checks/sem.sh" "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$t/warm.lg" "$t/warm.wat" >"$t/warm.log" 2>&1 \
-    || { echo "driver failed on a trivial program:"; tail -5 "$t/warm.log"; exit 1; }
+  if [ -n "${WASM_RUN:-}" ]; then
+    LW_DRIVER_ARGS="${DRIVER_FLAGS:-}" "$here/checks/sem.sh" "$WASM_RUN" "$t/warm.lg" >"$t/warm.log" 2>&1
+  else
+    "$here/checks/sem.sh" "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$t/warm.lg" "$t/warm.wat" >"$t/warm.log" 2>&1
+  fi
+  warm_status=$?
+  [ "$warm_status" -eq 0 ] || { echo "driver failed on a trivial program:"; tail -5 "$t/warm.log"; exit 1; }
   # a list entry is relative to LETGO_TEST, else to the list's dir, else to
   # the cwd; its result file is named after the entry with / flattened
   cdir=$(dirname "$corpus")
@@ -108,7 +119,7 @@ if [ -n "$corpus" ]; then
     nfiles=$((nfiles+1)); total=$((total+n))
     r=$t/$(printf '%s' "$f" | tr / _).res; src=$(src_of "$f")
     # skips of this file's ns that name one of its deftests (a stale entry excuses nothing)
-    fns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$src" | head -1)
+    fns=$(sed -nE 's/^[[:space:]]*(\(do[[:space:]]+)*\(ns[[:space:]]+([^[:space:]()]+).*/\2/p' "$src" | head -1)
     sk=$(awk -v ns="$fns" '$1==ns{print $2}' "$here/checks/run-tests.skip" | while read -r d; do
            awk -v d="$d" '$1=="(deftest" && $2==d {f=1} END {exit !f}' "$src" && echo "$d"; done | paste -sd, -)
     ns_sk=$(printf '%s' "$sk" | tr ',' '\n' | grep -c . || true)
@@ -179,6 +190,13 @@ strip() { sed -E 's/\x1b\[[0-9;]*m//g' | tr '\t' ' ' | cut -c1-200; }
 record() {   # record <oracle> <first-failure> <cause>
   [ -n "$one" ] || return 0
   local bt fails nfails nc wc ext
+  if [ "$1" != MATCH ] && [ -n "${LW_TEST_LOG_DIR:-}" ]; then
+    local logdir="$LW_TEST_LOG_DIR/$(basename "$one" .res)"
+    mkdir -p "$logdir"
+    printf '%s\n' "$f" >"$logdir/source.txt"
+    [ ! -f "$t/$b.native" ] || cp "$t/$b.native" "$logdir/native.out"
+    [ ! -f "$t/$b.wasm.out" ] || cp "$t/$b.wasm.out" "$logdir/backend.out"
+  fi
   bt=$(grep -m1 -E '^Ran [0-9]+ tests' "$t/$b.wasm.out" 2>/dev/null | sed -E 's/^Ran ([0-9]+) .*/\1/')
   fails=$(grep -E '^(FAIL|ERROR) in \(' "$t/$b.wasm.out" 2>/dev/null | sed -E 's/^(FAIL|ERROR) in \(([^)]*)\).*/\2/' | sort -u | paste -sd, -)
   nfails=$(grep -E '^(FAIL|ERROR) in \(' "$t/$b.native" 2>/dev/null | sed -E 's/^(FAIL|ERROR) in \(([^)]*)\).*/\2/' | sort -u | paste -sd, -)
@@ -206,14 +224,14 @@ for f in "${files[@]}"; do
   [ -f "$f" ] || { echo "FAIL $f: no such file"; record MISMATCH "no such file" "no such file"; continue; }
   b=$(basename "$f" .lg)
   sp=$(paths_of "$f")
-  ns=$(sed -nE 's/^\(ns ([^ )]+).*/\1/p' "$f" | head -1)
+  ns=$(sed -nE 's/^[[:space:]]*(\(do[[:space:]]+)*\(ns[[:space:]]+([^[:space:]()]+).*/\2/p' "$f" | head -1)
   secs=""
   cd "$(dirname "$f")" || exit 2
   if [ -z "$ns" ]; then
     # load-only file: a plain program on both sides
     "$LG" -source-paths "$sp" "$f" >"$t/$b.native" 2>&1; ne=$?
     start=$(date +%s)
-    LG_ARGS="-source-paths $sp" "$here/checks/wasm-run.sh" "$f" >"$t/$b.wasm.out" 2>&1; we=$?
+    LG_ARGS="-source-paths $sp" LW_DRIVER_ARGS="${DRIVER_FLAGS:-}" "${WASM_RUN:-$here/checks/wasm-run.sh}" "$f" >"$t/$b.wasm.out" 2>&1; we=$?
     secs=$(( $(date +%s) - start ))
     if [ $ne -eq $we ] && cmp -s "$t/$b.native" "$t/$b.wasm.out"; then
       echo "PASS $f (load-only, exit $ne)"; pass=$((pass+1)); record MATCH "" ""
