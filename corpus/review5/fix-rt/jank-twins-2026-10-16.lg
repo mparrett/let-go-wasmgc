@@ -1,0 +1,41 @@
+;; Core fns the runtime had no twin for (NaN?, double?, bit-set, bit-clear,
+;; bit-flip, bit-test, any?) and = / assoc! as values past their fixed
+;; arities. Each case runs directly, through apply, and through a def'd
+;; alias, since a value call goes through the twin's arity slots.
+(defn t [f] (try (pr-str (f)) (catch e (str "ERR " (ex-message e)))))
+
+(println "NaN?" (t #(NaN? (inc ##NaN))) (t #(NaN? 1.0)) (t #(NaN? 1)) (t #(NaN? ##Inf)) (t #(NaN? -0.0))
+         (t #(NaN? "a")) (t #(NaN? nil)) (t #(NaN? :k)) (t #(apply NaN? [])) (t #(apply NaN? [##NaN ##NaN]))
+         (t #(apply NaN? [1 2 3])))
+(println "double?" (t #(double? 1.0)) (t #(double? 1)) (t #(double? nil)) (t #(double? ##NaN)) (t #(double? "1.0"))
+         (t #(apply double? [])) (t #(apply double? [1.0 2.0])) (t #(apply double? [1.0 2.0 3.0])))
+
+(def bs bit-set) (def bc bit-clear) (def bf bit-flip) (def bt bit-test)
+(defn bits [x n] [(bit-set x n) (bit-clear x n) (bit-flip x n) (bit-test x n)])
+(defn vbits [x n] [(bs x n) (bc x n) (bf x n) (bt x n)])
+(println "bits" (bits 0 3) (bits 15 0) (bits -1 63) (bits 0 63) (bits 5 -1) (bits 5 -64) (bits 5 64) (bits 5 100))
+(println "vbits" (vbits 0 3) (vbits 15 0) (vbits -1 63) (vbits 5 -1) (vbits 5 64))
+(println "bits-apply" (t #(apply bit-set [0 62])) (t #(apply bit-test [4 2])) (t #(map bit-flip [0 1 2] [0 1 2])))
+(println "bits-err" (t #(bs nil 1)) (t #(bc 1 nil)) (t #(bf 1.0 1)) (t #(bt 1 "x"))
+         (t #(apply bit-set [1])) (t #(apply bit-clear [1 2 3])) (t #(apply bit-flip [])) (t #(apply bit-test [1 2 3 4]))
+         (t #(bs 1)) (t #(bt 1 2 3)))
+
+(def aq any?)
+(println "any?" (t #(any? nil)) (t #(any? false)) (t #(aq 1)) (t #(filter any? [nil false 1]))
+         (t #(apply any? [])) (t #(apply any? [1 2])) (t #(apply any? [1 2 3 4])))
+
+(def eq =)
+(println "=" (t #(eq 2)) (t #(eq nil)) (t #(eq 2 2 2)) (t #(eq 2 2 2 2)) (t #(eq 1 1 1 2)) (t #(eq 1 2 1 1))
+         (t #(eq 1 1 2 1 1 1)) (t #(eq [1] '(1) [1] (list 1))) (t #(eq nil nil nil nil)) (t #(eq ##NaN ##NaN ##NaN)))
+(println "apply=" (t #(apply = [1 1 1])) (t #(apply = [1 1 1 1 1 1 1 1])) (t #(apply = [:a :a :b])) (t #(apply = [1])) (t #(clojure.core/= :z))
+         (t #(apply = [])) (t #(eq)) (t #(reduce = [1 1 1])) (t #(map = [1 2 3] [1 0 3] [1 2 3] [1 2 0])))
+
+(def ab assoc!)
+(println "assoc!" (t #(persistent! (apply assoc! (transient {}) [:a 1 :b 2 :c 3])))
+         (t #(persistent! (ab (transient {}) :a 1 :b 2 :c 3)))
+         (t #(persistent! (apply assoc! (transient {}) [:a 1 :b 2 :c 3 :d 4 :e])))
+         (t #(persistent! (apply assoc! (transient [0]) [1 :x 2 :y 3 :z])))
+         (t #(persistent! (apply assoc! (transient {:a 0}) [:a 1 :a 2 :a 3])))
+         (t #(apply assoc! nil [:a 1 :b 2 :c 3]))
+         (t #(apply assoc! (transient [0]) [1 :x 5 :y 2 :z]))
+         (t #(apply assoc! (transient {}) [])) (t #(apply assoc! [])))

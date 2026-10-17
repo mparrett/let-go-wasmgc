@@ -1,0 +1,515 @@
+;; wasm.bignum — arbitrary-precision integers (BigInt) and rationals (Ratio)
+;; as a library, piece 1 of the numeric tower (D15's named limits). Nothing
+;; in the runtime calls it yet: wasm.seq/kind, wasm.core's arithmetic, the
+;; printer, hashing, equality and the reader do not know these values, so
+;; the shake drops the whole namespace from every program. In the runtime
+;; dialect of seq.lg.
+;;
+;; Ground truth is let-go e9789b7d: pkg/vm/bigint.go wraps Go's *big.Int,
+;; pkg/vm/ratio.go wraps *big.Rat, and pkg/vm/numbers.go's BigInt branches
+;; call big.Int's Quo for `quot`, Rem for `rem`, and for `mod` Rem followed
+;; by adding the divisor when the remainder's sign differs from the
+;; divisor's (floored, Clojure's mod; not big.Int's Euclidean Mod). Here
+;; `quot` `rem` `mod` are those three; `ediv` and `emod` are big.Int's
+;; Euclidean Div and Mod, named apart because let-go does not use them.
+;;
+;; Printed forms, measured with the pinned lg:
+;;   (str 5N) "5"     (pr-str 5N) "5N"     (str -0N) "0"
+;;   (str 1/2) "1/2"  (pr-str 1/2) "1/2"   (pr-str -7/3) "-7/3"
+;;   (str (* 99999999999N 99999999999N)) "9999999999800000000001"
+;; BigInt.String() is big.Int.String() plus "N" (what pr-str shows); str
+;; prints big.Int.String(). Ratio.String() is big.Rat.RatString(): "n/d",
+;; or "n" when the denominator is 1. `->string` and `rat->string` mirror
+;; big.Int.String() and RatString(); the "N" is the printer's (piece 2).
+;; (/ 4 2) is the Int 2 natively and (/ 6N 4) prints 3/2: let-go's
+;; MaybeSimplifyRatio turns an integral quotient into an Int or BigInt. That
+;; is the caller's step here: `rat-make` always answers a Ratio, and
+;; `rat-integer?` says when the caller should take `rat-num` instead.
+;;
+;; Representation. A BigInt is a wasm.arrays/I64s: slot 0 the sign,
+;; -1, 0 or 1; slots 1..n the magnitude's 32-bit limbs, little-endian, each
+;; in [0, 2^32), the top one nonzero. Zero is the one-slot array [0]. A
+;; 32x32 product plus two limbs fits a u64 exactly, so `mul` and the Knuth
+;; division steps need no 128-bit arithmetic; every i64 that may pass 2^63
+;; goes through the wrapping intrinsics and unsigned compares. Values are
+;; never mutated once returned (an operation may answer an operand itself,
+;; as `add` does for a zero addend). A Ratio
+;; is a two-slot wasm.pvec/Node holding numerator and denominator, always
+;; normalized as big.Rat is (gcd 1, denominator > 0); zero is 0/1.
+;;
+;; No new types, on purpose: every declaration joins every module's one rec
+;; group (D25), so a defstruct here would move the bytes of every program
+;; even though the shake drops all of this file's code (measured: one extra
+;; `(type ...)` line in the module of corpus/scalar/fib.clj). Neither a bare
+;; I64s nor a bare Node is a runtime value today (wasm.arrays wraps its
+;; I64s in `Arr`, a vector wraps its Nodes in `PVec`), so the wiring piece
+;; can give both their own box types when it moves bytes anyway.
+;;
+;; Division needs a 64-by-32-bit unsigned divide the intrinsics lack
+;; (`core/quot` is i64.div_s; this ns names its own BigInt quot, rem and
+;; mod, so the i64 op is spelled qualified). With the high word below the
+;; divisor, two 16-bit steps keep every dividend under 2^48, where the
+;; signed quot is exact.
+;;
+;; Errors: a zero divisor raises let-go's catchable "divide by zero" (the
+;; text NumQuot/NumRem/NumMod/NumDiv give) through wasm.core/raise.
+;; `to-f64` and `rat->f64` round to nearest even, as big.Int.Float64 and
+;; big.Rat.Float64 do, subnormals included; too large is +-Inf.
+(ns wasm.bignum
+  (:refer-clojure :exclude [quot rem mod abs compare zero? neg?])
+  (:require [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
+            [wasm.pvec :as pv]
+            [wasm.arrays :as arr]
+            [wasm.core :as c]
+            [wasm.math :as m]))
+
+(defn- ag [a i] (wasm/aget arr/I64s a i))
+(defn- mk "n zero limbs, sign slot 0." [n] (wasm/array-new arr/I64s (+ n 1) 0))
+(defn- nlimbs [a] (- (wasm/alen a) 1))
+(defn- limb [a i] (wasm/aget arr/I64s a (+ i 1)))
+(defn- limb! [a i v] (wasm/aset! arr/I64s a (+ i 1) v))
+(defn- lo32 [x] (bit-and x 4294967295))
+(defn- raise-dbz [] (c/raise (wasm/bytes-of-string "divide by zero")))
+
+(defn signum "-1, 0 or 1." [a] (ag a 0))
+(defn zero? [a] (= 0 (ag a 0)))
+(defn neg? [a] (< (ag a 0) 0))
+
+(defn- fin
+  "A fresh working array a (limbs possibly with leading zeros) as a BigInt
+   of sign s: trimmed, and zero when every limb is."
+  [a s]
+  (let [n (loop [n (nlimbs a)] (if (if (> n 0) (= 0 (limb a (dec n))) false) (recur (dec n)) n))]
+    (cond (= n 0) (mk 0)
+          (= n (nlimbs a)) (do (wasm/aset! arr/I64s a 0 s) a)
+          :else (let [r (mk n)]
+                  (wasm/array-copy arr/I64s r 1 a 1 n)
+                  (wasm/aset! arr/I64s r 0 s)
+                  r))))
+
+(defn- copy-mag [a]
+  (let [n (nlimbs a) r (mk n)] (wasm/array-copy arr/I64s r 1 a 1 n) r))
+
+;; ---------------------------------------------------------------------------
+;; Int interop
+
+(defn from-i64 [x]
+  (if (= x 0)
+    (mk 0)
+    (let [u (if (< x 0) (wasm/i64-sub 0 x) x)       ; MinInt64 stays 2^63 as a u64
+          r (mk 2)]
+      (limb! r 0 (lo32 u))
+      (limb! r 1 (wasm/i64-shr-u u 32))
+      (fin r (if (< x 0) -1 1)))))
+
+(defn fits-i64? [a]
+  (let [n (nlimbs a)]
+    (cond (< n 2) true
+          (> n 2) false
+          (< (limb a 1) 2147483648) true
+          (< (ag a 0) 0) (if (= (limb a 1) 2147483648) (= 0 (limb a 0)) false)
+          :else false)))
+
+(defn to-i64
+  "The value when it fits an i64; otherwise its low 64 bits with the sign
+   applied, as big.Int.Int64 answers."
+  [a]
+  (let [n (nlimbs a)
+        u (bit-or (wasm/i64-shl (if (> n 1) (limb a 1) 0) 32) (if (> n 0) (limb a 0) 0))]
+    (if (< (ag a 0) 0) (wasm/i64-sub 0 u) u)))
+
+;; ---------------------------------------------------------------------------
+;; Magnitudes. These read limbs only; results are fresh arrays with the sign
+;; slot unset, finished by `fin`.
+
+(defn- mag-cmp [a b]
+  (let [na (nlimbs a) nb (nlimbs b)]
+    (cond (< na nb) -1
+          (> na nb) 1
+          :else (loop [i (dec na)]
+                  (if (< i 0)
+                    0
+                    (let [x (limb a i) y (limb b i)]
+                      (cond (< x y) -1 (> x y) 1 :else (recur (dec i)))))))))
+
+(defn- mag-add [a b]
+  (let [na (nlimbs a) nb (nlimbs b)]
+    (if (< na nb)
+      (mag-add b a)
+      (let [r (mk (+ na 1))]
+        (loop [i 0 cy 0]
+          (if (< i na)
+            (let [t (+ (+ (limb a i) (if (< i nb) (limb b i) 0)) cy)]
+              (limb! r i (lo32 t))
+              (recur (inc i) (wasm/i64-shr-u t 32)))
+            (do (limb! r na cy) r)))))))
+
+(defn- mag-sub "|a| - |b|, for |a| >= |b|." [a b]
+  (let [na (nlimbs a) nb (nlimbs b) r (mk na)]
+    (loop [i 0 br 0]
+      (if (< i na)
+        (let [t (- (- (limb a i) (if (< i nb) (limb b i) 0)) br)]
+          (limb! r i (lo32 t))
+          (recur (inc i) (if (< t 0) 1 0)))
+        r))))
+
+(defn- bitlen [a]
+  (let [n (nlimbs a)]
+    (if (= n 0) 0 (+ (* 32 (dec n)) (- 64 (wasm/i64-clz (limb a (dec n))))))))
+
+(defn- mag-shl "|a| * 2^k, k >= 0." [a k]
+  (let [n (nlimbs a) w (core/quot k 32) s (- k (* 32 w)) r (mk (+ (+ n w) 1))]
+    (loop [i 0 cy 0]
+      (if (< i n)
+        (let [x (limb a i)]
+          (limb! r (+ i w) (lo32 (bit-or (wasm/i64-shl x s) cy)))
+          (recur (inc i) (wasm/i64-shr-u x (- 32 s))))
+        (do (limb! r (+ n w) cy) r)))))
+
+;; ---------------------------------------------------------------------------
+;; Sign-magnitude arithmetic
+
+(defn negate [a]
+  (if (= 0 (ag a 0))
+    a
+    (let [r (copy-mag a)] (wasm/aset! arr/I64s r 0 (- 0 (ag a 0))) r)))
+
+(defn abs [a] (if (< (ag a 0) 0) (negate a) a))
+
+(defn add [a b]
+  (let [sa (ag a 0) sb (ag b 0)]
+    (cond (= sa 0) b
+          (= sb 0) a
+          (= sa sb) (fin (mag-add a b) sa)
+          :else (let [cm (mag-cmp a b)]
+                  (cond (= cm 0) (mk 0)
+                        (> cm 0) (fin (mag-sub a b) sa)
+                        :else (fin (mag-sub b a) sb))))))
+
+(defn sub [a b] (add a (negate b)))
+
+(defn mul [a b]
+  (let [sa (ag a 0) sb (ag b 0)]
+    (if (if (= sa 0) true (= sb 0))
+      (mk 0)
+      (let [na (nlimbs a) nb (nlimbs b) r (mk (+ na nb))]
+        (loop [i 0]
+          (when (< i na)
+            (let [x (limb a i)]
+              (loop [j 0 cy 0]                      ; x*y + r + cy <= 2^64 - 1: exact as a u64
+                (if (< j nb)
+                  (let [t (wasm/i64-add (wasm/i64-add (wasm/i64-mul x (limb b j)) (limb r (+ i j))) cy)]
+                    (limb! r (+ i j) (lo32 t))
+                    (recur (inc j) (wasm/i64-shr-u t 32)))
+                  (limb! r (+ i nb) cy))))
+            (recur (inc i))))
+        (fin r (* sa sb))))))
+
+(defn compare "-1, 0 or 1." [a b]
+  (let [sa (ag a 0) sb (ag b 0)]
+    (cond (< sa sb) -1
+          (> sa sb) 1
+          (= sa 0) 0
+          :else (* sa (mag-cmp a b)))))
+
+;; ---------------------------------------------------------------------------
+;; Division (Knuth, TAOCP vol. 2, 4.3.1 Algorithm D; the multiply-subtract
+;; and add-back steps follow Hacker's Delight's divmnu with 32-bit digits).
+
+(defn- udiv-q
+  "floor((hi*2^32 + lo) / d) for hi < d < 2^32, in two 16-bit steps."
+  [hi lo d]
+  (let [t1 (bit-or (wasm/i64-shl hi 16) (wasm/i64-shr-u lo 16))
+        q1 (core/quot t1 d)
+        t2 (bit-or (wasm/i64-shl (- t1 (* q1 d)) 16) (bit-and lo 65535))]
+    (bit-or (wasm/i64-shl q1 16) (core/quot t2 d))))
+
+(defn- div1!
+  "The n low limbs of a divided by d (0 < d < 2^32): quotient limbs into q
+   (which may be a itself: limb i is read before it is written; null skips
+   them); answers the remainder."
+  [a n d q]
+  (loop [i (dec n) r 0]
+    (if (< i 0)
+      r
+      (let [x (limb a i)
+            qi (udiv-q r x d)]
+        (if (wasm/null? q) nil (limb! q i qi))
+        (recur (dec i) (wasm/i64-sub (bit-or (wasm/i64-shl r 32) x) (wasm/i64-mul qi d)))))))
+
+(defn- knuth
+  "|a| / |b| for nlimbs(b) >= 2 and |a| >= |b|: the quotient, or with
+   want-rem the remainder."
+  [a b want-rem]
+  (let [n (nlimbs b) ma (nlimbs a) mq (- ma n)
+        s (- (wasm/i64-clz (limb b (dec n))) 32)   ; normalize: top bit of the divisor set
+        vn (mk n) un (mk (+ ma 1)) q (mk (+ mq 1))]
+    ;; a limb shifted right by 32 - s is 0 when s = 0 (limbs are below 2^32)
+    (loop [i (dec n)]
+      (when (> i 0)
+        (limb! vn i (lo32 (bit-or (wasm/i64-shl (limb b i) s) (wasm/i64-shr-u (limb b (dec i)) (- 32 s)))))
+        (recur (dec i))))
+    (limb! vn 0 (lo32 (wasm/i64-shl (limb b 0) s)))
+    (limb! un ma (wasm/i64-shr-u (limb a (dec ma)) (- 32 s)))
+    (loop [i (dec ma)]
+      (when (> i 0)
+        (limb! un i (lo32 (bit-or (wasm/i64-shl (limb a i) s) (wasm/i64-shr-u (limb a (dec i)) (- 32 s)))))
+        (recur (dec i))))
+    (limb! un 0 (lo32 (wasm/i64-shl (limb a 0) s)))
+    (let [v1 (limb vn (dec n)) v2 (limb vn (- n 2))]
+      (loop [j mq]
+        (when (>= j 0)
+          (let [hi (limb un (+ j n)) lo (limb un (dec (+ j n)))
+                qh0 (if (= hi v1) 4294967295 (udiv-q hi lo v1))
+                ;; rhat = u - qhat*v1 < 2^33, computed mod 2^64
+                rh0 (wasm/i64-sub (bit-or (wasm/i64-shl hi 32) lo) (wasm/i64-mul qh0 v1))
+                u2 (limb un (- (+ j n) 2))
+                qh (loop [qh qh0 rh rh0]           ; at most twice
+                     (if (if (< rh 4294967296)
+                           (wasm/i64-lt-u (bit-or (wasm/i64-shl rh 32) u2) (wasm/i64-mul qh v2))
+                           false)
+                       (recur (dec qh) (+ rh v1))
+                       qh))
+                k (loop [i 0 k 0]                   ; un[j..j+n) -= qh * vn
+                    (if (< i n)
+                      (let [p (wasm/i64-mul qh (limb vn i))
+                            t (- (- (limb un (+ i j)) k) (lo32 p))]
+                        (limb! un (+ i j) (lo32 t))
+                        (recur (inc i) (- (wasm/i64-shr-u p 32) (wasm/i64-shr-s t 32))))
+                      k))
+                t (- (limb un (+ j n)) k)]
+            (if (< t 0)
+              (let [cy (loop [i 0 cy 0]             ; qhat was one too large: add vn back
+                         (if (< i n)
+                           (let [t2 (+ (+ (limb un (+ i j)) (limb vn i)) cy)]
+                             (limb! un (+ i j) (lo32 t2))
+                             (recur (inc i) (wasm/i64-shr-u t2 32)))
+                           cy))]
+                (limb! un (+ j n) (lo32 (+ (lo32 t) cy)))
+                (limb! q j (dec qh)))
+              (do (limb! un (+ j n) t)
+                  (limb! q j qh)))
+            (recur (dec j))))))
+    (if want-rem
+      (let [r (mk n)]
+        (loop [i 0]
+          (when (< i n)
+            (limb! r i (lo32 (bit-or (wasm/i64-shr-u (limb un i) s) (wasm/i64-shl (limb un (inc i)) (- 32 s)))))
+            (recur (inc i))))
+        r)
+      q)))
+
+(defn- divrem-mag
+  "|a| / |b| (b nonzero), truncated: the quotient's magnitude, or with
+   want-rem the remainder's, as a fresh working array."
+  [a b want-rem]
+  (cond (< (mag-cmp a b) 0) (if want-rem (copy-mag a) (mk 0))
+        (= (nlimbs b) 1)
+        (let [n (nlimbs a)
+              q (if want-rem (wasm/null) (mk n))
+              r (div1! a n (limb b 0) q)]
+          (if want-rem (let [rr (mk 1)] (limb! rr 0 r) rr) q))
+        :else (knuth a b want-rem)))
+
+(defn quot "Truncated quotient (big.Int.Quo; let-go's quot)." [a b]
+  (if (= 0 (ag b 0)) (raise-dbz) (fin (divrem-mag a b false) (* (ag a 0) (ag b 0)))))
+
+(defn rem "Truncated remainder, the dividend's sign (big.Int.Rem; let-go's rem)." [a b]
+  (if (= 0 (ag b 0)) (raise-dbz) (fin (divrem-mag a b true) (ag a 0))))
+
+(defn mod "Floored modulus, the divisor's sign (let-go's mod: Rem, then + b)." [a b]
+  (let [r (rem a b)]
+    (if (if (= 0 (ag r 0)) false (if (= (ag r 0) (ag b 0)) false true)) (add r b) r)))
+
+(defn emod "Euclidean modulus, never negative (big.Int.Mod; unused by let-go)." [a b]
+  (let [r (rem a b)] (if (< (ag r 0) 0) (add r (abs b)) r)))
+
+(defn ediv "Euclidean quotient (big.Int.Div; unused by let-go): a = b*q + (emod a b)." [a b]
+  (let [q (quot a b) r (rem a b)]
+    (cond (< (ag r 0) 0) (if (> (ag b 0) 0) (sub q (from-i64 1)) (add q (from-i64 1)))
+          :else q)))
+
+(defn gcd "Greatest common divisor, never negative; (gcd 0 0) is 0 (big.Int.GCD)." [a b]
+  (loop [x (abs a) y (abs b)]
+    (if (= 0 (ag y 0)) x (recur y (rem x y)))))
+
+;; ---------------------------------------------------------------------------
+;; Decimal text (Bytes, UTF-8/ASCII)
+
+(defn- pow10 [k] (loop [i 0 p 1] (if (< i k) (recur (inc i) (* p 10)) p)))
+
+(defn parse
+  "A BigInt from decimal Bytes with an optional + or - sign, as
+   big.Int.SetString(s, 10) reads them (leading zeros fine, no underscores,
+   no spaces, at least one digit); null when malformed."
+  [bs]
+  (let [n (wasm/alen bs)
+        c0 (if (> n 0) (wasm/bget bs 0) 0)
+        i0 (if (if (= c0 43) true (= c0 45)) 1 0)   ; + -
+        nd (- n i0)
+        ok (if (> nd 0)
+             (loop [i i0] (if (< i n) (let [d (wasm/bget bs i)] (if (if (< d 48) true (> d 57)) false (recur (inc i)))) true))
+             false)]
+    (if ok
+      (let [r (mk (+ (core/quot nd 9) 2))]
+        (loop [i i0 len 0]
+          (if (< i n)
+            (let [;; the first chunk takes nd mod 9 digits (9 when it divides), the rest 9 each
+                  w (if (= i i0) (let [x (- nd (* 9 (core/quot nd 9)))] (if (= x 0) 9 x)) 9)
+                  chunk (loop [k 0 v 0] (if (< k w) (recur (inc k) (+ (* v 10) (- (wasm/bget bs (+ i k)) 48))) v))
+                  mult (pow10 w)
+                  len2 (loop [k 0 cy chunk]         ; r = r*mult + chunk, in place
+                         (if (< k len)
+                           (let [t (+ (* (limb r k) mult) cy)]
+                             (limb! r k (lo32 t))
+                             (recur (inc k) (wasm/i64-shr-u t 32)))
+                           (if (= cy 0) len (do (limb! r len cy) (inc len)))))]
+              (recur (+ i w) len2))
+            (fin r (if (= c0 45) -1 1)))))
+      (wasm/null))))
+
+(defn- digits [x] (loop [x x d 1] (if (< x 10) d (recur (core/quot x 10) (inc d)))))
+
+(defn- put-digits! [out end x w]                 ; x's w low digits ending before out[end]
+  (loop [k 0 x x]
+    (when (< k w)
+      (wasm/bset! out (- (- end 1) k) (+ 48 (- x (* 10 (core/quot x 10)))))
+      (recur (inc k) (core/quot x 10)))))
+
+(defn ->string "Decimal Bytes, as big.Int.String() (no N suffix)." [a]
+  (let [n (nlimbs a)]
+    (if (= n 0)
+      (let [b (wasm/bytes-new 1)] (wasm/bset! b 0 48) b)
+      (let [work (copy-mag a)
+            chunks (wasm/array-new arr/I64s (+ (* 2 n) 1) 0)   ; base-1e9 digits, low first
+            k (loop [len n k 0]
+                (if (= len 0)
+                  k
+                  (let [r (div1! work len 1000000000 work)]
+                    (wasm/aset! arr/I64s chunks k r)
+                    (recur (loop [l len] (if (if (> l 0) (= 0 (limb work (dec l))) false) (recur (dec l)) l))
+                           (inc k)))))
+            top (wasm/aget arr/I64s chunks (dec k))
+            sg (if (< (ag a 0) 0) 1 0)
+            total (+ (+ sg (digits top)) (* 9 (dec k)))
+            out (wasm/bytes-new total)]
+        (if (= sg 1) (wasm/bset! out 0 45) nil)
+        (put-digits! out (+ sg (digits top)) top (digits top))
+        (loop [i (- k 2) end (+ (+ sg (digits top)) 9)]
+          (when (>= i 0)
+            (put-digits! out end (wasm/aget arr/I64s chunks i) 9)
+            (recur (dec i) (+ end 9))))
+        out))))
+
+;; ---------------------------------------------------------------------------
+;; To float64, rounded to nearest even
+
+(defn- window63
+  "Bits [k, k+63) of |a| as a non-negative i64, with bit 0 or'ed with 1
+   when any bit below k is set (a sticky bit: f64 keeps 53 of the 63, so
+   it can only break a tie)."
+  [a k]
+  (let [n (nlimbs a) w (core/quot k 32) off (- k (* 32 w))
+        l0 (if (< w n) (limb a w) 0)
+        l1 (if (< (+ w 1) n) (limb a (+ w 1)) 0)
+        l2 (if (if (> off 0) (< (+ w 2) n) false) (limb a (+ w 2)) 0)
+        v (bit-or (bit-or (wasm/i64-shr-u l0 off) (wasm/i64-shl l1 (- 32 off)))
+                  (if (> off 0) (wasm/i64-shl l2 (- 64 off)) 0))
+        sticky (if (= 0 (bit-and l0 (- (wasm/i64-shl 1 off) 1)))
+                 (loop [i 0] (if (< i w) (if (= 0 (limb a i)) (recur (inc i)) 1) 0))
+                 1)]
+    (bit-or (bit-and v 9223372036854775807) sticky)))
+
+(defn to-f64 "big.Int.Float64: nearest even, +-Inf beyond the float range." [a]
+  (let [L (bitlen a)]
+    (if (<= L 63)
+      (wasm/i64-to-f64 (to-i64 a))
+      (let [f (m/scale2 (wasm/i64-to-f64 (window63 a (- L 63))) (- L 63))]
+        (if (< (ag a 0) 0) (* -1.0 f) f)))))
+
+(defn- quot-f64
+  "|a| / |b| (both nonzero) as the nearest-even float64, subnormals
+   included: big.Rat.Float64's rounding."
+  [a b]
+  (let [s (- 63 (- (bitlen a) (bitlen b)))         ; |a|*2^s / |b| lies in (2^62, 2^64)
+        ;; trimmed: mag-shl leaves its carry limb, often 0, on top, and a
+        ;; divisor with a zero top limb is not normalized for knuth (its
+        ;; q-hat loop would spin ~2^32 times; found in review)
+        na (if (> s 0) (fin (mag-shl a s) 1) a)
+        nb (if (< s 0) (fin (mag-shl b (- 0 s)) 1) b)
+        st0 (if (= 0 (ag (fin (divrem-mag na nb true) 1) 0)) 0 1)
+        qv (to-i64 (fin (divrem-mag na nb false) 1))   ; < 2^64 as a u64
+        big? (< qv 0)
+        st (if big? (bit-or st0 (bit-and qv 1)) st0)
+        qm (if big? (wasm/i64-shr-u qv 1) qv)      ; [2^62, 2^63)
+        e (if big? (- 1 s) (- 0 s))]
+    (if (>= (+ e 62) -1022)
+      (m/scale2 (wasm/i64-to-f64 (bit-or qm st)) e)
+      (let [d (- -1074 e)]                         ; low bits to drop so the unit is 2^-1074
+        (if (>= d 64)
+          0.0
+          (let [keep (wasm/i64-shr-u qm d)
+                rb (bit-and qm (wasm/i64-sub (wasm/i64-shl 1 d) 1))
+                half (wasm/i64-shl 1 (- d 1))
+                up (cond (> rb half) 1
+                         (< rb half) 0
+                         (= st 1) 1
+                         :else (bit-and keep 1))]
+            (m/scale2 (wasm/i64-to-f64 (+ keep up)) -1074)))))))
+
+;; ---------------------------------------------------------------------------
+;; Ratio: a two-slot Node of BigInts, normalized as big.Rat (gcd 1, den > 0)
+
+(defn- rat-of [n d]
+  (let [r (wasm/array-new pv/Node 2 (wasm/null))]
+    (wasm/aset! pv/Node r 0 n)
+    (wasm/aset! pv/Node r 1 d)
+    r))
+(defn rat-num [r] (wasm/aget pv/Node r 0))
+(defn rat-den [r] (wasm/aget pv/Node r 1))
+(defn- one? [a] (if (= 1 (ag a 0)) (if (= 1 (nlimbs a)) (= 1 (limb a 0)) false) false))
+(defn rat-integer? "Denominator 1: native would answer an Int or BigInt." [r] (one? (rat-den r)))
+
+(defn rat-make
+  "n/d in lowest terms with d > 0 (BigInts); raises divide by zero for d = 0."
+  [n d]
+  (if (= 0 (ag d 0))
+    (raise-dbz)
+    (let [g (gcd n d)
+          n2 (quot n g)
+          d2 (quot d g)]
+      (if (< (ag d2 0) 0)
+        (rat-of (negate n2) (negate d2))
+        (rat-of n2 d2)))))
+
+(defn rat-add [x y]
+  (rat-make (add (mul (rat-num x) (rat-den y)) (mul (rat-num y) (rat-den x))) (mul (rat-den x) (rat-den y))))
+
+(defn rat-sub [x y]
+  (rat-make (sub (mul (rat-num x) (rat-den y)) (mul (rat-num y) (rat-den x))) (mul (rat-den x) (rat-den y))))
+
+(defn rat-mul [x y]
+  (rat-make (mul (rat-num x) (rat-num y)) (mul (rat-den x) (rat-den y))))
+
+(defn rat-div "x / y; raises divide by zero when y is zero." [x y]
+  (rat-make (mul (rat-num x) (rat-den y)) (mul (rat-den x) (rat-num y))))
+
+(defn rat-compare "-1, 0 or 1 (denominators are positive)." [x y]
+  (compare (mul (rat-num x) (rat-den y)) (mul (rat-num y) (rat-den x))))
+
+(defn rat->string "big.Rat.RatString: n/d, or n when d is 1." [r]
+  (if (rat-integer? r)
+    (->string (rat-num r))
+    (let [ns (->string (rat-num r)) ds (->string (rat-den r))
+          a (wasm/alen ns) b (wasm/alen ds)
+          out (wasm/bytes-new (+ (+ a b) 1))]
+      (wasm/array-copy wasm/Bytes out 0 ns 0 a)
+      (wasm/bset! out a 47)
+      (wasm/array-copy wasm/Bytes out (+ a 1) ds 0 b)
+      out)))
+
+(defn rat->f64 "big.Rat.Float64: nearest even, subnormals included." [r]
+  (let [n (rat-num r)]
+    (if (= 0 (ag n 0))
+      0.0
+      (let [f (quot-f64 n (rat-den r))] (if (< (ag n 0) 0) (* -1.0 f) f)))))

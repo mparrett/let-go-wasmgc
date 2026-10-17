@@ -79,8 +79,11 @@
    its top (legmacs' defcommand: (do (defn f ..) (defcommand! :f ..))),
    expanded; else nil. Native compiles a top-level do subform by subform, so
    that defn is a top-level defn and is indexed as one (it was a :def inside
-   the _main/__lw_nsinit body, unsupported). Other do expansions stay whole:
-   binding-out reads a top-level binding's (do (push-binding! ..) ..) shape."
+   the _main/__lw_nsinit body, unsupported). A do holding a deftest, a
+   deftype or another top-level head is spliced too (the jank suite's
+   when-var-exists wraps whole files in one). Other do expansions stay
+   whole: binding-out reads a top-level binding's (do (push-binding! ..) ..)
+   shape."
   [form]
   (loop [f form n 0]
     (when (and (seq? f) (symbol? (first f)) (< n 32))
@@ -593,7 +596,7 @@
              ;; reports a body that does not throw (bug-08)
              caught (fn [k ok]
                       `(if (__t-limit? ~e) (do (__t-report false) nil)
-                           (if ~(chk k) (do ~ok ~e) (do (__t-report :__t-error) nil))))]
+                           (if ~(chk k) (do ~ok ~e) (do (__t-erred ~e) nil))))]
          (cond
            ;; native's assert-expr special forms. Native's is returns the
            ;; form's value: the caught exception for thrown? and
@@ -607,7 +610,7 @@
                  (catch Throwable ~e
                    ~(caught (second form) `(__t-report (if (re-find ~(nth form 2) (ex-message ~e)) true false)))))
            :else `(try (let [v# ~form] (__t-report (if v# true false)) v#)
-                       (catch Throwable e# (__t-report :__t-error) nil)))))
+                       (catch Throwable e# (__t-erred e#) nil)))))
       ([form msg] `(is ~form)))
     (defmacro testing [s & body] `(do ~@body))
     ;; P5.10: native's are (pkg/rt/core/test.lg): one is per row of args
@@ -1560,6 +1563,9 @@
               ;; Program protocol methods are emitted after every implementation is known.
               (and (seq? form) (= 'defprotocol (first form)))
               (do (native! form) (note-protocol! (ns-name *ns*) form))
+              ;; the wasm target still refuses a program's defmulti (6134a6e); llvm takes it (D217)
+              (and (seq? form) (= 'defmulti (first form)) (not lw-rt/llvm-target?))
+              (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               ;; P6.1: a def below the top of the form (in a let/when/if)
               ;; is a var-table var, set where the def runs
               :else (do (compile-check! form)

@@ -1610,6 +1610,32 @@
 
 (declare try-wat analyze-ir lower-fn)
 
+;; Upstream ir.build finding: it folds a one-argument comparison to its
+;; argument ("comparisons -> identity"), so (< x) would lower as x where
+;; native returns true for any x (the bytecode compiler agrees with native).
+;; Build such a call as (do x true): the argument is still evaluated, and the
+;; builder's own gate (unqualified head, not shadowed, the core var) has
+;; already run. Every other shape reaches the builder untouched.
+(alter-var-root #'ir.build/build-builtin-op
+                (fn [orig]
+                  (fn [op-kw form ctx]
+                    (if (and (ir.build/comparison-ops op-kw) (= 2 (count form)))
+                      (ir.build/build-form (list 'do (second form) true) ctx)
+                      (orig op-kw form ctx)))))
+
+(defn unit-call-wat
+  "A core-var-ops call whose value needs no operand: (+) is 0, (*) is 1, and a
+   comparison of one value is true. nil for every other shape, including
+   (-) and (<), which take call-wat's path to the runtime's arity error."
+  [nid op args]
+  (let [set (fn [expr] (str "(local.set $v" nid " " expr ")"))]
+    (cond
+      (and (empty? args) (#{:add :mul} op))
+      (set (str "(i64.const " (if (= op :add) 0 1) ")" (coerce :int (ty nid))))
+      (and (= 1 (count args)) (cmp-ops op))
+      (set (str "(i32.const 1)" (coerce :bool (ty nid))))
+      :else nil)))
+
 (defn div-wat
   "`/` on two ints when the quotient is exact (native returns an Int then);
    a ratio, the MinInt64/-1 bigint and float operands are Phase 2 (D15) and
@@ -2021,7 +2047,9 @@
         (if (and v (not (table-var? v)))
           (let [normal (or (when (lw-rt/intrinsic? v) (intrinsic-call-wat nid v (rest refs)))
                            (when-let [cop (core-var-ops v)]
-                             (or (prim-wat nid cop (rest refs))
+                             (or (unit-call-wat nid cop (rest refs))
+                                 (when (empty? (rest refs)) (call-wat nid v (rest refs)))
+                                 (prim-wat nid cop (rest refs))
                                  (fail "unsupported core call shape" {:var v :argc (count (rest refs)) :fn *fname*})))
                            (call-wat nid v (rest refs)))]
             (if (rooted-call? v (count (rest refs))) (rooted-call-wat nid v (rest refs) normal) normal))
