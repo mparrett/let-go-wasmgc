@@ -1,0 +1,40 @@
+[1;31merror:[0m lower-wasm: a var used as a value (llvm) {:fn "_main__try117_body", :var "#'core/bit-not"}
+  [1;34m-->[0m /Users/ndn/development/let-go-wasmgc/src/lower_wasm.lg:194:47
+     [1;34m|[0m
+ [1;34m194[0m [1;34m|[0m   (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
+     [1;34m|[0m                                               [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at throw (/Users/ndn/development/let-go-wasmgc/src/lower_wasm.lg:194:47)
+  at ll-fail (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1488:27)
+  at ll-var-value (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:193:63)
+  at ll-op (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:275:31)
+  at ll-arg (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:354:27)
+  at seq (<embedded:core>:421:24)
+  at seq (<embedded:core>:2750:17)
+  at dorun (<embedded:core>:2763:4)
+  at doall (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1060:84)
+  at ll-piece! (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1178:5)
+  at seq (<embedded:core>:419:13)
+  at seq (<embedded:core>:2750:17)
+  at dorun (<embedded:core>:2763:4)
+  at doall (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1529:70)
+  at anonymous fn (/Users/ndn/development/let-go-wasmgc/src/lower_llvm_ir.lg:59:43)
+  at with-refs (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1529:49)
+  at anonymous fn (/Users/ndn/development/let-go-wasmgc/src/lower_llvm_ir.lg:59:43)
+  at with-refs (/Users/ndn/development/let-go-wasmgc/src/lower_llvm_rt.lg:617:24)
+  at anonymous fn (/Users/ndn/development/let-go-wasmgc/src/lower_llvm_rt.lg:619:26)
+  at ll-call-plan (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:621:33)
+  at ll-cps-call? (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:656:13)
+  at ll-cuts (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1522:72)
+  at reduce (<embedded:core>:1515:33)
+  at into (/Users/ndn/development/let-go-wasmgc/src/lower_llvm.lg:1522:54)
+  at fn (/Users/ndn/development/let-go-wasmgc/src/lower_wasm.lg:2484:32)
+  at next (<embedded:core>:2756:15)
+  at dorun (<embedded:core>:2763:4)
+  at doall (/Users/ndn/development/let-go-wasmgc/src/driver.lg:1634:76)
+  at anonymous fn (/Users/ndn/development/let-go-wasmgc/src/lower_wasm.lg:4231:5)
+  at compile-text (/Users/ndn/development/let-go-wasmgc/src/driver.lg:1721:48)
+  at apply* (<embedded:core>:1215:12)
+  at apply (/Users/ndn/development/let-go-wasmgc/src/driver.lg:1729:3)
+kept /var/folders/vk/rkcd0mjn591_03z0856412gh0000gn/T/tmp.dn4CDeOqBO
