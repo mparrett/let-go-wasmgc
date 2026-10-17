@@ -125,6 +125,7 @@ P12.32	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ ho
 P12.37	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-rtlib-check.sh checks/quiet.sh checks/sem.sh corpus/scalar/fib.clj corpus/poly/ corpus/llvm/
 P12.38	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-xsofy-check.sh corpus/dump-world.lg xsofy
 P12.39	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_ir.lg src/lower_llvm_refcheck.lg checks/llvm-refs-check.sh corpus/llvm/ corpus/poly/ corpus/control/
+LLVM.ORC	host/native/ src/ checks/native-run.sh checks/build-orc-runner.sh checks/llvm-orc-check.sh checks/fixtures/orc/
 P12.40	src/ checks/llvm-funnel-lint.lg checks/llvm-funnel-check.sh
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/

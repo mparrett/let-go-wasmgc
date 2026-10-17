@@ -129,3 +129,4 @@ P12.32	13	env WASM_RUN=checks/native-run.sh checks/run-expected.sh corpus/poly-c
 P12.37	13	checks/llvm-rtlib-check.sh	2026-10-09: the llvm target compiles from a cached runtime library: programs behave the same with --no-rtlib and from the cache, and a warm compile takes at most 5 s (D221)
 P12.38	13	checks/llvm-xsofy-check.sh	2026-10-09: xsofy compiled with --target llvm dumps the same world as native lg on seeds 1-20 at 60 turns (D222)
 P12.39	13	checks/llvm-refs-check.sh	2026-10-10: every module symbol an llvm unit names is recorded as it is written, so the shake cannot drop live code (D225)
+LLVM.ORC	13	bash checks/llvm-orc-check.sh	ORC native object cache preserves process behavior, invalidates changed inputs and survives corruption/concurrent writers; LLVM_ORC_EXTENDED=1 adds runtime/GC parity
