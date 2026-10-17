@@ -1,6 +1,7 @@
 ;; wasm.math — P3.1: the numeric natives xsofy reaches that wasm.core does
 ;; not provide: `/`, `rem`, the bit ops and unchecked arithmetic as values,
-;; `float`, `float?`, `int?`, `bigint?`, `rand-int`, and math/abs, sqrt,
+;; `float`, `float?`, `int?`, `bigint?`, `abs`, `rand-int`, `rand-nth`,
+;; `shuffle` (one generator), and math/abs, sqrt,
 ;; exp, pow. In the runtime dialect of seq.lg, plus float division (`/` on
 ;; :float operands, which the backend lowers to f64.div; the dialect test
 ;; whitelists it here as seq_test does for float-bits).
@@ -463,3 +464,64 @@
                (loop [r (next-rand)] (if (< r lim) (sq/box-int (wasm/i64-sub r (wasm/i64-mul m (quot r m)))) (recur (next-rand)))))))
          (c/raise (wasm/bytes-of-string "rand-int expected Int"))))
   ([a b] (raise-arity 2)))
+
+;; rand-nth and shuffle (lang.go:7007, :7036) draw from the same generator.
+;; rand-int keeps its own copy of this loop so its code is unchanged.
+(defn- rand-below [m]                                    ; uniform in [0, m), m > 0
+  (let [lim (wasm/i64-mul m (quot 9223372036854775807 m))]
+    (loop [r (next-rand)] (if (< r lim) (wasm/i64-sub r (wasm/i64-mul m (quot r m))) (recur (next-rand))))))
+
+;; A vm.Collection natively: the seq kinds that count without walking forever
+;; (not Repeat or ChunkedCons, which rand-nth refuses), vectors, strings,
+;; map entries, maps, sets, typed arrays.
+(defn- rand-coll? [k]
+  (cond (if (>= k 2) (<= k 5) false) true
+        (= k 7) true (= k 10) true (= k 11) true (= k 17) true (= k 23) true (= k 27) true
+        (if (>= k 30) (<= k 31) false) true
+        (if (>= k 37) (<= k 39) false) true
+        :else false))
+
+(defn ^{:twin "core/rand-nth"} rand-nth*
+  ([] (raise-arity 0))
+  ([coll] (let [k (c/ckind coll)]
+            (cond (= k 0) (wasm/null)
+                  (rand-coll? k)
+                  (let [n (sq/unbox-int (sq/count coll))]
+                    (if (= n 0)
+                      (c/raise (wasm/bytes-of-string "rand-nth called on empty collection"))
+                      (let [i (sq/box-int (rand-below n))]
+                        ;; a map or set is a vm.Lookup: ValueAt(idx) looks the index up as a key
+                        (if (if (if (= k 30) true (= k 31)) true (if (= k 38) true (= k 39)))
+                          (c/get coll i)
+                          (c/nth coll i)))))
+                  :else (c/raise (wasm/bytes-of-string "rand-nth expected Collection")))))
+  ([a b] (raise-arity 2))
+  ([a b & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
+
+(defn ^{:twin "core/shuffle"} shuffle*                    ; rand.Shuffle: Fisher-Yates from the top, j in [0, i]
+  ([] (raise-arity 0))
+  ([coll] (let [k (c/ckind coll)]
+            (cond (= k 0) (c/raise (wasm/bytes-of-string "shuffle not supported on nil"))
+                  (= k 17) (c/raise (wasm/bytes-of-string "shuffle not supported on string"))
+                  (if (= k 30) true (= k 38)) (c/raise (wasm/bytes-of-string "shuffle not supported on map"))
+                  :else (let [v (sq/vec coll)]
+                          (loop [v v i (dec (sq/unbox-int (sq/count v)))]
+                            (if (> i 0)
+                              (let [j (rand-below (inc i)) bi (sq/box-int i) bj (sq/box-int j)
+                                    a (c/nth v bi) b (c/nth v bj)]
+                                (recur (c/assoc (c/assoc v bi b) bj a) (dec i)))
+                              v))))))
+  ([a b] (raise-arity 2))
+  ([a b & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
+
+;; abs (CoreAbs -> vm.NumAbs): same type back, negated only when < 0, so -0.0
+;; and NaN come back as they are and MinInt64 wraps to itself. No BigInt,
+;; Ratio or BigDecimal here (D15).
+(defn ^{:twin "core/abs"} abs*
+  ([] (raise-arity 0))
+  ([x] (let [k (sq/kind x)]
+         (cond (= k 1) (let [n (sq/unbox-int x)] (if (< n 0) (sq/box-int (wasm/i64-sub 0 n)) x))
+               (= k 22) (let [f (s/unbox-float x)] (if (< f 0.0) (s/box-float (* -1.0 f)) x))
+               :else (raise-str (s/str (lit (wasm/bytes-of-string "cannot abs ")) (tn x))))))
+  ([x y] (raise-arity 2))
+  ([x y & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))

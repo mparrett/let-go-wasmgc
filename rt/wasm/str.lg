@@ -1040,6 +1040,21 @@
           (buf-done b))))
 
 ;; ---------------------------------------------------------------------------
+;; parse-boolean (CoreParseBool): exactly "true" or "false", nil for any other String.
+
+(defn- arity-err [n] (raise-val (wasm/bytes-of-string "wrong number of arguments ") (sq/box-int n) (wasm/bytes-of-string "")))
+(defn ^{:twin "core/parse-boolean"} parse-boolean*
+  ([] (arity-err 0))
+  ([s] (if (= 17 (sq/kind s))
+         (let [bs (str-bytes s)]
+           (cond (sq/bytes-eq? bs (wasm/bytes-of-string "true")) (sq/bool true)
+                 (sq/bytes-eq? bs (wasm/bytes-of-string "false")) (sq/bool false)
+                 :else (wasm/null)))
+         (raise-lit (wasm/bytes-of-string "parse-boolean expected String"))))
+  ([s x] (arity-err 2))
+  ([s x & more] (arity-err (+ 2 (sq/unbox-int (sq/count more))))))
+
+;; ---------------------------------------------------------------------------
 ;; parse-long (lang.go:2836): strconv.ParseInt(s, 10, 64), nil on any error.
 
 (defn ^{:twin "core/parse-long"} parse-long [s]
