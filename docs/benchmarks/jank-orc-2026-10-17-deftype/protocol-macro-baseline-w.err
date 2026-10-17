@@ -1,0 +1,27 @@
+[1;31merror:[0m wasm trap: arch/get: cast failure, expected struct UserInstance, got non-wasm value #<FieldProbe x=7> (FieldProbe)
+  [1;34m-->[0m <default>:32:43
+    [1;34m|[0m
+ [1;34m32[0m [1;34m|[0m         ;; assoc-seq, not apply: apply spreads through invoke-args, which
+    [1;34m|[0m                                           [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at throw (<default>:32:43)
+  at trap! (<default>:152:32)
+  at cast! (<default>:195:3)
+  at get (<default>:245:12)
+  at user-field-at (<unknown>)
+  at macroexpand-1 (<embedded:ir.passes.pipeline>:405:13)
+  at expand-fully (<embedded:ir.passes.pipeline>:443:26)
+  at seq (<embedded:core>:2750:17)
+  at dorun (<embedded:core>:2763:4)
+  at doall (<embedded:ir.passes.pipeline>:453:47)
+  at expand-all (src/lower_wasm.lg:3502:128)
+  at expand-form (src/driver.lg:409:11)
+  at expand-top (<embedded:core>:1231:14)
+  at seq (<embedded:core>:421:24)
+  at apply* (<embedded:core>:1221:14)
+  at apply (src/driver.lg:1527:94)
+  at compile-text (src/driver.lg:1656:48)
+  at apply* (<embedded:core>:1215:12)
+  at apply (src/driver.lg:1664:3)
+kept $TMPDIR/tmp.KoFl2WpIAU
