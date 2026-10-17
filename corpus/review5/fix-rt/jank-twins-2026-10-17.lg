@@ -1,0 +1,89 @@
+;; Core fns the runtime had no twin for: abs, ifn?, reversible?,
+;; parse-boolean, pop!, rand-nth, shuffle, into-array, long-array,
+;; let-go.types/array?, add-tap, remove-tap, tap>. Each runs directly,
+;; through apply and as a value. rand-nth and shuffle draw from a generator
+;; native cannot share, so only what does not depend on the draw is printed.
+(defn t [f] (try (pr-str (f)) (catch e (str "ERR " (ex-message e)))))
+
+(def ab abs)
+(println "abs" (t #(abs -1)) (t #(abs 1)) (t #(abs 0)) (t #(abs -9223372036854775807)) (t #(abs -9223372036854775808))
+         (t #(abs -1.5)) (t #(abs -0.0)) (t #(abs 0.0)) (t #(abs ##-Inf)) (t #(NaN? (abs ##NaN))) (t #(abs (float -2.5))))
+(println "abs-err" (t #(abs nil)) (t #(abs "a")) (t #(abs :k)) (t #(abs [1])) (t #(apply abs [])) (t #(apply abs [1 2])) (t #(apply abs [1 2 3]))
+         (t #(ab -7)) (t #(map abs [-1 2 -3.0])))
+
+(def fq ifn?)
+(println "ifn?" (map #(t (fn [] (ifn? %)))
+                     [inc :k 'x (with-meta :k {}) (with-meta 'x {}) {} #{} [] (sorted-map) (sorted-set) (int-array 2)
+                      (transient []) (transient {}) (transient #{}) #'t (promise) (juxt inc) (partial inc) (comp inc)
+                      (delay 1) (first {:a 1}) "s" 1 1.0 nil true \c (atom 1) (volatile! 1) (type 1) (seq [1]) '(1) (range 3) #"r"]))
+(println "ifn?-arity" (t #(apply ifn? [])) (t #(apply ifn? [inc inc])) (t #(apply ifn? [inc inc inc])) (t #(fq :k)) (t #(count (filter ifn? [1 :a nil inc]))))
+
+(def rq reversible?)
+(println "reversible?" (map #(t (fn [] (reversible? %)))
+                            [[] [1 2 3] (vec (range 40)) (with-meta [1] {}) (subvec [1 2 3] 1) (sorted-map :a 1) (sorted-set :a)
+                             (first {:a 1}) '(1 2) {:a 1} #{:a} (range 10) nil 1 1.0 :k 'a "s" \a (object-array 3) (seq [1 2])
+                             (seq (sorted-map :a 1)) (seq (sorted-set :a)) (array-map :a 1) (transient []) (rseq [1 2])]))
+(println "reversible?-arity" (t #(apply reversible? [])) (t #(apply reversible? [[] []])) (t #(apply reversible? [[] [] []])) (t #(rq [])))
+
+(def pb parse-boolean)
+(println "parse-boolean" (map #(t (fn [] (parse-boolean %))) ["true" "false" "True" "FALSE" "" " true" "true " "tru" "truee" "0" "1"])
+         (map #(t (fn [] (parse-boolean %))) [nil 0 0.0 \a :key {} '() #{} [] 'true])
+         (t #(apply parse-boolean [])) (t #(apply parse-boolean ["a" "b"])) (t #(apply parse-boolean ["a" "b" "c"])) (t #(pb "true")))
+
+(def pp pop!)
+(println "pop!" (t #(persistent! (pop! (transient [nil])))) (t #(persistent! (pop! (transient [1 2 3]))))
+         (t #(persistent! (pop! (pop! (transient [:c :b :a]))))) (t #(persistent! (pp (transient [1 2]))))
+         (t #(let [v (persistent! (pop! (transient (vec (range 34)))))] [(count v) (type v) (peek v)]))
+         (t #(let [v (persistent! (pop! (transient (vec (range 40)))))] [(count v) (type v) (peek v)]))
+         (t #(let [x (transient [1 2])] (pop! x) (pop! x) (persistent! x)))
+         (t #(type (pop! (transient [1])))))
+(println "pop!-err" (t #(pop! (transient []))) (t #(let [x (transient [0 1])] (persistent! x) (pop! x)))
+         (map #(t (fn [] (pop! %))) [(transient {:a 0}) (transient #{0}) [0] '(0) #{0} (range 3) true false "s" 3.14 42 nil])
+         (t #(apply pop! [])) (t #(apply pop! [(transient [1]) 2])) (t #(apply pop! [(transient [1]) 2 3])))
+
+(def rn rand-nth)
+(defn draws [coll] (set (repeatedly 200 #(rand-nth coll))))
+(println "rand-nth" (t #(rand-nth nil)) (t #(rand-nth [7])) (t #(rand-nth '(5))) (t #(rand-nth "a")) (t #(rand-nth (range 4 5)))
+         (t #(rand-nth (int-array [9]))) (t #(rand-nth (lazy-seq [3]))) (t #(rand-nth (cons 1 nil)))
+         (t #(rand-nth (map inc [1]))) (t #(rand-nth (seq {:a 1}))) (t #(rand-nth (seq [6]))) (t #(rn [8]))
+         ;; a map or a set looks the index up as a key
+         (t #(rand-nth {:a 1})) (t #(rand-nth {0 :zero})) (t #(rand-nth #{2})) (t #(rand-nth #{0})) (t #(rand-nth (sorted-map 0 :s))))
+(println "rand-nth-draws" (t #(every? #{1 2 3} (draws [1 2 3]))) (t #(< 1 (count (draws (vec (range 100))))))
+         (t #(every? #(< -1 % 1000) (draws (range 1000)))) (t #(every? #{\a \b} (draws "ab"))) (t #(every? #{:x :y} (draws '(:x :y)))) (t #(every? #{:a 1} (draws (first {:a 1})))))
+(println "rand-nth-err" (map #(t (fn [] (rand-nth %))) [[] "" '() {} #{} (range 0) (lazy-seq nil) 1 :k 1.5 true \c inc (atom 1) (transient [1]) (repeat 2 1)])
+         (t #(apply rand-nth [])) (t #(apply rand-nth [[1] 2])) (t #(apply rand-nth [[1] 2 3])))
+
+(def sh shuffle)
+(defn shape [x] (let [s (shuffle x)] [(type s) (count s) (sort (map str s))]))
+(println "shuffle" (t #(shuffle [])) (t #(shuffle [1])) (t #(shape [1 2 3])) (t #(shape #{1 2 3})) (t #(shape '(1 2 3)))
+         (t #(shape (range 40))) (t #(shape (int-array [7 8]))) (t #(shape (first {:a 1}))) (t #(shape (sorted-set 4 5)))
+         (t #(shape (lazy-seq [1 2]))) (t #(sh [5])) (t #(< 1 (count (set (repeatedly 50 (fn [] (shuffle (range 10)))))))))
+(println "shuffle-err" (map #(t (fn [] (shuffle %))) [nil "abc" "" {} {:a 1} (sorted-map 1 2) 1 :k 1.5 inc])
+         (t #(apply shuffle [])) (t #(apply shuffle [[1] 2])) (t #(apply shuffle [[1] 2 3])))
+
+(def ia into-array)
+(println "into-array" (t #(seq (into-array [1 :a]))) (t #(type (into-array [1]))) (t #(seq (into-array nil))) (t #(into-array "ab"))
+         (t #(into-array :byte [1 300])) (t #(into-array :int [1 2])) (t #(into-array :long [3])) (t #(into-array :object [1 :a]))
+         (t #(into-array "x" [1 :a])) (t #(into-array nil 2)) (t #(into-array :int 2)) (t #(into-array :int nil)) (t #(ia [5]))
+         (t #(reduce + (into-array (range 1 100)))) (t #(reduce + 1 (into-array :long (range 1 100)))))
+(println "into-array-err" (t #(into-array :nope [1])) (t #(into-array :foo/bar [1])) (t #(into-array :long [1.5])) (t #(into-array 1))
+         (t #(into-array :k)) (t #(into-array :int :k)) (t #(apply into-array [])) (t #(apply into-array [1 2 3])) (t #(apply into-array [1 2 3 4])))
+
+(def la long-array)
+(println "long-array" (t #(long-array [1 2])) (t #(seq (long-array 2 7))) (t #(la 1)) (t #(long-array [1.5])) (t #(long-array :k)) (t #(apply long-array [])) (t #(apply long-array [1 2 3])) (t #(some even? (long-array [1 2 3 4]))))
+
+(def aq let-go.types/array?)
+(println "array?" (map #(t (fn [] (let-go.types/array? %))) [(int-array 1) (byte-array 1) (object-array 1) (into-array [1]) [1] nil "s" '(1) {}])
+         (t #(apply let-go.types/array? [])) (t #(apply let-go.types/array? [(int-array 1) 1])) (t #(apply let-go.types/array? [1 2 3])) (t #(aq (int-array 0))))
+
+(def seen-a (atom [])) (def seen-b (atom []))
+(defn tap-a [x] (swap! seen-a conj x))
+(defn tap-b [x] (swap! seen-b conj x))
+(defn tap-boom [x] (throw (ex-info "boom" {})))
+(def at add-tap) (def rt remove-tap) (def tp tap>)
+(println "taps" (t #(tap> 0)) (t #(add-tap tap-a)) (t #(tap> 1)) (t #(add-tap tap-boom)) (t #(at tap-b)) (t #(tp 2))
+         (t #(remove-tap tap-a)) (t #(tap> 3)) (t #(rt tap-boom)) (t #(remove-tap inc)) (t #(tap> 4))
+         (t #(add-tap tap-b)) (t #(tap> 5)) (t #(remove-tap tap-b)) (t #(tap> 6)) (t #(remove-tap tap-b)) (t #(tap> 7))
+         (t #(deref seen-a)) (t #(deref seen-b)))
+(println "taps-err" (t #(add-tap 1)) (t #(add-tap nil)) (t #(add-tap :k)) (t #(remove-tap 1)) (t #(apply add-tap [])) (t #(apply add-tap [inc inc]))
+         (t #(apply remove-tap [])) (t #(apply remove-tap [1 2])) (t #(apply tap> [])) (t #(apply tap> [1 2])))

@@ -551,6 +551,25 @@
 (defn ^{:twin "core/map?"} map? [x] (let [k (ckind x)] (sq/bool (if (= k 30) true (= k 38)))))
 (defn ^{:twin "core/set?"} set? [x] (let [k (ckind x)] (sq/bool (if (= k 31) true (= k 39)))))
 (defn ^{:twin "core/sorted?"} sorted? [x] (let [k (ckind x)] (sq/bool (if (= k 38) true (= k 39)))))
+;; ifn? (CoreIsIFn): a vm.Fn (fns, vars, transients, typed arrays, keywords and
+;; symbols with or without meta), the collections that look themselves up, and
+;; a Promise; any arity but one is false.
+(defn ^{:twin "core/ifn?"} ifn?*
+  ([] (F))
+  ([x] (let [k (ckind x)]
+         (sq/bool (cond (= k 36) (if (= 1 (standin x)) false true)   ; a Regex stand-in is not an IFn
+                        (= k 16) true (= k 20) true (= k 21) true (= k 11) true
+                        (if (>= k 30) (<= k 34) false) true
+                        (if (>= k 37) (<= k 40) false) true
+                        :else false))))
+  ([x y] (F))
+  ([x y & more] (F)))
+;; reversible? (CoreIsReversible): vectors (a MapEntry is not one) and the sorted collections.
+(defn ^{:twin "core/reversible?"} reversible?*
+  ([] (F))
+  ([x] (let [k (ckind x)] (sq/bool (cond (= k 11) true (= k 38) true :else (= k 39)))))
+  ([x y] (F))
+  ([x y & more] (F)))
 (defn ^{:twin "core/seq?"} seq? [x]                       ; isSeq (lang.go:2290): implements vm.Seq
   (let [k (sq/kind x)] (sq/bool (if (sq/seq-kind? k) true (= k 23)))))
 (defn vector? [x] (let [k (sq/kind x)] (sq/bool (if (= k 11) true (= k 23)))))
@@ -901,6 +920,19 @@
   ([t] (raise-arity 1))
   ([t key] (if (= 32 (ckind t)) (m/tdissoc! t key) (raise (wasm/bytes-of-string "dissoc! expected TransientMap"))))
   ([t key key2] (dissoc! (dissoc! t key) key2)))
+
+;; pop! (CorePopBang, TransientVector.Pop): editable first, then non-empty.
+(defn ^{:twin "core/pop!"} pop!*
+  ([] (raise (wasm/bytes-of-string "pop! expects 1 arg")))
+  ([t] (if (= 34 (ckind t))
+         (do (tvec-editable t)
+             (let [v (wasm/get TVec 0 t)]
+               (if (= 0 (pv/vcount v))
+                 (raise (wasm/bytes-of-string "can't pop empty transient vector"))
+                 (do (wasm/set! TVec 0 t (pv/vpop v)) t))))
+         (raise (wasm/bytes-of-string "pop! expects a transient vector"))))
+  ([t x] (raise (wasm/bytes-of-string "pop! expects 1 arg")))
+  ([t x & more] (raise (wasm/bytes-of-string "pop! expects 1 arg"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Promise and delay (P6.7; lang.go:8007-8043, 8312-8330, vm/promise.go,
