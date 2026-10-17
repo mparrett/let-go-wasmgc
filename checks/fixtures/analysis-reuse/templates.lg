@@ -1,0 +1,10 @@
+;; Child IR templates are optimized during lowering, so they must not be
+;; reused as though they were immutable analysis results.
+(defn stable [x] (+ x 3))
+(defn add-one [x] (+ x 1))
+(defn invoke [f x] (f x))
+(defn captured [n] (fn [x] (+ n x)))
+(defn multi [] (fn ([x] (+ x 1)) ([x y] (+ x y))))
+(defn guarded [x] (try (add-one x) (catch e 99)))
+(println (stable 4) ((captured 10) 2) (guarded 40) (invoke add-one 41))
+(println ((multi) 9) ((multi) 10 20))

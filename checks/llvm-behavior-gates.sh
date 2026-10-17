@@ -32,6 +32,8 @@ row P12.39 slot checks/llvm-refs-check.sh
 # P12.40: lowering reads the session only through questions (red until
 # the function cache's groundwork plan, Task 4)
 row P12.40 slot checks/llvm-funnel-check.sh
+row LLVM.RTLIB.REUSE slot bash checks/llvm-rtlib-reuse-check.sh
+row LLVM.ANALYSIS.REUSE slot bash checks/llvm-analysis-reuse-check.sh
 row LLVM.ORC slot bash checks/llvm-orc-check.sh
 if [ "${GC_LANE:-1}" = 1 ]; then
   row gc-corpora checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
