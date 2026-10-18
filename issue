@@ -1,0 +1,24 @@
+id: a8b08e1
+v: 2
+title: Browser gate rows need local-scripts/coi-serve.py from outside the repo
+status: open
+priority: medium
+created: 2026-10-18T18:40:00Z
+updated: 2026-10-18T18:40:00Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: The browser rows depend on `local-scripts/coi-serve.py`, a file outside the repo, so they cannot run on a machine that lacks it, and they take the node-host and wasmtime checks down with them.
+ 
+ What I see on my machine (no `local-scripts/` beside the checkout, `LW_BROWSER_TOOLS` unset):
+ 
+ - `checks/browser-boot.sh` (P4.0, P4.1, P6.4) stops with "FAIL: server on <port> did not start". Its node-host and wasmtime rows come after the browser block, and `wait_up` exits, so those never run either, though neither needs a browser or COOP/COEP.
+ - `checks/lane5.sh` (P4.2), `checks/eval-hosts.sh` (P7.5) and `checks/size-boot-legmacs.sh` start the same server.
+ - The result is identical on main and on every branch I gated, so no branch currently has a passing result for these rows here.
+ 
+ The script only serves a directory with the two COOP/COEP headers (`SharedArrayBuffer` for the stock lane's key ring).
+ 
+ Proposed fix: fall through instead of failing hard.
+ 
+ 1. When the COI server or Chromium is unavailable, the browser lanes report SKIP with the reason and the script goes on, so node-host and wasmtime still run and decide the row. A row left with nothing but skipped lanes (P4.2, P7.5) exits 2, which the gate already counts as not passed, so a skip never reads as green.
+ 2. Put the COI server in the repo (a few lines on node, which the hosts already need), and have the four scripts use it by default, with `LW_BROWSER_TOOLS` as an override.
