@@ -100,12 +100,17 @@
                              :let [tk (var-name k) rv (var-name v)]
                              :when (and tk rv)]
                          [tk rv (str path ":" nm)])))
-        ;; extra-twins: [['core/ex-message 'wasm.core/ex-message] ...]
+        ;; extra-twins: [['core/ex-message (rt-sym 'core 'ex-message)] ...];
+        ;; (rt-sym 'n 'nm) is wasm.n/nm, as lw_rt names it on this target
+        quoted (fn [f] (when (and (seq? f) (= 'quote (first f)) (symbol? (second f))) (second f)))
+        route-sym (fn [f] (or (quoted f)
+                              (when (and (seq? f) (= 'rt-sym (first f)) (= 3 (count f)) (quoted (nth f 1)) (quoted (nth f 2)))
+                                (symbol (str "wasm." (quoted (nth f 1))) (str (quoted (nth f 2)))))))
         pair-routes (fn [path nm]
                       (let [f (def-form path nm)]
                         (for [p (filter vector? (tree-seq coll? seq f))
-                              :when (and (= 2 (count p)) (every? #(and (seq? %) (= 'quote (first %)) (symbol? (second %))) p))]
-                          [(qual (second (first p))) (qual (second (second p))) (str path ":" nm)])))]
+                              :when (and (= 2 (count p)) (quoted (first p)) (route-sym (second p)))]
+                          [(qual (quoted (first p))) (qual (route-sym (second p))) (str path ":" nm)])))]
     (distinct (concat (map-routes lw-rt 'ext-twins) (pair-routes lw-rt 'extra-twins) (map-routes lw 'value-substs)))))
 
 (if-not propose?
