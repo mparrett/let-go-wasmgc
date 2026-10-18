@@ -25,20 +25,21 @@ is native output, never the backend's WAT or bytes.
 6. **Results are records, not tests.** Gate logs, census tables, result TSVs
    and reports don't grow the test set; prefer out-of-tree logs to new records.
 7. **Growth comes from issues.** `checks/corpus-budget.tsv` gives each
-   top-level directory a base (files, KB, the date it was set) and the topics it
-   serves. Its ceiling is the base plus 2 files and 16 KB for each issue
-   given the label `corpus:<topic>` (one of its topics, or a topic below one)
-   since that date, a new issue or an existing one, so tagging the issue a test
-   answers is what makes room for the test. A label may go below a topic when
-   that is clearer (`corpus:lang/types/protocols` counts for `lang/types`), and
-   issues may nest with git-issue's `parent_of`. An untagged child takes its
-   nearest tagged ancestor's topics, counted from the later of that label's
-   date and its own creation. `checks/corpus-lint.sh` (row P0.2, a pre-commit hook) enforces it.
-   Raising a base, adding a row or changing topics cites an issue in the commit
-   (`Issue: #<id>`; a commit-msg hook checks). After deleting,
-   `checks/corpus-lint.sh --lower` brings the bases down. The `review*/` rows
-   have no topics: closed, they only shrink. Without the issue notes fetched
-   the lint sees the bases alone, which is stricter, never looser.
+   top-level directory a base (files, KB) and the topics it serves. Its ceiling
+   is the base plus 2 files and 16 KB for each live issue (open, in progress,
+   in review or blocked) labelled `corpus:<topic>` with one of its topics, a new
+   issue or an existing one, so tagging the issue a test answers is what makes
+   room for the test. A label may go below a topic when that is clearer
+   (`corpus:lang/types/protocols` counts for `lang/types`), and issues may nest
+   with git-issue's `parent_of`: an untagged child takes its nearest tagged
+   ancestor's topics. Closing or deferring an issue takes its room away, and
+   `checks/corpus-lint.sh --settle` then makes what was actually added the base
+   (also after deleting files). `checks/corpus-lint.sh` (row P0.2, a pre-commit
+   hook) enforces it. Raising a base, adding a row or changing topics cites an
+   issue in the commit (`Issue: #<id>`, or `Refs:` the closed issue when
+   settling; a commit-msg hook checks). The `review*/` rows have no topics:
+   closed, they only shrink. Without the issue notes fetched the lint sees the
+   bases alone, which is stricter, never looser.
 
 ## Who tests what
 
