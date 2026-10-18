@@ -2,7 +2,7 @@
 # both stages below. A hook already in .git/hooks (git-issue's pre-push) is
 # kept and still runs. Until every branch carries this file, install with
 # --allow-missing-config so commits on the others are not refused.
-default_install_hook_types: [pre-commit, pre-push]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
 repos:
   - repo: local
     hooks:
@@ -13,6 +13,19 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+      - id: corpus-lint
+        name: corpus within its budget (corpus/README.md)
+        entry: checks/corpus-lint.sh
+        language: system
+        pass_filenames: false
+        files: ^(corpus/|checks/corpus-budget\.tsv$)
+        stages: [pre-commit]
+      - id: corpus-budget-issue
+        name: a raised corpus ceiling cites an issue (corpus/README.md)
+        entry: checks/corpus-lint.sh --commit-msg
+        language: system
+        always_run: true
+        stages: [commit-msg]
       - id: publish-check
         name: publish-check over the commits being pushed
         entry: checks/publish-check-push.sh

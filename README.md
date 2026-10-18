@@ -226,7 +226,8 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
 - `checks/` the oracle, the row table `items.tsv`, the gate runner and the
   check scripts.
 - `corpus/` inputs and expected outputs for every check, one directory per
-  area, plus review corpora and recorded results.
+  area, plus review corpora and recorded results. `corpus/README.md` has
+  the rules for adding to it and which layer tests what.
 - `tools/` the native inventory and twin manifest (which natives a program
   reaches that the runtime does not provide).
 - `DECISIONS.md` the design record. `STATUS.md` the dated row table of work
@@ -322,7 +323,8 @@ mirror of that workspace. In practice:
   command whose exit 0 means done, and a one-line definition of done.
   `checks/run.sh <id>` runs one row. Exit 2 means the check itself is not
   built yet.
-- `checks/gate.sh <n>` runs every row of phase n (1 to 7). Each row's output
+- `checks/gate.sh <n>` runs every row of phase n (the second column of
+  `items.tsv`). Each row's output
   is kept in `${TMPDIR:-/tmp}/lw-gate-<n>/<id>.log`. The trimmed logs of the
   2026-10-02 gate runs are in `corpus/gates/2026-10-02-final/`.
 - `checks/oracle.sh` is the only match relation; every MATCH in `items.tsv`
