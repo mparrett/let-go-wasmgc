@@ -4,7 +4,7 @@ title: D226 (proposed): the corpus tests behaviors, one dense file per behavior,
 status: open
 priority: medium
 created: 2026-10-18T22:16:31Z
-updated: 2026-10-18T22:16:37Z
+updated: 2026-10-18T22:18:04Z
 author: Norman Nunley, Jr
 assignee: Matt Parrett
 hash_source: content
@@ -14,7 +14,7 @@ description: Proposed: the corpus tests behaviors, one dense file per behavior, 
  The PR from `corpus-conventions` carries it:
  
  1. `corpus/README.md`: the rules, which layer tests what, and a topic tree (`lang/numbers`, `lang/fns`, `lang/types`, ..., `targets/llvm`, `suites`, `apps`, `records`) to migrate to. Every directory gets a README saying what its topic covers and which check runs it; the 26 that lacked one have it now.
- 2. The topics are git-issue labels, `corpus:<topic>`, and a label may go below a topic for clarity (`corpus:lang/types/protocols`). `checks/corpus-budget.tsv` gives each of today's directories an exact base and the topics it serves; its ceiling grows by 2 files and 16 KB for each issue, new or existing, given one of its labels since the base date. `checks/corpus-lint.sh` enforces it (row P0.2, pre-commit). Raising a base by hand needs an `Issue:` trailer (commit-msg). `review*/` only shrinks.
+ 2. The topics are git-issue labels, `corpus:<topic>`, and a label may go below a topic for clarity (`corpus:lang/types/protocols`). `checks/corpus-budget.tsv` gives each of today's directories an exact base and the topics it serves; its ceiling grows by 2 files and 16 KB for each issue, new or existing, given one of its labels since the base date; an untagged child issue takes its nearest tagged ancestor's topics. `checks/corpus-lint.sh` enforces it (row P0.2, pre-commit). Raising a base by hand needs an `Issue:` trailer (commit-msg). `review*/` only shrinks.
  
  I tagged the existing issues: 27 of 60 fit a topic, `lang/types` leading with 7, which is why it is a topic, and those tags are the first room the budget grants. The other 33 are compile time, process and gate work, which grow no tests.
  
