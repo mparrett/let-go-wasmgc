@@ -83,3 +83,12 @@ reads only the markers.
 dir of symlinks (reach.lg writes to its cwd and slurps fixtures relative to
 it). The header gives the invocations that reproduce the probe's xsofy and
 legmacs lists, and `natives-shared.txt` is their `comm -12`.
+
+## git-issue-watch.py
+
+A Claude Code `UserPromptSubmit` hook that reads the git-issue notes on the
+remote. The first prompt of a session gets the open issues (ready, blocked,
+deferred, with what each waits on or unblocks); later prompts get only what
+changed (new issues, field changes, new comments). It fetches into
+`refs/issue-watch/*` and never writes `refs/notes/*`, so unpushed issue edits
+are safe. The docstring has the settings snippet to enable it.
