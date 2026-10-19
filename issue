@@ -24,3 +24,6 @@ description: The browser rows depend on `local-scripts/coi-serve.py`, a file out
  
  1. When the COI server or Chromium is unavailable, the browser lanes report SKIP with the reason and the script goes on, so node-host and wasmtime still run and decide the row. A row left with nothing but skipped lanes (P4.2, P7.5) exits 2, which the gate already counts as not passed, so a skip never reads as green.
  2. Put the COI server in the repo (a few lines on node, which the hosts already need), and have the four scripts use it by default, with `LW_BROWSER_TOOLS` as an override.
+
+## Comments
+[2026-10-19T05:48:41Z] Matt Parrett: Taking this. Both parts of the proposed fix are right: the browser lanes report SKIP with the reason and the node-host and wasmtime lanes still decide the row, and the COI server moves into the repo under host/ as a few lines of node with LW_BROWSER_TOOLS as the override. I will send it as a PR with the four scripts switched over.
