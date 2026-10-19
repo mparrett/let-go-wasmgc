@@ -11,3 +11,6 @@ hash_source: content
 role: wasm
 labels: corpus:lang/numbers
 description: General Ratio arithmetic is refused as a named limit (D177 keeps div-1.lg, div-2.lg and recip.lg out of the opmatrix MATCH claims). Either a boxed Ratio in the runtime or a documented permanent limit.
+
+## Comments
+[2026-10-19T05:48:40Z] Matt Parrett: Status 2026-10-18: moving. #49 (10-17) added the BigInt and Ratio library with a native oracle (wasm.bignum, 9 deftests, nothing calls it). llvm-poly folds it into a shared rt/let-go/lang/bignum.lg (plain Clojure, deftypes) that neither target compiles yet. The boxed Ratio in the runtime is tower piece 2 on the wasm side, per the split proposed in the PR #25 thread; the jank d15 rows (70 of the 113 misses at 128/241) are gated on it and on BigDecimal.
