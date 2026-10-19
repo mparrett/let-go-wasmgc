@@ -444,8 +444,11 @@
 (def ext-forms (if snapshot (:ext-forms snapshot) (read-forms ext-path)))
 
 (def globals
-  ;; runtime top-level defs that are not declarations: [{:var :ns :init form}]
-  (vec (for [[_ ns-sym forms] (conj file-forms [ext-path 'lw-ext ext-forms])
+  ;; runtime top-level defs that are not declarations: [{:var :ns :init form}].
+  ;; rt/llvm/ext.lg's defs are runtime globals on llvm; on GC lw_ext.lg's
+  ;; stay extern, as before 4a1095e (P8.0: lowering them there grew every
+  ;; module carrying the evaluator by ~26 KB with no change in behavior)
+  (vec (for [[_ ns-sym forms] (if llvm-target? (conj file-forms [ext-path 'lw-ext ext-forms]) file-forms)
              :when (not= ns-sym intrinsics-ns)
              form forms
              :when (and (seq? form) (= 'def (first form)))

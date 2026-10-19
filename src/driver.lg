@@ -10,7 +10,9 @@
 ;; they are only interned here, never eval'd, and the def runs in `_main`.
 (ns driver
   (:require [lower-wasm :as lw] [lw-rt] [ir.passes.pipeline :as p] [clojure.string]
-            [lower-llvm-analysis-cache :as analysis-cache]))
+            ;; no alias: a module carries driver's alias table, and one more
+            ;; alias moved every GC module's bytes (P8.0)
+            [lower-llvm-analysis-cache]))
 
 (defn- read-all [text] (read-string (str "[" text "\n]")))
 
@@ -543,10 +545,10 @@
                                 (lw/analyze-fn src wname (boolean multi?))))
                info (try (assoc
                            (if cache
-                             (analysis-cache/analyze!
+                             (lower-llvm-analysis-cache/analyze!
                               cache [(ns-name *ns*) wname]
-                              (when (analysis-cache/enabled? cache)
-                                (analysis-cache/input src (ns-name *ns*) wname (boolean multi?)
+                              (when (lower-llvm-analysis-cache/enabled? cache)
+                                (lower-llvm-analysis-cache/input src (ns-name *ns*) wname (boolean multi?)
                                                       (contains? boxed [v argc]) (analysis-interfaces src)))
                               reusable-analysis? analyze)
                              (analyze))
@@ -1757,16 +1759,16 @@
                                                                           (str (ex-message e)))))
                                 :else (lw/lower-fn %))
                cache (when (= :llvm lw/*target*)
-                       (analysis-cache/new-cache (not= "0" (os/getenv "LW_LL_ANALYSIS_REUSE"))))
+                       (lower-llvm-analysis-cache/new-cache (not= "0" (os/getenv "LW_LL_ANALYSIS_REUSE"))))
                fns (loop [boxed #{}]
-                     (when cache (analysis-cache/next-round! cache))
+                     (when cache (lower-llvm-analysis-cache/next-round! cache))
                      (let [infos (analyze-program! @defns main-src boxed (boolean test?) cache)
                            notes (atom {})
                            fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
                            more (remove boxed (boxing-needed @notes prog-vars))]
                        (if (empty? more) fns (recur (into boxed more)))))]
            (when (and cache (= "1" (os/getenv "LW_LL_ANALYSIS_STATS")))
-             (let [s (analysis-cache/stats cache)]
+             (let [s (lower-llvm-analysis-cache/stats cache)]
                (binding [*out* *err*]
                  (println (str "llvm-analysis-cache executed=" (:executed s)
                                " reused=" (:reused s) " bypassed=" (:bypassed s)
