@@ -11,3 +11,6 @@ hash_source: content
 role: wasm
 labels: corpus:lang/types
 description: The driver refuses defmulti in a program (named limit, D160/D204 lift it for library namespaces only). Lower a program-level defmulti/defmethod the way the library path does; add a corpus program and a limit test in checks/compile-page-check.mjs that flips from refusal to MATCH.
+
+## Comments
+[2026-10-19T05:48:39Z] Matt Parrett: Status 2026-10-18: still refused; one jank file (multimethods) stops on "unsupported top-level form defmulti". A related driver gap from the same run: a def inside a deftest body fails with "unsupported op :def" in four files (add_watch, empty, ifn?, remove_watch), and three of those four defs are defmulti/defrecord. Both are driver work, no runtime bytes; a candidate for the next cheap cluster.
