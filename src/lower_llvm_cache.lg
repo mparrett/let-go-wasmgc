@@ -45,9 +45,12 @@
 (def ^:dynamic *trace* nil)   ; an atom {:asks {q hash} :ran {sym h}} of the bound trace
 
 (defn- realize
-  "x with every lazy seq inside it realized."
+  "x with every lazy seq inside it realized. A var is an answer as itself:
+   map? and the rest read a var's value (in a module, a var stand-in's
+   type is its value's, which a find-var stand-in does not have: P12.4)."
   [x]
-  (cond (map? x) (into (empty x) (map (fn [e] [(realize (key e)) (realize (val e))]) x))
+  (cond (var? x) x
+        (map? x) (into (empty x) (map (fn [e] [(realize (key e)) (realize (val e))]) x))
         (vector? x) (mapv realize x)
         (set? x) (into (empty x) (map realize x))
         (seq? x) (doall (map realize x))
