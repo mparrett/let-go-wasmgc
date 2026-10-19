@@ -22,14 +22,21 @@ is native output, never the backend's WAT or bytes.
    compiled and the suite can't isolate it.
 5. **Generated sets are regenerated, not edited:** `opmatrix/`, `maporder/`,
    `floats/`, `edn/`, `typed/` keep their generator beside the output.
-6. **Results are records, not tests.** Gate logs, census tables, result TSVs
-   and reports don't grow the test set; prefer out-of-tree logs to new records.
+6. **Results are not tests.** Gate logs, census tables, result TSVs
+   and reports don't grow the test set; prefer out-of-tree logs to new result files.
 7. **Growth comes from issues.** `checks/corpus-budget.tsv` gives each
    top-level directory a base (files, KB) and the topics it serves. Its ceiling
    is the base plus 2 files and 16 KB for each live issue (open, in progress,
    in review or blocked) labelled `corpus:<topic>` with one of its topics, a new
    issue or an existing one, so tagging the issue a test answers is what makes
-   room for the test. A label may go below a topic when that is clearer
+   room for the test. Work that needs more than a fix's case (a library test,
+   its fixtures and a re-freeze, under one issue) labels its issue
+   `corpus-budget:<files>/<KB>`, e.g. `corpus-budget:6/64`, which that issue
+   grants instead, so the exception shows on the issue that asked for it.
+   `git issue update --labels` replaces the whole list, so give the issue's
+   existing labels with the new one; the lint fails on an override whose issue
+   has no topic.
+   A label may go below a topic when that is clearer
    (`corpus:lang/types/protocols` counts for `lang/types`), and issues may nest
    with git-issue's `parent_of`: an untagged child takes its nearest tagged
    ancestor's topics. Closing or deferring an issue takes its room away, and
@@ -80,7 +87,7 @@ a proposal: a directory moves in its own commit, with its `items.tsv` and
 | `targets/llvm/` | the llvm target's own runtime and limits | (new) |
 | `suites/` | others' test suites and their lists | `*-tests.txt`, `jank/`, `jank-harness/` |
 | `apps/` | whole programs | `xsofy/`, `xsofy-console/`, `legmacs/`, `examples/` |
-| `records/` | results, not tests | `gates/`, `quality/`, `census/` tables, `*-results.tsv`, `*-report.md` |
+| `results/` | gate logs and tables, not tests | `gates/`, `quality/`, `census/` tables, `*-results.tsv`, `*-report.md` |
 
 `wasm/pending/` and `wasm/gaps/` (programs that don't match yet) become cases
 in their topic's file, each marked with the issue that tracks it. The `review*/`

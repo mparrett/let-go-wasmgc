@@ -8,14 +8,17 @@
 # A directory's ceiling is its base plus an allowance (FILES_PER files, KB_PER
 # KB) for each live issue (open, in_progress, review or blocked) labelled with
 # one of its topics or a topic below one (a `lang` row counts
-# `corpus:lang/fns`). An untagged child (git-issue parent_of) takes its nearest
+# `corpus:lang/fns`). An issue labelled `corpus-budget:<files>/<KB>` grants
+# that instead, for work that needs more than a fix's case (a library test,
+# its fixtures and a re-freeze under one issue). An untagged child (git-issue parent_of) takes its nearest
 # tagged ancestor's topics. Closing or deferring an issue takes its room away:
 # `--settle` then makes what was actually added the base. A clone without the
 # issue notes sees the bases alone (stricter, never looser). The review*/ rows
 # have no topics: closed, they only shrink.
 # Fails on: a directory over its ceiling, a directory with no row, a directory
 # outside review*/ without a README.md, a `corpus:` label outside the
-# vocabulary, and a file outside review*/ named for one bug or probe (bug-*,
+# vocabulary, a malformed `corpus-budget:` label or one on an issue with no
+# topic, and a file outside review*/ named for one bug or probe (bug-*,
 # probe-*, pNN-*); a fix adds a case to the file that owns the behavior.
 #   --settle          after an issue closes, or after deleting: each base becomes
 #                     the directory's current size, as long as that is within
@@ -50,39 +53,46 @@ now=$(git ls-files --format='%(objectname) %(path)' corpus |
   awk -F'\t' '{split($2, p, "/"); d = (p[3] == "") ? "(top)" : p[2]; n[d]++; kb[d] += $1}
               END {for (d in n) printf "%s\t%d\t%d\n", d, n[d], (kb[d] + 1023) / 1024}' | sort)
 
-# per issue: id, status, children (parent_of), its corpus: topics
+# per issue: id, status, children (parent_of), its corpus: topics, its
+# corpus-budget: override (or -)
 issues=$(git for-each-ref --format='%(refname):issue' "$notes" | git cat-file --batch 2>/dev/null |
-  awk 'function flush() {if (id != "") printf "%s\t%s\t%s\t%s\n", id, st, (kids == "" ? "-" : kids), (tp == "" ? "-" : tp); id = st = kids = tp = ""}
+  awk 'function flush() {if (id != "") printf "%s\t%s\t%s\t%s\t%s\n", id, st, (kids == "" ? "-" : kids), (tp == "" ? "-" : tp), (ov == "" ? "-" : ov); id = st = kids = tp = ov = ""}
        /^[0-9a-f]+ [a-z]+ [0-9]+$/ || / missing$/ {flush(); next}
        /^id: / && id == "" {id = $2}
        /^status: / {st = $2}
        /^parent_of: / {kids = substr($0, 12); gsub(/[ #]/, "", kids)}
-       /^labels: / {m = split(substr($0, 9), l, ","); for (i = 1; i <= m; i++) {gsub(/ /, "", l[i]); if (l[i] ~ /^corpus:/) tp = tp (tp == "" ? "" : " ") substr(l[i], 8)}}
+       /^labels: / {m = split(substr($0, 9), l, ","); for (i = 1; i <= m; i++) {gsub(/ /, "", l[i]); if (l[i] ~ /^corpus:/) tp = tp (tp == "" ? "" : " ") substr(l[i], 8); else if (l[i] ~ /^corpus-budget:/) ov = substr(l[i], 15)}}
        END {flush()}')
-# one line per issue and topic: <live|done> <topic>; an untagged child takes its
-# nearest tagged ancestor's topics, and is live or done by its own status
-labels=$(printf '%s\n' "$issues" | awk -F'\t' 'NF == 4 {st[$1] = $2; ids[++m] = $1; if ($4 != "-") tg[$1] = $4
+# one line per issue and topic: <live|done> <topic> <files> <KB>; an untagged
+# child takes its nearest tagged ancestor's topics, and is live or done, and
+# sized, by its own status and corpus-budget: label
+labels=$(printf '%s\n' "$issues" | awk -F'\t' -v FP=$FILES_PER -v KP=$KB_PER 'NF == 5 {st[$1] = $2; ov[$1] = $5; ids[++m] = $1; if ($4 != "-") tg[$1] = $4
     if ($3 != "-") {n = split($3, k, ","); for (i = 1; i <= n; i++) par[k[i]] = $1}}
   END {for (j = 1; j <= m; j++) {x = ids[j]; y = x; h = 0
          while (!(y in tg) && (y in par) && h < 64) {y = par[y]; h++}
-         if (!(y in tg)) continue
+         if (!(y in tg)) {if (ov[x] != "-") print "untopiced", x; continue}
+         f = FP; kb = KP
+         if (ov[x] != "-") {if (ov[x] !~ /^[0-9]+\/[0-9]+$/) {print "bad", x, ov[x]; continue}; split(ov[x], o, "/"); f = o[1]; kb = o[2]}
          live = (st[x] == "open" || st[x] == "in_progress" || st[x] == "review" || st[x] == "blocked") ? "live" : "done"
-         n = split(tg[y], a, " "); for (i = 1; i <= n; i++) print live, a[i]}}')
+         n = split(tg[y], a, " "); for (i = 1; i <= n; i++) print live, a[i], f, kb}}')
 
 # inputs in order: the budget, the labels, the current sizes. Prints, per row,
 # "row <dir> <files> <KB> <ceiling files> <KB>" with every tagged issue counted
 # (what --settle may absorb), and "fail <message>" lines.
-report=$(awk -F'\t' -v FP=$FILES_PER -v KP=$KB_PER '
+report=$(awk -F'\t' '
   FNR == 1 {f++}
-  f == 2 {if (NF) {split($0, a, " "); ll[++nl] = a[1]; lt[nl] = a[2]}; next}
+  f == 2 && /^untopiced / {split($0, a, " "); print "fail\t  issue #" a[2] ": a corpus-budget: label with no corpus:<topic> label, own or inherited, grants nothing (git issue update --labels replaces the whole list)"; next}
+  f == 2 && /^bad / {split($0, a, " "); print "fail\t  issue #" a[2] ": corpus-budget:" a[3] " is not <files>/<KB>"; next}
+  f == 2 {if (NF) {split($0, a, " "); ll[++nl] = a[1]; lt[nl] = a[2]; lf[nl] = a[3]; lk[nl] = a[4]}; next}
   f == 1 && /^# topics:/ {nv = split(substr($0, 11), v, " "); for (i = 1; i <= nv; i++) voc[v[i]] = 1; next}
   f == 1 {if ($0 !~ /^#/) {n[$1] = $2; kb[$1] = $3; t[$1] = $4}; next}
   !($1 in n) {print "fail\t  corpus/" $1 ": no row in checks/corpus-budget.tsv (" $2 " files, " $3 " KB)"; next}
-  {live = all = 0; nt = split(t[$1], ts, ",")
+  {live = lf_ = lk_ = af = ak = 0; nt = split(t[$1], ts, ",")
    for (j = 1; j <= nl; j++)
-     for (i = 1; i <= nt; i++) if (ts[i] != "-" && (lt[j] == ts[i] || index(lt[j], ts[i] "/") == 1)) {all++; if (ll[j] == "live") live++; break}
-   cf = n[$1] + live * FP; ck = kb[$1] + live * KP
-   print "row\t" $1 "\t" $2 "\t" $3 "\t" (n[$1] + all * FP) "\t" (kb[$1] + all * KP)
+     for (i = 1; i <= nt; i++) if (ts[i] != "-" && (lt[j] == ts[i] || index(lt[j], ts[i] "/") == 1)) {
+       af += lf[j]; ak += lk[j]; if (ll[j] == "live") {live++; lf_ += lf[j]; lk_ += lk[j]}; break}
+   cf = n[$1] + lf_; ck = kb[$1] + lk_
+   print "row\t" $1 "\t" $2 "\t" $3 "\t" (n[$1] + af) "\t" (kb[$1] + ak)
    if ($2 > cf || $3 > ck) print "fail\t  corpus/" $1 ": " $2 " files, " $3 " KB over the ceiling of " cf " files, " ck " KB (base " n[$1] " files, " kb[$1] " KB + " live " live issue(s); after an issue closes, --settle)"}
   END {for (j = 1; j <= nl; j++) {ok = 0; for (x in voc) if (lt[j] == x || index(lt[j], x "/") == 1) ok = 1
          if (!ok && !(lt[j] in seen)) {seen[lt[j]] = 1; print "fail\t  label corpus:" lt[j] ": not a topic, or below one, in checks/corpus-budget.tsv"}}}' \
