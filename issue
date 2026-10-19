@@ -11,3 +11,6 @@ hash_source: content
 role: wasm
 labels: corpus:lang/numbers
 description: GitHub issue #14 on this repository: (defn f [x] (+ x 1)) (f 1.5) fails with the Phase-1 named limit where native prints 2.5. Tracked here so the board carries it; the issue holds the cause analysis.
+
+## Comments
+[2026-10-19T05:48:39Z] Matt Parrett: Status 2026-10-18: open, GitHub #14 has no comments. The jank suite at 128/241 shows the same limit from the other side: rand.cljc stops on "a non-Int value reached an Int-typed slot (numeric tower is Phase 2)", and dec.cljc on "dec on a non-Int operand". The fix is tower piece 4 (type contagion through untyped slots), after the boxed types of piece 2.
