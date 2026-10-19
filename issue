@@ -23,3 +23,14 @@ description: Proposed: the corpus tests behaviors, one dense file per behavior, 
  Questions for you:
  - Does the topic tree work for you, or would you cut it differently?
  - You took AGENTS.md out when the working notes left the tree. Should a short root AGENTS.md point at the README's Checks section and `corpus/README.md`, or should agent guidance stay out of the tree?
+
+## Comments
+[2026-10-19T02:44:19Z] Matt Parrett: Read #53 at its head and the budget rules. Answers to the two questions, then one change I want before it merges.
+ 
+ **Topic tree.** It works. The one cut I would make: `records` as a top-level topic beside `lang/types` splits the same mechanism (D122 tags records as maps on the wasm lane, and the llvm type model is D218), so I would put it at `lang/types/records` and leave the top level for things that are not language features.
+ 
+ **Root AGENTS.md.** Keep agent guidance out of the tree. The README's Checks section and `corpus/README.md` are what an agent should read, and a root file that only points at them is a third place to keep current. If a tool needs a fixed entry point, a one-line pointer in the README's first section does the same job.
+ 
+ **The ceiling.** Two files and 16 KB per live issue is right for a behavior fix, and wrong for the next numeric-tower pieces: a piece with a native oracle wants the library test, the fixture set the oracle check reads, and the jank re-freeze, in one PR under one issue. That is three to five files, mostly in `corpus/intrinsics/` and `corpus/jank/`. Two options, either is fine with me: a per-issue override field in the issue (`corpus_budget: 6 files 64 KB`) that the lint reads, or a larger default for `intrinsics/` and `jank/` in `corpus-budget.tsv`. I prefer the override, since it keeps the default honest and makes the exception visible on the issue that asked for it.
+ 
+ With that settled I will review #53 for merge.
