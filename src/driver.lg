@@ -53,8 +53,14 @@
             head (take-while #(not (and (switch-ns %) (:line (meta %)))) forms)]
         (vec (concat head
                      (mapcat (fn [cut e]
-                               (let [l (nth cut 0) c (nth cut 1) n (nth cut 2)]
-                                 (in-ns-call n #(read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e))))))
+                               (let [l (nth cut 0) c (nth cut 1) n (nth cut 2)
+                                     ;; a namespace made only to read in is
+                                     ;; removed again: a require would take
+                                     ;; it as loaded and skip its file (P7.11)
+                                     made? (nil? (find-ns n))
+                                     fs (in-ns-call n #(read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e))))]
+                                 (when made? (remove-ns n))
+                                 fs))
                              cuts ends)))))))
 
 (defn splice-do
