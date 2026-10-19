@@ -3763,9 +3763,15 @@
 (alter-var-root #'ir.build/build-form
                 (fn [orig]
                   (fn [form ctx]
-                    (if (and *in-wasm* (some? (lw-ext/regex-source form)))
+                    (cond
+                      (and *in-wasm* (some? (lw-ext/regex-source form)))
                       (ir.build/build-quote (list 'quote form) ctx)
-                      (orig form ctx)))))
+                      ;; var-value-form's read of its own var, carried in
+                      ;; the symbol's meta (privacy aside, as #'ns/p does)
+                      (and (symbol? form) (:lw/var-read (meta form)))
+                      ((get (ns-interns 'ir.build) 'add-inst!) ctx (ir.build/ctx-block ctx) :load-var []
+                       (:lw/var-read (meta form)))
+                      :else (orig form ctx)))))
 
 (alter-var-root #'ir.build/bind-local!
                 (fn [orig]
@@ -3801,7 +3807,11 @@
           (and *rt* (var? v) (not (:macro (meta v)))
                (or (value-substs v) (and (rt-target v) (callee-sig v)) (core-fn-impls v)
                    (no-twin-message v) (native-scalar-const? v))))
-    (list 'fn* [] (symbol v))
+    ;; marked: build-form reads v itself, so a private v is reached from
+    ;; whatever namespace the reader is built in (resolve enforces privacy,
+    ;; and a qualified miss became a :load-var of the bare symbol: nil on
+    ;; GC, "a var used as a value" on llvm)
+    (list 'fn* [] (with-meta (symbol v) {:lw/var-read v}))
     (list 'fn* [] (list (lw-rt/rt-sym 'core 'raise)
                         (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string)
                               (str "lower-wasm: the value of " v " is not reachable from its stand-in:"

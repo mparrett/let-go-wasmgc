@@ -11,6 +11,10 @@
 (println (t #(type #"a")) (t #(str #"a+")) (t #(pr-str #"a")) (t #(re-find #"a+" "baab")))
 (println (t #(type #'x)) (t #(type #'f)) (t #(deref #'x)) (t #(@#'f 4)) (t #(#'f 21)) (t #(apply #'f [5])))
 (println (t #(via)) (t #(binding [*d* 2] @#'*d*)) (t #(map deref [#'x #'*d*])))
+;; a private var's stand-in reads its value: the reader resolved its
+;; qualified name, which privacy hid (nil on GC; llvm refused the def)
+(def ^:private px 7)
+(println (t #(deref #'px)) (t #(:private (meta #'px))) (t #(map deref [#'px])))
 (println (t #(= #'x #'x)) (t #(= #'x #'f)) (t #(= (hash #'f) (hash #'f))) (t #(get {#'x 1 #'f 2} #'f)))
 (println (t #(sort (keys (meta #'x)))) (t #(:name (meta #'f))) (t #(contains? (meta #'x) :lw/var)))
 (println (meta ^:a [1]) (meta ^:b [1]) (meta ^:a {:k 1}) (meta ^:b {:k 1}) (meta ^:a #{1}) (meta ^:b #{1}))

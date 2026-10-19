@@ -1223,7 +1223,9 @@
 
 (defn ll-root-var! [nid op args]
   (let [k (first (ll-const-val (first args)))
-        v (when (keyword? k) (resolve (symbol (namespace k) (name k))))]
+        ;; find-var, not resolve: k is var-const-form's own name for the var,
+        ;; and resolve hides a private one (P12.38: xsofy.hash/salt-tag-kw)
+        v (when (keyword? k) (find-var (symbol (namespace k) (name k))))]
     (when-not (and v (q-var-global v))
       (ll-fail "root accessor requires a program Var" {:var k}))
     (if (= op #'llvm-read-root)
