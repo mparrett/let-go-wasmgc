@@ -1,5 +1,7 @@
-;; The WasmGC lane compiles the polymorphism forms and raises a catchable
-;; placeholder error when one runs (the llvm lane implements them).
+;; The WasmGC lane compiles the polymorphism forms inside an expression and
+;; raises a catchable placeholder error when one runs (the llvm lane
+;; implements them). At top level they compile on WasmGC too (main's program
+;; deftype/defrecord/defprotocol: corpus/eval/program/multi/progtypes.lg).
 (try (deftype Point [x y]) (catch Exception e (println (ex-message e))))
 (try (defrecord Pair [a b]) (catch Exception e (println (ex-message e))))
 (try (defprotocol Shape (area [s])) (catch Exception e (println (ex-message e))))
