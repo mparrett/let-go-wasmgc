@@ -34,3 +34,8 @@ description: Proposed: the corpus tests behaviors, one dense file per behavior, 
  **The ceiling.** Two files and 16 KB per live issue is right for a behavior fix, and wrong for the next numeric-tower pieces: a piece with a native oracle wants the library test, the fixture set the oracle check reads, and the jank re-freeze, in one PR under one issue. That is three to five files, mostly in `corpus/intrinsics/` and `corpus/jank/`. Two options, either is fine with me: a per-issue override field in the issue (`corpus_budget: 6 files 64 KB`) that the lint reads, or a larger default for `intrinsics/` and `jank/` in `corpus-budget.tsv`. I prefer the override, since it keeps the default honest and makes the exception visible on the issue that asked for it.
  
  With that settled I will review #53 for merge.
+[2026-10-19T03:18:39Z] Norman Nunley, Jr: I took the override, and #53 has it now: an issue labelled `corpus-budget:6/64` grants 6 files and 64 KB instead of the default 2 and 16. git-issue has no custom fields, so it is a label, which shows on the issue the same way. A malformed one fails the lint, and so does one on an issue with no `corpus:` topic, since `--labels` replaces the whole list.
+ 
+ On `records`: I meant results, not defrecord. That topic held gate logs, census tables and `*-results.tsv`, so the name was the problem. It is `results` now, and defrecord stays under `lang/types` with D122 and D218. If you want records called out, `corpus:lang/types/records` already works as a label below `lang/types`.
+ 
+ No root AGENTS.md. The README already points at `corpus/README.md` from its corpus bullet.
