@@ -1,0 +1,19 @@
+id: 50272ef
+v: 2
+title: M4: preemptive green threads over continuations, built for M:N later
+status: open
+priority: medium
+created: 2026-10-19T18:45:50Z
+updated: 2026-10-19T18:45:50Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Proposed: M4's scheduler is preemptive green threads over continuations, built so that OS threads (M:N) can come later without a rewrite.
+ 
+ 1. A thread record holds the per-thread state: the continuation it resumes with, `lg_handler`, the dynamic-binding stack and the argument buffer. These are separate globals today; a current-thread pointer replaces them, and later becomes one thread-local pointer per OS thread.
+ 2. Preemption reuses the entry check (spec decision 7): the scheduler's timer sets the flag every CPS function already tests, and the check yields when the slice is spent. No new per-call cost, and a looping `go` block cannot starve the others.
+ 3. The collector's roots add every suspended thread record and the run queue. Collection stays at entry checks; with OS threads it stops the world there.
+ 4. A blocking host call must not stall every green thread: host I/O becomes non-blocking and polled by the scheduler, or moves to a helper thread. Which one is open.
+ 5. Designed for later, not built in M4: per-thread free lists (and the inline allocation path built per-thread), atomic updates to the var table, atoms and the interned tables. Continuation records never change after allocation (decision 15), so they are safe to share.
+ 
+ Done as M4 says: native lg's `go`, `<!`, `>!`, `chan` and `timeout` tests MATCH, plus a case where a looping `go` block still lets the others run.
