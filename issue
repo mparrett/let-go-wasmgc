@@ -10,3 +10,6 @@ assignee: Matt Parrett
 hash_source: content
 labels: corpus:lang/types
 description: P10.6/#43 represent a defrecord instance as a map carrying :lw/type (D122: the backend has no type kind), so (dissoc r :a) keeps the tag where native returns a plain map, (= r {:a 1}) is false where native compares fields, and pr-str shows the tag. The jank suite shows it in dissoc.cljc and the record tests. Fixing it is a representation decision (a map kind that carries its type out of band, or a type kind) and touches the runtime layout under discussion on PR #25, so it waits for that answer. Out of scope for the 2026-10-15 loop.
+
+## Comments
+[2026-10-19T05:48:40Z] Matt Parrett: Status 2026-10-18: open. At 128/241 the suite still shows it in dissoc.cljc and the record files (dissoc keeps the tag, equality and pr-str differ). D218 decides the llvm side (a type is a Type object); the wasm side waits for the shared-core answer on #646deae so the two lanes pick one representation.
