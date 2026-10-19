@@ -11,3 +11,8 @@ hash_source: content
 issue_type: task
 labels: llvm
 description: docs/LLVM-TARGET-SPEC.md decision 5 is not built: every runtime helper whose result is used allocates a continuation record. CPS stays (direct calls between non-leaf fns were declined 2026-10-10). Measure the continuation share of allocation first.
+
+## Comments
+[2026-10-19T18:47:33Z] Norman Nunley, Jr: A direct call to a leaf reached through a var guards on the var's value, so redefinition stays correct without patching code. At the call site, load the var (the load the CPS call makes anyway) and compare its fn with the leaf the call was compiled against: equal makes the plain `fastcc` call, which returns the value and allocates no continuation; otherwise make the ordinary CPS call through the var. A redefinition sends exactly that var's call sites to the slow path, at once, and no global epoch or code patching is needed, which keeps it safe under M4's preemption (#50272ef) and later OS threads. Leaves the fixpoint reaches without a var (intrinsics, C helpers, runtime internals) need no guard.
+ 
+ Two consequences to settle with it: a leaf with a loop never reaches an entry check, so it cannot be preempted (bound it, or poll the entry flag at its loop head); and the function cache's key for a caller already includes its vars' interfaces, so a recompile after redefinition picks up the new leaf.
