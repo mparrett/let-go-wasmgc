@@ -20,6 +20,18 @@
     (cond (and (= 'ns (first form)) (symbol? (second form))) (second form)
           (and (= 'in-ns (first form)) (seq? (second form)) (= 'quote (first (second form)))) (second (second form)))))
 
+(defn in-ns-call
+  "(f) with namespace n current, created if absent, and the caller's
+   namespace current again however f exits. In place of (binding [*ns* n]
+   ..), as lw-rt/call-in-ns (P12.1): a backend fn compiled without the
+   runtime library cannot bind the native *ns* (P12.2). in-ns, not the-ns:
+   n may not exist yet, and in-ns creates it without running its file
+   (create-ns may autoload it on the pinned VM)."
+  [n f]
+  (let [cur (ns-name *ns*)]
+    (in-ns n)
+    (try (f) (finally (in-ns cur)))))
+
 (defn read-program
   "A source file's top-level forms, each read in the namespace it sits in,
    as native's load reads them: the current *ns* until a top-level ns or
@@ -42,12 +54,7 @@
         (vec (concat head
                      (mapcat (fn [cut e]
                                (let [l (nth cut 0) c (nth cut 1) n (nth cut 2)]
-                                 ;; create-ns may autoload n on the pinned VM.
-                                 ;; Reading must not run the file (or its requires).
-                                 ;; in-ns creates without invoking the loader.
-                                 (binding [*ns* *ns*]
-                                   (in-ns n)
-                                   (read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e))))))
+                                 (in-ns-call n #(read-all (str (pad [l (if (= 1 l) (dec c) c)]) (subs text (off [l c]) e))))))
                              cuts ends)))))))
 
 (defn splice-do
@@ -1233,7 +1240,7 @@
         skip (:skip opts)
         opts (assoc {:target (:target opts) :rt (:rt opts) :shake (:shake opts)} :trap-throws (boolean test?))
         ;; read in user, as native loads a program (::k is :user/k)
-        forms (mapcat splice-do (binding [*ns* (create-ns 'user)] (read-program in)))
+        forms (mapcat splice-do (in-ns-call 'user #(read-program in)))
         tests (atom [])
         forms (if test?
                 (let [[pre post] (split-with #(not (and (seq? %) (= 'ns (first %)))) forms)
