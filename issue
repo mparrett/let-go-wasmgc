@@ -11,3 +11,6 @@ hash_source: content
 role: wasm
 labels: corpus:runtime
 description: The twins added in #35 trigger a WARNING at native load because the ns forms lack :refer-clojure :exclude. Fix the ns forms; needs the byte guard, gate 2 and checks/gensym-load.sh (which now writes a snapshot).
+
+## Comments
+[2026-10-19T05:48:39Z] Matt Parrett: Status 2026-10-18: still warns, and the list grew with #46 and #51. A native (require (quote wasm.math) (quote wasm.term)) at e9789b7d prints four WARNING lines: prn-str and println-str in wasm.str, rand in wasm.math, read-line in wasm.term. checks/gensym-load.sh stays green because it does not fail on warnings. Fix: :refer-clojure :exclude in those three ns forms; expected byte-neutral, needs the guard and gate 2.
