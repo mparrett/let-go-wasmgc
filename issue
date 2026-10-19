@@ -11,3 +11,6 @@ hash_source: content
 role: wasm
 labels: corpus:lang/types
 description: D217 lifted the deftype/defprotocol/defrecord refusal for library namespaces. A program namespace still cannot declare a type. Extend the library path to the program ns and record the byte move under the guard.
+
+## Comments
+[2026-10-19T05:48:39Z] Matt Parrett: Landed in #43 (2026-10-15): a program namespace compiles deftype, defrecord and defprotocol through the library path; the jank harness depends on it and the suite went 0 -> 107 on that PR. What remains is the representation gap (a record is a tagged map, D122), tracked as #e9c84fc. Closing.
