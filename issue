@@ -1,0 +1,15 @@
+id: 5cb5141
+v: 2
+title: corpus-lint: an issue tagged two topics of one row grants its allowance twice
+status: open
+priority: medium
+created: 2026-10-20T14:31:06Z
+updated: 2026-10-20T14:31:06Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Found reviewing #53 at fd64121. The labels pass in checks/corpus-lint.sh prints one line per issue and topic, and the row pass adds the allowance for every matching line, so one live issue labelled both of a row's topics counts twice against that row.
+ 
+ Reproduced: three files staged into corpus/emit (base 10, topics lang/fns,host) with one live issue labelled corpus:lang/fns and corpus:host pass at 13 files, where the rule gives 12. The wasm row (lang,host) has the same shape for any issue tagged a lang/* topic plus host.
+ 
+ Fix: carry the issue id on each labels line and skip an id the row has already counted. One awk change; checks/corpus-lint.sh with CORPUS_LINT_NOTES pointed at scratch refs is the test shape.
