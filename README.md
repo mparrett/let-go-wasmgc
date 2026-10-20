@@ -12,9 +12,9 @@ This is an experiment, not part of let-go. Stock `lg -w` builds a wasm
 module that runs let-go's bytecode VM inside wasm; this backend does not use
 the VM at all. Every result here is measured against native `lg` by a
 differential check (see "Checks"), and the design record is
-[DECISIONS.md](DECISIONS.md), numbered D10 to D169.
+[DECISIONS.md](DECISIONS.md), numbered D10 to D217.
 
-## Status (as of 2026-10-02)
+## Status (as of 2026-10-20)
 
 - **xsofy** (a roguelike) is playable from the emitted module in the browser
   and in a terminal under node. Its world dumps for seeds 1 to 20 at 60 turns
@@ -26,24 +26,32 @@ differential check (see "Checks"), and the design record is
   and evaluating it with `C-x C-e` works.
 - **let-go's own core tests**: 271 of the 273 selected deftests pass, with
   the two remaining ones skipped by name.
+- **The jank clojure-test-suite** (241 files of core tests, run through
+  `checks/jank-suite.sh` against native lg) passes 128 files on the WasmGC
+  lane; `corpus/jank/baseline-wasm.tsv` ratchets the count, so a pull request
+  may not drop a file. Most of the rest wait on the numeric tower (BigInt,
+  BigDecimal and Ratio literals).
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
 - **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the
   compiler compiled, xsofy, legmacs; needs Chrome 137 or newer). Built by `host/build-pages.sh` and
   served from the `gh-pages` branch. [docs/READING-GUIDE.md](docs/READING-GUIDE.md)
   is a guided walk through the code.
-- Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0`; gate 7 was rerun
-  green the same evening after the evaluator's core table gained bit ops,
-  `Math/*` and clocks (D169, D170).
+- Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0` (gate 7 rerun green
+  the same evening, D169, D170) and gate 12, the self-compilation stage, on
+  2026-10-09 (D212). Since then every pull request is held to the GC byte
+  guard (`checks/gc-byte-identity.sh`: the compiled bytes of 29 programs
+  against a frozen baseline) plus the rows it touches, and the test counts
+  above were re-measured on 2026-10-20.
 
-Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-02:
+Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-20:
 
 | module | brotli |
 |---|---|
-| legmacs, with the evaluator | 166 KB |
-| legmacs, `LW_NO_EVAL=1` | 120 KB |
+| legmacs, with the evaluator | 172 KB |
+| legmacs, `LW_NO_EVAL=1` | 121 KB |
 | xsofy | 115 KB |
-| REPL page module | 77 KB |
+| REPL page module | 82 KB |
 
 Browsers: the hosts need WebAssembly JSPI. As of 2026-10-03 that is Chrome and
 Edge 137 or newer on desktop; Safari 27 ships it (iOS included) and Firefox
@@ -51,11 +59,13 @@ plans it for 153, so the gap closes on its own. Binaryen's Asyncify cannot
 stand in, because it spills locals to linear memory and these modules hold
 GC references in locals (`wasm-opt --asyncify` asserts on them).
 
-Named limits, as of 2026-10-02: Ratio and BigInt results are named errors
-(D15); `go` blocks and channels are not supported, and `future` runs its
-body at the call (D162); the evaluator has no interop, `deftype`,
-`defprotocol` or `defmulti` (D160). As of 2026-10-07 a library namespace
-(one under `-source-paths`) may define `deftype`, `defrecord` and
+Named limits, as of 2026-10-20: Ratio and BigInt results are named errors
+(D15; `rt/wasm/bignum.lg` holds a BigInt and Ratio library checked against
+native lg, which nothing calls yet); `go` blocks and channels are not
+supported, and `future` runs its body at the call (D162); the evaluator has
+no interop, `deftype`, `defprotocol` or `defmulti` (D160). A library
+namespace (one under `-source-paths`, since 2026-10-07) and a program's own
+namespace (since 2026-10-15) may define `deftype`, `defrecord` and
 `defprotocol`: a type is a keyword tag or a map carrying one, a protocol
 method one dispatching defn (D204); `extend-type`, `reify` and `defmulti`
 are not seen. [FINDINGS.md](FINDINGS.md) lists native
@@ -128,7 +138,8 @@ Environment variables that matter:
 ## Quick start
 
 Run from the repo root. The first compile after any change to `src/` or
-`rt/` builds the runtime library, which took about 90 s as of 2026-10-02;
+`rt/` builds the runtime library, which took about two minutes as of
+2026-10-20 (five scalar programs from a cold cache in 144 s);
 later compiles reuse it.
 
 Compile and run one program under node:
@@ -282,20 +293,24 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
 
 ## Where it might go
 
-Candidates, none started (as of 2026-10-02):
+As of 2026-10-20:
 
 - A linear-memory target beside WasmGC, specified in
-  [docs/LINEAR-TARGET-SPEC.md](docs/LINEAR-TARGET-SPEC.md): tagged i32
-  values, a bump allocator first and a precise collector second, a wazero
-  runner, and later an Asyncify build for browsers without JSPI.
-- Faster compiles: emit binary wasm directly instead of printing and
-  reparsing WAT, and cache IR per namespace keyed by source hash.
-- `go` blocks and channels, with a scheduler on JSPI.
-- Calls through var-table slots, so an evaluated redefinition reaches
-  compiled callers.
-- A baseline compiler as a second output of the evaluator's front end, so a
-  module can compile code at run time without porting the optimizing
-  compiler: specified in [docs/SELF-HOST-SPEC.md](docs/SELF-HOST-SPEC.md).
+  [docs/LINEAR-TARGET-SPEC.md](docs/LINEAR-TARGET-SPEC.md), is started:
+  tagged i32 values, a bump allocator and the wazero runner are in
+  (`--target linear`, phase 8 of `checks/items.tsv`); the precise collector
+  (phase 11) and an Asyncify build for browsers without JSPI are not.
+- The module compiling at run time is built: the evaluator's second output
+  (`rt/wasm/emit.lg`, D191), the backend carried as a program and
+  self-compiling in the browser (`host/compile.html`, D206 to D212,
+  phase 12), and a wasm binary encoder in plain lg (`rt/wasm/wasmbin.lg`,
+  D190). [docs/SELF-HOST-SPEC.md](docs/SELF-HOST-SPEC.md) is the spec.
+- A native target through LLVM IR is in review as pull request #25 (phase 13
+  rows); the runtime seam it needs (D213) is on main.
+- Still candidates, none started: the numeric tower's boxed BigInt and Ratio
+  in the runtime; `go` blocks and channels, with a scheduler on JSPI; calls
+  through var-table slots, so an evaluated redefinition reaches compiled
+  callers; IR cached per namespace keyed by source hash.
 
 ## How this repository is maintained
 
