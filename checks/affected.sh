@@ -28,6 +28,7 @@ cd "$(dirname "$0")/.."
 # path: src/ rt/ checks/oracle.sh checks/wasm-run.sh src/run.mjs.
 table() { cat <<'EOF'
 P0.1	checks/run-corpus.sh checks/sem.sh checks/gate.sh checks/census.sh checks/census.lg checks/census-summary.py checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg checks/run.sh corpus/scalar/
+P0.2	checks/corpus-lint.sh checks/corpus-budget.tsv corpus/
 P1.0	oracle corpus/scalar/
 P1.1	oracle corpus/scalar/ corpus/opmatrix/ corpus/typed/ checks/run-corpus.sh
 P1.2	oracle corpus/control/ checks/run-corpus.sh
