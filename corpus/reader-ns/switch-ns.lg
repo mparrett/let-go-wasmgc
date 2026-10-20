@@ -1,0 +1,9 @@
+;; ::k reads in user until a top-level ns/in-ns, then in the namespace it
+;; names; forms keep their :line (D219)
+(println ::k)
+(ns foo.bar)
+(println ::k)
+  (in-ns (quote baz)) (clojure.core/println ::j)
+(in-ns (quote foo.bar))
+(defn f [] ::q)
+(println (:line (meta (var f))) (f))
