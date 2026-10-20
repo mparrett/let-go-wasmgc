@@ -21,13 +21,18 @@ Enable it in .claude/settings.local.json (personal, not committed):
      "timeout": 20}]}]}}
 
 State is one file in the git common dir (issue-watch.json), shared by every
-worktree. ISSUE_WATCH_REMOTE names a remote other than origin.
+worktree: a baseline per session, so two sessions on one clone each see
+every change once and neither's prompt reads as the other's first, plus the
+last refs seen by anyone, which a new session reports changes against.
+Sessions unseen for a week drop out. ISSUE_WATCH_REMOTE names a remote
+other than origin.
 """
-import json, os, subprocess, sys
+import json, os, subprocess, sys, time
 
 REMOTE = os.environ.get("ISSUE_WATCH_REMOTE", "origin")
 TIMEOUT = 8
 MAX_CHARS = 8000
+SESSION_TTL = 7 * 24 * 3600  # a session unseen this long drops out of the state
 WATCH_NS = "refs/issue-watch/"
 RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
@@ -176,12 +181,20 @@ def main():
     try:
         with open(state_path) as f:
             state = json.load(f)
-        if "refs" not in state:  # first format: a bare ref map
-            state = {"refs": state, "session": None}
     except Exception:
-        state = {"refs": {}, "session": None}
-    seen = state["refs"]
-    first = not session or state.get("session") != session
+        state = {}
+    if "sessions" not in state:
+        # earlier formats: a bare ref map, then {"refs", "session"}; both
+        # become the shared baseline a new session reports changes against
+        state = {"sessions": {}, "last": state["refs"] if "refs" in state else state}
+    sessions = state["sessions"]
+    now = int(time.time())
+    for sid in [s for s, v in sessions.items() if now - v.get("at", 0) > SESSION_TTL]:
+        del sessions[sid]
+    # each session keeps its own baseline, so two sessions on one clone each
+    # see every change once; a new session starts from what was last seen
+    first = not session or session not in sessions
+    seen = state.get("last", {}) if first else sessions[session]["refs"]
 
     want = remote if first else {r: s for r, s in remote.items() if seen.get(r) != s}
     if want:
@@ -190,11 +203,17 @@ def main():
                 *[f"+{r}:{watch_ref(r)}" for r in want])
         except Exception:
             return  # leave the state alone; retry next prompt
+    for ref in seen:
+        if ref not in remote:  # the issue left the remote: drop its watch ref
+            git("update-ref", "-d", watch_ref(ref), check=False)
 
     delta = changes(remote, seen) if seen else []
+    if session:
+        sessions[session] = {"refs": remote, "at": now}
+    state["last"] = remote
     try:
         with open(state_path + ".tmp", "w") as f:
-            json.dump({"refs": remote, "session": session}, f)
+            json.dump(state, f)
         os.replace(state_path + ".tmp", state_path)
     except Exception:
         pass
