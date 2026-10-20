@@ -1,0 +1,13 @@
+id: 0eb8aad
+v: 2
+title: git-issue-watch: one shared session marker makes every prompt a first prompt with two sessions
+status: open
+priority: medium
+created: 2026-10-20T14:53:27Z
+updated: 2026-10-20T14:53:27Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Review of #52 (2026-10-18): tools/git-issue-watch.py keeps one session id and one ref map in issue-watch.json. With two sessions on one clone each prompt sees the other's marker and re-reports the whole board (measured: A 3656 chars, A 0, B 3656, A 3656 again), and a change recorded by one session is never shown to the other. Also: watch refs for issues gone from the remote are never pruned (P3).
+ 
+ Fix: a baseline per session id in the state file, plus the last refs seen by anyone for a new session's delta; sessions unseen for a week dropped; watch refs for refs missing from the remote deleted. Patch in a follow-up PR with the four-prompt test.
