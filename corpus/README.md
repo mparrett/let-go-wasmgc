@@ -44,7 +44,8 @@ is native output, never the backend's WAT or bytes.
    (also after deleting files). `checks/corpus-lint.sh` (row P0.2, a pre-commit
    hook) enforces it. Raising a base, adding a row or changing topics cites an
    issue in the commit (`Issue: #<id>`, or `Refs:` the closed issue when
-   settling; a commit-msg hook checks). The `review*/` rows have no topics:
+   settling; a commit-msg hook checks, which a clone made before it has only
+   after `prek install` runs again). The `review*/` rows have no topics:
    closed, they only shrink. Without the issue notes fetched the lint sees the
    bases alone, which is stricter, never looser.
 
