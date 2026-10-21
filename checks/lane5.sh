@@ -71,6 +71,7 @@ fi
 
 # ---- walks ----------------------------------------------------------------------
 browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
 [ -n "$browser_skip" ] && { echo "SKIP (lane 5: both lanes built; $browser_skip)"; exit 2; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 ps=$(free_port); python3 "$here/host/coi-serve.py" "$ps" "$stock" >"$t/s.log" 2>&1 & pids+=($!)

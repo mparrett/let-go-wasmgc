@@ -23,8 +23,9 @@
 # js/wasm), and the table records the failure from the run itself. A module
 # that does not compile still gets a table (the stock lane's sizes, the
 # backend's first error) and exit 1. Boot needs Playwright's Chromium: when
-# checks/browser-probe.mjs finds none the row is SKIP (exit 2) before any
-# build, and the table is left as it is. Env: LG, LEGMACS, LETGO, REPS, KEEP=1.
+# checks/browser-probe.mjs finds none the row is SKIP (exit 2) once the module
+# built, and the table is left as it is; LW_REQUIRE_BROWSER=1 makes that a
+# FAIL before any build. Env: LG, LEGMACS, LETGO, REPS, KEEP=1.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
@@ -33,7 +34,7 @@ LETGO=${LETGO:-$LW_ROOT/let-go}
 COMMIT=e9789b7d
 REPS=${REPS:-5}
 browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
-[ -n "$browser_skip" ] && { echo "SKIP (legmacs size/boot: $browser_skip)"; exit 2; }
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
@@ -81,6 +82,7 @@ if [ "$lw_ok" = 1 ]; then
 fi
 
 # ---- boot ------------------------------------------------------------------------
+[ -n "$browser_skip" ] && [ "$lw_ok" = 1 ] && { echo "SKIP (legmacs size/boot: module built; $browser_skip)"; exit 2; }
 boot_lane() {  # boot_lane <dir> <label> coi|plain
   local p; p=$(free_port)
   if [ "$3" = coi ]; then python3 "$here/host/coi-serve.py" "$p" "$1" >"$t/$2.server.log" 2>&1 & pids+=($!)
@@ -88,8 +90,10 @@ boot_lane() {  # boot_lane <dir> <label> coi|plain
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/index.html" && break; sleep 0.1; done
   node "$here/checks/browser-boot.mjs" --legmacs-time "http://127.0.0.1:$p" "$REPS" >"$t/boot-$2.json" 2>&1
 }
-[ -f "$stock/index.html" ] && boot_lane "$stock" stock coi
-[ "$lw_ok" = 1 ] && boot_lane "$t/lw" lw plain
+if [ -z "$browser_skip" ]; then
+  [ -f "$stock/index.html" ] && boot_lane "$stock" stock coi
+  [ "$lw_ok" = 1 ] && boot_lane "$t/lw" lw plain
+fi
 
 # ---- table -----------------------------------------------------------------------
 python3 - "$t" "$here/corpus/legmacs/size-boot.md" "$REPS" "$LEGMACS" "${LW_LEGMACS_MAIN:-}" <<'PY'

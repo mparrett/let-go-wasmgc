@@ -104,6 +104,10 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 - **brotli**, for the size lines the build scripts print.
 - **node** with WasmGC, wasm exception handling and JSPI. We develop on
   node 25. `src/run.mjs` and `host/node-host.mjs` set their own stack sizes.
+- **wasmtime** for the wasmtime row of `checks/browser-boot.sh` (run with
+  GC, exceptions, function references and tail calls enabled). Without it
+  that row is SKIP, and node-host alone decides P4.0 when Chromium is
+  missing too (D227).
 - **Chromium through Playwright** for the browser lanes
   (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/eval-hosts.sh`,
   `checks/size-boot.sh`, the `*-page-check.mjs` scripts). Playwright is
@@ -112,7 +116,9 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   `npx playwright install chromium`); the default is `../../../local-scripts`
   relative to `checks/`. Without it the rows do not fail: their browser lanes
   report SKIP with the reason (`checks/browser-probe.mjs`), node-host and
-  wasmtime decide P4.0 and P7.5, and the browser-only rows exit 2 (D227).
+  wasmtime decide P4.0, node-host and legmacs decide P7.5, and the
+  browser-only rows exit 2 (D227). `LW_REQUIRE_BROWSER=1` turns that SKIP
+  into a FAIL on a machine where the browser lanes are expected to run.
   The COI server and the shell injector live in `host/` (`coi-serve.py`,
   `inject-shell.sh`) since 2026-10-21 and need nothing outside the repository.
 - **xsofy and legmacs checkouts** (`$XSOFY`, `$LEGMACS`) for those corpora.
@@ -125,6 +131,7 @@ Environment variables that matter:
 | variable | effect |
 |---|---|
 | `LW_BROWSER_TOOLS` | directory holding `browser-smoke-playwright/` (Playwright for the browser lanes; absent = those lanes SKIP, D227) |
+| `LW_REQUIRE_BROWSER=1` | a browser lane that cannot run is a FAIL, not a SKIP (D227) |
 | `LW_ROOT` | the root holding `let-go/`, `xsofy/`, `legmacs/`, `lg-bin/` (`checks/env.sh`) |
 | `LG` | native lg used by the driver and as the oracle's reference |
 | `LG_ARGS` | args passed to native lg before the program; its `-source-paths` also names the backend's library roots |

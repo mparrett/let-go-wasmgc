@@ -14,8 +14,9 @@
 # reported either way (JSPI needs no SharedArrayBuffer, so it is expected to
 # pass too; that is the COI finding in host/ABI.md). node and wasmtime rows
 # are informational. Without Playwright's Chromium (checks/browser-probe.mjs)
-# the browser rows are SKIP and node and wasmtime decide the exit instead
-# (D227). Env: LG, KEEP=1.
+# the browser rows are SKIP and node and wasmtime decide the exit instead;
+# without wasmtime on PATH its row is SKIP too and node decides alone (D227).
+# LW_REQUIRE_BROWSER=1 makes a missing Chromium a FAIL. Env: LG, KEEP=1.
 #
 # checks/browser-boot.sh --xsofy-shell — P4.1 host half: the same two modules
 # in the REAL xsofy/tools/xsofy-shell.html (host/build-xsofy-serve.sh injects
@@ -67,6 +68,7 @@ trap cleanup EXIT
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true   # non-empty = the reason the browser lanes cannot run
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
 
 # ---- --xsofy -------------------------------------------------------------------
 if [ "$mode" = xsofy ]; then
@@ -216,6 +218,7 @@ LG_HOST_TIMING=1 node "$here/host/node-host.mjs" "$www/hello.wasm" </dev/null >"
 node "$here/host/node-host.mjs" "$www/keys.wasm" --keys abq >"$t/node-keys.out" 2>&1
 host_row node "$t/node-hello.out" "$nx" "$t/node-keys.out" >"$t/rows.tsv"
 
+if command -v wasmtime >/dev/null 2>&1; then
 feat=(--enable-gc --enable-reference-types --enable-exception-handling --enable-tail-call --enable-multivalue
       --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --disable-compact-imports)
 wasm-tools parse "$here/host/wasmtime-adapter.wat" -o "$t/adapter.wasm"
@@ -229,6 +232,9 @@ wt_run() {  # wt_run <module> <out>; keys a b q on stdin
 wt_run "$www/hello.wasm" "$t/wt-hello.out"; wx=$?
 wt_run "$www/keys.wasm" "$t/wt-keys.out"
 host_row wasmtime "$t/wt-hello.out" "$wx" "$t/wt-keys.out" >>"$t/rows.tsv"
+else
+  printf 'wasmtime\tSKIP\tSKIP\n' >>"$t/rows.tsv"
+fi
 
 # ---- report --------------------------------------------------------------------
 python3 - "$t" <<'EOF'
@@ -254,7 +260,8 @@ for f in ('coi', 'plain'):
 timing = open(f'{t}/node-hello.err').read().strip()
 for line in open(f'{t}/rows.tsv'):
     name, h, k = line.rstrip('\n').split('\t')
-    extra = timing.replace('timing ', '') if name == 'node' else 'no JSPI: sleep/read_key block the thread'
+    extra = (timing.replace('timing ', '') if name == 'node' else
+             'no wasmtime on PATH' if h == 'SKIP' else 'no JSPI: sleep/read_key block the thread')
     print(f"{name:<16}{'-':<6}{'-':<6}{('yes' if name=='node' else 'no'):<6}{h:<7}{k:<6}  {extra}")
 EOF
 coi_ok=$(python3 -c '
@@ -263,8 +270,9 @@ try: r = json.load(open(sys.argv[1]))
 except Exception: r = {}
 print(int(bool(r.get("hello", {}).get("pass")) and bool(r.get("keys", {}).get("pass")) and r.get("coi") is True))' "$t/coi.json")
 if [ -n "$browser_skip" ]; then
-  if ! grep -q FAIL "$t/rows.tsv"; then echo "PASS (browser lanes SKIP: $browser_skip; node-host and wasmtime: hello MATCHes native lg, keys echoed)"; exit 0; fi
-  echo "FAIL (browser lanes SKIP: $browser_skip; node-host or wasmtime)"; exit 1
+  deciders="node-host and wasmtime"; grep -q "^wasmtime	SKIP" "$t/rows.tsv" && deciders="wasmtime SKIP (no wasmtime on PATH); node-host"
+  if ! grep -q FAIL "$t/rows.tsv"; then echo "PASS (browser lanes SKIP: $browser_skip; $deciders: hello MATCHes native lg, keys echoed)"; exit 0; fi
+  echo "FAIL (browser lanes SKIP: $browser_skip; $deciders)"; exit 1
 fi
 if [ "$coi_ok" = 1 ]; then echo "PASS (browser under COI: hello MATCHes native lg, keys echoed)"; exit 0; fi
 echo "FAIL (browser under COI)"; exit 1

@@ -40,6 +40,7 @@ else
   ok=0; echo "node-host  FAIL  exit $rc"; diff "$t/expected" "$t/node.out" | head -12
 fi
 browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
 if [ -n "$browser_skip" ]; then
   echo "browser    SKIP  $browser_skip"
 else
