@@ -26,7 +26,8 @@ t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] || rm -rf "$t"' EXIT
 # the function name alone. Ignore that token in this compiler context only.
 norm() { sed -E -e 's/\x1b\[[0-9;]*m//g' -e 's#(/[^ :]+)+/##g' -e 's/0x[0-9a-f]+/0xADDR/g' -e 's/(Executing macro .* \(<(fn|mfn|native-fn)( .*)?) 0xADDR(>\) failed)/\1\4/g' -e 's/ at [^ ]+:[0-9]+//g' -e 's/:[0-9]+:[0-9]+$//' | grep -m1 -i 'error' ; }
 # LG_ARGS: extra native-lg args before the program (e.g. -source-paths <root>); split on whitespace by design.
-"$LG" ${LG_ARGS:-} "$prog" "$@" >"$t/n.out" 2>"$t/n.err"; nx=$?
+# limit.sh: run-corpus.sh's per-program limits; a no-op for any other caller
+"$(dirname "$0")/limit.sh" run "$LG" ${LG_ARGS:-} "$prog" "$@" >"$t/n.out" 2>"$t/n.err"; nx=$?
 $WASM_RUN "$prog" "$@" >"$t/w.out" 2>"$t/w.err"; wx=$?
 if [ "$((nx==0))" != "$((wx==0))" ]; then echo "MISMATCH exit ($nx vs $wx)"; exit 1; fi
 if [ $nx -eq 0 ]; then

@@ -46,6 +46,8 @@
 # `test.<ns>` from the root, quality.* from scripts/) on both sides, and run
 # with test/ as cwd (quality_cost reads ../scripts/quality). Other files get
 # their own dir.
+# The native run, the compile and the node run go through checks/limit.sh,
+# a no-op unless checks/run-corpus.sh set its limits.
 # Env: LG, KEEP=1 (keep the scratch dir), SRC_PATHS (override the source
 # paths), LETGO_TEST (default $LW_ROOT/let-go/test), P (default 3),
 # LW_TEST_TIMEOUT (default 300: the per-file cap of --corpus, in seconds; a
@@ -211,7 +213,7 @@ for f in "${files[@]}"; do
   cd "$(dirname "$f")" || exit 2
   if [ -z "$ns" ]; then
     # load-only file: a plain program on both sides
-    "$LG" -source-paths "$sp" "$f" >"$t/$b.native" 2>&1; ne=$?
+    "$here/checks/limit.sh" run "$LG" -source-paths "$sp" "$f" >"$t/$b.native" 2>&1; ne=$?
     start=$(date +%s)
     LG_ARGS="-source-paths $sp" "$here/checks/wasm-run.sh" "$f" >"$t/$b.wasm.out" 2>&1; we=$?
     secs=$(( $(date +%s) - start ))
@@ -224,7 +226,7 @@ for f in "${files[@]}"; do
     continue
   fi
   skips=$(awk -v ns="$ns" '$1==ns{print $2}' "$here/checks/run-tests.skip" | paste -sd, -)
-  "$LG" -source-paths "$here/rt:$sp" "${NATIVE_RUNNER:-$here/checks/native-test-runner.lg}" "$f" ${skips//,/ } \
+  "$here/checks/limit.sh" run "$LG" -source-paths "$here/rt:$sp" "${NATIVE_RUNNER:-$here/checks/native-test-runner.lg}" "$f" ${skips//,/ } \
     >"$t/$b.native" 2>&1
   start=$(date +%s)
   if [ -n "${WASM_RUN:-}" ]; then
@@ -240,7 +242,7 @@ for f in "${files[@]}"; do
       echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
       continue
     fi
-  elif ! "$LG" -source-paths "$here/src:$sp" "$here/src/driver.lg" -source-paths "$sp" "$f" "$t/$b.wat" --test ${skips:+--skip "$skips"} ${DRIVER_FLAGS:-} \
+  elif ! "$here/checks/limit.sh" compile "$LG" -source-paths "$here/src:$sp" "$here/src/driver.lg" -source-paths "$sp" "$f" "$t/$b.wat" --test ${skips:+--skip "$skips"} ${DRIVER_FLAGS:-} \
        >"$t/$b.drv" 2>&1; then
     msg="compile: $(grep -v catalog "$t/$b.drv" | grep -m1 -iE 'error|lower-wasm' | strip)"
     echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
@@ -252,7 +254,7 @@ for f in "${files[@]}"; do
       msg="assemble: $(head -1 "$t/$b.asm" | strip)"
       echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"; continue
     fi
-    node "$here/src/run.mjs" "$t/$b.wasm" >"$t/$b.wasm.out" 2>&1
+    "$here/checks/limit.sh" run node "$here/src/run.mjs" "$t/$b.wasm" >"$t/$b.wasm.out" 2>&1
   fi
   norm <"$t/$b.native" >"$t/$b.n"; norm <"$t/$b.wasm.out" >"$t/$b.w"
   werr=$(grep -m1 -E '^(error|lower-wasm)' "$t/$b.wasm.out" | strip)

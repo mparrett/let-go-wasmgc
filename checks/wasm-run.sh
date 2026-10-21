@@ -13,6 +13,7 @@
 # LW_MODULE_CACHE=<dir> (reuse the compiled module of an unchanged program:
 # keyed by the program, its source roots, src/ and rt/; args are run-time).
 #
+# The compile and the run go through checks/limit.sh (run-corpus.sh's limits).
 # The compile holds one slot of the machine-wide pool (checks/sem.sh) for its
 # duration; the node run does not. Nesting under a caller's slot is harmless.
 set -uo pipefail
@@ -38,10 +39,10 @@ fi
 if [ -n "$key" ] && [ -f "$LW_MODULE_CACHE/$key.wasm" ]; then
   cp "$LW_MODULE_CACHE/$key.wasm" "$t/m.wasm"
 else
-  if ! "$here/checks/sem.sh" "${drv[@]}" "$prog" "$t/m.wat" >"$t/drv.log" 2>&1; then
+  if ! "$here/checks/sem.sh" "$here/checks/limit.sh" compile "${drv[@]}" "$prog" "$t/m.wat" >"$t/drv.log" 2>&1; then
     cat "$t/drv.log" >&2; exit 1
   fi
   wasm-tools parse "$t/m.wat" -o "$t/m.wasm" || exit 1
   [ -n "$key" ] && command cp "$t/m.wasm" "$LW_MODULE_CACHE/$key.wasm.tmp$$" && command mv -f "$LW_MODULE_CACHE/$key.wasm.tmp$$" "$LW_MODULE_CACHE/$key.wasm"
 fi
-node "$here/src/run.mjs" "$t/m.wasm" "$prog" "$@"
+"$here/checks/limit.sh" run node "$here/src/run.mjs" "$t/m.wasm" "$prog" "$@"

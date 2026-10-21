@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Linear target and GC-disabled Go runner (2026-10-03).
+# Linear target and GC-disabled Go runner (2026-10-03). The compile and the
+# run go through checks/limit.sh (run-corpus.sh's limits).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$here/checks/env.sh"
@@ -27,7 +28,7 @@ fi
 if [ -n "$key" ] && [ -f "$LW_MODULE_CACHE/$key.wasm" ]; then
  cp "$LW_MODULE_CACHE/$key.wasm" "$t/m.wasm"
 else
- if ! "${drv[@]}" "$prog" "$t/m.wat" > "$t/compile.log" 2>&1; then cat "$t/compile.log" >&2; exit 1; fi
+ if ! "$here/checks/limit.sh" compile "${drv[@]}" "$prog" "$t/m.wat" > "$t/compile.log" 2>&1; then cat "$t/compile.log" >&2; exit 1; fi
  wasm-tools parse "$t/m.wat" -o "$t/m.wasm"
  wasm-tools validate --features=-gc "$t/m.wasm"
  if [ -n "$key" ]; then cp "$t/m.wasm" "$LW_MODULE_CACHE/$key.wasm.tmp$$"; mv "$LW_MODULE_CACHE/$key.wasm.tmp$$" "$LW_MODULE_CACHE/$key.wasm"; fi
@@ -40,4 +41,4 @@ if [ ! -x "$runner" ]; then
  (cd "$here/host/wazero" && go build -o "$runner.tmp$$" .)
  mv "$runner.tmp$$" "$runner"
 fi
-"$runner" "$t/m.wasm" "$prog" "$@"
+"$here/checks/limit.sh" run "$runner" "$t/m.wasm" "$prog" "$@"
