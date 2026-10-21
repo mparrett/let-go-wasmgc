@@ -109,7 +109,8 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   that row is SKIP, and node-host alone decides P4.0 when Chromium is
   missing too (D227).
 - **Chromium through Playwright** for the browser lanes
-  (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/eval-hosts.sh`,
+  (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/turn-time.sh`,
+  `checks/eval-hosts.sh`,
   `checks/size-boot.sh`, the `*-page-check.mjs` scripts). Playwright is
   resolved from `LW_BROWSER_TOOLS/browser-smoke-playwright/` (a directory
   with a `package.json` depending on `playwright`, browsers installed with
