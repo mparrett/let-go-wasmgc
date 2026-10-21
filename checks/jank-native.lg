@@ -6,13 +6,17 @@
 ;; then the file by path, then its namespace's tests, after taking :test off
 ;; every deftest named in the skip list.
 ;;   lg -source-paths <compat>:<suite> checks/jank-native.lg <file> [skip ...]
+(defn top-level-forms [form]
+  (if (and (seq? form) (= 'do (first form)))
+    (mapcat top-level-forms (rest form))
+    [form]))
 (set-read-clj! true)
 (let [args *command-line-args*
       target (first args)
       skips (map symbol (rest args))
       port (os/getenv "JANK_PORTABILITY")
       _ (when (seq port) (binding [*file* port] (load-string (slurp port))))
-      forms (read-string (str "[" (slurp target) "\n]"))
+      forms (mapcat top-level-forms (read-string (str "[" (slurp target) "\n]")))
       ns-name (some #(when (and (seq? %) (= 'ns (first %))) (second %)) forms)]
   (binding [*file* target] (load-string (slurp target)))
   (doseq [s skips]
