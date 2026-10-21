@@ -11,3 +11,6 @@ hash_source: content
 description: Review of #52 (2026-10-18): tools/git-issue-watch.py keeps one session id and one ref map in issue-watch.json. With two sessions on one clone each prompt sees the other's marker and re-reports the whole board (measured: A 3656 chars, A 0, B 3656, A 3656 again), and a change recorded by one session is never shown to the other. Also: watch refs for issues gone from the remote are never pruned (P3).
  
  Fix: a baseline per session id in the state file, plus the last refs seen by anyone for a new session's delta; sessions unseen for a week dropped; watch refs for refs missing from the remote deleted. Patch in a follow-up PR with the four-prompt test.
+
+## Comments
+[2026-10-21T15:46:48Z] Matt Parrett: Merged with PR #52 (551eb9d): the per-session baseline and watch-ref pruning from #55 are on main; the five-prompt sequence A A B A B gives 3793/0/3793/0/0 characters at that head.
