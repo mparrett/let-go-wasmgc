@@ -114,7 +114,8 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   alone decides P4.0 when Chromium is missing too (D227).
   `LW_REQUIRE_WASMTIME=1` turns the SKIP into a FAIL.
 - **Chromium through Playwright** for the browser lanes
-  (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/eval-hosts.sh`,
+  (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/turn-time.sh`,
+  `checks/eval-hosts.sh`,
   `checks/size-boot.sh`, the `*-page-check.mjs` scripts). Playwright is
   the first of these whose Chromium launches (`checks/playwright.mjs`):
   `LW_BROWSER_TOOLS/browser-smoke-playwright/` when that is set; the version
