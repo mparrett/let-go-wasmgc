@@ -16,6 +16,10 @@
 // P4.2 lane 5's gating walk (checks/lane5.sh): zz-determinism-probe.mjs's key
 // sequence, but settle-based instead of 400 ms apart, see settleWalk() below.
 //
+// checks/browser-boot.mjs --turn-time <base-url> <seed> [keys]
+// P4.4 (checks/turn-time.sh): keypress-to-turn latency of one lane, see
+// turnTime() below.
+//
 // checks/browser-boot.mjs --legmacs <base-url>
 // P6.4: legmacs in let-go's stock xterm shell on the lower-wasm host (or any
 // lane whose page is that shell, e.g. the stock `lg -w` bundle), see
@@ -50,6 +54,11 @@ if (process.argv[2] === '--settle-walk') {
   const out = await settleWalk(...process.argv.slice(3));
   console.log(JSON.stringify(out));
   process.exit(out.failure ? 2 : 0);   // 2 = harness failure, not a lane mismatch
+}
+if (process.argv[2] === '--turn-time') {
+  const out = await turnTime(...process.argv.slice(3));
+  console.log(JSON.stringify(out));
+  process.exit(out.failure ? 2 : 0);
 }
 // --run <base-url> <module> <expected-stdout-file>: boot one module in
 // host/index.html, wait for it to finish, compare stdout (P7.5 eval-hosts.sh)
@@ -419,6 +428,87 @@ async function settleWalk(base, seed, outFile) {
     out.failure = String((e && e.message) || e).split('\n')[0];
   }
   try { fs.writeFileSync(outFile + '.steps.json', JSON.stringify(steps)); } catch {}
+  await browser.close();
+  return out;
+}
+
+// ---- --turn-time ---------------------------------------------------------------
+// checks/turn-time.sh's measurement: the game's turn latency in one lane. Same
+// boot as the settle walk, then KEYS keys (the probe's l l j j h k l j, repeated)
+// each sent once the previous turn settled, as in settleWalk. Per key the lane
+// records, from timestamps taken inside the page (no node-side polling in the
+// number): the keydown dispatched on xterm's textarea, and the `xsofy/stats`
+// event the game emits once its turn resolved (emit-stats runs before the
+// dirty render, so the span is key wake-up + the turn's compute, not drawing).
+// A key the game coalesced or ignored (turn unchanged) is kept in the log and
+// left out of the statistics. Prints ackMs per counted turn with the median,
+// mean and p90; `failure` and exit 2 on a harness timeout.
+async function turnTime(base, seed, keysArg) {
+  const KEYS = parseInt(keysArg ?? process.env.LW_TURN_KEYS ?? '40', 10);
+  const SETTLE = parseInt(process.env.LW_SETTLE ?? '3', 10);
+  const MIN_MS = parseInt(process.env.LW_MIN_MS ?? '200', 10);
+  const CAP_MS = 5000, POLL_MS = 100;
+  const seq = ['l', 'l', 'j', 'j', 'h', 'k', 'l', 'j'];
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const out = { label: 'turn-time', seed, keys: KEYS };
+  const steps = [];
+  await page.addInitScript(() => {
+    window.__stats = { n: 0, turn: null, t: null };
+    window.addEventListener('xsofy/stats', (e) => { window.__stats.n++; window.__stats.turn = e.detail && e.detail.turn; window.__stats.t = performance.now(); });
+  });
+  const rows = () => page.evaluate(() => [...document.querySelectorAll('.xterm-rows > div')].map((d) => d.textContent).join('\n'));
+  const stats = () => page.evaluate(() => ({ ...window.__stats }));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function settle(t0) {
+    let prev = await rows(), same = 0;
+    for (;;) {
+      await sleep(POLL_MS);
+      const cur = await rows();
+      same = cur === prev ? same + 1 : 0; prev = cur;
+      if (same >= SETTLE && Date.now() - t0 >= MIN_MS) return;
+      if (Date.now() - t0 > CAP_MS) throw new Error(`settle timeout (${CAP_MS} ms) after key ${steps.length}`);
+    }
+  }
+  try {
+    await page.goto(`${base}/?seed=${seed}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => /press any key/i.test(document.body.innerText), null, { timeout: 120000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => /hp[: ]/i.test(document.body.innerText) || /floor/i.test(document.body.innerText), null, { timeout: 120000 });
+    await page.waitForTimeout(3000);
+    await settle(Date.now());
+    for (let i = 0; i < KEYS; i++) {
+      const key = seq[i % seq.length];
+      const before = await stats();
+      const t0 = await page.evaluate((key) => {
+        const ta = document.querySelector('.xterm-helper-textarea');
+        const code = 'Key' + key.toUpperCase();
+        const t = performance.now();
+        ta.dispatchEvent(new KeyboardEvent('keydown', { key, code, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true }));
+        return t;
+      }, key);
+      const tw = Date.now();
+      let after;
+      for (;;) {
+        after = await stats();
+        if (after.n > before.n) break;
+        if (Date.now() - tw > CAP_MS) throw new Error(`no xsofy/stats within ${CAP_MS} ms of key ${i} ('${key}')`);
+        await sleep(10);
+      }
+      await settle(tw);
+      const fin = await stats();
+      steps.push({ key, turnBefore: before.turn, turnAfter: fin.turn, events: fin.n - before.n, ackMs: Math.round((after.t - t0) * 100) / 100 });
+    }
+    const counted = steps.filter((s) => s.turnAfter !== s.turnBefore).map((s) => s.ackMs).sort((a, b) => a - b);
+    const q = (p) => counted.length ? counted[Math.min(counted.length - 1, Math.floor(p * counted.length))] : null;
+    out.turns = counted.length;
+    out.ackMs = steps.map((s) => s.ackMs);
+    out.medianMs = q(0.5); out.p90Ms = q(0.9);
+    out.meanMs = counted.length ? Math.round(counted.reduce((a, b) => a + b, 0) / counted.length * 100) / 100 : null;
+    out.turnLog = steps.map((s) => `${s.key}:${s.turnBefore}>${s.turnAfter}`).join(' ');
+  } catch (e) {
+    out.failure = String((e && e.message) || e).split('\n')[0];
+  }
   await browser.close();
   return out;
 }

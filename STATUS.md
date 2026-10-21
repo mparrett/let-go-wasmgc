@@ -43,6 +43,7 @@ These records were kept while the backend was built inside a larger workspace. T
 | P2.2 | done 2026-10-01 | — | wasm-hash.sh: 201 rows, 0 misses, 11 limits |
 | P4.1-backend + P4.3 | done 2026-10-01 | opus | xsofy plays in the real shell; 140 KB brotli; verified --xsofy PASS |
 | P4.2 | done 2026-10-01 | sonnet | settle-based lane5; 3/3 IDENTICAL; stock lane was the flaky one |
+| P4.4 | green 2026-10-21 | fable | checks/turn-time.sh: xsofy turn latency, keydown to the game's stats event with in-page timestamps, 40 keys x 3 runs per lane at seed 424242: lower-wasm 42.9 ms median, stock Go 164.1 ms (3.82x), identical turn logs (27 turns of 40, the rest bump walls). corpus/xsofy/turn-time.md. The first steady-state compute row; size-boot measures download + init. |
 | P4.GATE | PASSED 2026-10-01 17:05 | — | campaign finish line; verified by orchestrator |
 | P2.14 | progress 17:56 | opus | 145/273 measured (blocker 1 done: source paths + load-by-path); blockers 2-8 + regex engine coded in scratch, rebuilding/measuring |
 | P0.1 | progress 17:59 | sonnet | steps done: sem.sh pool, run-corpus P=3, gate -j2, native per-file P=4, census sharded P=4 + content-hash key, LW_RTLIB_DIR, affected.sh bash-3.2 fix; serial-vs-parallel outputs byte-identical (corpus/wasm, native, legmacs+xsofy TSV, gate); falsified; remaining: final `checks/run.sh P0.1` in the live tree (census rerun in progress, then gate once); ETA 30 min |
@@ -192,6 +193,7 @@ Milestone implementation and the existing corpus selection are complete (2026-10
 - 2026-10-03: existing GC runtime-cache restore variance and the bare os/args printer-reachability issue remain reported in the PR; their GC behavior is preserved. Neither blocked the required final gates.
 - 2026-10-03: GC legmacs boot/size rerun: lower-wasm module alone: 2,265,456 B as emitted, 686,520 B after `wasm-opt -O3` (served), 170,576 B brotli, 206,572 B gzip. Bundle raw/brotli/gzip: 707 KB, 178 KB, 215 KB; median title-or-boot / first frame: 128 ms / 128 ms. Full dated runs: corpus/legmacs/size-boot.md.
 - 2026-10-03: GC xsofy boot/size rerun: Lane 5 module alone: 1,920,368 B as emitted, 430,783 B after `wasm-opt -O3` (served), 115,153 B brotli, 137,162 B gzip. Bundle raw/brotli/gzip: 521 KB, 147 KB, 174 KB; median title-or-boot / first frame: 4060 ms / 5144 ms. Full dated runs: corpus/xsofy/size-boot.md.
+- 2026-10-21: size/boot tables re-measured at main 551eb9d (load 3-4): xsofy lane 5 title 5037 ms / map 6240 ms vs stock 9092 / 13177 (10-07: 4547 / 5712 vs 6390 / 9220; both lanes slower on the day, the ratio wider); legmacs boot 609 ms (10-07: 264 ms; module 686,487 -> 689,585 B served after the jank twins). Not the module: the 10-07 tree 21f5a46 rebuilt and booted on the same day gives 595 ms, so the 2.3x is the browser or the machine (Playwright's headless shell was reinstalled since), and the two days' boot columns are not comparable. Full runs: corpus/xsofy/size-boot.md, corpus/legmacs/size-boot.md.
 
 ## Stage 2, the self-compiling backend (D205/D206), rows added 2026-10-08
 
