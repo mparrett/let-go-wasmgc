@@ -1,0 +1,487 @@
+;; let-go.lang.bignum — arbitrary-precision integers (BigInt) and rationals (Ratio)
+;; in plain Clojure, one library for every target (rt/let-go/lang). Nothing calls
+;; it yet: the arithmetic, printer, hashing, equality and reader of either
+;; runtime do not know these values. The algorithms are wasm.bignum's (#49),
+;; the deftypes and the integral demotion numeric.bigint's and
+;; numeric.ratio's; both of those are gone.
+;;
+;; Ground truth is let-go e9789b7d: pkg/vm/bigint.go wraps Go's *big.Int,
+;; pkg/vm/ratio.go wraps *big.Rat, and pkg/vm/numbers.go's BigInt branches
+;; call big.Int's Quo for `quot`, Rem for `rem`, and for `mod` Rem followed
+;; by adding the divisor when the remainder's sign differs from the
+;; divisor's (floored, Clojure's mod; not big.Int's Euclidean Mod). Here
+;; `quot` `rem` `mod` are those three; `ediv` and `emod` are big.Int's
+;; Euclidean Div and Mod, named apart because let-go does not use them.
+;; `->string` and `rat->string` are big.Int.String() and big.Rat.RatString()
+;; (the "N" pr-str shows is the printer's). `rat-make` always answers a
+;; Ratio; `simplify` is let-go's MaybeSimplifyRatio: an integral quotient
+;; is an Int when it fits, else a BigInt.
+;;
+;; Representation. A BigInt is (BigInt. sign mag): sign -1, 0 or 1; mag an
+;; int-array of the magnitude's 32-bit limbs, little-endian, each in
+;; [0, 2^32), the top one nonzero; zero has no limbs. A Ratio is
+;; (Ratio. num den), two BigInts normalized as big.Rat is (gcd 1,
+;; denominator > 0; zero is 0/1). Values are never mutated once returned
+;; (an operation may answer an operand itself, as `add` does for a zero
+;; addend); a magnitude being built is a working array that `fin` trims.
+;;
+;; Unsigned 64-bit arithmetic in signed Clojure: a 32x32 product plus two
+;; limbs fits a u64 exactly, so `mul` and the Knuth division steps need no
+;; 128-bit arithmetic. Every i64 that may pass 2^63 is made with
+;; unchecked-multiply / unchecked-add / unchecked-subtract or a shift (both
+;; wrap), read back with unsigned-bit-shift-right and bit-and, and compared
+;; with `ult?`. Shifts stay below 64: let-go's (bit-shift-left 1 64) is 0,
+;; not wasm's shift-count-mod-64.
+;;
+;; Division's 64-by-32-bit unsigned divide: with the high word below the
+;; divisor, two 16-bit steps keep every dividend under 2^48, where the
+;; signed quot is exact.
+;;
+;; Errors: a zero divisor throws "divide by zero", let-go's text for
+;; NumQuot/NumRem/NumMod/NumDiv. `to-f64` and `rat->f64` round to nearest
+;; even, as big.Int.Float64 and big.Rat.Float64 do, subnormals included;
+;; too large is +-Inf.
+(ns let-go.lang.bignum
+  (:refer-clojure :exclude [quot rem mod abs compare zero? neg?]))
+
+(deftype BigInt [sign mag])
+(deftype Ratio [num den])
+
+(def ^:private min64 -9223372036854775808)
+(def ^:private mask32 4294967295)
+
+(defn- mk "n zero limbs." [n] (int-array n))
+(defn- len [a] (alength a))
+(defn- lo32 [x] (bit-and x mask32))
+(defn- ult? "Unsigned a < b." [a b] (< (bit-xor a min64) (bit-xor b min64)))
+(defn- bitlen32 [x] (loop [x x k 0] (if (= x 0) k (recur (unsigned-bit-shift-right x 1) (inc k)))))
+(defn- raise-dbz [] (throw (ex-info "divide by zero" {})))
+(defn- sg [a] (.-sign a))
+(defn- mg [a] (.-mag a))
+
+(defn- copy-of "The n low limbs of a, fresh." [a n]
+  (let [r (mk n)]
+    (loop [i 0] (when (< i n) (aset r i (aget a i)) (recur (inc i))))
+    r))
+
+(defn- trim-mag "Working magnitude a without its zero top limbs (a itself when it has none)." [a]
+  (let [n (loop [n (len a)] (if (and (> n 0) (= 0 (aget a (dec n)))) (recur (dec n)) n))]
+    (if (= n (len a)) a (copy-of a n))))
+
+(def ^:private big-zero (BigInt. 0 (mk 0)))
+
+(defn- fin "Working magnitude a as a BigInt of sign s: trimmed, and zero when every limb is." [a s]
+  (let [m (trim-mag a)] (if (= 0 (len m)) big-zero (BigInt. s m))))
+
+(defn signum "-1, 0 or 1." [a] (sg a))
+(defn zero? [a] (= 0 (sg a)))
+(defn neg? [a] (< (sg a) 0))
+
+;; ---------------------------------------------------------------------------
+;; Int interop
+
+(defn from-i64 [x]
+  (if (= x 0)
+    big-zero
+    (let [u (if (< x 0) (unchecked-subtract 0 x) x)   ; MinInt64 stays 2^63 as a u64
+          r (mk 2)]
+      (aset r 0 (lo32 u))
+      (aset r 1 (unsigned-bit-shift-right u 32))
+      (fin r (if (< x 0) -1 1)))))
+
+(defn fits-i64? [a]
+  (let [m (mg a) n (len m)]
+    (cond (< n 2) true
+          (> n 2) false
+          (< (aget m 1) 2147483648) true
+          (< (sg a) 0) (and (= (aget m 1) 2147483648) (= 0 (aget m 0)))
+          :else false)))
+
+(defn to-i64
+  "The value when it fits an i64; otherwise its low 64 bits with the sign
+   applied, as big.Int.Int64 answers."
+  [a]
+  (let [m (mg a) n (len m)
+        u (bit-or (bit-shift-left (if (> n 1) (aget m 1) 0) 32) (if (> n 0) (aget m 0) 0))]
+    (if (< (sg a) 0) (unchecked-subtract 0 u) u)))
+
+;; ---------------------------------------------------------------------------
+;; Magnitudes: int-arrays of limbs. Results are fresh working arrays.
+
+(defn- mag-cmp [a b]
+  (let [na (len a) nb (len b)]
+    (cond (< na nb) -1
+          (> na nb) 1
+          :else (loop [i (dec na)]
+                  (if (< i 0)
+                    0
+                    (let [x (aget a i) y (aget b i)]
+                      (cond (< x y) -1 (> x y) 1 :else (recur (dec i)))))))))
+
+(defn- mag-add [a b]
+  (let [na (len a) nb (len b)]
+    (if (< na nb)
+      (mag-add b a)
+      (let [r (mk (inc na))]
+        (loop [i 0 cy 0]
+          (if (< i na)
+            (let [t (+ (aget a i) (if (< i nb) (aget b i) 0) cy)]
+              (aset r i (lo32 t))
+              (recur (inc i) (unsigned-bit-shift-right t 32)))
+            (do (aset r na cy) r)))))))
+
+(defn- mag-sub "|a| - |b|, for |a| >= |b|." [a b]
+  (let [na (len a) nb (len b) r (mk na)]
+    (loop [i 0 br 0]
+      (if (< i na)
+        (let [t (- (aget a i) (if (< i nb) (aget b i) 0) br)]
+          (aset r i (lo32 t))
+          (recur (inc i) (if (< t 0) 1 0)))
+        r))))
+
+(defn- bitlen [a]
+  (let [n (len a)]
+    (if (= n 0) 0 (+ (* 32 (dec n)) (bitlen32 (aget a (dec n)))))))
+
+(defn- mag-shl "|a| * 2^k, k >= 0." [a k]
+  (let [n (len a) w (clojure.core/quot k 32) s (- k (* 32 w)) r (mk (+ n w 1))]
+    (loop [i 0 cy 0]
+      (if (< i n)
+        (let [x (aget a i)]
+          (aset r (+ i w) (lo32 (bit-or (bit-shift-left x s) cy)))
+          (recur (inc i) (unsigned-bit-shift-right x (- 32 s))))
+        (do (aset r (+ n w) cy) r)))))
+
+;; ---------------------------------------------------------------------------
+;; Sign-magnitude arithmetic
+
+(defn negate [a]
+  (if (= 0 (sg a)) a (BigInt. (- (sg a)) (mg a))))
+
+(defn abs [a] (if (< (sg a) 0) (negate a) a))
+
+(defn add [a b]
+  (let [sa (sg a) sb (sg b)]
+    (cond (= sa 0) b
+          (= sb 0) a
+          (= sa sb) (fin (mag-add (mg a) (mg b)) sa)
+          :else (let [cm (mag-cmp (mg a) (mg b))]
+                  (cond (= cm 0) big-zero
+                        (> cm 0) (fin (mag-sub (mg a) (mg b)) sa)
+                        :else (fin (mag-sub (mg b) (mg a)) sb))))))
+
+(defn sub [a b] (add a (negate b)))
+
+(defn mul [a b]
+  (let [sa (sg a) sb (sg b)]
+    (if (or (= sa 0) (= sb 0))
+      big-zero
+      (let [ma (mg a) mb (mg b) na (len ma) nb (len mb) r (mk (+ na nb))]
+        (loop [i 0]
+          (when (< i na)
+            (let [x (aget ma i)]
+              (loop [j 0 cy 0]                      ; x*y + r + cy <= 2^64 - 1: exact as a u64
+                (if (< j nb)
+                  (let [t (unchecked-add (unchecked-add (unchecked-multiply x (aget mb j)) (aget r (+ i j))) cy)]
+                    (aset r (+ i j) (lo32 t))
+                    (recur (inc j) (unsigned-bit-shift-right t 32)))
+                  (aset r (+ i nb) cy))))
+            (recur (inc i))))
+        (fin r (* sa sb))))))
+
+(defn compare "-1, 0 or 1." [a b]
+  (let [sa (sg a) sb (sg b)]
+    (cond (< sa sb) -1
+          (> sa sb) 1
+          (= sa 0) 0
+          :else (* sa (mag-cmp (mg a) (mg b))))))
+
+;; ---------------------------------------------------------------------------
+;; Division (Knuth, TAOCP vol. 2, 4.3.1 Algorithm D; the multiply-subtract
+;; and add-back steps follow Hacker's Delight's divmnu with 32-bit digits).
+
+(defn- udiv-q
+  "floor((hi*2^32 + lo) / d) for hi < d < 2^32, in two 16-bit steps."
+  [hi lo d]
+  (let [t1 (bit-or (bit-shift-left hi 16) (unsigned-bit-shift-right lo 16))
+        q1 (clojure.core/quot t1 d)
+        t2 (bit-or (bit-shift-left (- t1 (* q1 d)) 16) (bit-and lo 65535))]
+    (bit-or (bit-shift-left q1 16) (clojure.core/quot t2 d))))
+
+(defn- div1!
+  "The n low limbs of a divided by d (0 < d < 2^32): quotient limbs into q
+   (which may be a itself: limb i is read before it is written; nil skips
+   them); answers the remainder."
+  [a n d q]
+  (loop [i (dec n) r 0]
+    (if (< i 0)
+      r
+      (let [x (aget a i)
+            qi (udiv-q r x d)]
+        (when q (aset q i qi))
+        (recur (dec i) (unchecked-subtract (bit-or (bit-shift-left r 32) x) (unchecked-multiply qi d)))))))
+
+(defn- knuth
+  "|a| / |b| for len(b) >= 2 and |a| >= |b|: the quotient, or with
+   want-rem the remainder, as a working array."
+  [a b want-rem]
+  (let [n (len b) ma (len a) mq (- ma n)
+        s (- 32 (bitlen32 (aget b (dec n))))   ; normalize: top bit of the divisor set
+        vn (mk n) un (mk (inc ma)) q (mk (inc mq))]
+    ;; a limb shifted right by 32 - s is 0 when s = 0 (limbs are below 2^32)
+    (loop [i (dec n)]
+      (when (> i 0)
+        (aset vn i (lo32 (bit-or (bit-shift-left (aget b i) s) (unsigned-bit-shift-right (aget b (dec i)) (- 32 s)))))
+        (recur (dec i))))
+    (aset vn 0 (lo32 (bit-shift-left (aget b 0) s)))
+    (aset un ma (unsigned-bit-shift-right (aget a (dec ma)) (- 32 s)))
+    (loop [i (dec ma)]
+      (when (> i 0)
+        (aset un i (lo32 (bit-or (bit-shift-left (aget a i) s) (unsigned-bit-shift-right (aget a (dec i)) (- 32 s)))))
+        (recur (dec i))))
+    (aset un 0 (lo32 (bit-shift-left (aget a 0) s)))
+    (let [v1 (aget vn (dec n)) v2 (aget vn (- n 2))]
+      (loop [j mq]
+        (when (>= j 0)
+          (let [hi (aget un (+ j n)) lo (aget un (dec (+ j n)))
+                qh0 (if (= hi v1) mask32 (udiv-q hi lo v1))
+                ;; rhat = u - qhat*v1 < 2^33, computed mod 2^64
+                rh0 (unchecked-subtract (bit-or (bit-shift-left hi 32) lo) (unchecked-multiply qh0 v1))
+                u2 (aget un (- (+ j n) 2))
+                qh (loop [qh qh0 rh rh0]           ; at most twice
+                     (if (and (< rh 4294967296)
+                              (ult? (bit-or (bit-shift-left rh 32) u2) (unchecked-multiply qh v2)))
+                       (recur (dec qh) (+ rh v1))
+                       qh))
+                k (loop [i 0 k 0]                   ; un[j..j+n) -= qh * vn
+                    (if (< i n)
+                      (let [p (unchecked-multiply qh (aget vn i))
+                            t (- (aget un (+ i j)) k (lo32 p))]
+                        (aset un (+ i j) (lo32 t))
+                        (recur (inc i) (- (unsigned-bit-shift-right p 32) (bit-shift-right t 32))))
+                      k))
+                t (- (aget un (+ j n)) k)]
+            (if (< t 0)
+              (let [cy (loop [i 0 cy 0]             ; qhat was one too large: add vn back
+                         (if (< i n)
+                           (let [t2 (+ (aget un (+ i j)) (aget vn i) cy)]
+                             (aset un (+ i j) (lo32 t2))
+                             (recur (inc i) (unsigned-bit-shift-right t2 32)))
+                           cy))]
+                (aset un (+ j n) (lo32 (+ (lo32 t) cy)))
+                (aset q j (dec qh)))
+              (do (aset un (+ j n) t)
+                  (aset q j qh)))
+            (recur (dec j))))))
+    (if want-rem
+      (let [r (mk n)]
+        (loop [i 0]
+          (when (< i n)
+            (aset r i (lo32 (bit-or (unsigned-bit-shift-right (aget un i) s) (bit-shift-left (aget un (inc i)) (- 32 s)))))
+            (recur (inc i))))
+        r)
+      q)))
+
+(defn- divrem-mag
+  "|a| / |b| (b nonzero), truncated: the quotient's magnitude, or with
+   want-rem the remainder's, as a working array."
+  [a b want-rem]
+  (cond (< (mag-cmp a b) 0) (if want-rem a (mk 0))
+        (= (len b) 1)
+        (let [n (len a)
+              q (if want-rem nil (mk n))
+              r (div1! a n (aget b 0) q)]
+          (if want-rem (let [rr (mk 1)] (aset rr 0 r) rr) q))
+        :else (knuth a b want-rem)))
+
+(defn quot "Truncated quotient (big.Int.Quo; let-go's quot)." [a b]
+  (if (= 0 (sg b)) (raise-dbz) (fin (divrem-mag (mg a) (mg b) false) (* (sg a) (sg b)))))
+
+(defn rem "Truncated remainder, the dividend's sign (big.Int.Rem; let-go's rem)." [a b]
+  (if (= 0 (sg b)) (raise-dbz) (fin (divrem-mag (mg a) (mg b) true) (sg a))))
+
+(defn mod "Floored modulus, the divisor's sign (let-go's mod: Rem, then + b)." [a b]
+  (let [r (rem a b)]
+    (if (and (not= 0 (sg r)) (not= (sg r) (sg b))) (add r b) r)))
+
+(defn emod "Euclidean modulus, never negative (big.Int.Mod; unused by let-go)." [a b]
+  (let [r (rem a b)] (if (< (sg r) 0) (add r (abs b)) r)))
+
+(defn ediv "Euclidean quotient (big.Int.Div; unused by let-go): a = b*q + (emod a b)." [a b]
+  (let [q (quot a b) r (rem a b)]
+    (cond (< (sg r) 0) (if (> (sg b) 0) (sub q (from-i64 1)) (add q (from-i64 1)))
+          :else q)))
+
+(defn gcd "Greatest common divisor, never negative; (gcd 0 0) is 0 (big.Int.GCD)." [a b]
+  (loop [x (abs a) y (abs b)]
+    (if (= 0 (sg y)) x (recur y (rem x y)))))
+
+;; ---------------------------------------------------------------------------
+;; Decimal text
+
+(defn- pow10 [k] (loop [i 0 p 1] (if (< i k) (recur (inc i) (* p 10)) p)))
+(defn- digit [s i] (- (int (nth s i)) 48))
+
+(defn parse
+  "A BigInt from a decimal string with an optional + or - sign, as
+   big.Int.SetString(s, 10) reads it (leading zeros fine, no underscores,
+   no spaces, at least one digit); nil when malformed."
+  [s]
+  (let [n (count s)
+        c0 (if (> n 0) (int (nth s 0)) 0)
+        i0 (if (or (= c0 43) (= c0 45)) 1 0)          ; + -
+        nd (- n i0)
+        ok (and (> nd 0)
+                (loop [i i0] (if (< i n) (let [d (digit s i)] (if (and (>= d 0) (<= d 9)) (recur (inc i)) false)) true)))]
+    (when ok
+      (let [r (mk (+ (clojure.core/quot nd 9) 2))]
+        (loop [i i0 used 0]
+          (if (< i n)
+            (let [;; the first chunk takes nd mod 9 digits (9 when it divides), the rest 9 each
+                  w (if (= i i0) (let [x (- nd (* 9 (clojure.core/quot nd 9)))] (if (= x 0) 9 x)) 9)
+                  chunk (loop [k 0 v 0] (if (< k w) (recur (inc k) (+ (* v 10) (digit s (+ i k)))) v))
+                  m (pow10 w)
+                  used2 (loop [k 0 cy chunk]        ; r = r*m + chunk, in place
+                          (if (< k used)
+                            (let [t (+ (* (aget r k) m) cy)]
+                              (aset r k (lo32 t))
+                              (recur (inc k) (unsigned-bit-shift-right t 32)))
+                            (if (= cy 0) used (do (aset r used cy) (inc used)))))]
+              (recur (+ i w) used2))
+            (fin r (if (= c0 45) -1 1))))))))
+
+(defn- pad9 [x] (let [t (str x)] (str (subs "000000000" (count t)) t)))
+
+(defn ->string "Decimal text, as big.Int.String() (no N suffix)." [a]
+  (let [m (mg a) n (len m)]
+    (if (= n 0)
+      "0"
+      (let [work (copy-of m n)
+            chunks (loop [used n out []]            ; base-1e9 digits, low first
+                     (if (= used 0)
+                       out
+                       (let [r (div1! work used 1000000000 work)]
+                         (recur (loop [l used] (if (and (> l 0) (= 0 (aget work (dec l)))) (recur (dec l)) l))
+                                (conj out r)))))]
+        (apply str (if (< (sg a) 0) "-" "") (peek chunks) (map pad9 (rest (rseq chunks))))))))
+
+;; ---------------------------------------------------------------------------
+;; To float64, rounded to nearest even
+
+(defn- scale2 "x * 2^e, exact whenever the result is representable (wasm.math's)." [x e]
+  (loop [m x e e]
+    (cond (>= e 64) (recur (* m 1.8446744073709552e19) (- e 64))
+          (>= e 8) (recur (* m 256.0) (- e 8))
+          (> e 0) (recur (* m 2.0) (dec e))
+          (<= e -64) (recur (* m 5.421010862427522e-20) (+ e 64))
+          (<= e -8) (recur (* m 0.00390625) (+ e 8))
+          (< e 0) (recur (* m 0.5) (inc e))
+          :else m)))
+
+(defn- window63
+  "Bits [k, k+63) of magnitude a as a non-negative i64, with bit 0 or'ed
+   with 1 when any bit below k is set (a sticky bit: f64 keeps 53 of the
+   63, so it can only break a tie)."
+  [a k]
+  (let [n (len a) w (clojure.core/quot k 32) off (- k (* 32 w))
+        l0 (if (< w n) (aget a w) 0)
+        l1 (if (< (inc w) n) (aget a (inc w)) 0)
+        l2 (if (and (> off 0) (< (+ w 2) n)) (aget a (+ w 2)) 0)
+        v (bit-or (bit-or (unsigned-bit-shift-right l0 off) (bit-shift-left l1 (- 32 off)))
+                  (if (> off 0) (bit-shift-left l2 (- 64 off)) 0))
+        sticky (if (= 0 (bit-and l0 (- (bit-shift-left 1 off) 1)))
+                 (loop [i 0] (if (< i w) (if (= 0 (aget a i)) (recur (inc i)) 1) 0))
+                 1)]
+    (bit-or (bit-and v 9223372036854775807) sticky)))
+
+(defn to-f64 "big.Int.Float64: nearest even, +-Inf beyond the float range." [a]
+  (let [L (bitlen (mg a))]
+    (if (<= L 63)
+      (double (to-i64 a))
+      (let [f (scale2 (double (window63 (mg a) (- L 63))) (- L 63))]
+        (if (< (sg a) 0) (* -1.0 f) f)))))
+
+(defn- quot-f64
+  "|a| / |b| (magnitudes, both nonzero) as the nearest-even float64,
+   subnormals included: big.Rat.Float64's rounding."
+  [a b]
+  (let [s (- 63 (- (bitlen a) (bitlen b)))         ; |a|*2^s / |b| lies in (2^62, 2^64)
+        ;; trimmed: mag-shl leaves its carry limb, often 0, on top, and a
+        ;; divisor with a zero top limb is not normalized for knuth (its
+        ;; q-hat loop would spin ~2^32 times; found in the #49 review)
+        na (if (> s 0) (trim-mag (mag-shl a s)) a)
+        nb (if (< s 0) (trim-mag (mag-shl b (- s))) b)
+        st0 (if (= 0 (len (trim-mag (divrem-mag na nb true)))) 0 1)
+        qm0 (trim-mag (divrem-mag na nb false))         ; < 2^64: at most two limbs
+        qv (bit-or (bit-shift-left (if (> (len qm0) 1) (aget qm0 1) 0) 32) (if (> (len qm0) 0) (aget qm0 0) 0))
+        big? (< qv 0)
+        st (if big? (bit-or st0 (bit-and qv 1)) st0)
+        qm (if big? (unsigned-bit-shift-right qv 1) qv)   ; [2^62, 2^63)
+        e (if big? (- 1 s) (- s))]
+    (if (>= (+ e 62) -1022)
+      (scale2 (double (bit-or qm st)) e)
+      (let [d (- -1074 e)]                         ; low bits to drop so the unit is 2^-1074
+        (if (>= d 64)
+          0.0
+          (let [keep (unsigned-bit-shift-right qm d)
+                rb (bit-and qm (unchecked-subtract (bit-shift-left 1 d) 1))
+                half (bit-shift-left 1 (dec d))
+                up (cond (> rb half) 1
+                         (< rb half) 0
+                         (= st 1) 1
+                         :else (bit-and keep 1))]
+            (scale2 (double (+ keep up)) -1074)))))))
+
+;; ---------------------------------------------------------------------------
+;; Ratio, normalized as big.Rat (gcd 1, den > 0)
+
+(defn rat-num [r] (.-num r))
+(defn rat-den [r] (.-den r))
+(defn- one? [a] (let [m (mg a)] (and (= 1 (sg a)) (= 1 (len m)) (= 1 (aget m 0)))))
+(defn rat-integer? "Denominator 1: native would answer an Int or BigInt." [r] (one? (rat-den r)))
+
+(defn rat-make
+  "n/d in lowest terms with d > 0 (BigInts); throws divide by zero for d = 0."
+  [n d]
+  (if (= 0 (sg d))
+    (raise-dbz)
+    (let [g (gcd n d)
+          n2 (quot n g)
+          d2 (quot d g)]
+      (if (< (sg d2) 0)
+        (Ratio. (negate n2) (negate d2))
+        (Ratio. n2 d2)))))
+
+(defn simplify
+  "let-go's MaybeSimplifyRatio: an integral r as an Int when it fits an
+   i64, else its BigInt numerator; any other r unchanged."
+  [r]
+  (if (rat-integer? r)
+    (let [n (rat-num r)] (if (fits-i64? n) (to-i64 n) n))
+    r))
+
+(defn rat-add [x y]
+  (rat-make (add (mul (rat-num x) (rat-den y)) (mul (rat-num y) (rat-den x))) (mul (rat-den x) (rat-den y))))
+
+(defn rat-sub [x y]
+  (rat-make (sub (mul (rat-num x) (rat-den y)) (mul (rat-num y) (rat-den x))) (mul (rat-den x) (rat-den y))))
+
+(defn rat-mul [x y]
+  (rat-make (mul (rat-num x) (rat-num y)) (mul (rat-den x) (rat-den y))))
+
+(defn rat-div "x / y; throws divide by zero when y is zero." [x y]
+  (rat-make (mul (rat-num x) (rat-den y)) (mul (rat-den x) (rat-num y))))
+
+(defn rat-compare "-1, 0 or 1 (denominators are positive)." [x y]
+  (compare (mul (rat-num x) (rat-den y)) (mul (rat-num y) (rat-den x))))
+
+(defn rat->string "big.Rat.RatString: n/d, or n when d is 1." [r]
+  (if (rat-integer? r)
+    (->string (rat-num r))
+    (str (->string (rat-num r)) "/" (->string (rat-den r)))))
+
+(defn rat->f64 "big.Rat.Float64: nearest even, subnormals included." [r]
+  (let [n (rat-num r)]
+    (if (= 0 (sg n))
+      0.0
+      (let [f (quot-f64 (mg n) (mg (rat-den r)))] (if (< (sg n) 0) (* -1.0 f) f)))))
