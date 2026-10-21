@@ -4,8 +4,9 @@ title: Optional runtimes: one discovery step each, reporting SKIP with the reaso
 status: open
 priority: medium
 created: 2026-10-21T15:38:30Z
-updated: 2026-10-21T15:38:30Z
+updated: 2026-10-21T15:38:38Z
 author: Matt Parrett
 assignee: Matt Parrett
 hash_source: content
+depends_on: a8b08e1
 description: checks/browser-probe.mjs (PR #57, D227) is the first probe for an optional runtime: it launches Chromium once and the browser lanes report SKIP with the reason when that fails. The other optional runtimes have no such step. wasmtime missing from PATH read as "no JSPI" on P4.0 until #57 made it a SKIP row; the llvm rows only test that native-run.sh exists and then fail when llc or clang is missing. One discovery step per runtime (wasmtime, llc/clang, and whatever the next target brings), each printing the same SKIP shape and honouring LW_REQUIRE_BROWSER-style opt-ins, would make the gate readable on a machine with a subset of the toolchain. Raised in the review of PR #57.
