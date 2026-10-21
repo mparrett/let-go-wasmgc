@@ -22,15 +22,18 @@
 # a first frame (main.lg's os/cwd raises "getwd: not implemented on js" under
 # js/wasm), and the table records the failure from the run itself. A module
 # that does not compile still gets a table (the stock lane's sizes, the
-# backend's first error) and exit 1. Env: LG, LEGMACS, LETGO, REPS, KEEP=1.
+# backend's first error) and exit 1. Boot needs Playwright's Chromium: when
+# checks/browser-probe.mjs finds none the row is SKIP (exit 2) before any
+# build, and the table is left as it is. Env: LG, LEGMACS, LETGO, REPS, KEEP=1.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 LETGO=${LETGO:-$LW_ROOT/let-go}
 COMMIT=e9789b7d
 REPS=${REPS:-5}
+browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && { echo "SKIP (legmacs size/boot: $browser_skip)"; exit 2; }
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
@@ -80,7 +83,7 @@ fi
 # ---- boot ------------------------------------------------------------------------
 boot_lane() {  # boot_lane <dir> <label> coi|plain
   local p; p=$(free_port)
-  if [ "$3" = coi ]; then python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$p" "$1" >"$t/$2.server.log" 2>&1 & pids+=($!)
+  if [ "$3" = coi ]; then python3 "$here/host/coi-serve.py" "$p" "$1" >"$t/$2.server.log" 2>&1 & pids+=($!)
   else python3 -m http.server --bind 127.0.0.1 --directory "$1" "$p" >"$t/$2.server.log" 2>&1 & pids+=($!); fi
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/index.html" && break; sleep 0.1; done
   node "$here/checks/browser-boot.mjs" --legmacs-time "http://127.0.0.1:$p" "$REPS" >"$t/boot-$2.json" 2>&1
