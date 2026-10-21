@@ -5,12 +5,11 @@
 # host/inject-shell.sh (before </body>, sentinel wrapped), plus
 # xsofy-shell-adapter.js, lg-wasm-host.js and the modules.
 # Open <out-dir>/index.html?module=<name>.wasm through any static server;
-# the JSPI lane needs no COOP/COEP (D91). Env: XSOFY (default the canonical
-# checkout).
+# the JSPI lane needs no COOP/COEP (D91). Env: XSOFY (checks/env.sh:
+# $LW_ROOT/xsofy).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-ws=$(cd "$here/../../.." && pwd)
-XSOFY=${XSOFY:-$ws/xsofy}
+. "$here/../checks/env.sh"
 out=${1:?usage: build-xsofy-serve.sh <out-dir> [module.wasm ...]}; shift
 mkdir -p "$out"
 command cp "$here/xsofy.html" "$out/index.html"
