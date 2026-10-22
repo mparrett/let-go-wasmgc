@@ -31,6 +31,12 @@
 # gates against each other. As a backstop a command started under a held slot
 # sees LW_SEM_HELD=1 and runs without taking another, so accidental nesting
 # costs oversubscription, not a deadlock.
+#
+# $LW_SEM/slots.tsv is the table of running slots, one row per held slot:
+# slot, pid, owner (LW_OWNER, else the repo's name), started (UTC), cwd,
+# command. Each row lives in its slot's directory, so it goes when the slot
+# does; the table is rebuilt from them, under a lock and by an atomic rename,
+# whenever a slot is taken or released.
 set -uo pipefail
 if [ -n "${LW_SEM_HELD:-}" ]; then exec "$@"; fi
 n=${LW_SLOTS:-4}; d=${LW_SEM:-/tmp/lw-sem-$(id -u)}; d=${d%/}; mkdir -p "$d"
@@ -60,7 +66,22 @@ while :; do
   if [ "$(date +%s)" -ge "$deadline" ]; then echo "sem: waited ${LW_SEM_WAIT:-1800}s, running unslotted" >&2; break; fi
   sleep 0.5
 done
-trap '[ -n "$got" ] && rm -rf "$got"' EXIT
+# rebuilt under a short lock, so the last rebuild follows the last change
+table() {
+  local i
+  for ((i = 0; i < 40; i++)); do mkdir "$d/table.lock" 2>/dev/null && break; sleep 0.05; done
+  { printf 'slot\tpid\towner\tstarted\tcwd\tcmd\n'; cat "$d"/slot*/row 2>/dev/null || true; } >"$d/slots.tsv.$$"
+  command mv -f "$d/slots.tsv.$$" "$d/slots.tsv"
+  rmdir "$d/table.lock" 2>/dev/null || true
+}
+if [ -n "$got" ]; then
+  cmd=$(printf '%q ' "$@" | tr '\t\n' '  ')
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(basename "$got")" "$$" \
+    "${LW_OWNER:-$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "${cmd:0:300}" >"$got/row"
+  table
+fi
+trap '[ -n "$got" ] && rm -rf "$got" && table' EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM HUP
 LW_SEM_HELD=1 nice -n "${LW_NICE:-10}" "$@"
 exit $?
