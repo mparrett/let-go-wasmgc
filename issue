@@ -1,0 +1,19 @@
+id: 8a8d408
+v: 2
+title: Function cache: identify a compiler function by its expanded form, not its source text?
+status: open
+priority: medium
+created: 2026-10-22T03:19:43Z
+updated: 2026-10-22T03:19:43Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Function cache plan 2 has to choose how a compiler function's code is identified in a trace.
+ 
+ Plan 1 records each compiler function that ran by the hash of its source form, before macroexpansion. A function's hash therefore doesn't change when a macro it uses is edited, or a def table it reads. The spec covers that with the compiler key: a hash of the compiler's tables and macros, whose change starts an empty store. That is correct but coarse: one macro edit discards every entry.
+ 
+ The option: hash each compiler function's expanded form, normalized by `lower-llvm-cache/normalize` so gensyms don't move it. A macro edit would then invalidate only the entries whose lowering ran a function whose expansion changed. Tables would stay in the key.
+ 
+ The cost is a macroexpand and a normalize of every compiler function each time the llvm target loads. The trace check's timing would measure it before we decide.
+ 
+ Whichever we pick, the key also has to cover what tracing cannot see: `lower-llvm-cache` and `lower-llvm-analysis-cache` (not traced), vars with no source file, dynamic vars that hold functions, and functions captured at load (`(def g (comp f h))` calls `f` without going through its var).
