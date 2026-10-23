@@ -13,3 +13,6 @@ description: Proposed: every commit message is a Conventional Commit, enforced b
  Our PR titles already follow Conventional Commits 1.0.0, and #64 adds `checks/subject-lint.py`, which accepts a message git writes itself (merge, revert, `fixup!`). As a prek `commit-msg` hook it would refuse any other message that is not `type(scope): description`. I took the hook out of #64 so that you decide this here, not by merging a template.
  
  The question: do commits on a branch carry the rule, or only the squash commit that lands on main? If only the squash, `make pr-ready` already checks the title and the hook stays out.
+
+## Comments
+[2026-10-23T16:25:08Z] Matt Parrett: Adopted: every commit message is a Conventional Commit, branch commits included, with the commit-msg hook as the enforcement once #64 is in. The subject-lint accepting git's own messages (merge, revert, fixup!) is what makes the per-commit rule workable; a squash-only rule would leave the hook out and let branch history drift from the subjects it produces. Our commits switch from here; the existing area prefixes become the scope, as yours did.
