@@ -1,0 +1,15 @@
+id: c23ba38
+v: 2
+title: Nothing checks the affected.sh table that attestation trusts
+status: open
+priority: medium
+created: 2026-10-23T15:07:52Z
+updated: 2026-10-23T15:07:52Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Attestation is only as honest as the `affected.sh` table, and nothing checks the table.
+ 
+ `gate.sh` skips a row whose attest key is unchanged, and the key hashes only the inputs the table names for that row. When a check script starts reading a new file and the table is not updated, the row stays "attested" after that file changes. The header says the table is the one place to extend; that is a rule an agent can miss.
+ 
+ I want a lint row: for every items.tsv row, each `checks/*` path in its command and each file those scripts source or invoke from `checks/` appears in the row's inputs. It runs in phase 0 beside corpus-lint and fails on a missing input.
