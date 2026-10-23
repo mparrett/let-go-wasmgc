@@ -31,6 +31,7 @@ P0.1	checks/run-corpus.sh checks/sem.sh checks/gate.sh checks/census.sh checks/c
 P0.2	checks/corpus-lint.sh checks/corpus-budget.tsv corpus/
 P0.3	checks/state.sh checks/env.sh
 P0.4	checks/workflow.sh checks/workflow.mk checks/subject-lint.py checks/comment-lint.py
+P0.6	checks/frontier.py checks/lifecycle.mk checks/state.sh
 P0.5	checks/subject-lint.py checks/comment-lint.py checks/subject-lint-cases.sh checks/comment-lint-cases.sh
 P1.0	oracle corpus/scalar/
 P1.1	oracle corpus/scalar/ corpus/opmatrix/ corpus/typed/ checks/run-corpus.sh

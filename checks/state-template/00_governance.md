@@ -21,31 +21,29 @@ described in BCP 14 when, and only when, they appear in all capitals.
 ## Boot
 
 On session start and after any context compaction, the agent MUST read this issue's
-entries in lexical order (`checks/state.sh show <issue>`). This entry takes precedence
-over any summary of the conversation.
+entries in lexical order (`checks/state.sh show <issue>`) and take the frontier from
+`make -f checks/workflow.mk next ISSUE=<issue>`. This entry takes precedence over any
+summary of the conversation. The agent MUST work one commitment at a time.
 
-## Lifecycle (make: a target MUST NOT run until all of its prerequisites hold)
+## Lifecycle
 
-    finish:             push retro
-    push:               commit human-push-approval   # pr-ready before the PR; then pushed, ci
-    commit:             approved-review human-commit-approval
-    approved-review:    critic-review human-review-approval
-    critic-review:      gate-green
-    gate-green:         rows-red-green               # make -f checks/workflow.mk gate PHASE=<n>
-    rows-red-green:     approved-plan                # make -f checks/workflow.mk rows
-    approved-plan:      baseline facts-verified human-plan-approval
-    baseline:           issue-assigned               # make -f checks/workflow.mk baseline
-    facts-verified:     issue-assigned
-    issue-assigned:     read-init-d in-flight-reviewed
-    in-flight-reviewed:                              # make -f checks/workflow.mk start -> 05_inflight
+The lifecycle is the make graph in checks/lifecycle.mk: a target is an outcome, its
+prerequisites are what it rests on. The agent reads it at boot and takes the realized and
+ready steps from `make -f checks/workflow.mk next ISSUE=<issue>` (checks/frontier.py).
 
 1. A step that a script can decide MUST be a target in checks/workflow.mk, and the agent
    MUST run the target rather than the commands it wraps. A scriptable step without a
    target MUST be added as one before it is relied on.
-2. A human-*-approval holds only when the operator states it in the current
-   conversation. An agent MUST NOT infer one from a question, a silence or an earlier
-   approval of a different step.
-3. Stamps are this issue's entries and checks/.attest/<row>.
+2. A step is realized only by its entry in this machine's ledger (the local journal). An
+   entry about the change carries the Diff-Sha it was made on and holds only while the
+   branch's diff has that hash. A comment on the issue is never authority. 30_rows and
+   35_gate are written only by record-rows and record-gate, which run the step; like a
+   declaration, that is held by the agent, not enforced.
+3. A declaration (20_plan, 45_review_ok, 50_commit, 60_push) is the operator's: written by
+   `make -f checks/workflow.mk declare`, run in the operator's own shell. An agent MUST NOT
+   run it, write a `Declared-By:` header, or infer a declaration from a question, a silence
+   or an earlier approval of a different step. Nothing in code stops an agent that runs as
+   the operator from doing so; this rule is held by the agent, not enforced.
 
 ## Work in flight
 
@@ -71,14 +69,17 @@ over any summary of the conversation.
 ## Speech acts
 
     Request   operator   opens 10_issue
-    Promise   agent      20_plan; MUST NOT precede facts-verified
+    Promise   agent      offers the plan; MUST NOT precede facts-recorded
     Assert    agent      void without a witness
-    Declare   operator   every human-*-approval; an agent MUST NOT declare
+    Declare   operator   20_plan, 45_review_ok, 50_commit, 60_push; an agent MUST NOT declare
 
-9. Each 15_facts entry has one status: ESTABLISHED | CONTRADICTED | UNKNOWN | RETRACTED.
-   approved-plan MUST NOT hold while any fact is CONTRADICTED.
-10. When a witness disproves a fact, the agent MUST mark it RETRACTED, mark every fact
-    that depends on it UNKNOWN, and return to approved-plan.
+9. A fact is a row of the 15_facts Belnap table, `| ID | Proposition | Status | Evidence |
+   DependsOn |`, with Status one of ESTABLISHED | CONTRADICTED | UNKNOWN | RETRACTED and
+   Evidence a witness. The latest row for an ID is the fact. plan-approved MUST NOT hold
+   while a fact is CONTRADICTED, or ESTABLISHED on one RETRACTED or UNKNOWN.
+10. When a witness disproves a fact, the agent MUST add a row marking it RETRACTED, with
+    the witness. Every fact resting on it then counts UNKNOWN (checks/frontier.py), and
+    the plan is declared again on the facts as they stand.
 
 ## Contracts
 
@@ -105,7 +106,9 @@ over any summary of the conversation.
 
 ## Standing rules
 
-11. A commit MUST NOT be labelled WIP. Force-push MUST NOT target main.
+11. Commit messages and PR titles MUST be Conventional Commits 1.0.0, branch commits
+    included (checks/subject-lint.py, the commit-msg hook; git-issue:7a1b919). A commit
+    MUST NOT be labelled WIP. Force-push MUST NOT target main.
 12. Tracked files MUST NOT contain home or temporary-directory paths or personal names.
 13. Each behavior has one corpus file. A fix MUST be a case in the file that owns the
     behavior, found by searching before a file is added.
@@ -116,7 +119,6 @@ over any summary of the conversation.
 
 Not yet rules. Each joins this template only once its issue is settled:
 
-    commit messages are Conventional Commits     git-issue:7a1b919
     where decisions are recorded                 git-issue:2a446d9
     ids in code and comments                     git-issue:4160e49
     whether byte identity may decide a gate      git-issue:907a973

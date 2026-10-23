@@ -7,11 +7,13 @@
 #                                  dir): prek's shims for pre-commit, commit-msg
 #                                  and pre-push, and git-issue's pre-push hook as
 #                                  pre-push.legacy, which prek runs after its own
-#   workflow.sh rows [<row>...]    run each row (default: checks/affected.sh's)
+#   workflow.sh rows [<row>...]    run each row (default: the rows the branch's
+#                                  diff touches, as record-rows chooses them)
 #                                  through run.sh with LW_ATTEST=0; prints
 #                                  `<row> <exit>` and exits 1 if any is not 0
-#   workflow.sh baseline [<row>...]  the same rows on $LW_STATE_BASE (default
-#                                  origin/main) with this tree's checks/ laid
+#   workflow.sh baseline [<row>...]  the same rows on the diff's base (the
+#                                  merge-base of HEAD and $LW_STATE_BASE,
+#                                  default origin/main) with this tree's checks/ laid
 #                                  over it, in a throwaway worktree: a new
 #                                  check must fail there; exits 0 either way
 #   workflow.sh pushed [<remote>]  every local issue note is on <remote>
@@ -23,6 +25,26 @@
 #   workflow.sh ci <pr>            the PR's checks, asked once: 0 all passed,
 #                                  1 one failed, 3 still running (ask again
 #                                  later; never a polling loop)
+#   workflow.sh diff-sha           sha256 of the branch's diff from its base,
+#                                  untracked files included: what Diff-Sha
+#                                  entries bind to (checks/frontier.py);
+#                                  exit 3 when there is no change
+#   workflow.sh critic <issue>     that diff, written to
+#                                  $LW_STATE/<issue>.critic.diff with its
+#                                  sha256: what the un-primed, read-only critic
+#                                  reads; its findings become the 40_review entry
+#   workflow.sh record-rows <issue>  the affected rows on the base and on the
+#                                  tree; records 30_rows (each row's two exits,
+#                                  Rev, Diff-Sha) only when every row passes
+#                                  on the tree
+#   workflow.sh record-gate <issue>  the phase gates of the affected rows,
+#                                  attestation off; records 35_gate only when
+#                                  every gate passes
+#   workflow.sh declare <issue> <entry> [<note>]
+#                                  the operator's declaration (20_plan,
+#                                  45_review_ok, 50_commit, 60_push), bound to
+#                                  the facts or the diff it approves. Run it in
+#                                  your own shell; an agent never does.
 #   workflow.sh                    self-test
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -55,18 +77,23 @@ run_rows() {   # <tree> <row>...: run each row in <tree>, print `<row> <exit>`; 
 }
 
 rows() {
-  [ $# -gt 0 ] || set -- $(checks/affected.sh)
+  local ids
+  if [ $# = 0 ]; then ids=$(branch_rows) || { echo "rows: the branch's rows cannot be told" >&2; return 2; }; set -- $ids; fi
   [ $# -gt 0 ] || { echo "rows: no row reads a changed file" >&2; return 0; }
   run_rows . "$@"
 }
 
 baseline() {
-  local base=${LW_STATE_BASE:-origin/main} wt
-  [ $# -gt 0 ] || set -- $(checks/affected.sh)
+  local base wt
+  # the diff's own base: where the branch left origin/main
+  base=$(diff_base) || return 2
+  local ids
+  if [ $# = 0 ]; then ids=$(branch_rows) || { echo "baseline: the branch's rows cannot be told" >&2; return 2; }; set -- $ids; fi
   [ $# -gt 0 ] || { echo "baseline: no row reads a changed file" >&2; return 0; }
-  wt=$(mktemp -d) && git worktree add -q --detach "$wt" "$base" || return 2
-  trap "git worktree remove --force '$wt' 2>/dev/null; rm -rf '$wt'" RETURN
-  rm -rf "$wt/checks" && cp -R checks "$wt/checks"
+  wt=$(mktemp -d) || return 2
+  trap "ig worktree remove --force '$wt' 2>/dev/null; rm -rf '$wt'" RETURN
+  ig worktree add -q --detach "$wt" "$base" || return 2
+  { rm -rf "$wt/checks" && cp -R checks "$wt/checks"; } || return 2
   run_rows "$wt" "$@"
   return 0
 }
@@ -100,6 +127,165 @@ ci() {
     8) echo "ci: #$pr still running" >&2; return 3 ;;
     *) return 1 ;;
   esac
+}
+
+# git for the branch's diff and the rows chosen from it: without the user's
+# global, system and environment config (GIT_CONFIG_*, GIT_DIFF_OPTS,
+# GIT_EXTERNAL_DIFF, GIT_INDEX_FILE, GIT_ATTR_*, GIT_DIR and the other
+# repository-location variables), replace refs, grafts, or the global ignore and
+# attributes files: the repository's .gitignore and this clone's
+# .git/info/exclude decide what is untracked, and a setting in the
+# repository's own .git/config still applies
+ig() {
+  env -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_DIFF_OPTS -u GIT_EXTERNAL_DIFF \
+      -u GIT_INDEX_FILE -u GIT_ATTR_SOURCE -u GIT_DIR -u GIT_WORK_TREE -u GIT_OBJECT_DIRECTORY \
+      -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_REPLACE_REF_BASE -u GIT_COMMON_DIR \
+      -u GIT_GRAFT_FILE -u GIT_SHALLOW_FILE \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
+      git -c diff.suppressBlankEmpty=false -c core.excludesFile=/dev/null -c core.attributesFile=/dev/null "$@"
+}
+# the base of the branch's diff
+diff_base() { ig merge-base HEAD "${LW_STATE_BASE:-origin/main}"; }
+# the files the branch's diff touches, NUL-separated: changed since the base,
+# and untracked (a nested repository, listed as dir/, is not one)
+branch_files() {
+  local b t f rc; b=$(diff_base) || return 2
+  t=$(mktemp) || return 2
+  { ig diff -z --name-only --no-renames "$b" && ig ls-files -z -o --exclude-standard; } > "$t" || { rm -f "$t"; return 2; }
+  # NUL all the way: a path may hold any byte but NUL
+  while IFS= read -r -d '' f; do
+    case $f in ''|*/) ;; *) printf '%s\0' "$f" ;; esac
+  done < "$t" | LC_ALL=C sort -zu; rc=$?
+  rm -f "$t"; return $rc
+}
+# the rows the branch's diff touches, or exit 2 when they cannot be told
+branch_rows() {
+  local t f files=(); t=$(mktemp) || return 2
+  branch_files > "$t" || { rm -f "$t"; return 2; }
+  while IFS= read -r -d '' f; do files+=("$f"); done < "$t"; rm -f "$t"
+  [ ${#files[@]} -gt 0 ] || return 0
+  # each row once, in items.tsv order
+  local out; out=$(checks/affected.sh "${files[@]}") || return 2
+  printf '%s\n' "$out" | awk 'NF && !seen[$0]++'
+}
+
+# the branch's diff from its base, untracked files included, with binary
+# content, full object ids and the diff options spelled out, so two shells
+# hash the same tree the same way
+branch_diff() {
+  local base d top rc=0 g=(ig)
+  local opts=(--binary --no-ext-diff --no-textconv --no-color --no-renames --diff-algorithm=myers -U3
+              --inter-hunk-context=0 --src-prefix=a/ --dst-prefix=b/ -O/dev/null --full-index)
+  top=$(ig rev-parse --show-toplevel) || return 2
+  local st; st=$(mkdir -p "${LW_STATE:?}" && cd "$LW_STATE" && pwd -P) || return 2
+  case "$st/" in "$(cd "$top" && pwd -P)"/*)
+    echo "diff: LW_STATE ($LW_STATE) is inside the tree; its files would change every hash" >&2; return 2 ;; esac
+  base=$(diff_base) || return 2
+  "${g[@]}" diff "${opts[@]}" "$base" || return 2
+  local list; list=$(mktemp) || return 2
+  "${g[@]}" ls-files -z -o --exclude-standard > "$list" || { rm -f "$list"; return 2; }
+  while IFS= read -r -d '' d; do
+    # a nested repository is listed as dir/: it is not this repository's change
+    case $d in */) continue ;; esac
+    # --no-index exits 1 when the files differ, which they always do here
+    "${g[@]}" diff "${opts[@]}" --no-index -- /dev/null "$d"; [ $? -le 1 ] || rc=2
+  done < <(LC_ALL=C sort -z "$list")
+  rm -f "$list"
+  return $rc
+}
+# the hash of exactly the bytes critic writes
+diff_sha() {
+  local f h; f=$(mktemp) || return 2
+  branch_diff > "$f" || { rm -f "$f"; return 2; }
+  # no change from the base: no hash to bind anything to
+  [ -s "$f" ] || { rm -f "$f"; echo "diff-sha: no change from the base" >&2; return 3; }
+  h=$(shasum -a 256 "$f") || { rm -f "$f"; return 2; }
+  rm -f "$f"; echo "${h%% *}"
+}
+rev() { echo "$(ig rev-parse --short HEAD)$([ -z "$(ig status --porcelain)" ] || echo +edits)"; }
+
+critic() {
+  local issue=${1:?issue} f t
+  f=$LW_STATE/$issue.critic.diff; mkdir -p "$LW_STATE"; t=$(mktemp) || return 2
+  # a failed or empty diff leaves no file for a critic to read stale
+  branch_diff > "$t" || { rm -f "$t" "$f"; return 2; }
+  [ -s "$t" ] || { rm -f "$t" "$f"; echo "critic: no change from the base" >&2; return 1; }
+  mv "$t" "$f" || return 2
+  echo "Diff: $f"
+  echo "Diff-Sha: $(shasum -a 256 "$f" | cut -d' ' -f1)"
+}
+
+record_rows() {
+  local issue=${1:?issue} ids base tree pairs h log=$LW_STATE/$1.rows.log
+  # the hash first, then the rows the branch's diff touches: both come from
+  # that diff, and a change during the run is caught by hashing again after
+  h=$(diff_sha) || { echo "record-rows: no diff hash" >&2; return 2; }
+  ids=$(branch_rows) || { echo "record-rows: the branch's rows cannot be told" >&2; return 2; }
+  [ -n "$ids" ] || { echo "record-rows: no row reads a changed file; nothing shows the change works" >&2; return 1; }
+  base=$(baseline $ids) || { echo "record-rows: the base could not be checked out" >&2; return 2; }
+  if ! tree=$(run_rows . $ids); then
+    printf 'base:\n%s\ntree:\n%s\n' "$base" "$tree" > "$log"; echo "record-rows: a row fails on the tree; see $log" >&2; return 1
+  fi
+  # one line per selected row with both exits; a new row reads base!=0 tree=0
+  pairs=$(for r in $ids; do
+    printf 'Row: %s base=%s tree=%s\n' "$r" "$(awk -v r="$r" '$1==r{print $2}' <<<"$base")" "$(awk -v r="$r" '$1==r{print $2}' <<<"$tree")"
+  done)
+  [ "$(diff_sha)" = "$h" ] || { echo "record-rows: the tree changed while the rows ran; nothing recorded" >&2; return 1; }
+  if grep -qE 'base=( |$)|tree=( |$)' <<<"$pairs"; then
+    printf '%s\n' "$pairs" > "$log"; echo "record-rows: a row has no result on one side; see $log" >&2; return 2
+  fi
+  printf 'Rev: %s\nDiff-Sha: %s\n%s\n' "$(rev)" "$h" "$pairs" | checks/state.sh put "$issue" 30_rows
+}
+
+record_gate() {
+  local issue=${1:?issue} ph phases out="" rc=0 r h log=$LW_STATE/$1.gate.log
+  h=$(diff_sha) || { echo "record-gate: no diff hash" >&2; return 2; }
+  local ids; ids=$(branch_rows) || { echo "record-gate: the branch's rows cannot be told" >&2; return 2; }
+  phases=$(for r in $ids; do awk -F'\t' -v id="$r" '$1==id{print $2}' checks/items.tsv; done | sort -un)
+  [ -n "$phases" ] || { echo "record-gate: no row reads a changed file; no gate to run" >&2; return 1; }
+  : > "$log"
+  for ph in $phases; do
+    LW_ATTEST=0 checks/gate.sh "$ph" >> "$log" 2>&1; r=$?
+    out="${out}Gate: $ph exit $r"$'\n'; [ $r = 0 ] || rc=1
+  done
+  [ $rc = 0 ] || { printf '%s' "$out" >&2; echo "record-gate: a phase fails; see $log" >&2; return 1; }
+  [ "$(diff_sha)" = "$h" ] || { echo "record-gate: the tree changed while the gates ran; nothing recorded" >&2; return 1; }
+  printf 'Rev: %s\nDiff-Sha: %s\n%s' "$(rev)" "$h" "$out" | checks/state.sh put "$issue" 35_gate
+}
+
+declare_() {
+  local issue=${1:?issue} entry=${2:?entry} note=${3:-} bind f h
+  case $entry in
+    20_plan) f=$(checks/state.sh local "$issue") || { echo "declare: the local ledger cannot be read" >&2; return 2; }
+             f=$f/$(awk '$1=="#:" && $4=="facts"{print $3}' checks/lifecycle.mk).md
+             [ -s "$f" ] || { echo "declare: no facts recorded; nothing for the plan to rest on" >&2; return 2; }
+             bind="Facts-Sha: $(shasum -a 256 < "$f" | cut -d' ' -f1)" ;;
+    45_review_ok|50_commit|60_push) h=$(diff_sha) || { echo "declare: no diff hash" >&2; return 2; }
+             bind="Diff-Sha: $h" ;;
+    *) echo "declare: $entry is not a declaration (20_plan, 45_review_ok, 50_commit, 60_push)" >&2; return 2 ;;
+  esac
+  # a blank line ends the header block, so a note cannot override a header
+  printf 'Declared-By: operator\n%s\nRev: %s\n\n%s\n' "$bind" "$(rev)" "$note" | checks/state.sh put "$issue" "$entry"
+}
+
+selftest_diff() {  # diff-sha and branch_files, in a throwaway repository
+  local t f=0 a b c
+  t=$(mktemp -d); mkdir -p "$t/r"
+  ( cd "$t/r" && git init -q && echo one > a.txt && git add a.txt && git -c user.name=t -c user.email=t@t commit -q -m one && git update-ref refs/remotes/origin/main HEAD ) || return 1
+  ck() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; f=1; fi; }
+  ck 'no change from the base has no hash (exit 3)' '(cd "$t/r" && LW_STATE=$t/st diff_sha >/dev/null 2>&1); [ $? = 3 ]'
+  ( cd "$t/r" && echo two >> a.txt && git -c user.name=t -c user.email=t@t commit -q -am two )
+  a=$(cd "$t/r" && LW_STATE=$t/st diff_sha)
+  ck 'a committed change on a clean tree is hashed' '[ -n "$a" ]'
+  ck 'and its files are the ones the rows are chosen from' '[ "$(cd "$t/r" && branch_files | tr "\\0" "\\n")" = a.txt ]'
+  b=$(cd "$t/r" && GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=diff.srcPrefix GIT_CONFIG_VALUE_0=x/ GIT_CONFIG_KEY_1=core.abbrev GIT_CONFIG_VALUE_1=12 LW_STATE=$t/st diff_sha)
+  ck 'environment config does not change the hash' '[ "$a" = "$b" ]'
+  ( cd "$t/r" && mkdir nested && cd nested && git init -q && echo x > y && git add y && git -c user.name=t -c user.email=t@t commit -q -m n )
+  c=$(cd "$t/r" && LW_STATE=$t/st diff_sha)
+  ck 'an untracked nested repository is not part of the diff' '[ "$a" = "$c" ]'
+  ck 'and listing files succeeds when it is the only untracked entry' '(cd "$t/r" && branch_files >/dev/null)'
+  rm -rf "$t"
+  return $f
 }
 
 selftest() {
@@ -155,7 +341,12 @@ case ${1:-} in
   baseline) shift; . checks/env.sh; baseline "$@" ;;
   pushed)   shift; pushed "$@" ;;
   pr-ready) shift; pr_ready "$@" ;;
+  critic)   shift; . checks/env.sh; critic "$@" ;;
+  diff-sha) . checks/env.sh; diff_sha ;;
+  record-rows) shift; . checks/env.sh; record_rows "$@" ;;
+  record-gate) shift; . checks/env.sh; record_gate "$@" ;;
+  declare)  shift; . checks/env.sh; declare_ "$@" ;;
   ci)       shift; ci "$@" ;;
-  '')       selftest ;;
-  *)        echo "usage: workflow.sh hooks|rows|baseline|pushed|pr-ready|ci" >&2; exit 2 ;;
+  '')       selftest; r1=$?; selftest_diff; r2=$?; [ $r1 = 0 ] && [ $r2 = 0 ] ;;
+  *)        echo "usage: workflow.sh hooks|rows|baseline|pushed|pr-ready|ci|critic|diff-sha|record-rows|record-gate|declare" >&2; exit 2 ;;
 esac
