@@ -1,0 +1,15 @@
+id: ce73405
+v: 2
+title: Concurrent gates of one phase overwrite each other's row logs
+status: open
+priority: medium
+created: 2026-10-23T15:07:52Z
+updated: 2026-10-23T15:07:52Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Two gates of the same phase running at once overwrite each other's logs, so a FAIL can point at another run's log.
+ 
+ `gate.sh` keeps each row's output in `${TMPDIR:-/tmp}/lw-gate-<phase>/<id>.log`, and its header notes the collision. With several agents sharing the slot pool that happens: two agents gating phase 1 each print the same log path for a FAIL.
+ 
+ Fix: one directory per run (`mktemp -d` under that prefix), printed once when the gate starts, and the FAIL line names the file in it.
