@@ -1,0 +1,15 @@
+id: 7a1b919
+v: 2
+title: Proposed: every commit message is a Conventional Commit, enforced by a commit-msg hook
+status: open
+priority: medium
+created: 2026-10-23T15:50:05Z
+updated: 2026-10-23T15:50:05Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Proposed: every commit message is a Conventional Commit, enforced by a commit-msg hook.
+ 
+ Our PR titles already follow Conventional Commits 1.0.0, and #64 adds `checks/subject-lint.py`, which accepts a message git writes itself (merge, revert, `fixup!`). As a prek `commit-msg` hook it would refuse any other message that is not `type(scope): description`. I took the hook out of #64 so that you decide this here, not by merging a template.
+ 
+ The question: do commits on a branch carry the rule, or only the squash commit that lands on main? If only the squash, `make pr-ready` already checks the title and the hook stays out.
