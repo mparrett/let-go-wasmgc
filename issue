@@ -1,0 +1,18 @@
+id: 4160e49
+v: 2
+title: Proposed: code and comments do not cite issue, row or decision ids
+status: open
+priority: medium
+created: 2026-10-23T15:50:05Z
+updated: 2026-10-23T15:50:05Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Proposed: code and comments do not cite issue, row or decision ids; the commit, the PR and the issue carry them.
+ 
+ The checks cite D-numbers and row ids in comments today (`gate.sh` names D194 and D197 beside the rows it adds). Adopting this means a cleanup, not a description of the tree as it is.
+ 
+ For: an id in a comment goes stale when the decision moves. The reader must look it up to learn what the line does, when the comment could say so directly.
+ Against: an id is a stable link to the reasoning. The checks are where a reader asks why.
+ 
+ If we adopt it, a lint row can hold it for new lines only, as `local-paths.sh` does for paths.
