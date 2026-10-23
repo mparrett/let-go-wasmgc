@@ -1,0 +1,21 @@
+id: 6d2aea7
+v: 2
+title: Remove rt/wasm/bignum.lg, superseded by let-go.lang.bignum
+status: open
+priority: medium
+created: 2026-10-23T20:25:05Z
+updated: 2026-10-23T20:25:05Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Remove rt/wasm/bignum.lg: let-go.lang.bignum in rt/let-go/lang/ (#62) replaced it, and the old copy is a second implementation that nothing calls.
+ 
+ The removal also takes its row in rt/wasm/README.md's load order, its entry in corpus/intrinsics/xsofy_natives_test.lg's dialect test, and the README line that names it.
+ 
+ Facts that close it (status, then the witness each needs):
+ 
+ - F1 nothing loads wasm.bignum: a search of the tree at the PR head, and the rows that loaded it pass (command and exit).
+ - F2 let-go.lang.bignum still holds the cases: corpus/intrinsics/bignum_test.lg passes (command and exit).
+ - F3 the gensym count after load is 1133, or its new value is recorded with the reason: checks/gensym-load.sh output.
+ - F4 GC bytes: P8.0 IDENTICAL, or the baseline is re-frozen with the reason in its header (command and exit, plus the header line).
+ - F5 behavior: gate 2 and the P7 eval rows pass (command and exit).
