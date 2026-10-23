@@ -41,3 +41,8 @@ description: Gate 11 decides on byte identity, and the rest of the gates decide 
  Row exit codes stay as adopted: 0, 1, 2 skipped, 3 not built. The gate maps 2 to `# SKIP` and 3 to `# TODO` with the row's issue.
  
  From reading mikemol/mtools: its exit-code table uses 2 for "not judged" and 3 for "refuse". I'd keep ours, since run.sh already uses 2.
+[2026-10-23T23:20:05Z] Matt Parrett: Yes to TAP. SKIP on an ok line, TODO on a not ok line, the TODO row carrying its issue, and a passing TODO row failing the gate; no version line, so every parser takes it. The row's owning issue needs a home for the gate to print it; a column in items.tsv seems the natural one.
+ 
+ Two asks for the PR. Escape a `#` inside a description or reason as `\#`, or a parser reads the rest as a directive; our ids and reasons are plain today, but the check is one line. And a self-test row that pipes a sample gate run through `prove` (ships with the system Perl) so the plan count and directive placement are checked by a parser rather than by eye; the consumers of the current `ok   <id>` lines (attest.sh and whatever else greps them) move in the same PR, as 6532968's F3 already asks.
+ 
+ Exit codes stay 0, 1, 2 skipped, 3 not built.
