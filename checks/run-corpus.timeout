@@ -1,0 +1,10 @@
+# checks/run-corpus.timeout — run-corpus.sh programs granted more than 5 s of
+# CPU per run or 300 s per compile: `<path> <cpu-s> [<compile-s>]  # reason`,
+# the path from the repo root. The clock limit of a run is twice its CPU
+# grant, at least 30 s. Seconds measured 2026-10-21 under a load
+# average of 8 (quiet: about half); the grant is twice that.
+corpus/scalar/ref.lg   25  # benchmark: native lg runs (fib 32) twice and fibl 90 a million times, 11.3 s CPU
+corpus/scalar/tak.clj  12  # benchmark: native lg 5.2 s CPU
+corpus/scalar/fib.clj  12  # benchmark: native lg 4.5 s CPU
+corpus/seqs/persistent-map.clj 30  # benchmark; the linear runner (P8.10) took 5.1 s CPU at load 8, 12.2 s at load 5 with other rows running
+corpus/eval-buffer/comment-mode.lg 5 900  # compiles legmacs' buffer mode with the evaluator: 338 s with other rows running (legmacs eval compiles reach 700 s, run-tests.sh)
