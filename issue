@@ -8,7 +8,7 @@ updated: 2026-10-23T21:21:44Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
-relates_to: 3e08842,7e36c67
+relates_to: 3e08842,7e36c67,d7bb11b
 description: A compile server: load the driver once and compile many programs in that process, so a gate pays the compiler's start-up once instead of per program.
  
  Today every corpus program is a fresh `lg src/driver.lg <program>`: the interpreter loads the compiler from source, then compiles one program. On 2026-10-23 a few-line program in corpus/maporder took 20 to 50 s that way at load 5 to 14, and P8.0 makes 58 such compiles. The function cache (git-issue:3e08842, git-issue:7e36c67) removes repeated analysis within the llvm lane; this removes repeated start-up on both lanes.
