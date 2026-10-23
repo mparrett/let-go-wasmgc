@@ -15,8 +15,10 @@
 #
 # Writes corpus/xsofy/turn-time.md and prints it. Exit 0 iff every run counted
 # at least KEYS/2 turns in both lanes; 2 when checks/browser-probe.mjs finds no
-# Chromium (after the lanes built) or a run times out; 1 on a build failure.
-# Env: LG, XSOFY, LETGO, SEED, KEYS, REPS, KEEP=1, LW_LANE5_CACHE, LW_BROWSER_TOOLS.
+# Chromium (after the lanes built) or a run times out; 1 on a build failure, or
+# before any build when LW_REQUIRE_BROWSER=1 and the probe fails.
+# Env: LG, XSOFY, LETGO, SEED, KEYS, REPS, KEEP=1, LW_LANE5_CACHE, LW_BROWSER_TOOLS,
+# LW_REQUIRE_BROWSER.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
@@ -29,6 +31,11 @@ REPS=${REPS:-3}
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
+
+# probe first, so LW_REQUIRE_BROWSER fails before either lane builds; the SKIP
+# itself waits until both lanes have built (D227)
+browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
 
 # ---- stock lane (lane5.sh's cache) --------------------------------------------------
 cache=${LW_LANE5_CACHE:-${TMPDIR:-/tmp}/lw-lane5-stock}; mkdir -p "$cache"
@@ -51,7 +58,6 @@ fi
 "$here/host/build-xsofy-module.sh" "$t/module.wasm" || { echo "FAIL: xsofy main.lg did not compile"; exit 1; }
 "$here/host/build-xsofy-serve.sh" "$t/lw" "$t/module.wasm" || { echo "FAIL: build-xsofy-serve.sh"; exit 1; }
 
-browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
 [ -n "$browser_skip" ] && { echo "SKIP (turn-time: both lanes built; $browser_skip)"; exit 2; }
 
 # ---- runs ------------------------------------------------------------------------

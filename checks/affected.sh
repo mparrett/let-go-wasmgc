@@ -60,6 +60,7 @@ P4.0	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs
 P4.1	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs xsofy
 P4.2	oracle host/ checks/lane5.sh xsofy
 P4.3	oracle host/ checks/size-boot.sh xsofy
+P4.4	oracle host/ checks/turn-time.sh checks/browser-boot.mjs checks/browser-probe.mjs xsofy
 P2.14	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
 P5.0	corpus/quality/
 P5.1	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
