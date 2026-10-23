@@ -18,7 +18,9 @@
 #                                  before starting more: issues in progress or
 #                                  in review, worktrees with commits not on
 #                                  $LW_STATE_BASE (default origin/main) or with
-#                                  uncommitted edits, and your open PRs
+#                                  uncommitted edits, your open PRs, and
+#                                  others' open PRs with a commit newer than
+#                                  your last review or comment on them
 #   state.sh                       self-test in a throwaway repository
 #
 # The issue is the store: comments are append-only and travel with the
@@ -123,14 +125,30 @@ inflight() {
     [ "$ahead" = 0 ] && [ "$dirty" = 0 ] && continue
     printf 'worktree\t%s\t%s\t+%s\t%s edits\n' "$wt" "${br#refs/heads/}" "$ahead" "$dirty"
   done
-  command -v gh >/dev/null && gh pr list --author @me --state open --json number,headRefName,title \
-    --template '{{range .}}pr{{"\t"}}#{{.number}}{{"\t"}}{{.headRefName}}{{"\t"}}{{.title}}{{"\n"}}{{end}}' 2>/dev/null
+  local gh=${GH:-gh} me
+  command -v "$gh" >/dev/null || return 0
+  me=$("$gh" api user 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["login"])' 2>/dev/null) || return 0
+  "$gh" pr list --state open --json number,author,headRefName,title,commits,reviews,comments 2>/dev/null |
+    python3 -c '
+import json, sys
+me = sys.argv[1]
+for p in json.load(sys.stdin):
+    who = p["author"]["login"]
+    if who == me:
+        print("pr\t#%d\t%s\t%s" % (p["number"], p["headRefName"], p["title"]))
+        continue
+    mine = [r.get("submittedAt") or "" for r in p["reviews"] if r["author"]["login"] == me]
+    mine += [c.get("createdAt") or "" for c in p["comments"] if c["author"]["login"] == me]
+    last = p["commits"][-1]["committedDate"] if p["commits"] else ""
+    if max(mine, default="") < last:
+        print("review\t#%d\t%s\t%s: %s" % (p["number"], p["headRefName"], who, p["title"]))
+' "$me"
   return 0
 }
 
 selftest() {
   local repo id out rc fail=0
-  repo=$(mktemp -d) && trap "rm -rf '$repo' '$repo.state' '$repo.side'" EXIT
+  repo=$(mktemp -d) && trap "rm -rf '$repo' '$repo.state' '$repo.side' '$repo.gh'" EXIT
   export LW_STATE=$repo.state LW_STATE_POST=1; mkdir -p "$LW_STATE"
   cd "$repo" && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init && git branch -M main
   echo .git-issue/ >> .git/info/exclude   # git-issue's status table, as in the real tree's .gitignore
@@ -156,7 +174,7 @@ selftest() {
   rm -rf "$LW_STATE/$id"
   check 'cache rebuilt from the issue alone' '[ "$(pull "$id")" = "$LW_STATE/$id" ] && [ -e "$LW_STATE/$id/30_rows.md" ]'
   check 'status reads the readerboard' '[ "$(status)" = "$(printf "%s\tAWAITING_DECLARATION\tapproved-review" "$id")" ]'
-  export LW_STATE_BASE=main
+  export LW_STATE_BASE=main GH=$repo.nogh
   check 'nothing in flight on a clean repo' '[ -z "$(inflight | grep -v ^pr)" ]'
   git issue start "$id" >/dev/null 2>&1
   git worktree add -q -b side "$repo.side" main 2>/dev/null
@@ -166,6 +184,25 @@ selftest() {
   check 'an issue in progress is in flight' 'grep -q "^issue	$id	in_progress" <<<"$out"'
   check 'a worktree ahead of the base is in flight' 'grep -q "	side	+1	0 edits" <<<"$out"'
   check 'uncommitted edits are in flight' 'grep -q "	main	+0	1 edits" <<<"$out"'
+  cat > "$repo.gh" <<'GH'
+#!/bin/sh
+case "$1 $2" in
+  "api user") echo '{"login":"me"}' ;;
+  "pr list") cat <<'JSON'
+[{"number":1,"author":{"login":"me"},"headRefName":"mine","title":"t1","commits":[{"committedDate":"2026-10-20T00:00:00Z"}],"reviews":[],"comments":[]},
+ {"number":2,"author":{"login":"peer"},"headRefName":"seen","title":"t2","commits":[{"committedDate":"2026-10-20T00:00:00Z"}],"reviews":[{"author":{"login":"me"},"submittedAt":"2026-10-21T00:00:00Z"}],"comments":[]},
+ {"number":3,"author":{"login":"peer"},"headRefName":"pushed-since","title":"t3","commits":[{"committedDate":"2026-10-22T00:00:00Z"}],"reviews":[],"comments":[{"author":{"login":"me"},"createdAt":"2026-10-21T00:00:00Z"}]},
+ {"number":4,"author":{"login":"peer"},"headRefName":"never","title":"t4","commits":[{"committedDate":"2026-10-20T00:00:00Z"}],"reviews":[],"comments":[]}]
+JSON
+  ;;
+esac
+GH
+  chmod +x "$repo.gh"
+  out=$(GH=$repo.gh inflight)
+  check 'my open PR is in flight' 'grep -q "^pr	#1	mine" <<<"$out"'
+  check 'a PR I reviewed after its last commit is not' '! grep -q "#2" <<<"$out"'
+  check 'a PR with a commit after my last comment is owed a review' 'grep -q "^review	#3	pushed-since	peer" <<<"$out"'
+  check 'a PR I never reviewed is owed a review' 'grep -q "^review	#4	never" <<<"$out"'
   return $fail
 }
 
