@@ -165,7 +165,7 @@ branch_rows() {
   while IFS= read -r -d '' f; do files+=("$f"); done < "$t"; rm -f "$t"
   [ ${#files[@]} -gt 0 ] || return 0
   # each row once, in items.tsv order
-  local out; out=$(checks/affected.sh "${files[@]}") || return 2
+  local out; out=$(checks/affected.sh -- "${files[@]}") || return 2
   printf '%s\n' "$out" | awk 'NF && !seen[$0]++'
 }
 
@@ -284,6 +284,8 @@ selftest_diff() {  # diff-sha and branch_files, in a throwaway repository
   c=$(cd "$t/r" && LW_STATE=$t/st diff_sha)
   ck 'an untracked nested repository is not part of the diff' '[ "$a" = "$c" ]'
   ck 'and listing files succeeds when it is the only untracked entry' '(cd "$t/r" && branch_files >/dev/null)'
+  ( cd "$t/r" && echo z > ./--all )
+  ck 'a changed file named like an option is listed as a path' '(cd "$t/r" && branch_files | tr "\\0" "\\n" | grep -qx -- --all)'
   rm -rf "$t"
   return $f
 }

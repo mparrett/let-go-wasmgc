@@ -148,21 +148,30 @@ def facts(text):
         rows[fid] = {"status": status, "deps": [d.strip() for d in deps.split(",") if d.strip() and d.strip() != "-"]}
     problems += [bad[f] for f in sorted(bad)]
 
-    memo = {}
-
-    def effective(fid, seen=()):
-        if fid in memo:
-            return memo[fid]
-        r = rows.get(fid)
-        if r is None or fid in seen:
-            return "UNKNOWN"
-        out = r["status"]
-        if out == "ESTABLISHED" and any(effective(d, seen + (fid,)) in ("RETRACTED", "UNKNOWN", "CONTRADICTED") for d in r["deps"]):
-            out = "UNKNOWN"
-        memo[fid] = out
-        return out
-
-    eff = {fid: effective(fid) for fid in rows}
+    # the cascade, depth-first with an explicit stack, so a chain's length is no
+    # limit: a fact counts as UNKNOWN when one it rests on is RETRACTED, UNKNOWN,
+    # CONTRADICTED, missing, or on a cycle with it
+    eff, state = {}, {}
+    for root in rows:
+        if root in eff:
+            continue
+        state[root] = 1
+        stack = [(root, 0)]
+        while stack:
+            fid, i = stack[-1]
+            deps = rows[fid]["deps"] if rows[fid]["status"] == "ESTABLISHED" else []
+            if i < len(deps):
+                stack[-1] = (fid, i + 1)
+                d = deps[i]
+                if d in rows and d not in state:
+                    state[d] = 1
+                    stack.append((d, 0))
+                continue
+            out = rows[fid]["status"]
+            if out == "ESTABLISHED" and any(eff.get(d, "UNKNOWN") in ("RETRACTED", "UNKNOWN", "CONTRADICTED") for d in deps):
+                out = "UNKNOWN"
+            eff[fid] = out
+            stack.pop()
     problems += ["%s: CONTRADICTED" % f for f, s in sorted(eff.items()) if s == "CONTRADICTED"]
     problems += ["%s: rests on %s" % (f, ",".join(rows[f]["deps"])) for f in sorted(rows)
                  if rows[f]["status"] == "ESTABLISHED" and eff[f] == "UNKNOWN"]
@@ -222,7 +231,7 @@ def sha(data):
 
 
 def main(issue):
-    if not re.match(r"^[A-Za-z0-9_-]+$", issue):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", issue):
         print("frontier: %r is not an issue id" % issue, file=sys.stderr)
         return 2
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -330,6 +339,13 @@ def selftest():
     check("only a newline ends a line", facts("| F1 | p | CONTRADICTED | x | - |\x85| F1 | p | ESTABLISHED | x | - |\n")[0] != [])
     check("so is one whose first cell looks like a header", facts("| F1 | q | ESTABLISHED | x | - |\nX:y | r | CONTRADICTED | x | -\n")[0] != [])
     check("a row without its leading pipe is reported", facts("| F1 | q | ESTABLISHED | x | - |\nF9 | r | CONTRADICTED | x | -\n")[0] != [])
+    deep = "".join("| F%d | p | ESTABLISHED | w | F%d |\n" % (i, i + 1) for i in range(3000)) + "| F3000 | p | ESTABLISHED | w | - |\n"
+    probs, eff = facts(deep)
+    check("a 3000-link chain is judged whole, with no depth limit", not probs and eff["F0"] == "ESTABLISHED")
+    probs, eff = facts(deep.replace("| F3000 | p | ESTABLISHED |", "| F3000 | p | RETRACTED |"))
+    check("and a retraction at its far end reaches its head", eff["F0"] == "UNKNOWN")
+    probs, eff = facts("| F1 | p | ESTABLISHED | w | F2 |\n| F2 | q | ESTABLISHED | w | F1 |\n")
+    check("facts resting on each other in a cycle are both UNKNOWN", eff == {"F1": "UNKNOWN", "F2": "UNKNOWN"})
     check("a row with no ID is reported", facts("| | p | CONTRADICTED | x | - |\n| F1 | q | ESTABLISHED | x | - |\n")[0] != [])
     for bad in ("\t@echo x\n#: a 10_x present\nfinish: a\na:\n", "finish: a\n#: a 10_x present\na:\n\t#: b 15_f present\n"):
         try:

@@ -8,7 +8,7 @@ described in BCP 14 when, and only when, they appear in all capitals.
 
     operator     the human who owns the issue's approvals
     agent        any non-human process acting on the issue
-    entry        a git-issue comment led by `State: NN_name` (checks/state.sh)
+    entry        a record led by `State: NN_name` in this machine's journal (checks/state.sh)
     row          a line of checks/items.tsv; it passes when `checks/run.sh <row>` exits 0
     base         origin/main, or $LW_STATE_BASE when set
     in flight    as `checks/state.sh inflight` lists it: an issue in_progress or review, a
