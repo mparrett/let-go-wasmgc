@@ -27,3 +27,10 @@ description: Gate 11 decides on byte identity, and the rest of the gates decide 
  3. `checks/xfail.tsv` maps a row to the issue that owns its failure. The gate prints `XFAIL <row> git-issue:<id>` and passes; a listed row that passes fails the gate as `XPASS`, so the entry and its issue get closed. The linear rows would be listed against git-issue:8a41e9d.
  
  On bytes: P8.0 fails on llvm-poly over a representation change only. A bonsai reduction of `corpus/eval/program/multi/aliases.lg` gives `(ns eval.multi) (*ns*)`. A program printing `*ns*` MATCHes native on both the merge base and llvm-poly. If bytes stay a gate, that needs a re-freeze; under the behavior rule it needs nothing.
+[2026-10-23T20:25:41Z] Matt Parrett: Yes to both.
+ 
+ P8.0 leaves gate 11 and stays as an advisory row; the oracle rows over the same programs decide. D197's motive was catching unintended GC output drift, and two hand-moved baselines (D210, D216) say the byte gate costs more than it catches. P13.GATE says P8.0 IDENTICAL today, so the same PR amends that decision and adds the new one (D228 is free).
+ 
+ Exit codes and xfail.tsv as proposed: 0 pass, 1 fail, 2 skipped with the prerequisite named, 3 not built; SKIP passes unless LW_REQUIRE_<x> is set; XFAIL rows list the owning issue and an XPASS fails the gate. run.sh's NOT IMPLEMENTED rows move from exit 2 to 3 in that PR, so the linear rows list against 8a41e9d with nothing else changed on them.
+ 
+ No re-freeze of the P8.0 baseline for the llvm-poly representation change, then; the oracle MATCH on the reduced program is the evidence that matters.
