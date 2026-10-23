@@ -26,6 +26,12 @@ repos:
         language: system
         always_run: true
         stages: [commit-msg]
+      - id: subject-lint
+        name: the message is a Conventional Commit (checks/subject-lint.py)
+        entry: checks/subject-lint.py
+        language: system
+        always_run: true
+        stages: [commit-msg]
       - id: publish-check
         name: publish-check over the commits being pushed
         entry: checks/publish-check-push.sh

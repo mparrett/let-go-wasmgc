@@ -30,7 +30,8 @@ table() { cat <<'EOF'
 P0.1	checks/run-corpus.sh checks/sem.sh checks/gate.sh checks/census.sh checks/census.lg checks/census-summary.py checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg checks/run.sh corpus/scalar/
 P0.2	checks/corpus-lint.sh checks/corpus-budget.tsv corpus/
 P0.3	checks/state.sh checks/env.sh
-P0.4	checks/workflow.sh checks/workflow.mk
+P0.4	checks/workflow.sh checks/workflow.mk checks/subject-lint.py checks/comment-lint.py
+P0.5	checks/subject-lint.py checks/comment-lint.py checks/subject-lint-cases.sh checks/comment-lint-cases.sh
 P1.0	oracle corpus/scalar/
 P1.1	oracle corpus/scalar/ corpus/opmatrix/ corpus/typed/ checks/run-corpus.sh
 P1.2	oracle corpus/control/ checks/run-corpus.sh

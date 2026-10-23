@@ -17,6 +17,12 @@
 #   workflow.sh pushed [<remote>]  every local issue note is on <remote>
 #                                  (default origin); exits 1 naming the
 #                                  unpushed ones
+#   workflow.sh pr-ready <title> <body-file>  the title is a Conventional
+#                                  Commit subject and the body passes
+#                                  comment-lint, before `gh pr create/edit`
+#   workflow.sh ci <pr>            the PR's checks, asked once: 0 all passed,
+#                                  1 one failed, 3 still running (ask again
+#                                  later; never a polling loop)
 #   workflow.sh                    self-test
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -79,6 +85,23 @@ pushed() {
   return $fail
 }
 
+pr_ready() {
+  local title=${1:?title} body=${2:?body file} fail=0
+  checks/subject-lint.py --title "$title" || fail=1
+  checks/comment-lint.py "$body" || fail=1
+  return $fail
+}
+
+ci() {
+  local pr=${1:?pr number} rc
+  ${GH:-gh} pr checks "$pr"; rc=$?
+  case $rc in
+    0) return 0 ;;
+    8) echo "ci: #$pr still running" >&2; return 3 ;;
+    *) return 1 ;;
+  esac
+}
+
 selftest() {
   local t fail=0 out rc
   t=$(mktemp -d) && trap "rm -rf '$t'" EXIT
@@ -110,6 +133,19 @@ selftest() {
   git update-ref refs/notes/issue-aaaaaaa "$(git rev-parse refs/notes/issue-aaaaaaa^)"
   check 'a remote ahead of the local copy passes' 'pushed'
   cd - >/dev/null
+
+  printf '#!/bin/sh\nexit $FAKE_RC\n' > "$t/gh" && chmod +x "$t/gh"
+  local gh_rc want
+  for c in '0 0' '1 1' '8 3'; do
+    read -r gh_rc want <<<"$c"
+    FAKE_RC=$gh_rc GH=$t/gh ci 1 >/dev/null 2>&1; rc=$?
+    check "ci maps gh's exit $gh_rc to $want" '[ $rc = $want ]'
+  done
+  printf 'Fixed by #58. P6.0 passes on its head.\n' > "$t/body.md"
+  check 'pr-ready passes a good title and body' 'pr_ready "fix(driver): read programs in user" "$t/body.md" >/dev/null'
+  check 'pr-ready fails a title that is not a Conventional Commit' '! pr_ready "driver: read programs" "$t/body.md" >/dev/null'
+  printf 'Fixed by #58.\n\nGenerated with a tool\n' > "$t/bad.md"
+  check 'pr-ready fails a body with a footer' '! pr_ready "fix(driver): read programs in user" "$t/bad.md" >/dev/null'
   return $fail
 }
 
@@ -118,6 +154,8 @@ case ${1:-} in
   rows)     shift; . checks/env.sh; rows "$@" ;;
   baseline) shift; . checks/env.sh; baseline "$@" ;;
   pushed)   shift; pushed "$@" ;;
+  pr-ready) shift; pr_ready "$@" ;;
+  ci)       shift; ci "$@" ;;
   '')       selftest ;;
-  *)        echo "usage: workflow.sh hooks|rows|baseline|pushed" >&2; exit 2 ;;
+  *)        echo "usage: workflow.sh hooks|rows|baseline|pushed|pr-ready|ci" >&2; exit 2 ;;
 esac

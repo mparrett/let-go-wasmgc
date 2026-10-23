@@ -4,7 +4,7 @@ Boot: cat $LW_STATE/<issue>/*.md in lexical order; this entry wins over any summ
 ## Lifecycle (make; a target runs only when its prerequisites hold)
 
     finish:          push retro
-    push:            commit human-push-approval   # then make -f checks/workflow.mk pushed
+    push:            commit human-push-approval   # pr-ready before the PR; then pushed, ci
     commit:          approved-review human-commit-approval
     approved-review: critic-review human-review-approval
     critic-review:   gate-green
@@ -31,8 +31,8 @@ Boot: cat $LW_STATE/<issue>/*.md in lexical order; this entry wins over any summ
 
 Stamps: the numbered entries of this issue (checks/state.sh), and checks/.attest/<row>.
 Every deterministic step is a target in checks/workflow.mk (start, baseline, rows, gate,
-pushed); run the target, never a remembered command. A step a script could decide and
-that is not a target yet is a defect: add the target.
+pushed, pr-ready, ci); run the target, never a remembered command. A step a script
+could decide and that is not a target yet is a defect: add the target.
 A human-*-approval holds only when the human said so this session; never inferred.
 
 ## Turn grammar (RFC 5234 ABNF)
