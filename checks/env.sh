@@ -32,5 +32,8 @@ WASM_MERGE=${WASM_MERGE:-$( [ -x "$lw_brew/wasm-merge" ] && echo "$lw_brew/wasm-
 # One slot pool for every agent and session (checks/sem.sh); not under $TMPDIR,
 # which differs per session and gave each agent its own set of slots.
 LW_SEM=${LW_SEM:-/tmp/lw-sem-$(id -u)}
-export LW_ROOT LG LETGO XSOFY LEGMACS WASM_OPT WASM_MERGE LW_SEM
+# The cache of each issue's workflow state (checks/state.sh). Durable, outside
+# the tree and outside /tmp; the issue itself is the store.
+LW_STATE=${LW_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/let-go-wasmgc}
+export LW_ROOT LG LETGO XSOFY LEGMACS WASM_OPT WASM_MERGE LW_SEM LW_STATE
 unset lw_env_here lw_env_src lw_c lw_brew
