@@ -1,0 +1,18 @@
+id: d828fec
+v: 2
+title: Rebase llvm-poly onto main
+status: open
+priority: medium
+created: 2026-10-23T20:25:06Z
+updated: 2026-10-23T20:25:06Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Rebase llvm-poly onto main, so it carries #57 (browser scripts), #58 (twin manifest), the twin warnings fix and the bignum removal, and its gates can be green before function cache work lands on it.
+ 
+ Facts that close it:
+ 
+ - F1 every failing row in gates 1 to 13 on the rebased branch is accounted for: it passes, or it is SKIP with its reason, XFAIL with its issue, or fails identically on main (a base comparison per row).
+ - F2 P8.0: its byte change on llvm-poly is representation only, as bonsai reduced it to (ns eval.multi) (*ns*) with behavior MATCHing on both trees; the baseline is re-frozen with that reason (a reduction, a MATCH, and the header line).
+ - F3 Task 5's diff for git-issue:3e08842 still applies and P12.41 passes (command and exit).
+ - F4 checks/llvm-behavior-gates.sh passes (command and exit).
