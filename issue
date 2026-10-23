@@ -1,0 +1,17 @@
+id: 6532968
+v: 2
+title: gate.sh: per-row wall time, recorded
+status: open
+priority: medium
+created: 2026-10-23T20:25:05Z
+updated: 2026-10-23T20:25:05Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: gate.sh prints each row's wall time and records it, so we can see which checks cost the most before deciding what to make cheaper.
+ 
+ Facts that close it:
+ 
+ - F1 every ok and FAIL line carries the row's wall seconds: gate.sh's self-test through LW_GATE_ROWS (command and output).
+ - F2 each run appends one line per row to a timings ledger with the revision, the load average and the slots held when it started (a file:line of the format, and a sample).
+ - F3 everything that reads gate output still reads it: a search for its consumers, and their rows pass (command and exit).
