@@ -1,0 +1,15 @@
+id: 907a973
+v: 2
+title: Gate on behavior: P8.0's byte identity decides gate 11
+status: open
+priority: medium
+created: 2026-10-23T15:07:52Z
+updated: 2026-10-23T15:07:52Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Gate 11 decides on byte identity, and the rest of the gates decide on behavior; I want one rule.
+ 
+ `gate.sh 11` also runs P8.0, the GC byte-identity check (gate.sh, the D197 case), and P13.GATE requires P8.0 IDENTICAL. The baseline has had to move twice already (D210, D216), each time by hand. A byte diff says the output moved, not that a program's behavior changed; `oracle.sh` already answers that question for every corpus program.
+ 
+ Options: replace P8.0 in the gate with the oracle rows over the same programs and keep the byte check as an advisory row outside any gate, or keep it and say in DECISIONS why bytes stay a gate here. I lean to the first.
