@@ -61,7 +61,7 @@
             [wasm.pvec :as pv]
             [wasm.arrays :as arr]
             [wasm.core :as c]
-            [wasm.math :as m]))
+            [wasm.math :as wmath]))
 
 (defn- ag [a i] (wasm/aget arr/I64s a i))
 (defn- mk "n zero limbs, sign slot 0." [n] (wasm/array-new arr/I64s (+ n 1) 0))
@@ -424,7 +424,7 @@
   (let [L (bitlen a)]
     (if (<= L 63)
       (wasm/i64-to-f64 (to-i64 a))
-      (let [f (m/scale2 (wasm/i64-to-f64 (window63 a (- L 63))) (- L 63))]
+      (let [f (wmath/scale2 (wasm/i64-to-f64 (window63 a (- L 63))) (- L 63))]
         (if (< (ag a 0) 0) (* -1.0 f) f)))))
 
 (defn- quot-f64
@@ -444,7 +444,7 @@
         qm (if big? (wasm/i64-shr-u qv 1) qv)      ; [2^62, 2^63)
         e (if big? (- 1 s) (- 0 s))]
     (if (>= (+ e 62) -1022)
-      (m/scale2 (wasm/i64-to-f64 (bit-or qm st)) e)
+      (wmath/scale2 (wasm/i64-to-f64 (bit-or qm st)) e)
       (let [d (- -1074 e)]                         ; low bits to drop so the unit is 2^-1074
         (if (>= d 64)
           0.0
@@ -455,7 +455,7 @@
                          (< rb half) 0
                          (= st 1) 1
                          :else (bit-and keep 1))]
-            (m/scale2 (wasm/i64-to-f64 (+ keep up)) -1074)))))))
+            (wmath/scale2 (wasm/i64-to-f64 (+ keep up)) -1074)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ratio: a two-slot Node of BigInts, normalized as big.Rat (gcd 1, den > 0)
