@@ -254,6 +254,7 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   reaches that the runtime does not provide).
 - `DECISIONS.md` the design record. `STATUS.md` the dated row table of work
   items. `FINDINGS.md` things learned that are not decisions.
+  `docs/WORKFLOW.md` how issues, commits, reviews and gates are run.
   `EVAL-NATIVE-SPEC.md` a work order for running the evaluator outside wasm.
 
 ## Design in brief
