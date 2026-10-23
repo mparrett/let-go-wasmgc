@@ -1,0 +1,21 @@
+id: 562dff4
+v: 2
+title: Proposed: each issue keeps its agent workflow state in its git-issue comments; STATUS.md is generated from it
+status: open
+priority: medium
+created: 2026-10-23T15:07:52Z
+updated: 2026-10-23T15:07:52Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Proposed: each issue keeps its agent workflow state in its own git-issue comments, and STATUS.md becomes a view generated from that state.
+ 
+ Branch workflow-state adds `checks/state.sh` (row P0.3). A state entry is a comment whose first line is `State: NN_name`, followed by `Key: Value` headers and a body. Entries are numbered like init.d scripts: 00_governance, 10_issue, 15_facts, 18_baseline (the affected rows on origin/main), 20_plan, 30_rows (red then green exit per row), 32_jobs, 35_gate, 40_review, 45/50/60 for the review, commit and push sign-offs, 90_retro and 99_next_action. The script fixes each entry's kind: a latch keeps its first entry, a transition keeps its latest, and an append keeps every entry. `state.sh show <issue>` rebuilds a local cache and prints the entries in order, so a fresh session or a compacted one resumes from the issue and not from memory.
+ 
+ Three things for you to decide:
+ 
+ 1. Thread or notes ref. The comments would sit in the issue thread you read. If that is noise, the same records can live in a sibling notes ref per issue; the script's interface stays the same.
+ 2. Latches across machines. A latch holds per machine. If two machines each post 20_plan before syncing, both caches see their own plan until `git issue sync` runs; then the earlier one wins everywhere and one cache flips. That is harmless for 00_governance, which is the same template on every machine, and wrong for an approved plan. A notes ref with a merge rule would close the gap.
+ 3. STATUS.md and PROGRESS.md. `state.sh status` prints one line per open issue with its commitment state and active target. I want STATUS.md generated from it and PROGRESS.md retired; both are yours to keep or drop.
+ 
+ Nothing posts until you agree: `put` refuses unless it is explicitly enabled.
