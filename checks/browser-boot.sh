@@ -2,7 +2,7 @@
 # checks/browser-boot.sh — P4.0: the browser host boots an emitted module.
 #
 # Builds corpus/host/hello.lg through the backend and host/keys-probe.wat,
-# serves host/ + both modules twice (local-scripts/coi-serve.py with COOP/COEP,
+# serves host/ + both modules twice (host/coi-serve.py with COOP/COEP,
 # and plain `python3 -m http.server` without), and drives host/index.html in
 # headless Chromium (checks/browser-boot.mjs):
 #   hello: stdout must equal native lg's for the same program, byte for byte;
@@ -13,11 +13,14 @@
 # Exit 0 iff hello and keys pass in the browser UNDER COI. The no-COI row is
 # reported either way (JSPI needs no SharedArrayBuffer, so it is expected to
 # pass too; that is the COI finding in host/ABI.md). node and wasmtime rows
-# are informational. Env: LG, KEEP=1.
+# are informational. Without Playwright's Chromium (checks/browser-probe.mjs)
+# the browser rows are SKIP and node and wasmtime decide the exit instead;
+# without wasmtime on PATH its row is SKIP too and node decides alone (D227).
+# LW_REQUIRE_BROWSER=1 makes a missing Chromium a FAIL. Env: LG, KEEP=1.
 #
 # checks/browser-boot.sh --xsofy-shell — P4.1 host half: the same two modules
 # in the REAL xsofy/tools/xsofy-shell.html (host/build-xsofy-serve.sh injects
-# it unchanged with local-scripts/inject-shell.sh, on host/xsofy-shell-adapter.js),
+# it unchanged with host/inject-shell.sh, on host/xsofy-shell-adapter.js),
 # served without COI (D91). Asserts: the shell boots (ready mode 'worker',
 # Fairfax HD loaded, xterm attached, #status hidden); hello's stdout and the
 # xterm buffer both equal native lg's output; keys-probe prints the size the
@@ -49,11 +52,14 @@
 # iff all hold; a module that does not compile is exit 1 with the driver's
 # first error. Env: LG, LEGMACS, LETGO, LW_LEGMACS_MAIN (build-legmacs-module.sh:
 # a diagnostic stand-in entry; the row never sets it).
+#
+# The three browser-only modes exit 2 (SKIP, after their module built) when
+# checks/browser-probe.mjs finds no Chromium; --xsofy still runs and reports
+# term-demo under node-host first.
 set -uo pipefail
 mode=default
 case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; --xsofy) mode=xsofy ;; --legmacs) mode=legmacs ;; "") ;; *) echo "usage: browser-boot.sh [--xsofy-shell|--xsofy|--legmacs]"; exit 2 ;; esac
 here=$(cd "$(dirname "$0")/.." && pwd)
-ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 MERGE=$WASM_MERGE
 t=$(mktemp -d); pids=()
@@ -61,6 +67,8 @@ cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p
 trap cleanup EXIT
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true   # non-empty = the reason the browser lanes cannot run
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
 
 # ---- --xsofy -------------------------------------------------------------------
 if [ "$mode" = xsofy ]; then
@@ -78,6 +86,11 @@ if [ "$mode" = xsofy ]; then
   fi
   "$here/host/build-xsofy-module.sh" "$t/module.wasm" || { echo "FAIL: xsofy main.lg did not compile"; exit 1; }
   "$here/host/build-xsofy-serve.sh" "$t/xs" "$t/module.wasm" || { echo "FAIL: build-xsofy-serve.sh"; exit 1; }
+  if [ -n "$browser_skip" ]; then
+    echo "xsofy     SKIP  $browser_skip"
+    [ "$ok" = 1 ] && { echo "SKIP (xsofy: term-demo matches native; the browser lane did not run)"; exit 2; }
+    echo "FAIL (xsofy: term-demo)"; exit 1
+  fi
   px=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$t/xs" "$px" >"$t/xs.server.log" 2>&1 & pids+=($!)
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
   node "$here/checks/browser-boot.mjs" --xsofy "http://127.0.0.1:$px" "${SEED:-424242}" >"$t/game.json"
@@ -106,6 +119,7 @@ if [ "$mode" = legmacs ]; then
   fi
   sed -n 's/^module: /module: /p' "$t/mod.log"
   "$here/host/build-legmacs-serve.sh" "$t/lm" "$t/module.wasm" || { echo "FAIL: build-legmacs-serve.sh"; exit 1; }
+  [ -n "$browser_skip" ] && { echo "SKIP (legmacs in the browser: $browser_skip)"; exit 2; }
   px=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$t/lm" "$px" >"$t/lm.server.log" 2>&1 & pids+=($!)
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
   node "$here/checks/browser-boot.mjs" --legmacs "http://127.0.0.1:$px" >"$t/lm.json"
@@ -143,6 +157,7 @@ keys_expected=$'size 80 24\nready\nkey 97\nkey 98\nkey 113\npending 0\nbye'
 if [ "$mode" = xsofy-shell ]; then
   xs=$t/xs
   "$here/host/build-xsofy-serve.sh" "$xs" "$www/hello.wasm" "$www/keys.wasm" || { echo "FAIL: build-xsofy-serve.sh"; exit 1; }
+  [ -n "$browser_skip" ] && { echo "SKIP (xsofy-shell: $browser_skip)"; exit 2; }
   px=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$xs" "$px" >"$t/xs.server.log" 2>&1 & pids+=($!)
   for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
   node "$here/checks/browser-boot.mjs" --xsofy-shell "http://127.0.0.1:$px" "$t/native.out" >"$t/xs.json"
@@ -178,15 +193,19 @@ fi
 
 # ---- browser, with and without COI -----------------------------------------
 # servers start in this shell (not in a $(...) subshell) so cleanup can kill them
-pc=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
-pp=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$www" "$pp" >"$t/plain.server.log" 2>&1 & pids+=($!)
-wait_up() {
-  for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$1/index.html" && return 0; sleep 0.1; done
-  echo "FAIL: server on $1 did not start"; cat "$t"/*.server.log; exit 1
-}
-wait_up "$pc"; wait_up "$pp"
-node "$here/checks/browser-boot.mjs" "http://127.0.0.1:$pc" coi "$t/native.out" >"$t/coi.json"
-node "$here/checks/browser-boot.mjs" "http://127.0.0.1:$pp" no-coi "$t/native.out" >"$t/plain.json"
+if [ -z "$browser_skip" ]; then
+  pc=$(free_port); python3 "$here/host/coi-serve.py" "$pc" "$www" >"$t/coi.server.log" 2>&1 & pids+=($!)
+  pp=$(free_port); python3 -m http.server --bind 127.0.0.1 --directory "$www" "$pp" >"$t/plain.server.log" 2>&1 & pids+=($!)
+  wait_up() {
+    for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$1/index.html" && return 0; sleep 0.1; done
+    echo "FAIL: server on $1 did not start"; cat "$t"/*.server.log; exit 1
+  }
+  wait_up "$pc"; wait_up "$pp"
+  node "$here/checks/browser-boot.mjs" "http://127.0.0.1:$pc" coi "$t/native.out" >"$t/coi.json"
+  node "$here/checks/browser-boot.mjs" "http://127.0.0.1:$pp" no-coi "$t/native.out" >"$t/plain.json"
+else
+  for f in coi plain; do printf '{"label": "%s", "skip": %s}\n' "$f" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$browser_skip")" >"$t/$f.json"; done
+fi
 
 # ---- node and wasmtime ---------------------------------------------------------
 host_row() {  # host_row <name> <hello-out> <hello-exit> <keys-out>
@@ -199,6 +218,7 @@ LG_HOST_TIMING=1 node "$here/host/node-host.mjs" "$www/hello.wasm" </dev/null >"
 node "$here/host/node-host.mjs" "$www/keys.wasm" --keys abq >"$t/node-keys.out" 2>&1
 host_row node "$t/node-hello.out" "$nx" "$t/node-keys.out" >"$t/rows.tsv"
 
+if command -v wasmtime >/dev/null 2>&1; then
 feat=(--enable-gc --enable-reference-types --enable-exception-handling --enable-tail-call --enable-multivalue
       --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --disable-compact-imports)
 wasm-tools parse "$here/host/wasmtime-adapter.wat" -o "$t/adapter.wasm"
@@ -212,6 +232,9 @@ wt_run() {  # wt_run <module> <out>; keys a b q on stdin
 wt_run "$www/hello.wasm" "$t/wt-hello.out"; wx=$?
 wt_run "$www/keys.wasm" "$t/wt-keys.out"
 host_row wasmtime "$t/wt-hello.out" "$wx" "$t/wt-keys.out" >>"$t/rows.tsv"
+else
+  printf 'wasmtime\tSKIP\tSKIP\n' >>"$t/rows.tsv"
+fi
 
 # ---- report --------------------------------------------------------------------
 python3 - "$t" <<'EOF'
@@ -224,6 +247,8 @@ def load(f):
     except Exception as e: return {'label': f, 'failure': f'no result from browser-boot.mjs ({e})'}
 for f in ('coi', 'plain'):
     r = load(f)
+    if r.get('skip'):
+        print(f"{'chromium/'+r['label']:<16}{'-':<6}{'-':<6}{'-':<6}{'SKIP':<7}{'SKIP':<6}  {r['skip']}"); continue
     h, k = r.get('hello', {}), r.get('keys', {})
     print(f"{'chromium/'+r['label']:<16}{str(r.get('coi','?')):<6}{str(r.get('sab','?')):<6}{str(r.get('jspi','?')):<6}"
           f"{('PASS' if h.get('pass') else 'FAIL'):<7}{('PASS' if k.get('pass') else 'FAIL'):<6}"
@@ -235,7 +260,8 @@ for f in ('coi', 'plain'):
 timing = open(f'{t}/node-hello.err').read().strip()
 for line in open(f'{t}/rows.tsv'):
     name, h, k = line.rstrip('\n').split('\t')
-    extra = timing.replace('timing ', '') if name == 'node' else 'no JSPI: sleep/read_key block the thread'
+    extra = (timing.replace('timing ', '') if name == 'node' else
+             'no wasmtime on PATH' if h == 'SKIP' else 'no JSPI: sleep/read_key block the thread')
     print(f"{name:<16}{'-':<6}{'-':<6}{('yes' if name=='node' else 'no'):<6}{h:<7}{k:<6}  {extra}")
 EOF
 coi_ok=$(python3 -c '
@@ -243,5 +269,10 @@ import json, sys
 try: r = json.load(open(sys.argv[1]))
 except Exception: r = {}
 print(int(bool(r.get("hello", {}).get("pass")) and bool(r.get("keys", {}).get("pass")) and r.get("coi") is True))' "$t/coi.json")
+if [ -n "$browser_skip" ]; then
+  deciders="node-host and wasmtime"; grep -q "^wasmtime	SKIP" "$t/rows.tsv" && deciders="wasmtime SKIP (no wasmtime on PATH); node-host"
+  if ! grep -q FAIL "$t/rows.tsv"; then echo "PASS (browser lanes SKIP: $browser_skip; $deciders: hello MATCHes native lg, keys echoed)"; exit 0; fi
+  echo "FAIL (browser lanes SKIP: $browser_skip; $deciders)"; exit 1
+fi
 if [ "$coi_ok" = 1 ]; then echo "PASS (browser under COI: hello MATCHes native lg, keys echoed)"; exit 0; fi
 echo "FAIL (browser under COI)"; exit 1

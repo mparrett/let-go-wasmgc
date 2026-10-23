@@ -4,8 +4,9 @@
 #   1. corpus/host/eval-hello.lg (eval of read code, a defn made by eval,
 #      a closure, an eval error's message) through the backend: its stdout
 #      under host/node-host.mjs AND in host/index.html (headless Chromium,
-#      checks/browser-boot.mjs --run, served with COI by
-#      local-scripts/coi-serve.py) must equal native lg's, byte for byte.
+#      checks/browser-boot.mjs --run, served with COI by host/coi-serve.py)
+#      must equal native lg's, byte for byte. Without Playwright's Chromium
+#      (checks/browser-probe.mjs) that lane is SKIP and the other two decide.
 #   2. legmacs' real module (host/build-legmacs-module.sh, cached) under
 #      node-host with the keys a manual test-drive uses: type
 #      (defn f [x] (* x 2)) C-x C-e, (f 21) C-x C-e, then C-x C-c. The echo
@@ -17,7 +18,6 @@
 # LW_EVAL_PROG=<other program> and LW_EVAL_SKIP_LEGMACS=1.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 t=$(mktemp -d); pids=()
@@ -39,13 +39,19 @@ if [ "$rc" = 0 ] && cmp -s "$t/node.out" "$t/expected"; then
 else
   ok=0; echo "node-host  FAIL  exit $rc"; diff "$t/expected" "$t/node.out" | head -12
 fi
-mkdir -p "$t/www"; command cp "$here"/host/index.html "$here"/host/lg-wasm-host.js "$t/www/"; command cp "$t/eval.wasm" "$t/www/eval.wasm"
-px=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$px" "$t/www" >"$t/server.log" 2>&1 & pids+=($!)
-for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
-if node "$here/checks/browser-boot.mjs" --run "http://127.0.0.1:$px" eval.wasm "$t/expected" >"$t/browser.json" 2>"$t/browser.err"; then
-  echo "browser    PASS  eval-hello == native in Chromium ($(python3 -c 'import json,sys; print(round(json.load(open(sys.argv[1]))["totalMs"]))' "$t/browser.json") ms)"
+browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
+if [ -n "$browser_skip" ]; then
+  echo "browser    SKIP  $browser_skip"
 else
-  ok=0; echo "browser    FAIL"; head -c 900 "$t/browser.json"; echo; head -5 "$t/browser.err"
+  mkdir -p "$t/www"; command cp "$here"/host/index.html "$here"/host/lg-wasm-host.js "$t/www/"; command cp "$t/eval.wasm" "$t/www/eval.wasm"
+  px=$(free_port); python3 "$here/host/coi-serve.py" "$px" "$t/www" >"$t/server.log" 2>&1 & pids+=($!)
+  for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$px/index.html" && break; sleep 0.1; done
+  if node "$here/checks/browser-boot.mjs" --run "http://127.0.0.1:$px" eval.wasm "$t/expected" >"$t/browser.json" 2>"$t/browser.err"; then
+    echo "browser    PASS  eval-hello == native in Chromium ($(python3 -c 'import json,sys; print(round(json.load(open(sys.argv[1]))["totalMs"]))' "$t/browser.json") ms)"
+  else
+    ok=0; echo "browser    FAIL"; head -c 900 "$t/browser.json"; echo; head -5 "$t/browser.err"
+  fi
 fi
 
 # ---- 2. legmacs C-x C-e under node-host -----------------------------------
@@ -63,5 +69,8 @@ if has "$t/lm.node" "=> 42" && has "$t/lm.node" "=> #'legmacs.main/f"; then
 else
   ok=0; echo "legmacs    FAIL  node-host exit $rn; echo lines seen:"; tr -d '\033' <"$t/lm.node" | grep -a -o "=> [^|]\{0,60\}\|Eval error[^|]\{0,80\}" | head -5
 fi
-[ "$ok" = 1 ] && { echo "PASS (eval reachable from node-host, the browser and legmacs C-x C-e)"; exit 0; }
+if [ "$ok" = 1 ]; then
+  [ -n "$browser_skip" ] && { echo "PASS (eval reachable from node-host and legmacs C-x C-e; the browser lane did not run)"; exit 0; }
+  echo "PASS (eval reachable from node-host, the browser and legmacs C-x C-e)"; exit 0
+fi
 echo "FAIL (eval-hosts)"; exit 1

@@ -135,7 +135,7 @@ boot, size, held and quit (falsified 2026-10-01).
 `host/build-xsofy-serve.sh <dir> [modules…]` builds a serve directory:
 `host/xsofy.html` (let-go's `-w-shell none` frame: `#status`, `#app`, then a
 classic `<script src="xsofy-shell-adapter.js">`) with the shell injected by
-the workspace's own `local-scripts/inject-shell.sh` (sentinel-wrapped, before
+`host/inject-shell.sh` (sentinel-wrapped, before
 the body close tag; the shell is copied byte for byte). The adapter defines
 `window.LetGoHost` synchronously, so it exists when the shell binds at parse
 time, then dynamic-imports `lg-wasm-host.js`.

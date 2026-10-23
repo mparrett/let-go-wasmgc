@@ -6,12 +6,12 @@
 #   stock  xsofy main.lg bundled by `lg -w -w-shell none` at let-go e9789b7d
 #          (the backend's ground truth, LETGO_SRC = a `git archive` export of
 #          that commit, so the canonical let-go checkout is not touched), then
-#          xsofy-shell.html injected by local-scripts/inject-shell.sh: exactly
-#          local-scripts/build-bundle.sh's client-shell path. Cached under
+#          xsofy-shell.html injected by host/inject-shell.sh (the client-shell
+#          build path of the workspace that develops xsofy). Cached under
 #          $LW_LANE5_CACHE keyed by the commit, xsofy's sources and the shell.
 #   lw     host/build-xsofy-module.sh's module.wasm in host/build-xsofy-serve.sh's
 #          page (the same shell, injected the same way, on the adapter).
-# Both are served with COOP/COEP (local-scripts/coi-serve.py): the stock lane's
+# Both are served with COOP/COEP (host/coi-serve.py): the stock lane's
 # key ring needs SharedArrayBuffer; the lw lane does not care (D91).
 #
 # Walks, each run on both lanes and compared with cmp (document.body.innerText):
@@ -33,20 +33,19 @@
 # No masking: neither lane has build-info.json, so the shell prints the same
 # chrome; the title bar and quest come from xsofy/startup on both.
 # Exit 0 iff the probe walk is byte-identical across the lanes; 2 on a harness
-# failure (walk timeout / crash), 1 on a lane mismatch.
+# failure (walk timeout / crash) or when checks/browser-probe.mjs finds no
+# Chromium (SKIP, after both lanes built), 1 on a lane mismatch.
 # Env: LG, XSOFY, SEED (424242), KEEP=1, LW_LANE5_CACHE, LW_SETTLE (quiet samples,
 # default 3; 0 = ack only, the falsification), LW_MIN_MS (default 200).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LETGO=${LETGO:-$LW_ROOT/let-go}
 COMMIT=e9789b7d
 SEED=${SEED:-424242}
-pw=${LW_BROWSER_TOOLS:-$ws/local-scripts}/browser-smoke-playwright
 t=$(mktemp -d); pids=()
-cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
+cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
 
 # ---- stock lane ------------------------------------------------------------------
@@ -62,7 +61,7 @@ if [ ! -f "$stock/index.html" ]; then
   if ! (cd "$XSOFY" && LETGO_SRC="$src" "$LG" -w "$stock.tmp" -w-shell none main.lg) >"$t/stock-build.log" 2>&1; then
     echo "FAIL: stock lane build"; tail -20 "$t/stock-build.log"; exit 1
   fi
-  "${LW_BROWSER_TOOLS:-$ws/local-scripts}/inject-shell.sh" "$stock.tmp/index.html" "$XSOFY/tools/xsofy-shell.html" >/dev/null || exit 1
+  "$here/host/inject-shell.sh" "$stock.tmp/index.html" "$XSOFY/tools/xsofy-shell.html" >/dev/null || exit 1
   rm -rf "$stock"; command mv "$stock.tmp" "$stock"
 fi
 
@@ -71,9 +70,12 @@ fi
 "$here/host/build-xsofy-serve.sh" "$t/lw" "$t/module.wasm" || { echo "FAIL: build-xsofy-serve.sh"; exit 1; }
 
 # ---- walks ----------------------------------------------------------------------
+browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
+[ -n "$browser_skip" ] && { echo "SKIP (lane 5: both lanes built; $browser_skip)"; exit 2; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
-ps=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$ps" "$stock" >"$t/s.log" 2>&1 & pids+=($!)
-pl=$(free_port); python3 "${LW_BROWSER_TOOLS:-$ws/local-scripts}/coi-serve.py" "$pl" "$t/lw" >"$t/l.log" 2>&1 & pids+=($!)
+ps=$(free_port); python3 "$here/host/coi-serve.py" "$ps" "$stock" >"$t/s.log" 2>&1 & pids+=($!)
+pl=$(free_port); python3 "$here/host/coi-serve.py" "$pl" "$t/lw" >"$t/l.log" 2>&1 & pids+=($!)
 for p in "$ps" "$pl"; do for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/index.html" && break; sleep 0.1; done; done
 
 harness=0
