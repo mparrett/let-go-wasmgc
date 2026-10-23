@@ -1,37 +1,24 @@
-;; wasm.bignum (rt/wasm/bignum.lg) against native lg's own BigInt and
+;; let-go.lang.bignum (rt/let-go/lang/bignum.lg) against native lg's own BigInt and
 ;; Ratio: every expectation is native arithmetic on the same operands, and
-;; both sides compare by their decimal text (native `str`, the module's
-;; `->string` / `rat->string`). The module is a library nothing calls yet,
-;; so this file is its only consumer; its dialect row is in
-;; xsofy_natives_test.lg's `dialect` deftest with the other P3.1 files.
+;; both sides compare by their decimal text (native `str`, the library's
+;; `->string` / `rat->string`). The library is plain Clojure that nothing
+;; calls yet, so this file is its only consumer.
 (ns bignum-test
   (:require [test :refer [deftest is testing]]
-            [wasm.intrinsics :as wasm]
-            [wasm.seq :as sq]
-            [wasm.bignum :as b]))
+            [check :as check]
+            [let-go.lang.bignum :as b]))
 
-(defn- P "Native integer (Int or BigInt) or string -> runtime BigInt via parse." [x]
-  (b/parse (wasm/bytes-of-string (str x))))
-(defn- S [x] (wasm/string-of-bytes (b/->string x)))
-(defn- RS [r] (wasm/string-of-bytes (b/rat->string r)))
+(defn- P "Native integer (Int or BigInt) or string -> library BigInt via parse." [x]
+  (b/parse (str x)))
+(defn- S [x] (b/->string x))
+(defn- RS [r] (b/rat->string r))
 
 (defn- pow2 [k] (reduce * 1N (repeat k 2N)))
 (def ^:private min64 -9223372036854775808)
 (def ^:private max64 9223372036854775807)
 
-(defn- wref? [x] (and (= (type x) (type (object-array 0))) (pos? (alength x)) (map? (aget x 0))))
-(defn- outcome
-  "[:ok text] or [:err message] for a thunk; the runtime raises an sq/Err
-   ref, native an ExecutionError."
-  [f]
-  (try [:ok (f)]
-       (catch Throwable e
-         [:err (if (and (wref? e) (wasm/is? sq/Err e))
-                 (wasm/string-of-bytes (wasm/get sq/Err 2 e))
-                 (ex-message e))])))
-
-;; Native error messages carry no prefix for these ops (NumQuot's error text).
-(defn- native-out [f] (outcome #(str (f))))
+(defn- outcome "[:ok value] or [:err message] for a thunk." [f]
+  (try [:ok (f)] (catch Throwable e [:err (ex-message e)])))
 
 (def ^:private boundaries
   (let [base [0 1 2 3 7 10 65535 65536 2147483647 2147483648 2147483649
@@ -57,6 +44,12 @@
           (is (= (str (mod bx by)) (S (b/mod X Y))) (str "mod " x " " y))
           (is (= (str r) (S (b/emod X Y))) (str "emod " x " " y))
           (is (= (str (quot (- bx r) by)) (S (b/ediv X Y))) (str "ediv " x " " y)))))))
+
+(deftest representation
+  (testing "BigInt and Ratio are their own types"
+    (is (instance? b/BigInt (P 5)))
+    (is (instance? b/Ratio (b/rat-make (P 1) (P 2))))
+    (is (not (instance? b/Ratio (P 5))))))
 
 (deftest from-to-i64
   (doseq [x [0 1 -1 2147483647 2147483648 -2147483648 -2147483649 4294967295 4294967296
@@ -90,8 +83,7 @@
   ;; division run over crafted operands: :ref1 / :ref2 the q-hat estimate
   ;; was too large by one / two and the two-limb test fixed it; :addback
   ;; q-hat survived that test one too large and the add-back step ran;
-  ;; :cap the top limbs were equal, q-hat clamped to 2^32-1; :top31 the
-  ;; divisor's top limb is just above 2^31 (no normalizing shift)
+  ;; :cap the top limbs were equal, q-hat clamped to 2^32-1
   [[:ref1 170141183535065848891063257303245898218N 39614081284802284907336302593N]
    [:ref1 39614081277631258723199592439N 9223372041964930760N]
    [:ref1 18888563891059102026384722976N 4397836491498192895N]
@@ -113,13 +105,19 @@
             q [1 2 4294967295 (pow2 31)]]
       (check-binops [[(dec (* q v)) v] [(- (dec (* q v))) v]]))))
 
+(deftest long-carries
+  (testing "carry and borrow chains across 31, 32 and 33 limbs of 2^32-1"
+    (doseq [n [31 32 33]
+            :let [ones (dec (pow2 (* 32 n))) power (pow2 (* 32 n))]]
+      (check-binops [[ones 1] [ones ones] [ones power] [power ones] [(- ones) power]]))))
+
 (deftest parse-and-print
   (testing "parse accepts what big.Int.SetString(s, 10) accepts (native bigint)"
     (doseq [s ["0" "-0" "+0" "+5" "-5" "007" "-007" "000000000000000000000000000000001"
                "123456789012345678901234567890" "-99999999999999999999" "4294967296" "18446744073709551616"
                "" "+" "-" "+-5" "--5" "5-" " 5" "5 " "1_0" "0x10" "1e5" "12a" "1.0" "٣"]]
       (let [native (try (str (bigint s)) (catch Throwable _ nil))
-            mine (let [x (b/parse (wasm/bytes-of-string s))] (if (wasm/null? x) nil (S x)))]
+            mine (let [x (b/parse s)] (when x (S x)))]
         (is (= native mine) (pr-str s)))))
   (testing "print -> parse -> print round trips, every chunk boundary of 10^9"
     (doseq [x (concat boundaries [(pow2 1000) (- (pow2 1000)) (reduce * 1N (repeat 50 10N))
@@ -184,6 +182,25 @@
       (let [q (/ (* s (bigint n)) (bigint d))]
         (is (= (double q) (b/rat->f64 (b/rat-make (P (* s n)) (P d)))) (str (* s n) "/" d))))))
 
+(defn- native-of
+  "A simplify result as a native number: Int as itself, BigInt and Ratio
+   through their text."
+  [v]
+  (cond (instance? b/BigInt v) (bigint (S v))
+        (instance? b/Ratio v) (/ (bigint (S (b/rat-num v))) (bigint (S (b/rat-den v))))
+        :else v))
+
+(deftest simplify
+  (testing "an integral quotient is an Int when it fits, else a BigInt; otherwise the Ratio (native /)"
+    (doseq [[n d] [[6 3] [6 4] [-6 3] [0 7] [(* 2 (pow2 70)) 2] [(* 2 (pow2 70)) (pow2 70)]
+                   [min64 1] [(pow2 63) 1] [(- (pow2 63)) 1] [(pow2 63) -1] [1 min64]]]
+      (let [q (/ (bigint n) (bigint d)) v (b/simplify (b/rat-make (P n) (P d)))]
+        (is (= (type q) (cond (instance? b/BigInt v) (type 1N) (instance? b/Ratio v) (type 1/2) :else (type v)))
+            (str n "/" d))
+        (is (= q (native-of v)) (str n "/" d)))))
+  (testing "1/2 - MinInt64 stays exact"
+    (is (= (- 1/2 min64) (native-of (b/simplify (b/rat-sub (b/rat-make (P 1) (P 2)) (b/rat-make (P min64) (P 1)))))))))
+
 ;; A fixed-seed LCG (native Ints, no overflow): the same operands every run.
 (defn- lcg [s] (mod (+ (* s 1103515245) 12345) 2147483648))
 
@@ -212,3 +229,30 @@
       (is (= (double x) (b/to-f64 (P x))) (str x))
       (when-not (zero? y)
         (is (= (double (/ (bigint x) (bigint y))) (b/rat->f64 (b/rat-make (P x) (P y)))) (str x "/" y))))))
+
+(defn- limbs->native [ls] (reduce (fn [n l] (+' (*' n 4294967296) l)) 0N (rseq ls)))
+
+(deftest properties
+  (testing "signed BigInt and Ratio arithmetic agree with native on generated limb vectors"
+    (let [result (check/check
+                   (check/for-all [a (check/gen-vector (check/gen-int 0 4294967295) 0 8)
+                                   b (check/gen-vector (check/gen-int 0 4294967295) 0 8)
+                                   sa (check/gen-elements [-1 1])
+                                   sb (check/gen-elements [-1 1])]
+                     (let [x (* sa (limbs->native a)) y (* sb (limbs->native b))
+                           X (P x) Y (P y)]
+                       (and (= [(str (+ x y)) (str (- x y)) (str (* x y)) (str (- x))]
+                               (mapv S [(b/add X Y) (b/sub X Y) (b/mul X Y) (b/negate X)]))
+                            (= (compare x y) (b/compare X Y))
+                            (= (<= min64 x max64) (b/fits-i64? X))
+                            (or (zero? y)
+                                (and (= [(str (quot x y)) (str (rem x y)) (str (mod x y))]
+                                        (mapv S [(b/quot X Y) (b/rem X Y) (b/mod X Y)]))
+                                     (= (/ x y) (native-of (b/simplify (b/rat-make X Y))))
+                                     (let [r (b/rat-make X Y) o (b/rat-make Y (P 3))
+                                           q (/ x y) p (/ y 3)]
+                                       (= [(+ q p) (- q p) (* q p) (/ q p)]
+                                          (mapv (comp native-of b/simplify)
+                                                [(b/rat-add r o) (b/rat-sub r o) (b/rat-mul r o) (b/rat-div r o)]))))))))
+                   {:seed 20261024 :num-tests 150})]
+      (is (= :pass (:result result)) (pr-str result)))))
