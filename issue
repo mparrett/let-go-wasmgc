@@ -34,3 +34,10 @@ description: Gate 11 decides on byte identity, and the rest of the gates decide 
  Exit codes and xfail.tsv as proposed: 0 pass, 1 fail, 2 skipped with the prerequisite named, 3 not built; SKIP passes unless LW_REQUIRE_<x> is set; XFAIL rows list the owning issue and an XPASS fails the gate. run.sh's NOT IMPLEMENTED rows move from exit 2 to 3 in that PR, so the linear rows list against 8a41e9d with nothing else changed on them.
  
  No re-freeze of the P8.0 baseline for the llvm-poly representation change, then; the oracle MATCH on the reduced program is the evidence that matters.
+[2026-10-23T22:10:44Z] Norman Nunley, Jr: Before I build the exit codes and xfail.tsv: I'd like the gate's output to be TAP. It says the same thing in a format the tools and the models already know.
+ 
+ `gate.sh` would print `ok <n> - P1.0`, `not ok <n> - P1.4`, `ok <n> - P4.0 # SKIP no Chromium (LW_BROWSER_TOOLS)` and `not ok <n> - P11.0 # TODO git-issue:8a41e9d`. TAP's TODO directive is our known-failing row: the gate passes on it. A TODO row that passes is what TAP calls a bonus; the gate fails on it, as the XPASS rule says. The xfail list becomes the TODO directive with its issue, so checks/xfail.tsv need not exist.
+ 
+ Row exit codes stay as adopted: 0, 1, 2 skipped, 3 not built. The gate maps 2 to `# SKIP` and 3 to `# TODO` with the row's issue.
+ 
+ From reading mikemol/mtools: its exit-code table uses 2 for "not judged" and 3 for "refuse". I'd keep ours, since run.sh already uses 2.
