@@ -16,3 +16,4 @@ description: The twins added in #35 trigger a WARNING at native load because the
 ## Comments
 [2026-10-19T05:48:39Z] Matt Parrett: Status 2026-10-18: still warns, and the list grew with #46 and #51. A native (require (quote wasm.math) (quote wasm.term)) at e9789b7d prints four WARNING lines: prn-str and println-str in wasm.str, rand in wasm.math, read-line in wasm.term. checks/gensym-load.sh stays green because it does not fail on warnings. Fix: :refer-clojure :exclude in those three ns forms; expected byte-neutral, needs the guard and gate 2.
 [2026-10-23T19:38:15Z] Norman Nunley, Jr: Taking this one, since P12.0 (self-compile) fails on the warnings on llvm-poly. A PR on main follows.
+[2026-10-23T23:30:11Z] Matt Parrett: Fixed by #65 (6ecb0f1): the four ns forms exclude the five twin names and wasm.bignum aliases wasm.math as wmath. Verified at the head: native require prints no warnings (five on the previous main), gensym count 1133, P8.0 29 programs IDENTICAL.
