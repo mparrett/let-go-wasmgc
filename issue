@@ -13,3 +13,16 @@ description: Gate 11 decides on byte identity, and the rest of the gates decide 
  `gate.sh 11` also runs P8.0, the GC byte-identity check (gate.sh, the D197 case), and P13.GATE requires P8.0 IDENTICAL. The baseline has had to move twice already (D210, D216), each time by hand. A byte diff says the output moved, not that a program's behavior changed; `oracle.sh` already answers that question for every corpus program.
  
  Options: replace P8.0 in the gate with the oracle rows over the same programs and keep the byte check as an advisory row outside any gate, or keep it and say in DECISIONS why bytes stay a gate here. I lean to the first.
+
+## Comments
+[2026-10-23T19:26:51Z] Norman Nunley, Jr: One more gate question to settle with this one: the gate has no skipped or known-failing status, so a branch can't be in a working state while a row is deferred or a machine lacks a prerequisite.
+ 
+ Today `gate.sh` fails any non-zero exit, and exit 2 means two things: "not built yet" (`run.sh`'s NOT IMPLEMENTED, the linear M2 rows P11.0 to P11.7) and, since D227, "skipped: a prerequisite is missing here". So gate 11 fails on every branch until M2 is built. The browser rows fail on any machine without Chromium. The only way out is commenting a row out, which hides it.
+ 
+ Proposed:
+ 
+ 1. Exit codes: 0 passes, 1 fails, 2 skipped (prints the missing prerequisite), 3 not built.
+ 2. The gate prints `SKIP <row> (<reason>)` and does not fail on it, unless `LW_REQUIRE_<x>` says that prerequisite is expected on this machine, as `LW_REQUIRE_BROWSER` does now.
+ 3. `checks/xfail.tsv` maps a row to the issue that owns its failure. The gate prints `XFAIL <row> git-issue:<id>` and passes; a listed row that passes fails the gate as `XPASS`, so the entry and its issue get closed. The linear rows would be listed against git-issue:8a41e9d.
+ 
+ On bytes: P8.0 fails on llvm-poly over a representation change only. A bonsai reduction of `corpus/eval/program/multi/aliases.lg` gives `(ns eval.multi) (*ns*)`. A program printing `*ns*` MATCHes native on both the merge base and llvm-poly. If bytes stay a gate, that needs a re-freeze; under the behavior rule it needs nothing.
