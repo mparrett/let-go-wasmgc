@@ -4,17 +4,17 @@ Boot: cat $LW_STATE/<issue>/*.md in lexical order; this entry wins over any summ
 ## Lifecycle (make; a target runs only when its prerequisites hold)
 
     finish:          push retro
-    push:            commit human-push-approval
+    push:            commit human-push-approval   # then make -f checks/workflow.mk pushed
     commit:          approved-review human-commit-approval
     approved-review: critic-review human-review-approval
     critic-review:   gate-green
-    gate-green:      rows-red-green               # LW_ATTEST=0 checks/gate.sh <phase>
-    rows-red-green:  approved-plan                # checks/run.sh <row>, per row
+    gate-green:      rows-red-green               # make -f checks/workflow.mk gate PHASE=<n>
+    rows-red-green:  approved-plan                # make -f checks/workflow.mk rows
     approved-plan:   baseline facts-verified human-plan-approval
-    baseline:        issue-assigned               # affected rows run on origin/main
+    baseline:        issue-assigned               # make -f checks/workflow.mk baseline
     facts-verified:  issue-assigned
     issue-assigned:  read-init-d in-flight-reviewed
-    in-flight-reviewed:                           # checks/state.sh inflight -> 05_inflight
+    in-flight-reviewed:                           # make -f checks/workflow.mk start -> 05_inflight
 
 ## Work in progress (Kanban pull; finish before you start)
 
@@ -30,6 +30,9 @@ Boot: cat $LW_STATE/<issue>/*.md in lexical order; this entry wins over any summ
     a change   @ensures nothing it replaces stays behind (dead paths, twin helpers, stale rows)
 
 Stamps: the numbered entries of this issue (checks/state.sh), and checks/.attest/<row>.
+Every deterministic step is a target in checks/workflow.mk (start, baseline, rows, gate,
+pushed); run the target, never a remembered command. A step a script could decide and
+that is not a target yet is a defect: add the target.
 A human-*-approval holds only when the human said so this session; never inferred.
 
 ## Turn grammar (RFC 5234 ABNF)
