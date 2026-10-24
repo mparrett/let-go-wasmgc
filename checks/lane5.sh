@@ -32,9 +32,9 @@
 #          is gated by checks/browser-boot.sh --xsofy-shell's `held` assertion.
 # No masking: neither lane has build-info.json, so the shell prints the same
 # chrome; the title bar and quest come from xsofy/startup on both.
-# Exit 0 iff the probe walk is byte-identical across the lanes; 2 on a harness
-# failure (walk timeout / crash) or when checks/browser-probe.mjs finds no
-# Chromium (SKIP, after both lanes built), 1 on a lane mismatch.
+# Exit 0 iff the probe walk is byte-identical across the lanes; 1 on a lane
+# mismatch or a harness failure (walk timeout / crash); 2 when
+# checks/browser-probe.mjs finds no Chromium (SKIP, after both lanes built).
 # Env: LG, XSOFY, SEED (424242), KEEP=1, LW_LANE5_CACHE, LW_SETTLE (quiet samples,
 # default 3; 0 = ack only, the falsification), LW_MIN_MS (default 200).
 set -uo pipefail
@@ -110,6 +110,6 @@ for i, (x, y) in enumerate(zip(a, b)):
         print("  probe: first differing key = #%d ('%s'); settled screens differ" % (i, x["key"])); break
 PY
 echo "walks: probe (gate) = l l j j h k l j, each after the game settled; held (informational) = $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("bursts","?"))' "$t/held-lw.json" 2>/dev/null) (one task per burst)"
-if [ "$harness" = 1 ]; then echo "FAIL (lane 5: harness failure, not a lane mismatch)"; exit 2; fi
+if [ "$harness" = 1 ]; then echo "FAIL (lane 5: harness failure, not a lane mismatch)"; exit 1; fi
 if [ "$ok" = 1 ]; then echo "PASS (lane 5 probe walk byte-identical to the stock-Go lane at seed $SEED)"; exit 0; fi
 echo "FAIL (lane 5)"; exit 1

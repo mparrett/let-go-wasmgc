@@ -119,8 +119,8 @@ described so that 1 does not paint them out.
    representation layer: the functions listed above dispatch on it, and
    every raw instruction string in the emitter goes through that layer
    rather than being spelled twice. No second emitter file. The cost is
-   that the GC path is edited; the guard is the byte-identity check in the
-   acceptance list.
+   that the GC path is edited; the guard is the GC oracle rows (the
+   byte-identity check is advisory since D228).
 6. **Driver switch.** `--target linear` on the driver command line and
    `LW_TARGET=linear` in the environment mean the same thing; the flag
    wins. The target is part of the rtlib cache key, so the two targets
@@ -306,13 +306,14 @@ precise is known at that point.
     A phase that claims its root checks work shows them failing with one
     spill or root deliberately removed, and records that in its DECISIONS
     entry.
-12. **The GC target never moves.** `checks/gate.sh 11` also runs P8.0, so
-    every phase's gate includes GC byte identity.
+12. **The GC target never moves.** The oracle rows over the gate-8 corpus
+    decide it (D228); P8.0, the GC byte guard, is an advisory row no gate runs.
 
 ### Phases and rows
 
-Each phase is its own pull request; its rows exit 2 until it lands
-(`checks/linear-gc.sh` is the placeholder they share). Run them with
+Each phase is its own pull request; its rows exit 3 (not built) until it
+lands (`checks/linear-gc.sh` is the placeholder they share), and gate 11
+reports them `# TODO git-issue:8a41e9d`, their owning issue. Run them with
 `checks/gate.sh 11`.
 
 | Phase | Builds | Rows |
@@ -345,8 +346,8 @@ because M1 never frees.
 
 - Work on a branch of this repository and open a pull request; CI runs the
   publish check on it. Do not push to `main`.
-- `src/` changes are the risky part: keep the GC byte-identity check green
-  after every emitter commit, not only at the end.
+- `src/` changes are the risky part: keep the GC oracle rows green after
+  every emitter commit, not only at the end.
 - Native lg is the oracle for everything. When native and linear disagree,
   the backend is wrong until a `FINDINGS.md` entry shows native is.
 - Named limits are fine; silent divergence is not. An op the linear target

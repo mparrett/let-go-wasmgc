@@ -30,8 +30,8 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/checks/env.sh"
-command -v node >/dev/null || { echo "node not on PATH"; exit 2; }
-command -v wasm-tools >/dev/null || { echo "wasm-tools not on PATH"; exit 2; }
+command -v node >/dev/null || { echo "SKIP node not on PATH"; exit 2; }
+command -v wasm-tools >/dev/null || { echo "SKIP wasm-tools not on PATH"; exit 2; }
 
 # The emit side, called by oracle.sh as WASM_RUN: $0 --run <program>, with
 # EMIT_OUT naming the directory the driver wrote for that program.

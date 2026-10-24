@@ -44,12 +44,12 @@ commit=$(sed -nE 's/^\(def letgo-commit "([0-9a-f]+)"\)$/\1/p' "$here/src/lw_rt.
 suite=$LETGO/test/clojure-test-suite/test
 want=$(git -C "$LETGO" ls-tree "$commit" test/clojure-test-suite | awk '{print $3}')
 have=$(git -C "$LETGO/test/clojure-test-suite" rev-parse HEAD 2>/dev/null)
-[ -n "$want" ] && [ "$have" = "$want" ] || { echo "jank-suite: $LETGO/test/clojure-test-suite is at ${have:-nothing}, the pin $commit records $want" >&2; exit 2; }
+[ -n "$want" ] && [ "$have" = "$want" ] || { echo "SKIP jank-suite: $LETGO/test/clojure-test-suite is at ${have:-nothing}, the pin $commit records $want" >&2; exit 2; }
 # let-go's test/compat at the pin (the portability shim the native harness loads)
 compat=${LW_CACHE:-$HOME/.cache/let-go-wasmgc}/letgo-compat-$commit/test/compat
 if [ ! -f "$compat/clojure/core-test/portability.lg" ]; then
   d=${LW_CACHE:-$HOME/.cache/let-go-wasmgc}/letgo-compat-$commit
-  mkdir -p "$d" && git -C "$LETGO" archive "$commit" test/compat | tar -x -C "$d" || exit 2
+  mkdir -p "$d" && git -C "$LETGO" archive "$commit" test/compat | tar -x -C "$d" || exit 1
 fi
 export JANK_PORTABILITY=$compat/clojure/core-test/portability.lg
 export NATIVE_RUNNER=$here/checks/jank-native.lg DRIVER_FLAGS="--read-clj ${DRIVER_FLAGS:-}"
@@ -102,7 +102,7 @@ awk -F'\t' 'NR>1 {print $1 "\t" $4}' "$out/results.tsv" | sort > "$out/passing.t
 case $mode in
   update-baseline) cp "$out/passing.tsv" "$baseline"; echo "baseline $baseline: $(awk -F'\t' '{s+=$2} END{print s}' "$out/passing.tsv") deftests" ;;
   ratchet)
-    [ -f "$baseline" ] || { echo "ratchet: no baseline at $baseline (run --update-baseline first)"; exit 2; }
+    [ -f "$baseline" ] || { echo "NOT IMPLEMENTED: ratchet: no baseline at $baseline (run --update-baseline first)"; exit 3; }
     missing=$(join -t $'\t' -v1 "$baseline" "$out/passing.tsv")
     if [ -n "$missing" ]; then echo "ratchet: baseline files missing from this run (a filtered or crashed run?):"; cut -f1 <<<"$missing" | sed 's/^/  /'; exit 1; fi
     worse=$(join -t $'\t' "$baseline" "$out/passing.tsv" | awk -F'\t' '$3 < $2 {print $1 " " $2 " -> " $3}')

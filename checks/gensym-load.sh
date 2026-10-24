@@ -10,7 +10,7 @@
 #
 # Compiles checks/fixtures/gensym-probe.lg with --no-rt (load-time effects
 # only; no runtime library built) and compares the counter its macro saw with
-# EXPECT. A src/ change that moves it either keeps byte identity by avoiding
+# EXPECT. A src/ change that moves it either leaves the count alone by avoiding
 # the gensym, or records the new value here and says in its DECISIONS entry
 # that local numbering moved (checked with "differs only in local numbering"
 # plus gate 1).

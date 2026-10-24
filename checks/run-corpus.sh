@@ -154,7 +154,7 @@ prog() {
   o=$(WASM_RUN=$runner "$root/checks/oracle.sh" "$f" 2>&1); rc=$?
   case $rc in
     0) echo "MATCH $f" >"$out"; echo match >"$cls" ;;
-    2) echo "NOT IMPLEMENTED $f: $(printf '%s' "$o" | head -1)" >"$out"; echo ni >"$cls" ;;
+    3) echo "NOT IMPLEMENTED $f: $(printf '%s' "$o" | head -1)" >"$out"; echo ni >"$cls" ;;
     *) { echo "MISMATCH $f: $(printf '%s' "$o" | head -1)"
          printf '%s\n' "$o" | sed -n '2,6p' | sed 's/^/    /'; } >"$out"; echo hard >"$cls" ;;
   esac
@@ -227,4 +227,5 @@ slow=$(awk -F'\t' -v cap="${LW_SUITE_LIMIT:-120}" '{s[$1]+=$2; if (!($1 in o)) o
 echo "$match/${#files[@]} MATCH"
 [ $hard -eq 1 ] && exit 1
 [ $match -eq ${#files[@]} ] && exit 0
-exit 2
+# what is left is NOT IMPLEMENTED: not built yet
+exit 3

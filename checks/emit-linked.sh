@@ -38,8 +38,8 @@ if [ "${1:-}" = --replay ]; then
   cat "$d/out"; cat "$d/err" >&2; exit "$(cat "$d/x")"
 fi
 
-command -v node >/dev/null || { echo "node not on PATH"; exit 2; }
-command -v wasm-tools >/dev/null || { echo "wasm-tools not on PATH"; exit 2; }
+command -v node >/dev/null || { echo "SKIP node not on PATH"; exit 2; }
+command -v wasm-tools >/dev/null || { echo "SKIP wasm-tools not on PATH"; exit 2; }
 cd "$root"
 t0=$(date +%s)
 t=$(mktemp -d "${TMPDIR:-/tmp}/emit-linked.XXXXXX"); trap 'rm -rf "$t"' EXIT

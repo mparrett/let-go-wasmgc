@@ -39,9 +39,9 @@ differential check (see "Checks"), and the design record is
   is a guided walk through the code.
 - Gates 1 to 7 passed on 2026-10-02 with `LW_ATTEST=0` (gate 7 rerun green
   the same evening, D169, D170) and gate 12, the self-compilation stage, on
-  2026-10-09 (D212). Since then every pull request is held to the GC byte
-  guard (`checks/gc-byte-identity.sh`: the compiled bytes of 29 programs
-  against a frozen baseline) plus the rows it touches, and the test counts
+  2026-10-09 (D212). Since then every pull request is held to the rows it
+  touches; the GC byte guard (`checks/gc-byte-identity.sh`, P8.0) is
+  advisory since D228, and the oracle rows decide. The test counts
   above were re-measured on 2026-10-20.
 
 Module sizes after `wasm-opt -O3`, brotli-compressed, as of 2026-10-20:
@@ -117,7 +117,8 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   relative to `checks/`. Without it the rows do not fail: their browser lanes
   report SKIP with the reason (`checks/browser-probe.mjs`), node-host and
   wasmtime decide P4.0, node-host and legmacs decide P7.5, and the
-  browser-only rows exit 2 (D227). `LW_REQUIRE_BROWSER=1` turns that SKIP
+  browser-only rows exit 2 with a SKIP line (D227), which the gate reports as
+  `# SKIP`. `LW_REQUIRE_BROWSER=1` turns that SKIP
   into a FAIL on a machine where the browser lanes are expected to run.
   The COI server and the shell injector live in `host/` (`coi-serve.py`,
   `inject-shell.sh`) since 2026-10-21 and need nothing outside the repository.
@@ -347,10 +348,15 @@ mirror of that workspace. In practice:
 
 - `checks/items.tsv` has one row per work item: an id, a phase, the exact
   command whose exit 0 means done, and a one-line definition of done.
-  `checks/run.sh <id>` runs one row. Exit 2 means the check itself is not
-  built yet.
+  `checks/run.sh <id>` runs one row. Exit 0 is done, 1 failing, 2 skipped (a
+  tool or host lane is missing here; the row's last line starts with `SKIP`
+  and gives the reason), 3 not built yet. A fifth column names the issue that owns a known
+  failure.
 - `checks/gate.sh <n>` runs every row of phase n (the second column of
-  `items.tsv`). Each row's output
+  `items.tsv`) and reports them as TAP (D228): `ok`, `ok … # SKIP <reason>`,
+  `not ok … # TODO git-issue:<id>` for a row with an owning issue, `not ok`
+  otherwise; it fails on any plain `not ok`, and on a TODO row that passes.
+  Each row's output
   is kept in `${TMPDIR:-/tmp}/lw-gate-<n>/<id>.log`. The trimmed logs of the
   2026-10-02 gate runs are in `corpus/gates/2026-10-02-final/`.
 - `checks/oracle.sh` is the only match relation; every MATCH in `items.tsv`

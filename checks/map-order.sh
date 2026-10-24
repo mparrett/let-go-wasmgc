@@ -6,9 +6,9 @@
 #      program MATCHes native lg under the backend (STALE-EXPECTED first).
 #   2. let-go's test/map_order_test.lg under the backend via
 #      checks/run-tests.sh. That runner does not exist yet: the half prints
-#      NOT IMPLEMENTED and the check exits 2.
-#   Exit: 0 both pass; 1 any MISMATCH / STALE-EXPECTED / test failure;
-#   2 otherwise not done (backend or runner missing).
+#      NOT IMPLEMENTED and the check exits 3.
+#   Exit: 0 both pass; 1 any MISMATCH / STALE-EXPECTED / test failure, or a
+#   usage error in a half; 3 not built (backend or runner missing).
 #
 # --native  check the corpus itself, no backend: regenerate the programs into
 #           a scratch dir with gen.lg and require them byte-identical to the
@@ -69,9 +69,11 @@ test_file=$LETGO/test/map_order_test.lg
 if [ -x checks/run-tests.sh ]; then
   checks/run-tests.sh "$test_file"; tests_rc=$?
 else
-  echo "NOT IMPLEMENTED $test_file (checks/run-tests.sh missing)"; tests_rc=2
+  echo "NOT IMPLEMENTED $test_file (checks/run-tests.sh missing)"; tests_rc=3
 fi
 
 [ $corpus_rc -eq 1 ] || [ $tests_rc -eq 1 ] && exit 1
 [ $corpus_rc -eq 0 ] && [ $tests_rc -eq 0 ] && exit 0
-exit 2
+# not built only when every half that is not done says so (3); a usage 2 fails
+for rc in $corpus_rc $tests_rc; do case $rc in 0|3) ;; *) exit 1 ;; esac; done
+exit 3

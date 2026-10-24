@@ -15,12 +15,12 @@
 #
 # Env: LG (native lg; default = the plan's pinned main build), LG_ARGS (args before the program),
 #      WASM_RUN (command that compiles+runs an .lg through the backend and
-#      behaves like lg on stdout/stderr/exit; unset = NOT IMPLEMENTED, exit 2),
+#      behaves like lg on stdout/stderr/exit; unset = NOT IMPLEMENTED, exit 3),
 #      KEEP=1 to leave the scratch dir behind.
 set -uo pipefail
 . "$(dirname "$0")/env.sh"
 prog=$1; shift
-[ -n "${WASM_RUN:-}" ] || { echo "NOT IMPLEMENTED: WASM_RUN unset (backend runner missing)"; exit 2; }
+[ -n "${WASM_RUN:-}" ] || { echo "NOT IMPLEMENTED: WASM_RUN unset (backend runner missing)"; exit 3; }
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] || rm -rf "$t"' EXIT
 # Native macro contexts include a process address; emitted diagnostics keep
 # the function name alone. Ignore that token in this compiler context only.

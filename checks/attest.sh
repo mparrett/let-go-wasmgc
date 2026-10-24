@@ -14,15 +14,16 @@
 #   attest.sh                 self-test (the P5.4 row): the key moves when a
 #                             new file appears under an input dir and moves
 #                             back when it is removed; a file outside the row's
-#                             inputs leaves it alone; then, if every phase-2 row
-#                             is attested fresh, `gate.sh 2` must finish in
-#                             under 60 s with every row ok (the "second gate on
-#                             an unchanged tree" claim), else it says which rows
-#                             are stale and exits 1 (run gate.sh 2 once first).
+#                             inputs leaves it alone; then, after one `gate.sh 2`
+#                             to attest any stale phase-2 rows, a second
+#                             `gate.sh 2` must exit 0 within 60 s and its TAP
+#                             must parse under prove (the "second gate on an
+#                             unchanged tree" claim; a # TODO row may print
+#                             not ok).
 #
 # Store: checks/.attest/<id> (gitignored: it is this machine's memory of what
 # ran green here, not a fact about the tree). gate.sh consults `fresh` before
-# running a row and prints `ok   <id> (attested)`; run.sh and gate.sh call
+# running a row and prints `ok <n> - <id> (attested)`; run.sh and gate.sh call
 # `record` after a row exits 0. LW_ATTEST=0 turns both off for one run.
 # What the key cannot see is what the affected.sh table does not name (the
 # table is the one place to extend when a check grows an input, as its
@@ -82,6 +83,10 @@ case ${1:-selftest} in
     fi
     t0=$(date +%s); out=$(checks/gate.sh 2 2>/dev/null); rc=$?; dt=$(( $(date +%s) - t0 ))
     echo "$out"; echo "second gate.sh 2: ${dt}s exit $rc"
-    [ $rc = 0 ] && [ $dt -lt 60 ] && ! printf '%s' "$out" | grep -q FAIL ;;
+    # prove checks that the stream parses as TAP; the gate's exit enforces the
+    # TODO and failure rules
+    tap=$(mktemp); printf '%s\n' "$out" >"$tap"; prove -e cat "$tap" >/dev/null 2>&1; prc=$?; rm -f "$tap"
+    [ $prc = 0 ] || echo "attest: prove rejected the second gate's TAP (or prove is missing)"
+    [ $rc = 0 ] && [ $dt -lt 60 ] && [ $prc = 0 ] ;;
   *) echo "usage: attest.sh [key|record|fresh|clear] [id]" >&2; exit 2 ;;
 esac

@@ -18,8 +18,8 @@ cd "$(dirname "$0")/.."
 N=${1:-5}
 . "$(dirname "$0")/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
-[ -x checks/wasm-run.sh ] || { echo "NOT IMPLEMENTED: checks/wasm-run.sh missing"; exit 2; }
-[ -f corpus/legmacs/dump-session.lg ] || { echo "NOT IMPLEMENTED: corpus/legmacs/dump-session.lg missing"; exit 2; }
+[ -x checks/wasm-run.sh ] || { echo "NOT IMPLEMENTED: checks/wasm-run.sh missing"; exit 3; }
+[ -f corpus/legmacs/dump-session.lg ] || { echo "NOT IMPLEMENTED: corpus/legmacs/dump-session.lg missing"; exit 3; }
 [ -d "$LEGMACS/legmacs" ] || { echo "FAIL: no legmacs checkout at $LEGMACS"; exit 1; }
 cache=${LW_MODULE_CACHE:-$(mktemp -d)}
 [ -n "${LW_MODULE_CACHE:-}" ] || trap 'rm -rf "$cache"' EXIT
