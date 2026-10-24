@@ -37,8 +37,17 @@
 # command. Each row lives in its slot's directory, so it goes when the slot
 # does; the table is rebuilt from them, under a lock and by an atomic rename,
 # whenever a slot is taken or released.
+#
+# LW_SEM_TRACE=<file>: append `<asked> <got> <released>` (ms) for this
+# acquisition at exit, so a caller can tell waiting for a slot from working
+# (checks/gate.sh times its rows that way). A command that ran unslotted after
+# LW_SEM_WAIT counts as holding from the moment it started.
 set -uo pipefail
 if [ -n "${LW_SEM_HELD:-}" ]; then exec "$@"; fi
+# ms since the epoch: bash 5's EPOCHREALTIME, else perl (a process per call)
+got_ms=""
+sem_ms() { if [ -n "${EPOCHREALTIME:-}" ]; then local u=${EPOCHREALTIME/[.,]/}; echo $(( u / 1000 )); else perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; fi; }
+[ -z "${LW_SEM_TRACE:-}" ] || asked=$(sem_ms)
 n=${LW_SLOTS:-4}; d=${LW_SEM:-/tmp/lw-sem-$(id -u)}; d=${d%/}; mkdir -p "$d"
 deadline=$(( $(date +%s) + ${LW_SEM_WAIT:-1800} ))
 got=""
@@ -66,6 +75,7 @@ while :; do
   if [ "$(date +%s)" -ge "$deadline" ]; then echo "sem: waited ${LW_SEM_WAIT:-1800}s, running unslotted" >&2; break; fi
   sleep 0.5
 done
+[ -z "${LW_SEM_TRACE:-}" ] || got_ms=$(sem_ms)
 # rebuilt under a short lock, so the last rebuild follows the last change
 table() {
   local i
@@ -81,7 +91,7 @@ if [ -n "$got" ]; then
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "${cmd:0:300}" >"$got/row"
   table
 fi
-trap '[ -n "$got" ] && rm -rf "$got" && table' EXIT
+trap '[ -z "${LW_SEM_TRACE:-}" ] || [ -z "$got_ms" ] || echo "$asked $got_ms $(sem_ms)" >>"$LW_SEM_TRACE"; [ -n "$got" ] && rm -rf "$got" && table' EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM HUP
 LW_SEM_HELD=1 nice -n "${LW_NICE:-10}" "$@"
 exit $?

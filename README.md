@@ -356,7 +356,11 @@ mirror of that workspace. In practice:
   `items.tsv`) and reports them as TAP (D228): `ok`, `ok … # SKIP <reason>`,
   `not ok … # TODO git-issue:<id>` for a row with an owning issue, `not ok`
   otherwise; it fails on any plain `not ok`, and on a TODO row that passes.
-  Each row's output
+  The stream is TAP 13, with each row's work time (`duration_ms`, wall time
+  less any time blocked on the slot pool, which is `wait_ms`) in a block under
+  its line, and each row is logged with its time, the revision and the
+  machine's load to `$LW_STATE/gate-times.tsv`, or to `$LW_GATE_TIMES` when set
+  (D229). Each row's output
   is kept in `${TMPDIR:-/tmp}/lw-gate-<n>/<id>.log`. The trimmed logs of the
   2026-10-02 gate runs are in `corpus/gates/2026-10-02-final/`.
 - `checks/oracle.sh` is the only match relation; every MATCH in `items.tsv`
