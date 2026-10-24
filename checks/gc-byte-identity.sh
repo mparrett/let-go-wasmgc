@@ -33,6 +33,7 @@
 # f6c3a3e, P12.3 registry fixes; before that 2026-10-08 at
 # 1c5ff7c, D209 step 2: wasm.natives' create-ns twin and interned vars carrying meta; before that 2026-10-08 at
 # dcf502c, P12.0f load-string twin; before that 2026-10-08 at 8bdbf97, the D207 rooting rule; before that 2026-10-07 at 4d6fbc2, D204 with its review fixes (symbol of a var without the #' prefix, instance? with nil); before that 2026-10-07 at
+# (on the llvm branch, 2026-10-08 at 5336b5f, D216 (llvm lane): llvm-target merged with main, D210's fixnum bounds in box-int)
 # d0693f3, D199's directly lowered constants; before that 167f95e, the let-go ff1e6dac pin with D198 and the deferred read-json conversion; before
 # that 6a8401b, the pin alone; before that 2026-10-05 at 138f341, after
 # D185-D187; 2026-10-04 at 7b87007, first 2026-10-03 at 3c5011e).

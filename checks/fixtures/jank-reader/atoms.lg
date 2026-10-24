@@ -1,0 +1,81 @@
+; atom-options
+(let [a (atom 2 :meta {:label :a} :validator pos?)]
+  (println @a (meta a))
+  (println (reset! a 3) (swap! a + 2) @a)
+  (println (try (reset! a -1) (catch e (ex-message e))) @a)
+  (println (try (swap! a - 10) (catch e (ex-message e))) @a)
+  (println (try (compare-and-set! a 99 -1) (catch e (ex-message e))) @a)
+  (println (compare-and-set! a 99 6) @a)
+  (println (compare-and-set! a 5 6) @a))
+(doseq [f [(fn [] (atom 1 :meta 5))
+           (fn [] (atom 1 :validator false))
+           (fn [] (atom 1 :validator (constantly false)))
+           (fn [] (atom 1 :validator (fn [x] (throw (ex-info "bad-state" {})))))
+           (fn [] (atom 1 :unknown 2))
+           (fn [] (atom 1 :meta))]]
+  (println (try (f) (catch e (ex-message e)))))
+(let [a (atom 1 :meta nil :validator nil)]
+  (println (meta a) @a))
+(let [a (apply atom [1 :meta {:old true} :meta {:new true} :validator pos?])
+      b (with-meta a {:copy true})]
+  (println (meta a) (meta b) @b (identical? a b))
+  (println (try (reset! b 0) (catch e (ex-message e))) @b @a))
+(doseq [large? [false true]]
+  (let [a (atom 1) calls (atom 0)
+        f (fn [x & args]
+            (when (= 1 (swap! calls inc)) (reset! a 10))
+            (+ x (apply + args)))
+        result (if large? (swap! a f 1 2 3 4) (swap! a f 1))]
+    (println result @a @calls)))
+(let [a (atom 1 :validator (fn [x] (when (> x 0) :valid)))]
+  (println (try (reset! a 0) (catch e (ex-message e))) @a))
+(let [f pos? a (atom 1 :validator f)]
+  (println (= f (get-validator a)) (get-validator (atom 1))))
+(doseq [args [[] [1] [(atom 1) 2] [(atom 1) 2 3 4]]]
+  (println (try (apply get-validator args) (catch e (ex-message e)))))
+
+; atom-watches
+(let [events (atom []) a (atom 1 :validator pos?)
+      watcher (fn [k r old new] (swap! events conj [k (identical? a r) old new @r]))]
+  (println (identical? a (add-watch a :k watcher)))
+  (reset! a 2)
+  (swap! a + 3)
+  (compare-and-set! a 5 6)
+  (compare-and-set! a 99 7)
+  (try (reset! a 0) (catch e nil))
+  (println @events @a)
+  (add-watch a :k (fn [k r old new] (swap! events conj [:replacement old new])))
+  (reset! a 8)
+  (println (identical? a (remove-watch a :k)))
+  (reset! a 9)
+  (println @events @a))
+(let [a (atom 1)]
+  (add-watch a :throws (fn [k r old new] (throw (ex-info "watch-failed" {:old old :new new}))))
+  (println (try (reset! a 2) (catch e [(ex-message e) (ex-data e)])) @a)
+  (remove-watch a :throws)
+  (println (reset! a 3)))
+(doseq [f [(fn [] (add-watch)) (fn [] (add-watch nil :k nil))
+           (fn [] (add-watch nil :k (fn [& xs])))
+           (fn [] (remove-watch)) (fn [] (remove-watch nil :k))]]
+  (println (try (f) (catch e (ex-message e)))))
+(let [events (atom []) a (atom 1)
+      f (fn [k r old new] (swap! events conj [k old new]))]
+  (add-watch a :shared f)
+  (let [b (with-meta a {:copy true})]
+    (remove-watch b :shared)
+    (reset! a 2)
+    (add-watch b :new f)
+    (reset! a 3)
+    (reset! b 4)
+    (println @events @a @b)))
+(doseq [key [[1] (vec '(1))]]
+  (println (try (add-watch (atom 1) key (fn [& xs])) (catch e (ex-message e))))
+  (println (try (remove-watch (atom 1) key) (catch e (ex-message e)))))
+(let [a (agent 1) b (agent 10)]
+  (println (agent-error a) (agent-error b))
+  (println (identical? a (send a + 2 3)) @a)
+  (send a (fn [x] (throw (ex-info "action-failed" {:value x}))))
+  (println @a (ex-message (agent-error a)) (ex-data (agent-error a)) (agent-error b))
+  (send-off b inc)
+  (println @b)
+  (println (identical? a (restart-agent a 20)) @a (agent-error a) @b))

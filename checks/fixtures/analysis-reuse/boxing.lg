@@ -1,0 +1,10 @@
+;; The value call forces add-one to box its parameter. Independent definitions
+;; can reuse analysis; callers of add-one must observe its new interface.
+(defn stable-a [x] (+ x 10))
+(defn stable-b [x] (* x 2))
+(defn stable-c [x] (- x 3))
+(defn add-one [x] (+ x 1))
+(defn caller [x] (add-one x))
+(defn invoke [f x] (f x))
+(println (stable-a 1) (stable-b 4) (stable-c 9))
+(println (caller 40) (invoke add-one 41))

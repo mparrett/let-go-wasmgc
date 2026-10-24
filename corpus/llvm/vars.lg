@@ -1,0 +1,11 @@
+;; Task 5: var-table vars: top-level def, a def from another var, a
+;; redefinition, and a declared var defined after its first use.
+(def x 1)
+(def y (inc x))
+(println x y)
+(def x 10)
+(println x (+ x y))
+(declare later)
+(defn use-later [] (later 5))
+(defn later [n] (* n n))
+(println (use-later))

@@ -1,0 +1,17 @@
+;; (binding ..) on the llvm target (D222): *out* rebound to *err* sends
+;; println to stderr; a program dynamic var nests, unwinds through a caught
+;; throw, and is seen by fns called inside the binding.
+(def ^:dynamic *depth* 0)
+(defn show [] (println "depth" *depth*))
+
+(show)
+(binding [*depth* 1]
+  (show)
+  (binding [*depth* 2] (show))
+  (show))
+(show)
+(try (binding [*depth* 9] (throw (ex-info "boom" {})))
+     (catch Exception e (println "caught" (ex-message e))))
+(show)
+(binding [*out* *err*] (println "to stderr"))
+(println "back on stdout")

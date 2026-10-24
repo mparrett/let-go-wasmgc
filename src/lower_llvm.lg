@@ -1,0 +1,1893 @@
+;; lower-llvm: a native target (spike) that lowers let-go's indexed RPN IR to
+;; LLVM IR text in continuation-passing style. Part of the lower-wasm
+;; namespace, required only by ensure-llvm-target! on the first llvm build.
+;;
+;; Shape. Every lowered function is `tailcc void (ptr %k, args...)`: it
+;; never returns a value, it calls its continuation k with one value. Every
+;; call is a `musttail` call, so the C stack never grows. A call whose
+;; result is used further on allocates a continuation record, a named struct
+;; type {code, k, saved values...}, and passes it as the callee's k; the rest
+;; of the block becomes the record's code. Values are typed by ll-type: an
+;; :int is i64 and a :bool i1 everywhere, a :box is a word of the hardware
+;; profile's :word-bits (spec decision 6). Nothing here assumes the word size.
+;;
+;; Pieces. A block is cut after each continuation call; [b n] is block b's
+;; piece n. Entry points (an LLVM function each) are the fn's entry piece,
+;; every piece n > 0, and every block with other than one predecessor (joins,
+;; loop heads). A one-predecessor block is a basic block of the function
+;; that reaches it, so the functions are trees and no code is duplicated.
+(in-ns 'lower-wasm)
+(require '[lower-llvm-profile :as llvm-prof])
+(require '[lower-llvm-poly :as llvm-poly])
+(require '[lower-llvm-ir :as lir])
+(require '[hash])
+(require '[clojure.walk])
+
+(def ^:dynamic *ll* nil)
+(declare ll-q ll-fail ll-binding-var! ll-kbox ll-kfin ll-tryf ll-kinit llvm-dump llvm-profile llvm-fn
+         ll-intrinsic! ll-host-declares ll-declare ll-desc-item ll-type-defs ll-object-globals ll-true ll-false
+         ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
+         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
+
+;; A module unit (a lowered fn, a region, a global) is items plus the symbols
+;; they define (their names) and name (recorded by lower-llvm-ir/ref while
+;; they were made), which the shake (llvm-module, D221) walks.
+(def ll-fn-attrs
+  "Every generated fn's attributes: nounwind, since no lowered code unwinds
+   (raising is a CPS call to the handler, D206), so none needs an unwind
+   table entry."
+  ["nounwind"])
+(defn ll-fn
+  "A tailcc fn item (internal unless linkage says otherwise) returning void:
+   params are \"type %name\" strings, body its text after the opening brace."
+  ([nm params body] (ll-fn nm params body "internal"))
+  ([nm params body linkage]
+   {:llvm/fn {:name nm :linkage linkage :cc "tailcc" :ret "void" :params (vec params) :attrs ll-fn-attrs :body body}}))
+(defn ll-fn-bare "ll-fn for a backend helper named @lg_* (no quotes)." [nm params body]
+  (assoc-in (ll-fn nm params body) [:llvm/fn :bare] true))
+(def ll-refcheck?
+  "LW_LL_CHECK_REFS=1 (checks/llvm-refs-check.sh, P12.39): every unit is
+   also handed to lower-llvm-refcheck, which reports a symbol its text names
+   that it did not record."
+  (= "1" (os/getenv "LW_LL_CHECK_REFS")))
+(when ll-refcheck? (require 'lower-llvm-refcheck))
+(defn ll-unit
+  "A module unit: m's :items, their text, the symbols they define (their
+   names) and the symbols they name (refs, as recorded while they were made)."
+  [m refs]
+  (let [items (:items m) text (str/join "\n" (map lir/render items))
+        defs (set (keep lir/defines items))]
+    (when ll-refcheck? ((resolve 'lower-llvm-refcheck/note-unit!) text defs refs))
+    (assoc m :text text :defs defs :refs (set refs))))
+(defn ll-glob
+  "A global item: kind its linkage and kind (\"internal global\", \"private
+   constant\" ..), type and init its LLVM type and initializer."
+  [nm kind type init]
+  {:llvm/global {:name nm :kind kind :type type :init init}})
+(defn ll-add-global!
+  "ll-global!'s work: [item refs] made under with-refs."
+  [[item refs]]
+  (let [u (ll-unit {:items [item]} refs) nm (lir/defines item)
+        k [:llvm :global nm] h (hash/xxh3-64-str (:text u)) seen (get @*fn-values* k)]
+    (cond (nil? seen) (do (swap! *fn-values* assoc k h) (swap! *globals* conj u))
+          (not= seen h) (ll-fail "two definitions of one global" {:global nm}))
+    nil))
+(defmacro ll-global!
+  "Add the global item form makes to the module, once per name: the same
+   name with another text fails the compile, never two globals or a silent
+   pick. The symbols item names are recorded while it is made."
+  [item]
+  `(ll-add-global! (lir/with-refs (fn [] ~item))))
+(defn ll-add-region!
+  "ll-region!'s work: m may already be a unit (llvm-fn's), whose references
+   were recorded under its own binding; they are kept."
+  [[m refs]]
+  (swap! *regions* conj (ll-unit m (into (set refs) (:refs m)))))
+(defmacro ll-region!
+  "Add the lifted region (closure code, a wrapper, a try region) form makes,
+   {:name :items :types}; the symbols its items name are recorded while it
+   is made."
+  [m]
+  `(ll-add-region! (lir/with-refs (fn [] ~m))))
+
+(defn ll-fail [msg data]
+  ;; values print with str: a var's value (os/args) may not survive pr-str
+  (fail (str msg " (llvm)") (into {:fn *fname*} (map (fn [[k v]] [k (str v)]) data))))
+(defn ll-q
+  "A module symbol's quoted operand, recorded in the unit being made
+   (lower-llvm-ir/ref; the runtime's llvm.* names are emitted as lg.llvm.*)."
+  [s]
+  (lir/ref s))
+
+;; --- values ---------------------------------------------------------------
+;; A value's operand is in the representation its type gives it: :int a raw
+;; i64, :bool an i1, :box a tagged word (low bit 1: fixnum v<<1|1; 0 nil;
+;; 2 false; 4 true; otherwise a pointer to a heap object, as
+;; host/native/rt.c defines). ll-arg converts to the representation a use
+;; needs.
+
+(defn ll-word [] (str "i" (:word-bits (llvm-profile))))
+
+(defn ll-type [k]
+  (case k :int "i64" :bool "i1" :box (ll-word) :float "double" :func "ptr"
+    (ll-fail "a value kind with no LLVM type" {:kind k})))
+
+(defn ll-fix-bounds
+  "[min max] of the profile's fixnums, a signed :fixnum-bits width."
+  []
+  (let [h (bit-shift-left 1 (dec (:fixnum-bits (llvm-profile))))] [(- h) (dec h)]))
+
+(defn ll-callee-var [nid]
+  (let [r (src-of nid)]
+    (when (= :load-var (ir/op r *f*)) (ir/aux r *f*))))
+
+(defn ll-builtin-type-id [x]
+  (when (= (type x) (type (type 1)))
+    (some (fn [[id entry]] (when (= (str x) (:name entry)) id))
+          (map-indexed vector (llvm-poly/ll-type-table)))))
+
+(defn ll-native-type-const? [v]
+  (and (var? v) (not (:dynamic (meta v)))
+       (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
+       (some? (ll-builtin-type-id (try @v (catch e nil))))))
+
+(defn ll-const-val
+  "[v] for a constant value, else nil (fn templates and Var objects are
+   handled as closures and :def targets)."
+  [nid]
+  (if-let [c (int-const-val nid)]
+    [c]
+    (let [r (src-of nid) op (ir/op r *f*) a (ir/aux r *f*)]
+      (cond
+        ;; Host constants such as Long/MAX_VALUE and Double/NaN follow the
+        ;; same scalar-constant contract as the Wasm lane. Program globals,
+        ;; dynamic vars and explicitly altered native roots are not literals.
+        (and (= op :load-var) *rt* (not (table-var? a))
+             (not (rooted? a)) (or (native-scalar-const? a) (ll-native-type-const? a))) [@a]
+        (and (= :const op) (not (template? r)))
+        (let [v (if (typed-aux? a) (nth a 2) a)]
+          (when-not (var? v) [v]))))))
+
+;; core vars the llvm runtime implements as one of its top-level defs
+(defn ll-var-alias [v]
+  (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
+        (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
+        (and *rt* (= v #'*out*)) (lw-rt/rt-var 'host 'stdout-handle)
+        (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
+        (and *rt* (= v #'*in-wasm*)) (lw-rt/rt-var 'host 'in-wasm)
+        (and *rt* (= v #'*assert*)) (lw-rt/rt-var 'host 'assert-on)
+        (and *rt* (= v #'*compiling-aot*)) (lw-rt/rt-var 'host 'compiling-aot)
+        (and *rt* (= v #'core/*agent-errors*)) (lw-rt/rt-var 'core 'agent-errors)
+        :else v))
+
+(defn ll-table-var? [v] (and v (table-var? (ll-var-alias v))))
+
+(defn ll-materialized?
+  "A value with no definition of its own: a literal, a var that is a
+   constant (a defn or a core op, re-materialised at each use), or a closure
+   chain link. A var-table var is read where its :load-var sits."
+  [nid]
+  (or (some? (ll-const-val nid))
+      (let [v (ll-callee-var nid)] (and (some? v) (not= v #'*ns*) (not (ll-table-var? v))))
+      (closure-hidden? nid)
+      ;; a class symbol (consumed by catch-matches?) and a Var object (by :def)
+      (symbol-const? nid) (var-const? nid)))
+
+(declare ll-var-value)
+
+(defn ll-param?
+  "A block param that takes a slot: not dead, and not one legalize threads a
+   materialized value through (a var, a literal, a closure link), whose uses
+   resolve through src-of instead."
+  [p]
+  (not (or (dead? p) (ll-materialized? p))))
+
+(defn ll-params [b] (filter ll-param? (ir/block-params b *f*)))
+
+(defn ll-bind! [nid operand] (swap! (:env *ll*) assoc nid operand))
+
+(defn ll-op [nid]
+  "The operand for value nid, in its own representation."
+  (or (get @(:env *ll*) nid)
+      (let [v (ll-callee-var nid)]
+        (when (and v (not= v #'*ns*) (not (ll-table-var? v))) (ll-var-value v)))
+      (if (= :block-arg (ir/op nid *f*))
+        (ll-fail "block-arg with no binding" {:nid nid})
+        (str "%v" nid))))
+
+(declare ll-unbox-lines ll-raise-text ll-emit! ll-fresh ll-double-lit ll-float-const! ll-char-const! ll-i64-of-word! ll-alloc-call ll-desc-item ll-kind-fields ll-type-descs)
+
+(defn ll-coerce! [have want x]
+  (let [t (fn [] (ll-fresh "%w")) w (ll-word)]
+    (cond
+      (= have want) x
+      (and (= have :int) (= want :box)) (let [r (t)] (ll-emit! "  " r " = call " w " @lg_box_int(i64 " x ")") r)
+      (and (= have :box) (= want :int)) (let [r (t)] (doseq [l (ll-unbox-lines :int x r)] (ll-emit! l)) r)
+      (and (= have :bool) (= want :box)) (let [r (t)] (ll-emit! "  " r " = select i1 " x ", " w " " (ll-true) ", " w " " (ll-false)) r)
+      ;; nil and false are falsey, every other value truthy
+      (and (= have :box) (= want :bool))
+      (let [a (t) b (t) r (t)]
+        (ll-emit! "  " a " = icmp ne " w " " x ", 0")
+        (ll-emit! "  " b " = icmp ne " w " " x ", " (ll-false))
+        (ll-emit! "  " r " = and i1 " a ", " b)
+        r)
+      (and (= have :int) (= want :bool)) "true"
+      (and (= have :float) (= want :bool)) "true"
+      (and (= have :int) (= want :float)) (let [r (t)] (ll-emit! "  " r " = sitofp i64 " x " to double") r)
+      (and (= have :float) (= want :box))
+      (let [p (ll-alloc! (ll-sty "$Float") (ll-tid "$Float"))]
+        (ll-emit! "  store double " x ", ptr " (ll-field-ptr! (ll-sty "$Float") p 1))
+        (ll-word-of! p))
+      ;; an Int or a Float as f64; anything else is a catchable error
+      (and (= have :box) (= want :float)) (let [r (t)] (doseq [l (ll-unbox-lines :float x r)] (ll-emit! l)) r)
+      ;; a float where analysis chose i64 and the boxing fixpoint could not
+      ;; re-lower the callee: boxed, it fails the checked unbox at run time,
+      ;; as the GC lane's coerce does (P2.11 F9)
+      (and (= have :float) (= want :int)) (ll-coerce! :box :int (ll-coerce! :float :box x))
+      ;; a null in a code slot ((arch/null) is a boxed 0)
+      (and (= have :box) (= want :func)) (let [r (t)] (ll-emit! "  " r " = inttoptr " w " " x " to ptr") r)
+      :else (ll-fail "unsupported coercion" {:from have :to want}))))
+
+(defn ll-arg
+  "nid's operand in representation want, emitting any conversion."
+  [nid want]
+  (cond
+    ;; a Var object as a value ((var x), #'x): the runtime's Var stand-in,
+    ;; built once at startup as the GC lane's const-box-wat builds it
+    (and *rt* (var-const? nid) (not= want :bool))
+    (let [g (const-global! (const-val nid)) r (ll-fresh "%k")]
+      (ll-emit! "  " r " = load " (ll-word) ", ptr " (lir/ref (str "var" g)))
+      (ll-coerce! :box want r))
+    (and *rt* (var-const? nid)) "true"
+    :else
+  (if-let [[v] (ll-const-val nid)]
+    (cond
+      (int? v) (case want
+                 :int (str v)
+                 :float (ll-double-lit (double v))
+                 :bool "true"
+                 :box (let [[lo hi] (ll-fix-bounds)]
+                        (if (<= lo v hi) (str (inc (* 2 v))) (ll-coerce! :int :box (str v)))))
+      (and (float? v) (= want :float)) (ll-double-lit v)
+      ;; any other constant in a number slot is boxed and fails the checked
+      ;; unbox at run time, as on the GC lane (bug-01, P2.11 F9)
+      (#{:int :float} want) (ll-coerce! :box want (ll-arg nid :box))
+      (nil? v) (case want :box "0" :bool "false" (ll-fail "nil where a code pointer is needed" {:nid nid}))
+      (boolean? v) (case want :box (if v (ll-true) (ll-false)) :bool (str v) (ll-fail "a boolean where a code pointer is needed" {:nid nid}))
+      (float? v) (case want
+                   :box (ll-float-const! v)
+                   :bool "true"
+                   (ll-fail "a float where a code pointer is needed" {:nid nid}))
+      (= want :bool) "true"
+      (not= want :box) (ll-fail "a constant where a code pointer is needed" {:nid nid :value (pr-str v)})
+      (string? v) (ll-str-const! v)
+      (char? v) (ll-char-const! v)
+      (and *rt* (some? (ll-builtin-type-id v)))
+      (str "ptrtoint (ptr " (lir/ref (str "lg_type." (ll-builtin-type-id v))) " to " (ll-word) ")")
+      ;; keywords, symbols, collections, vars, regexes: built once by the
+      ;; runtime at startup (const-global!, as the WasmGC lane builds them)
+      *rt* (let [g (if-let [rs (regex-standin v)]
+                    (const-global! rs [:regex *fname* (src-of nid)])
+                    (const-global! v)) r (ll-fresh "%k")]
+             (ll-emit! "  " r " = load " (ll-word) ", ptr " (lir/ref (str "var" g)))
+             r)
+      :else (ll-fail "a constant that needs the runtime" {:value (pr-str v)}))
+    (ll-coerce! (ty nid) want (ll-op nid)))))
+
+(defn ll-const-sym
+  "The symbol of the constant global for text s of a kind: the kind and the
+   xxh3-64 of the text. Two texts with one name fail the compile."
+  [kind s]
+  (let [s (str s) nm (str kind "." (format "%016x" (hash/xxh3-64-str s)))
+        k [:llvm :cid-text nm] seen (get @*fn-values* k)]
+    (when (and seen (not= seen s))
+      (ll-fail "constant name collision" {:name nm :texts [seen s]}))
+    (when-not seen (swap! *fn-values* assoc k s))
+    nm))
+
+(defn ll-const-id
+  "The global name for constant text s of a kind (\"str\", \"bytes\",
+   \"cstr\"): its kind and the xxh3-64 of its text, so the name does not
+   depend on what was lowered before it and cached runtime text can hold it
+   (D221). hex32 collided (\"s6rja\" and \"snpfo\"), so two texts with one
+   64-bit name fail the compile instead of sharing a global."
+  [kind s]
+  (str "@\"" (ll-const-sym kind s) "\""))
+
+(defn ll-str-const!
+  "A string literal: a Str object over a constant Bytes object (its hash
+   field is cached at run time, so the Str is a mutable global)."
+  [s]
+  (let [w (ll-word) nm (ll-const-sym "str" s)]
+    (ll-global! (ll-glob nm "internal global" (ll-sty "$Str")
+                         (str "{ " w " " (ll-tid "$Str") ", " w " " (ll-bytes-const! s) ", i64 -1 }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
+
+(defn ll-hex64 [hi lo] (format "0x%08X%08X" hi lo))
+
+(defn ll-double-bits
+  "[hi lo] 32-bit halves of x's IEEE-754 bits, computed exactly (scaling by
+   2 is exact); NaN payloads are told apart by hash as f64-lit does."
+  [x]
+  (cond
+    (NaN? x) (let [lit ##NaN canon (- ##Inf ##Inf)]
+               (get {(hash lit) [0x7FF80000 1] (hash (- lit)) [0xFFF80000 1]
+                     (hash canon) [0x7FF80000 0] (hash (- canon)) [0xFFF80000 0]}
+                    (hash x) [0x7FF80000 0]))
+    (= x ##Inf) [0x7FF00000 0]
+    (= x ##-Inf) [0xFFF00000 0]
+    (zero? x) (if (neg? (/ 1.0 x)) [0x80000000 0] [0 0])
+    :else
+    (let [neg (neg? x)
+          [m e] (loop [a (if neg (- x) x) e 0]
+                  (cond (>= a 2.0) (recur (/ a 2.0) (inc e))
+                        (< a 1.0) (recur (* a 2.0) (dec e))
+                        :else [a e]))
+          biased (+ e 1023)
+          [field mant] (if (pos? biased)
+                         [biased (long (* (- m 1.0) 4503599627370496.0))]
+                         ;; subnormal: m * 2^e = mant * 2^-1074
+                         [0 (long (loop [v m k (+ e 1074)] (if (zero? k) v (recur (* v 2.0) (dec k)))))])
+          hi (bit-or (bit-or (if neg 0x80000000 0) (bit-shift-left field 20)) (unsigned-bit-shift-right mant 32))
+          lo (bit-and mant 0xFFFFFFFF)]
+      [hi lo])))
+
+(defn ll-double-lit [x] (apply ll-hex64 (ll-double-bits x)))
+
+(defn ll-float-const!
+  "A boxed float constant: a constant Float object."
+  [x]
+  (let [w (ll-word) [hi lo] (ll-double-bits x) nm (str "flt." (format "%08X%08X" hi lo))]
+    (ll-global! (ll-glob nm "internal constant" (ll-sty "$Float") (str "{ " w " " (ll-tid "$Float") ", double " (ll-hex64 hi lo) " }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
+
+(defn ll-char-const!
+  "A char constant: a constant Char object."
+  [c]
+  (let [w (ll-word) nm (str "chr." (int c))]
+    (ll-global! (ll-glob nm "internal constant" (ll-sty "$Char") (str "{ " w " " (ll-tid "$Char") ", i32 " (int c) " }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
+
+(defn ll-typed
+  "\"<type> <operand>\" for nid in representation want."
+  [nid want]
+  (str (ll-type want) " " (ll-arg nid want)))
+
+(defn ll-def!
+  "Bind nid to operand x, computed in representation have."
+  [nid have x]
+  (ll-bind! nid (ll-coerce! have (ty nid) x)))
+
+;; --- calls -----------------------------------------------------------------
+
+(def ll-leaf-vars #{#'println})
+
+(defn ll-leaf-var? [v] (and (not *rt*) (contains? ll-leaf-vars v)))
+
+(def ll-max-invoke 8)   ; args through a value; fixed code slots cover 0..4
+
+;; IR ops whose generic form (boxed or float operands) is a core fn
+(def ll-op-vars {:add #'+ :sub #'- :mul #'* :lt #'< :lte #'<= :gt #'> :gte #'>=
+                 :inc #'inc :dec #'dec :zero? #'zero? :pos? #'pos? :neg? #'neg?})
+
+(defn ll-arg-kind
+  "The representation value nid has (a literal's is that of its value)."
+  [nid]
+  (if-let [[v] (ll-const-val nid)]
+    (cond (int? v) :int (boolean? v) :bool (float? v) :float :else :box)
+    (ty nid)))
+
+(defn ll-var-sig
+  "The direct-call signature of v for argc args: a program defn, or (with
+   the runtime) the runtime defn that implements v (D58 twins)."
+  [v argc]
+  (or (get-in (q-sig v) [:arities argc])
+      (and *rt* (rt-target v) (get-in (callee-sig v) [:arities argc]))))
+
+(defn ll-pre-operand
+  "A seq-variant-table leading arg (a WasmGC expr) as [kind operand]."
+  [e]
+  (cond (= e "(call $rt_box_bool (i32.const 0))") [:box (ll-false)]
+        (= e "(call $rt_box_bool (i32.const 1))") [:box (ll-true)]
+        :else (if-let [[_ n] (re-find #"^\(ref\.i31 \(i32\.const (-?[0-9]+)\)\)$" e)]
+                [:box (str (inc (* 2 (parse-long n))))]
+                (ll-fail "unsupported leading arg of a seq form" {:expr e}))))
+
+(defn ll-variadic-plan
+  "A call of v past its fixed arities: through its variadic arity (the
+   fixed args, then the rest as a List, nil when none is left), or through
+   the runtime's -seq form (leading args, then the rest as a List, empty
+   when none is left); nil when neither takes argc args."
+  [v args]
+  (let [argc (count args)
+        ent (or (q-sig v) (when (and *rt* (rt-target v)) (callee-sig v)))]
+    (when ent
+      (if-let [vs (:variadic ent)]
+        (let [k (:fixed vs)]
+          (when (>= argc k)
+            {:sig vs :args (vec (take k args)) :rest (vec (drop k args)) :empty-rest :nil}))
+        (when-let [[sv k pre] (seq-variant ent argc)]
+          (when-let [sig (ll-var-sig sv (+ (count pre) k 1))]
+            {:sig sig :pre (mapv ll-pre-operand pre) :args (vec (take k args))
+             :rest (vec (drop k args)) :empty-rest :list}))))))
+
+(def ll-float-binops {:add "fadd" :sub "fsub" :mul "fmul" :div "fdiv"})
+(def ll-float-cmps {:lt "olt" :lte "ole" :gt "ogt" :gte "oge"})
+
+(defn ll-float-op?
+  "True when op over operands of these kinds lowers as f64 (prim-wat's
+   rule): a float operand and only numbers (int, float, box) beside it, or
+   = on two floats, or a one-operand op on a float."
+  [op kinds]
+  (let [some-float? (some #{:float} kinds) numeric? (every? #{:int :float :box} kinds) n (count kinds)]
+    (boolean
+     (or (and some-float? numeric? (= 2 n) (or (ll-float-binops op) (ll-float-cmps op)))
+         (and (= op :eq) (= 2 n) (every? #{:float} kinds))
+         (and (= 1 n) (= :float (first kinds)) (#{:zero? :pos? :neg? :inc :dec} op))))))
+
+(defn ll-invoke-vars [v]
+  (when (and *rt* v)
+    (get {(lw-rt/rt-var 'seq 'invoke0) 0 (lw-rt/rt-var 'seq 'invoke1) 1 (lw-rt/rt-var 'seq 'invoke2) 2
+          (lw-rt/rt-var 'core 'invoke3) 3 (lw-rt/rt-var 'core 'invoke4) 4}
+         v)))
+
+(defn ll-invoke-args!
+  "lg_invoke_args (k, f, n, a..d): a fn value called with its first n of
+   a..d through lg_invoke<n> (fixed slot, else variadic code); any other
+   callable through the runtime's own invoke-args (keywords, maps, sets,
+   vars as fns). Emitted once, when a call needs it."
+  []
+  (or (q-fn-value [:llvm :invoke-args])
+      (let [w (ll-word) real (:name (get-in (callee-sig (lw-rt/rt-var 'core 'invoke-args)) [:arities 6]))
+            ids (map ll-tid ["$Fn" "$FnV" "$FnX"]) as ["%a" "%b" "%c" "%d"]]
+        (swap! *fn-values* assoc [:llvm :invoke-args] "lg_invoke_args")
+        (ll-region!
+               {:items [(ll-fn-bare "lg_invoke_args" (concat ["ptr %k" (str w " %f") "i64 %n"] (map #(str w " " %) as))
+                         (str "entry:\n"
+                           "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
+                           "  %no = or i1 %fx, %nl\n  br i1 %no, label %other, label %obj\nobj:\n"
+                           "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
+                           (apply str (map-indexed (fn [i id] (str "  %t" i " = icmp eq " w " %h, " id "\n")) ids))
+                           "  %t01 = or i1 %t0, %t1\n  %isfn = or i1 %t01, %t2\n  br i1 %isfn, label %fn, label %other\nfn:\n"
+                           "  switch i64 %n, label %other [" (apply str (for [j (range 5)] (str " i64 " j ", label %n" j))) " ]\n"
+                           (apply str (for [j (range 5)]
+                                        (str "n" j ":\n  musttail call tailcc void @lg_invoke" j "(ptr %k, " w " %f"
+                                             (apply str (map #(str ", " w " " %) (take j as))) ")\n  ret void\n")))
+                           "other:\n  musttail call tailcc void " (ll-q real) "(ptr %k, " w " %f, i64 %n"
+                           (apply str (map #(str ", " w " " %) as)) ")\n  ret void\n"))]})
+        "lg_invoke_args")))
+
+(defn ll-apply-list!
+  "lg_apply_list (k, f, l, n): apply past 4 args, l a List of the n args. A
+   FnV or FnX whose variadic arity takes k <= n fixed args gets l's first k
+   and l's tail as the rest (nil when empty) unless a FnX has a code for n;
+   otherwise lg_invoke<n> up to ll-max-invoke (which raises the arity
+   error); past that, the runtime's call-fail. Emitted once, when needed."
+  []
+  (or (q-fn-value [:llvm :apply-list])
+      (let [w (ll-word) lty (ll-sty "$List") vty (ll-sty "$FnV") xty (ll-sty "$FnX")
+            cf (get-in (callee-sig (lw-rt/rt-var 'core 'call-fail)) [:arities 2])
+            ;; the first j items of %l as %e<tag>_0.., the tail as %t<tag>_j
+            walk (fn [tag j]
+                   (apply str
+                          (for [i (range j)]
+                            (let [cur (if (zero? i) "%l" (str "%t" tag "_" i))]
+                              (str "  %p" tag "_" i " = inttoptr " w " " cur " to ptr\n"
+                                   "  %q" tag "_" i " = getelementptr " lty ", ptr %p" tag "_" i ", i32 0, i32 1\n"
+                                   "  %e" tag "_" i " = load " w ", ptr %q" tag "_" i "\n"
+                                   "  %r" tag "_" i " = getelementptr " lty ", ptr %p" tag "_" i ", i32 0, i32 2\n"
+                                   "  %t" tag "_" (inc i) " = load " w ", ptr %r" tag "_" i "\n")))))
+            tail (fn [tag j] (if (zero? j) "%l" (str "%t" tag "_" j)))
+            es (fn [tag j] (apply str (map #(str ", " w " %e" tag "_" %) (range j))))
+            ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
+        (swap! *fn-values* assoc [:llvm :apply-list] "lg_apply_list")
+        (ll-region!
+               {:items [(ll-fn-bare "lg_apply_list" ["ptr %k" (str w " %f") (str w " %l") "i64 %n"]
+                         (str "entry:\n"
+                           "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
+                           "  %no = or i1 %fx, %nl\n  br i1 %no, label %fixed, label %obj\nobj:\n"
+                           "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
+                           "  %tv = icmp eq " w " %h, " (nth ids 1) "\n  %tx = icmp eq " w " %h, " (nth ids 2) "\n"
+                           "  %isv = or i1 %tv, %tx\n  br i1 %isv, label %vk, label %fixed\nvk:\n"
+                           ;; a FnX may have an exact code for n (native prefers it):
+                           ;; lg_invoke<n> tries that slot before the variadic code
+                           "  %nx = icmp sle i64 %n, " ll-max-invoke "\n  %xn = and i1 %tx, %nx\n  br i1 %xn, label %fixed, label %vcode\nvcode:\n"
+                           "  %kp = getelementptr " vty ", ptr %p, i32 0, i32 10\n  %k32 = load i32, ptr %kp\n  %kk = sext i32 %k32 to i64\n"
+                           "  %kneg = icmp slt i64 %kk, 0\n  %kbig = icmp sgt i64 %kk, %n\n  %kno = or i1 %kneg, %kbig\n"
+                           "  br i1 %kno, label %fixed, label %vsw\nvsw:\n"
+                           "  %vp = getelementptr " vty ", ptr %p, i32 0, i32 9\n  %vc = load ptr, ptr %vp\n"
+                           "  switch i64 %kk, label %fixed [" (apply str (for [j (range (inc ll-max-invoke))] (str " i64 " j ", label %v" j))) " ]\n"
+                           (apply str
+                                  (for [j (range (inc ll-max-invoke))]
+                                    (let [tg (str "v" j)]
+                                      (str tg ":\n" (walk tg j)
+                                           ;; the rest: the tail, nil when it is the empty List
+                                           "  %rp" tg " = inttoptr " w " " (tail tg j) " to ptr\n"
+                                           "  %rc" tg " = getelementptr " lty ", ptr %rp" tg ", i32 0, i32 3\n  %rn" tg " = load i64, ptr %rc" tg "\n"
+                                           "  %re" tg " = icmp eq i64 %rn" tg ", 0\n"
+                                           "  %rs" tg " = select i1 %re" tg ", " w " 0, " w " " (tail tg j) "\n"
+                                           "  musttail call tailcc void %vc(ptr %k, " w " %f" (es tg j) ", " w " %rs" tg ")\n  ret void\n"))))
+                           "fixed:\n  switch i64 %n, label %fail [" (apply str (for [j (range 5 (inc ll-max-invoke))] (str " i64 " j ", label %n" j))) " ]\n"
+                           (apply str
+                                  (for [j (range 5 (inc ll-max-invoke))]
+                                    (let [tg (str "n" j)]
+                                      (str tg ":\n" (walk tg j)
+                                           "  musttail call tailcc void @lg_invoke" j "(ptr %k, " w " %f" (es tg j) ")\n  ret void\n"))))
+                           "fail:\n"
+                           (if (= :int (second (:params cf)))
+                             (str "  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, i64 %n)\n")
+                             (str "  %n2 = shl i64 %n, 1\n  %n3 = or i64 %n2, 1\n"
+                                  (if (= w "i64") "  %nb = add i64 %n3, 0\n" (str "  %nb = trunc i64 %n3 to " w "\n"))
+                                  "  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, " w " %nb)\n"))
+                           "  ret void\n"))]})
+        "lg_apply_list")))
+
+(defn ll-note-abi!
+  "note-call-abi! by each arg's representation as this lane has it (a
+   literal's included): a boxed value for an unboxed param, or a float for
+   an int one, is a violation the driver's boxing fixpoint resolves."
+  [v args sig]
+  (when (and *abi-notes* v (:var (q-sig v))
+             (some (fn [[a k]] (let [h (ll-arg-kind a)]
+                                 (or (and (not= k :box) (not= k :func) (= h :box))
+                                     (and (= k :int) (= h :float)))))
+                   (map vector args (:params sig))))
+    (swap! *abi-notes* update :viol (fnil conj #{}) [v (count args)])))
+
+;; Internal forms used by a program Var's root accessor, not its visible
+;; value getter. LLVM lowers these directly to the root slot.
+(defn llvm-read-root [k] nil)
+(defn llvm-write-root! [k x] nil)
+
+(defn ll-call-plan*
+  [nid]
+  (let [op (ir/op nid *f*) refs (ir/refs nid *f*)
+        v (when (= :call op) (ll-callee-var (first refs)))
+        prim (if (= :call op) (core-var-ops v) op)
+        args (if (= :call op) (rest refs) refs)
+        kinds (map ll-arg-kind args)
+        to (fn [rv] (let [sig (ll-var-sig rv (count args))]
+                      (when-not sig (ll-fail "no runtime signature for an op's generic form" {:var rv :argc (count args)}))
+                      {:sig sig :args args}))]
+    (cond
+      ;; with the runtime, = on anything but two ints or two bools is equiv?,
+      ;; and arithmetic on a boxed or float operand is the core fn's twin
+      (and *rt* (= prim :eq) (= 2 (count args)) (not-every? #{:int} kinds) (not-every? #{:bool} kinds))
+      (to (lw-rt/rt-var 'seq 'equiv?))
+      ;; a float operand makes the op an inline f64 one (ll-prim!), as the GC
+      ;; lane's prim-wat does: only a boxed operand without one is generic
+      (ll-float-op? prim kinds) nil
+      (and *rt* (= prim :div)) (to (lw-rt/rt-var 'math 'div))
+      (and *rt* (ll-op-vars prim) (some #{:box :float} kinds)) (to (ll-op-vars prim))
+      (= op :try) (ll-try-plan nid)
+      (and *rt* (= op :load-var) (= (ir/aux nid *f*) #'*ns*))
+      (to (lw-rt/rt-var 'natives 'current-ns))
+      (not= :call op) nil
+      (= v #'throw) {:sig {:name "lg_throw" :params [:box] :ret :box} :args args}
+      ;; wasm/call-ref: a call through a funcref, typed by its func decl
+      (and v (lw-rt/intrinsic? v) (= "call-ref" (name (symbol v))))
+      (let [[tn d] (decl-arg (first args) "call-ref")]
+        {:sig {:call-ref tn :params (vec (cons :func (map slot-kind (:params d)))) :ret (slot-kind (:result d))}
+         :args (rest args)})
+      ;; neg of anything but an int or a float: the runtime's 1-arity -
+      (and (= v #'neg) (not (#{:int :float} (first kinds)))) (to (lw-rt/rt-var 'core 'sub))
+      ;; (binding [*out* h] ..) and *err* (binding-out's stand-ins): the
+      ;; runtime's handle stacks, which printing follows
+      (and *rt* (#{#'push-out! #'pop-out! #'push-err! #'pop-err!} v))
+      (to (lw-rt/rt-var 'host (symbol (name (symbol v)))))
+      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var! #'llvm-read-root #'llvm-write-root!} v) (and v (lw-rt/intrinsic? v))
+          (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))))
+      nil
+      (or (nil? v) (ll-table-var? v))
+      (let [argc (count args)]
+        (if (> argc ll-max-invoke)
+          {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box}
+           :args [(first refs)] :rest args :empty-rest :list :apply-list true}
+          {:sig {:invoke argc :name (str "lg_invoke" argc) :params (vec (repeat (inc argc) :box)) :ret :box}
+           :args refs}))
+      ;; the runtime's own dispatch reads a fixed code slot and knows no
+      ;; FnV: its invoke helpers become lg_invoke<n>, as rt-overrides makes
+      ;; them $rt_invokeN on the GC lane
+      (ll-invoke-vars v) (let [n (ll-invoke-vars v)]
+                           {:sig {:name (str "lg_invoke" n) :params (vec (repeat (inc n) :box)) :ret :box} :args args})
+      (and *rt* (= v (lw-rt/rt-var 'core 'invoke-list)) (= 3 (count args)))
+      {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box} :args args}
+      (and *rt* (= v (lw-rt/rt-var 'core 'invoke-args)) (= 6 (count args)))
+      {:sig {:name (ll-invoke-args!) :params [:box :int :box :box :box :box] :ret :box} :args args}
+      (ll-var-sig v (count args))
+      (let [sig (ll-var-sig v (count args))]
+        ;; a boxed or float value for a typed param: the driver re-lowers the
+        ;; defn with boxed params (its boxing fixpoint), as direct-call-wat notes
+        (ll-note-abi! v args sig)
+        {:sig sig :args args :var v})
+      ;; vector, hash-map, hash-set: lw-ext's variadic fns (the GC lane builds
+      ;; them inline)
+      (contains? value-substs v) (or (ll-variadic-plan (value-substs v) args)
+                                     (ll-fail "no runtime signature for a collection constructor" {:var v}))
+      :else (or (ll-variadic-plan v args)
+                (ll-fail "call to a fn with no known signature" {:var v :argc (count args)})))))
+
+(defn ll-call-plan
+  "{:sig :args} when instruction nid leaves its function through a musttail
+   call (a call, or an op whose generic form is one), else nil. A call
+   through a value has callee lg_invoke<n> and passes the value first."
+  [nid]
+  (if-let [m (:plans *ll*)]
+    (if (contains? @m nid)
+      (get @m nid)
+      (let [p (ll-call-plan* nid)] (swap! m assoc nid p) p))
+    (ll-call-plan* nid)))
+
+(defn ll-cps-call? [nid] (some? (ll-call-plan nid)))
+(defn ll-sig [nid] (:sig (ll-call-plan nid)))
+(defn ll-call-args
+  "The value nids call c reads, its rest args included."
+  [c sig]
+  (let [p (ll-call-plan c)] (concat (:args p) (:rest p))))
+
+(defn ll-rest-list!
+  "The rest of a variadic call as native builds it: a List of nids' boxed
+   values; empty, it is nil or an empty List as empty says."
+  [nids empty]
+  (let [sty (ll-sty "$List") w (ll-word)
+        mk (fn [first-w next-w cnt]
+             (let [p (ll-alloc! sty (ll-tid "$List"))]
+               (ll-emit! "  store " w " " first-w ", ptr " (ll-field-ptr! sty p 1))
+               (ll-emit! "  store " w " " next-w ", ptr " (ll-field-ptr! sty p 2))
+               (ll-emit! "  store i64 " cnt ", ptr " (ll-field-ptr! sty p 3))
+               (ll-emit! "  store " w " 0, ptr " (ll-field-ptr! sty p 4))
+               (ll-word-of! p)))]
+    (if (empty? nids)
+      (if (= empty :nil) "0" (mk "0" "0" 0))
+      (reduce (fn [acc [i nid]] (mk (ll-arg nid :box) acc i))
+              (mk "0" "0" 0)
+              (map vector (range 1 (inc (count nids))) (reverse nids))))))
+
+;; --- pieces and liveness ---------------------------------------------------
+
+(defn ll-cuts
+  "Block b's insts split after each continuation call: a vector of pieces,
+   each a vector of insts; every piece but the last ends with its call."
+  [b]
+  (loop [xs (ir/block-insts b *f*) cur [] out []]
+    (if (empty? xs)
+      (conj out cur)
+      (let [i (first xs) cur (conj cur i)]
+        (if (ll-cps-call? i)
+          (recur (rest xs) [] (conj out cur))
+          (recur (rest xs) cur out))))))
+
+(defn ll-term-edges [b]
+  (let [t (ir/block-term b *f*) a (when t (ir/aux t *f*))]
+    (case (when t (ir/op t *f*))
+      :branch [a]
+      :branch-if [(ir/cond-target-true a) (ir/cond-target-false a)]
+      [])))
+
+(defn ll-value-uses
+  "Values piece p reads, besides materialized ones."
+  [[b n]]
+  (let [cuts (:cuts *ll*) pieces (get cuts b) insts (nth pieces n)
+        last? (= n (dec (count pieces)))
+        reads (concat (mapcat #(if (ll-cps-call? %) (ll-call-args % nil) (ir/refs % *f*))
+                              (remove #(= :block-arg (ir/op % *f*)) insts))
+                      (when (and last? (ir/block-term b *f*))
+                        (concat (ir/refs (ir/block-term b *f*) *f*)
+                                (mapcat ir/branch-target-args (ll-term-edges b)))))]
+    (set (remove ll-materialized? reads))))
+
+(defn ll-defs
+  "Values piece p defines: its insts, the call before it, and (piece 0) the
+   block's params, which the inst list may place after a cut."
+  [[b n]]
+  (let [pieces (get (:cuts *ll*) b) insts (remove #(= :block-arg (ir/op % *f*)) (nth pieces n))
+        prev (when (pos? n) (last (nth pieces (dec n))))]
+    (set (concat (when prev [prev]) insts (when (zero? n) (ir/block-params b *f*))))))
+
+(defn ll-succs [[b n]]
+  (let [pieces (get (:cuts *ll*) b)]
+    (if (< n (dec (count pieces)))
+      [[b (inc n)]]
+      (map (fn [e] [(ir/branch-target-target e) 0]) (ll-term-edges b)))))
+
+(defn ll-liveness []
+  (let [ps (for [[b pieces] (:cuts *ll*) n (range (count pieces))] [b n])]
+    (loop [live (zipmap ps (repeat #{}))]
+      (let [next (into {} (for [p ps]
+                            [p (into (set (remove (ll-defs p) (ll-value-uses p)))
+                                     (remove (ll-defs p)
+                                             (mapcat #(get live %) (ll-succs p))))]))]
+        (if (= next live) live (recur next))))))
+
+(defn ll-live-in [p] (vec (sort (get (:live *ll*) p))))
+
+(defn ll-entry? [[b n :as p]]
+  (or (pos? n)
+      (= b (ir/entry-block *f*))
+      (not= 1 (count (ir/block-preds b *f*)))))
+
+(defn ll-implicit
+  "[type name] of the values every function of this fn's code carries after
+   k: the closure (%self) in closure code, the captures (%c0 ..) in a lifted
+   try region. They travel through joins as params and through
+   continuations in their records, so any function of the code can read them."
+  []
+  (cond (:self-type *ll*) [[(ll-word) "%self"]]
+        (seq (:region-caps *ll*)) (vec (map-indexed (fn [i k] [(ll-type k) (str "%c" i)]) (:region-caps *ll*)))
+        :else []))
+
+(defn ll-implicit-args [] (map (fn [[t n]] (str t " " n)) (ll-implicit)))
+
+(defn ll-fn-name [[b n]]
+  (cond (pos? n) (str *fname* ".c" b "_" n)
+        (= b (ir/entry-block *f*)) *fname*
+        :else (str *fname* ".b" b)))
+
+;; --- instructions ----------------------------------------------------------
+
+(defn ll-emit! [& parts] (swap! (:lines *ll*) conj (apply str parts)))
+(defn ll-label! [l] (swap! (:lines *ll*) conj (str l ":")))
+(defn ll-fresh [prefix] (str prefix (swap! (:counter *ll*) inc)))
+
+(defn ll-int-arg [nid] (ll-arg nid :int))
+
+(defn ll-checked! [nid op a b]
+  (let [r (ll-fresh "%o") ok (ll-fresh "ok") v (str "%v" nid)]
+    (ll-emit! "  " r " = call {i64, i1} @llvm." op ".with.overflow.i64(i64 " a ", i64 " b ")")
+    (ll-emit! "  " v " = extractvalue {i64, i1} " r ", 0")
+    (ll-emit! "  " r "f = extractvalue {i64, i1} " r ", 1")
+    (ll-emit! "  br i1 " r "f, label %ovf, label %" ok)
+    (reset! (:ovf *ll*) true)
+    (ll-label! ok)
+    (ll-def! nid :int v)))
+
+(def ll-cmp {:lt "slt" :lte "sle" :gt "sgt" :gte "sge" :eq "eq"})
+(def ll-checked-op {:add "sadd" :sub "ssub" :mul "smul"})
+(def ll-plain-op {:unchecked-add "add" :unchecked-sub "sub" :unchecked-mul "mul"
+                  :bit-and "and" :bit-or "or" :bit-xor "xor"})
+
+(defn ll-icmp! [nid pred a b]
+  (let [v (str "%v" nid)]
+    (ll-emit! "  " v " = icmp " pred " i64 " a ", " b)
+    (ll-def! nid :bool v)))
+
+(defn ll-prim! [nid op refs]
+  (let [n (count refs)]
+    (cond
+      (and (= op :eq) (= 2 n) (every? #(= :bool (ll-arg-kind %)) refs))
+      (let [a (ll-arg (first refs) :bool) b (ll-arg (second refs) :bool)
+            v (str "%v" nid)]
+        (ll-emit! "  " v " = icmp eq i1 " a ", " b)
+        (ll-def! nid :bool v))
+      ;; f64, Go float semantics, no checks (prim-wat)
+      (ll-float-op? op (map ll-arg-kind refs))
+      (let [xs (doall (map #(ll-arg % :float) refs)) v (str "%v" nid)]
+        (cond
+          (ll-float-binops op) (do (ll-emit! "  " v " = " (ll-float-binops op) " double " (first xs) ", " (second xs))
+                                   (ll-def! nid :float v))
+          (ll-float-cmps op) (do (ll-emit! "  " v " = fcmp " (ll-float-cmps op) " double " (first xs) ", " (second xs))
+                                 (ll-def! nid :bool v))
+          (= op :eq) (do (ll-emit! "  " v " = fcmp oeq double " (first xs) ", " (second xs)) (ll-def! nid :bool v))
+          (#{:inc :dec} op) (do (ll-emit! "  " v " = " (if (= op :inc) "fadd" "fsub") " double " (first xs) ", 1.0")
+                                (ll-def! nid :float v))
+          :else (do (ll-emit! "  " v " = fcmp " ({:zero? "oeq" :pos? "ogt" :neg? "olt"} op) " double " (first xs) ", 0.0")
+                    (ll-def! nid :bool v))))
+      (and (ll-checked-op op) (= 2 n)) (let [[a b] (map ll-int-arg refs)] (ll-checked! nid (ll-checked-op op) a b))
+      (and (#{:inc :dec} op) (= 1 n)) (ll-checked! nid (if (= op :inc) "sadd" "ssub") (ll-int-arg (first refs)) "1")
+      (and (ll-cmp op) (= 2 n) (not (and (= op :eq) (not-every? #(= :int (ll-arg-kind %)) refs))))
+      (let [[a b] (map ll-int-arg refs)] (ll-icmp! nid (ll-cmp op) a b))
+      (and (#{:zero? :pos? :neg?} op) (= 1 n))
+      (ll-icmp! nid ({:zero? "eq" :pos? "sgt" :neg? "slt"} op) (ll-int-arg (first refs)) "0")
+      (and (ll-plain-op op) (= 2 n))
+      (let [[a b] (map ll-int-arg refs) v (str "%v" nid)]
+        (ll-emit! "  " v " = " (ll-plain-op op) " i64 " a ", " b)
+        (ll-def! nid :int v))
+      (and (= op :bit-not) (= 1 n))
+      (let [v (str "%v" nid)] (ll-emit! "  " v " = xor i64 " (ll-int-arg (first refs)) ", -1") (ll-def! nid :int v))
+      (and (= op :bit-and-not) (= 2 n))
+      (let [[a b] (map ll-int-arg refs) t (ll-fresh "%nb") v (str "%v" nid)]
+        (ll-emit! "  " t " = xor i64 " b ", -1")
+        (ll-emit! "  " v " = and i64 " a ", " t)
+        (ll-def! nid :int v))
+      ;; Go shifts, not LLVM's: a count >= 64, or negative (huge as unsigned),
+      ;; shifts every bit out (D16)
+      (and (#{:bit-shift-left :bit-shift-right :unsigned-bit-shift-right} op) (= 2 n))
+      (let [[a b] (map ll-int-arg refs) in (ll-fresh "%in") m (ll-fresh "%sm") r (ll-fresh "%sh") out (ll-fresh "%so") v (str "%v" nid)]
+        (ll-emit! "  " in " = icmp ult i64 " b ", 64")
+        (ll-emit! "  " m " = and i64 " b ", 63")
+        (ll-emit! "  " r " = " ({:bit-shift-left "shl" :bit-shift-right "ashr" :unsigned-bit-shift-right "lshr"} op) " i64 " a ", " m)
+        (if (= op :bit-shift-right)
+          (ll-emit! "  " out " = ashr i64 " a ", 63")
+          (ll-emit! "  " out " = add i64 0, 0"))
+        (ll-emit! "  " v " = select i1 " in ", i64 " r ", i64 " out)
+        (ll-def! nid :int v))
+      ;; quot: native's divide-by-zero error, and a / -1 is 0 - a (sdiv
+      ;; overflows on MinInt64 / -1 where Go wraps, D16)
+      (and (= op :quot) (= 2 n))
+      (let [[a b] (map ll-int-arg refs) z (ll-fresh "%dz") m1 (ll-fresh "%dm") d (ll-fresh "%dq") ng (ll-fresh "%dn")
+            sb (ll-fresh "%ds") v (str "%v" nid) ok (ll-fresh "dok") bad (ll-fresh "dbad")]
+        (ll-emit! "  " z " = icmp eq i64 " b ", 0")
+        (ll-emit! "  br i1 " z ", label %" bad ", label %" ok)
+        (ll-label! bad)
+        (ll-emit! (ll-raise-text 'div-zero-error "lg_div_zero"))
+        (ll-label! ok)
+        (ll-emit! "  " m1 " = icmp eq i64 " b ", -1")
+        (ll-emit! "  " sb " = select i1 " m1 ", i64 1, i64 " b)
+        (ll-emit! "  " d " = sdiv i64 " a ", " sb)
+        (ll-emit! "  " ng " = sub i64 0, " a)
+        (ll-emit! "  " v " = select i1 " m1 ", i64 " ng ", i64 " d)
+        (ll-def! nid :int v))
+      :else (ll-fail (str "unsupported op " op) {:nid nid :argc n}))))
+
+(defn ll-println! [nid args]
+  (doseq [[i a] (map-indexed vector args)]
+    (when (pos? i) (ll-emit! "  call void @lg_print_space()"))
+    (case (if (ll-const-val a) :box (ty a))
+      :int (ll-emit! "  call void @lg_print_i64(i64 " (ll-op a) ")")
+      :bool (let [z (ll-fresh "%z")]
+              (ll-emit! "  " z " = zext i1 " (ll-op a) " to i32")
+              (ll-emit! "  call void @lg_print_bool(i32 " z ")"))
+      :box (ll-emit! "  call void @lg_print_box(" (ll-typed a :box) ")")
+      (ll-fail "println of an unsupported kind" {:nid a :type (ty a)})))
+  (ll-emit! "  call void @lg_print_nl()")
+  (ll-bind! nid (ll-coerce! :box (ty nid) "0")))
+
+(declare ll-closure! ll-gvar ll-var-ptr! ll-root-var! ll-catch-matches!)
+
+(defn ll-inst! [nid]
+  (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)]
+    (cond
+      (= op :block-arg) nil
+      (= op :load-arg) (ll-bind! nid (str "%p" aux))
+      (ll-materialized? nid) nil
+      (closure-val? nid) (ll-def! nid :box (ll-closure! nid))
+      ;; a capture: the closure's Fn holds its env object in field 3
+      (and (= op :load-closed) (not (:self-type *ll*)))
+      (ll-def! nid (nth (:region-caps *ll*) aux) (str "%c" aux))
+      (= op :load-closed)
+      (let [kinds (:cap-kinds *ll*) k (nth kinds aux) e (ll-fresh "%env") v (ll-fresh "%c")]
+        (ll-emit! "  " e " = load " (ll-word) ", ptr " (ll-field-ptr! (ll-sty "$Fn") (ll-ptr! "%self") 4))
+        (ll-emit! "  " v " = load " (ll-type k) ", ptr " (ll-field-ptr! (ll-env-sty kinds) (ll-ptr! e) (inc aux)))
+        (ll-def! nid k v))
+      (= op :load-var)
+      (let [r (ll-fresh "%g")]
+        (ll-emit! "  " r " = load " (ll-word) ", ptr " (ll-var-ptr! aux))
+        (ll-def! nid :box r))
+      (= op :def)
+      (let [[vr val] refs v (const-val vr)]
+        (when-not (table-var? v)
+          (ll-fail "unsupported op :def" {:var v}))
+        (when val (ll-emit! "  store " (ll-typed val :box) ", ptr " (ll-var-ptr! v)))
+        (ll-bind! nid (ll-arg vr (ty nid))))
+      (var-const? nid) nil
+      (= op :call)
+      (let [v (ll-callee-var (first refs))]
+        (cond (ll-leaf-var? v) (ll-println! nid (rest refs))
+              (= v #'catch-matches?) (ll-catch-matches! nid (rest refs))
+              (#{#'push-var! #'pop-var!} v) (ll-binding-var! nid v (rest refs))
+              (#{#'llvm-read-root #'llvm-write-root!} v) (ll-root-var! nid v (rest refs))
+              ;; seq/float-bits is the stand-in for f64-bits (D28/D45): the raw
+              ;; bits, NaN payloads included (rt-overrides' i64.reinterpret_f64)
+              (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits)))
+              (let [r (str "%v" nid)]
+                (ll-emit! "  " r " = bitcast double " (ll-arg (second refs) :float) " to i64")
+                (ll-def! nid :int r))
+              ;; lower-wasm/neg (NumNeg, neg-wat): an int wraps ((- MinInt64)
+              ;; = MinInt64, D16), a float is Go's -x (the sign flips, NaN too)
+              (= v #'neg)
+              (let [x (second refs) r (str "%v" nid)]
+                (case (ll-arg-kind x)
+                  :int (do (ll-emit! "  " r " = sub i64 0, " (ll-arg x :int)) (ll-def! nid :int r))
+                  :float (do (ll-emit! "  " r " = fneg double " (ll-arg x :float)) (ll-def! nid :float r))))
+              (core-var-ops v) (ll-prim! nid (core-var-ops v) (rest refs))
+              (and v (lw-rt/intrinsic? v))
+              (let [[o k] (ll-intrinsic! (name (symbol v)) (rest refs))]
+                (if (contains? #{:void :bottom} k)
+                  (ll-bind! nid (ll-coerce! :box (ty nid) "0"))
+                  (ll-def! nid k o)))
+              :else (ll-fail "unexpected call" {:nid nid :var v})))
+      :else (ll-prim! nid op refs))))
+
+;; --- control ---------------------------------------------------------------
+
+(defn ll-tail! [callee args]
+  (ll-emit! "  musttail call tailcc void " callee "(" (str/join ", " args) ")")
+  (ll-emit! "  ret void"))
+
+(defn ll-return! [nid]
+  (let [c (ll-fresh "%k")]
+    (ll-emit! "  " c " = load ptr, ptr %k")
+    (ll-tail! c ["ptr %k" (ll-typed nid *ret-type*)])))
+
+(defn ll-jump-args [target args]
+  (let [p [target 0]]
+    (doall
+     (concat ["ptr %k"] (ll-implicit-args)
+             (map #(str (ll-type (ty %)) " " (ll-op %)) (ll-live-in p))
+             (keep (fn [[a p]] (when (ll-param? p) (ll-typed a (ty p))))
+                   (map vector args (ir/block-params target *f*)))))))
+
+(declare ll-piece!)
+
+(defn ll-edge!
+  "Emit the code for an edge into block target with args; local blocks are
+   emitted inline (their params alias the args), entry points are entered
+   with a musttail call."
+  [{:keys [target args] :as edge}]
+  (if (ll-entry? [target 0])
+    (ll-tail! (ll-q (ll-fn-name [target 0])) (ll-jump-args target (ir/branch-target-args edge)))
+    (do (doseq [[p a] (map vector (ir/block-params target *f*) (ir/branch-target-args edge))
+                :when (ll-param? p)]
+          (ll-bind! p (ll-arg a (ty p))))
+        (ll-piece! [target 0]))))
+
+(defn ll-returns-call?
+  "True when the piece after call c does nothing but return c's result."
+  [b n c]
+  (let [pieces (get (:cuts *ll*) b)
+        rest-insts (remove ll-materialized? (nth pieces (inc n)))
+        t (ir/block-term b *f*)]
+    (and (= (inc n) (dec (count pieces)))
+         (empty? rest-insts)
+         (= (:ret (ll-sig c)) *ret-type*)
+         (case (ir/op t *f*)
+           :return (= c (first (ir/refs t *f*)))
+           :branch (let [bt (ir/aux t *f*) j (binding [*absorbed* #{}] (returns-param (ir/branch-target-target bt)))]
+                     (and j (= c (nth (vec (ir/branch-target-args bt)) j nil))))
+           false))))
+
+(defn ll-saved
+  "The values continuation piece cont restores from its record, in slot order."
+  [[b n :as cont]]
+  (let [c (last (nth (get (:cuts *ll*) b) (dec n)))]
+    (vec (remove #{c} (ll-live-in cont)))))
+
+(defn ll-implicit-kinds
+  "The kinds of ll-implicit's values: the closure is a box, a region's
+   captures have theirs."
+  []
+  (cond (:self-type *ll*) [:box]
+        (seq (:region-caps *ll*)) (vec (:region-caps *ll*))
+        :else []))
+
+(defn ll-record-type
+  "The named struct type of continuation piece cont's record,
+   {code, k, saved...}; its definition, and its collector descriptor (k,
+   then the boxed implicit and saved values), are collected for the module."
+  [cont]
+  (let [nm (lir/type-op (str "k." (ll-fn-name cont)))
+        kinds (concat (ll-implicit-kinds) (map ty (ll-saved cont)))]
+    (swap! (:types *ll*) conj
+           {:llvm/type {:name nm :fields (concat ["ptr" "ptr"] (map first (ll-implicit)) (map #(ll-type (ty %)) (ll-saved cont)))}})
+    ;; with the type, so a later boxing round's records replace these
+    (swap! (:types *ll*) conj (ll-desc-item nm (cons 1 (ll-kind-fields 2 kinds))))
+    nm))
+
+(defn ll-slot0
+  "The record field of the first saved value: after code and k, and after
+   %self in a closure's code (the closure travels with its continuations)."
+  [] (+ 2 (count (ll-implicit))))
+
+(def ll-fast-ops #{:add :sub :mul :inc :dec :lt :lte :gt :gte :zero? :pos? :neg? :eq})
+
+(defn ll-fast-op
+  "The prim of call c when it has a fixnum fast path: a prim op (or its core
+   fn) planned as a call of its generic twin, every operand a box or an int."
+  [c]
+  (let [op (ir/op c *f*) refs (ir/refs c *f*)
+        v (when (= :call op) (ll-callee-var (first refs)))
+        prim (if (= :call op) (core-var-ops v) op)
+        args (if (= :call op) (rest refs) refs)]
+    (when (and (ll-fast-ops prim) (:sig (ll-call-plan c)) (not (:invoke (ll-sig c)))
+               (every? #{:box :int} (map ll-arg-kind args))
+               (some #{:box} (map ll-arg-kind args)))
+      prim)))
+
+(defn ll-fast-value!
+  "Emit op's fixnum fast path on args; returns [kind operand], branching to
+   label slow when an operand is not a fixnum or the result overflows i64."
+  [prim args slow]
+  (let [w (ll-word) kinds (map ll-arg-kind args)
+        ops (doall (map (fn [a k] (ll-arg a k)) args kinds))
+        boxed (keep (fn [[o k]] (when (= k :box) o)) (map vector ops kinds))
+        tag (reduce (fn [acc o] (let [r (ll-fresh "%ft")] (ll-emit! "  " r " = and " w " " acc ", " o) r)) boxed)
+        lo (ll-fresh "%fl") fx (ll-fresh "%fx") go (ll-fresh "fast")]
+    (ll-emit! "  " lo " = and " w " " tag ", 1")
+    (ll-emit! "  " fx " = icmp ne " w " " lo ", 0")
+    (ll-emit! "  br i1 " fx ", label %" go ", label %" slow)
+    (ll-label! go)
+    (let [xs (doall (map (fn [o k]
+                           (if (= k :int) o
+                               ;; a fixnum is signed: sign-extend (ll-i64-of-word! is for
+                               ;; lengths, unsigned)
+                               (let [r (ll-fresh "%fs")]
+                                 (ll-emit! "  " r " = ashr " w " " o ", 1")
+                                 (if (= w "i64")
+                                   r
+                                   (let [x (ll-fresh "%fx")] (ll-emit! "  " x " = sext " w " " r " to i64") x)))))
+                         ops kinds))
+          [x y] xs
+          cmp (fn [pred a b] (let [r (ll-fresh "%fc")] (ll-emit! "  " r " = icmp " pred " i64 " a ", " b) [:bool r]))
+          arith (fn [op a b]
+                  (let [o (ll-fresh "%fo") r (ll-fresh "%fr") of (ll-fresh "%fv") ok (ll-fresh "fok")]
+                    (ll-emit! "  " o " = call {i64, i1} @llvm." op ".with.overflow.i64(i64 " a ", i64 " b ")")
+                    (ll-emit! "  " r " = extractvalue {i64, i1} " o ", 0")
+                    (ll-emit! "  " of " = extractvalue {i64, i1} " o ", 1")
+                    (ll-emit! "  br i1 " of ", label %" slow ", label %" ok)
+                    (ll-label! ok)
+                    [:int r]))]
+      (case prim
+        :add (arith "sadd" x y) :sub (arith "ssub" x y) :mul (arith "smul" x y)
+        :inc (arith "sadd" x "1") :dec (arith "ssub" x "1")
+        :lt (cmp "slt" x y) :lte (cmp "sle" x y) :gt (cmp "sgt" x y) :gte (cmp "sge" x y)
+        :eq (cmp "eq" x y)
+        :zero? (cmp "eq" x "0") :pos? (cmp "sgt" x "0") :neg? (cmp "slt" x "0")))))
+
+(defn ll-cps-call! [[b n] c]
+  (let [sig (ll-sig c) plan (ll-call-plan c) args (:args plan)
+        cr? (:call-ref sig)
+        callee (if cr?
+                 (let [fp (ll-arg (first args) :func) nl (ll-fresh "%nf")]
+                   (ll-emit! "  " nl " = icmp ne ptr " fp ", null")
+                   (ll-check! nl "wasm/call-ref: null funcref")
+                   fp)
+                 (ll-q (:name sig)))
+        args (if cr? (rest args) args)
+        fast (ll-fast-op c)
+        slow (when fast (ll-fresh "slow"))
+        _ (when fast
+            (let [[k v] (ll-fast-value! fast (:args plan) slow)
+                  res (ll-coerce! k (:ret sig) v)]
+              (if (ll-returns-call? b n c)
+                (let [kc (ll-fresh "%kc")]
+                  (ll-emit! "  " kc " = load ptr, ptr %k")
+                  (ll-tail! kc ["ptr %k" (str (ll-type (:ret sig)) " " res)]))
+                (let [cont [b (inc n)]]
+                  (ll-tail! (ll-q (str (ll-fn-name cont) ".j"))
+                            (concat ["ptr %k"] (ll-implicit-args)
+                                    (map #(str (ll-type (ty %)) " " (ll-op %)) (ll-saved cont))
+                                    [(str (ll-type (:ret sig)) " " res)]))))
+              (ll-label! slow)))
+        ps (if cr? (rest (:params sig)) (:params sig))
+        pre (:pre plan)
+        argv (if (:apply-list plan)
+               [(ll-typed (first args) :box)
+                (str (ll-type :box) " " (ll-rest-list! (:rest plan) :list))
+                (str "i64 " (count (:rest plan)))]
+               (doall (concat (map (fn [[k o] t] (str (ll-type t) " " (ll-coerce! k t o))) pre ps)
+                            (map ll-typed args (drop (count pre) ps))
+                            (when (:rest plan)
+                              [(str (ll-type :box) " " (ll-rest-list! (:rest plan) (:empty-rest plan)))]))))]
+    (if (ll-returns-call? b n c)
+      (ll-tail! callee (cons "ptr %k" argv))
+      (let [cont [b (inc n)] saved (ll-saved cont) rt (ll-record-type cont)
+            r (ll-fresh "%r") w (ll-word)]
+        (ll-emit! "  " r " = " (ll-alloc-call rt))
+        (ll-emit! "  store ptr " (ll-q (ll-fn-name cont)) ", ptr " r)
+        (ll-emit! "  " r ".1 = getelementptr " rt ", ptr " r ", i32 0, i32 1")
+        (ll-emit! "  store ptr %k, ptr " r ".1")
+        (doseq [[i [t n]] (map-indexed vector (ll-implicit))]
+          (ll-emit! "  " r ".i" i " = getelementptr " rt ", ptr " r ", i32 0, i32 " (+ 2 i))
+          (ll-emit! "  store " t " " n ", ptr " r ".i" i))
+        (doseq [[i s] (map-indexed vector saved)]
+          (ll-emit! "  " r "." (+ (ll-slot0) i) " = getelementptr " rt ", ptr " r ", i32 0, i32 " (+ (ll-slot0) i))
+          (ll-emit! "  store " (ll-type (ty s)) " " (ll-op s) ", ptr " r "." (+ (ll-slot0) i)))
+        (ll-tail! callee (cons (str "ptr " r) argv))))))
+
+(defn ll-piece!
+  "Emit piece p into the current function, then what follows it."
+  [[b n :as p]]
+  (let [pieces (get (:cuts *ll*) b) insts (nth pieces n)
+        last? (= n (dec (count pieces)))]
+    (doseq [i insts :when (not (and (not last?) (= i (peek insts))))]
+      (ll-inst! i))
+    (if-not last?
+      (ll-cps-call! p (peek insts))
+      (let [t (ir/block-term b *f*) a (when t (ir/aux t *f*))]
+        (case (when t (ir/op t *f*))
+          ;; a block with no terminator is never reached (after a throw)
+          nil (ll-emit! "  unreachable")
+          :return (ll-return! (first (ir/refs t *f*)))
+          :recur-fn
+          (let [refs (ir/refs t *f*)]
+            (when (not= (count refs) (count *param-kinds*))
+              (ll-fail "recur arity mismatch" {:argc (count refs)}))
+            (ll-tail! (ll-q *fname*)
+                      (concat ["ptr %k"] (when (:self-type *ll*) [(str (ll-word) " %self")])
+                              (doall (map ll-typed refs *param-kinds*))
+                              (when-not (:self-type *ll*) (ll-implicit-args)))))
+          :branch (ll-edge! a)
+          :branch-if
+          (let [tl (ll-fresh "t") fl (ll-fresh "f") cnd (first (ir/refs t *f*))]
+            (ll-emit! "  br i1 " (ll-arg cnd :bool) ", label %" tl ", label %" fl)
+            (ll-label! tl) (ll-edge! (ir/cond-target-true a))
+            (ll-label! fl) (ll-edge! (ir/cond-target-false a)))
+          (ll-fail (str "unsupported terminator " (ir/op t *f*)) {:block b}))))))
+
+(defn ll-gc-check
+  "The entry check of a CPS function (spec decision 7): when the allocator
+   has asked for a collection, collect with the function's roots, its
+   [type name] params that may hold heap words (records, frames, boxes);
+   nothing else is live, since every call is a tail call."
+  [roots]
+  (let [n (count roots) w (ll-word)]
+    (str "  %gc.r = alloca [" (max n 1) " x ptr]\n"
+         "  %gc.p = load i8, ptr @lg_gc_pending\n  %gc.c = icmp ne i8 %gc.p, 0\n"
+         "  br i1 %gc.c, label %lg.gc, label %lg.body\nlg.gc:\n"
+         (apply str (map-indexed (fn [i [t x]]
+                                   (str "  %gc.s" i " = getelementptr [" n " x ptr], ptr %gc.r, i32 0, i32 " i "\n"
+                                        (if (= t "ptr")
+                                          (str "  store ptr " x ", ptr %gc.s" i "\n")
+                                          (str "  %gc.v" i " = inttoptr " w " " x " to ptr\n  store ptr %gc.v" i ", ptr %gc.s" i "\n"))))
+                                 roots))
+         "  call void @lg_gc(ptr %gc.r, i32 " n ")\n  br label %lg.body\nlg.body:\n")))
+
+(defn ll-boxed-roots
+  "[type name] of the :box values among [kind name] pairs."
+  [pairs]
+  (for [[k x] pairs :when (= k :box)] [(ll-word) x]))
+
+(defn ll-raise-text
+  "Leave the current CPS function raising runtime error fn nm of llvm.core
+   (catchable, as natively): a tail call with this function's k. Without the
+   runtime, C helper c prints the error and exits."
+  [nm c]
+  (if *rt*
+    (str "  musttail call tailcc void " (ll-q (:name (get-in (callee-sig (lw-rt/rt-var 'core nm)) [:arities 0])))
+         "(ptr %k)\n  ret void")
+    (str "  call void @" c "()\n  unreachable")))
+
+(defn ll-function!
+  "One LLVM function for entry point p."
+  [[b n :as p] nparams]
+  (reset! (:env *ll*) {})
+  (reset! (:lines *ll*) [])
+  (reset! (:ovf *ll*) false)
+  (let [nm (ll-fn-name p) live (ll-live-in p)
+        prev-call (when (pos? n) (last (nth (get (:cuts *ll*) b) (dec n))))
+        params (cond
+                 (pos? n) ["ptr %rec" (str (ll-type (:ret (ll-sig prev-call))) " %res")]
+                 (= b (ir/entry-block *f*)) (concat ["ptr %k"] (when (:self-type *ll*) [(str (ll-word) " %self")])
+                                                    (map-indexed #(str (ll-type %2) " %p" %1) *param-kinds*)
+                                                    (when-not (:self-type *ll*) (ll-implicit-args)))
+                 :else (concat ["ptr %k"] (ll-implicit-args)
+                               (map #(str (ll-type (ty %)) " %a" %) live)
+                               (map #(str (ll-type (ty %)) " %a" %) (ll-params b))))]
+    (when (and (= b (ir/entry-block *f*)) (zero? n) (seq (ir/block-preds b *f*)))
+      (ll-fail "a loop back to the fn entry" {:block b}))
+    (cond
+      (and (pos? n) (ll-fast-op prev-call))
+      ;; a join: saved values arrive as params (from the fast path or the adapter)
+      (do (doseq [s (ll-saved p)] (ll-bind! s (str "%a" s)))
+          (ll-def! prev-call (:ret (ll-sig prev-call)) "%res"))
+      (pos? n)
+      (let [rt (ll-record-type p)]
+        (ll-emit! "  %ks = getelementptr " rt ", ptr %rec, i32 0, i32 1")
+        (ll-emit! "  %k = load ptr, ptr %ks")
+        (doseq [[i [t n]] (map-indexed vector (ll-implicit))]
+          (ll-emit! "  %im" i " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ 2 i))
+          (ll-emit! "  " n " = load " t ", ptr %im" i))
+        (doseq [[i s] (map-indexed vector (ll-saved p))]
+          (ll-emit! "  %s" s " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ (ll-slot0) i))
+          (ll-emit! "  %a" s " = load " (ll-type (ty s)) ", ptr %s" s)
+          (ll-bind! s (str "%a" s)))
+        (ll-def! prev-call (:ret (ll-sig prev-call)) "%res"))
+      :else
+      (when-not (= b (ir/entry-block *f*))
+        (doseq [s (concat live (ll-params b))] (ll-bind! s (str "%a" s)))))
+    (ll-piece! p)
+    (let [fast? (and prev-call (ll-fast-op prev-call))
+          rt (when fast? (ll-record-type p))
+          rty (when prev-call (ll-type (:ret (ll-sig prev-call))))
+          jparams (when fast?
+                    (concat ["ptr %k"] (ll-implicit-args)
+                            (map #(str (ll-type (ty %)) " %a" %) (ll-saved p)) [(str rty " %res")]))
+          ret-k (when prev-call (:ret (ll-sig prev-call)))
+          implicit (map vector (ll-implicit-kinds) (map second (ll-implicit)))
+          roots (cond
+                  fast? (concat [["ptr" "%k"]] (ll-boxed-roots implicit)
+                                (ll-boxed-roots (map (fn [s] [(ty s) (str "%a" s)]) (ll-saved p)))
+                                (ll-boxed-roots [[ret-k "%res"]]))
+                  (pos? n) (concat [["ptr" "%rec"]] (ll-boxed-roots [[ret-k "%res"]]))
+                  (= b (ir/entry-block *f*))
+                  (concat [["ptr" "%k"]] (when (:self-type *ll*) [[(ll-word) "%self"]])
+                          (ll-boxed-roots (map-indexed (fn [i k] [k (str "%p" i)]) *param-kinds*))
+                          (when-not (:self-type *ll*) (ll-boxed-roots implicit)))
+                  :else (concat [["ptr" "%k"]] (ll-boxed-roots implicit)
+                                (ll-boxed-roots (map (fn [s] [(ty s) (str "%a" s)]) (concat live (ll-params b))))))
+          body (str "entry:\n"
+                    (ll-gc-check roots)
+                    (str/join "\n" @(:lines *ll*))
+                    (when @(:ovf *ll*) (str "\novf:\n" (ll-raise-text 'overflow-error "lg_overflow")))
+                    "\n")]
+      (if-not fast?
+        [(ll-fn nm params body (when-not (= p [(ir/entry-block *f*) 0]) "internal"))]
+        ;; the slow path's continuation: load the record, enter the join
+        [(ll-fn (str nm ".j") jparams body)
+         (ll-fn nm ["ptr %rec" (str rty " %res")]
+                (str "entry:\n"
+                     "  %ks = getelementptr " rt ", ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n"
+                     (apply str (map-indexed (fn [i [t n]] (str "  %im" i " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ 2 i) "\n  " n " = load " t ", ptr %im" i "\n")) (ll-implicit)))
+                     (apply str (map-indexed (fn [i s] (str "  %s" s " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ (ll-slot0) i) "\n  %a" s " = load " (ll-type (ty s)) ", ptr %s" s "\n")) (ll-saved p)))
+                     "  musttail call tailcc void " (ll-q (str nm ".j")) "(" (str/join ", " jparams) ")\n  ret void\n"))]))))
+
+;; --- fn values (spec decision 10) ----------------------------------------
+;; A fn value is a word pointing at an object of the runtime's own Fn type
+;; (rt/wasm/seq.lg): {id, code0, code1, code2, env, code3, code4, info, hash}.
+;; Code takes (k, self, args...), every arg and the result boxed; a closure's
+;; captures live in its env object. Calls through a value go to lg_invoke<n>.
+
+(def ll-code-field {0 1 1 2 2 3 3 5 4 6})
+
+(defn ll-gvar [v] (lir/ref (str "var" (var-global (ll-var-alias v)))))
+
+(defn ll-root-var! [nid op args]
+  (let [k (first (ll-const-val (first args)))
+        ;; find-var, not resolve: k is var-const-form's own name for the var,
+        ;; and resolve hides a private one (P12.38: xsofy.hash/salt-tag-kw)
+        v (when (keyword? k) (find-var (symbol (namespace k) (name k))))]
+    (when-not (and v (q-var-global v))
+      (ll-fail "root accessor requires a program Var" {:var k}))
+    (if (= op #'llvm-read-root)
+      (let [r (ll-fresh "%root")]
+        (ll-emit! "  " r " = load " (ll-word) ", ptr " (ll-gvar v))
+        (ll-def! nid :box r))
+      (let [x (ll-arg (second args) :box)]
+        (ll-emit! "  store " (ll-word) " " x ", ptr " (ll-gvar v))
+        (ll-def! nid :box x)))))
+
+(defn ll-binding-head! [v]
+  (let [nm (str "binding." (var-global (ll-var-alias v)))]
+    (ll-global! (ll-glob nm "internal global" (ll-word) "0"))
+    (lir/ref nm)))
+
+(defn ll-var-ptr!
+  "Address of the visible value: top dynamic binding, or the root slot.
+   GEP is not inbounds, so computing the unused field address from nil is
+   valid; only the selected address is ever dereferenced."
+  [v]
+  (let [root (ll-gvar v)]
+    (if-not *rt* root
+      (let [head (ll-fresh "%bh") empty? (ll-fresh "%be") addr (ll-fresh "%ba")]
+        (ll-emit! "  " head " = load " (ll-word) ", ptr " (ll-binding-head! v))
+        (ll-emit! "  " empty? " = icmp eq " (ll-word) " " head ", 0")
+        (let [bound (ll-field-ptr! (ll-sty "$List") (ll-ptr! head) 1)]
+          (ll-emit! "  " addr " = select i1 " empty? ", ptr " root ", ptr " bound))
+        addr))))
+
+(defn ll-binding-var!
+  "binding-out's push-var!/pop-var! (a binding of a program var, k its
+   :ns/name): push/pop that Var's binding stack, leaving its root intact.
+   Separate stacks also permit macros to pop different Vars in push order."
+  [nid v args]
+  (let [k (first (ll-const-val (first args)))
+        vr (when (keyword? k) (try (resolve (symbol (namespace k) (name k))) (catch e nil)))
+        g (when vr (var-global vr))
+        _ (when-not g (ll-fail (str "binding of " k " is not supported (not a var-table var)") {:var (str vr)}))
+        w (ll-word) sty (ll-sty "$List") bs (ll-binding-head! vr)]
+    (if (= v #'push-var!)
+      (let [val (ll-arg (second args) :box)
+            p (ll-alloc! sty (ll-tid "$List")) stk (ll-fresh "%bs")]
+        (ll-emit! "  " stk " = load " w ", ptr " bs)
+        (ll-emit! "  store " w " " val ", ptr " (ll-field-ptr! sty p 1))
+        (ll-emit! "  store " w " " stk ", ptr " (ll-field-ptr! sty p 2))
+        (ll-emit! "  store i64 1, ptr " (ll-field-ptr! sty p 3))
+        (ll-emit! "  store " w " 0, ptr " (ll-field-ptr! sty p 4))
+        (ll-emit! "  store " w " " (ll-word-of! p) ", ptr " bs))
+      (let [stk (ll-fresh "%bs") r (ll-fresh "%br")]
+        (ll-emit! "  " stk " = load " w ", ptr " bs)
+        (let [sp (ll-ptr! stk)]
+          (ll-emit! "  " r " = load " w ", ptr " (ll-field-ptr! sty sp 2)))
+        (ll-emit! "  store " w " " r ", ptr " bs)))
+    (ll-bind! nid (ll-coerce! :box (ty nid) "0"))))
+
+(defn ll-cstring!
+  "A private constant C string global for s; returns its name."
+  [s]
+  (let [bs (.getBytes (str s)) nm (ll-const-sym "cstr" s)]
+    (ll-global! (ll-glob nm "private unnamed_addr constant" (str "[" (inc (count bs)) " x i8]")
+                         (str "c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\\00\"")))
+    (lir/ref nm)))
+
+(defn ll-sym-word
+  "The word operand of module symbol g's address, recorded in the unit."
+  [g]
+  (str "ptrtoint (ptr " (lir/ref g) " to " (ll-word) ")"))
+
+(defn ll-fn-info!
+  "An FnInfo object (kind 0 one arity, 1 several, 3 variadic; the name's
+   bytes, or nil for an anonymous fn): its symbol (ll-sym-word for its word)."
+  [id kind arity nm]
+  (let [g (str "info." id) w (ll-word)]
+    (ll-global! (ll-glob g "internal global" (ll-sty "$FnInfo")
+                         (str "{ " w " " (ll-tid "$FnInfo") ", i32 " kind ", i32 " arity ", " w " " (if nm (ll-bytes-const! nm) "0") " }")))
+    g))
+
+(defn ll-fn-type
+  "The runtime type of a fn value with these codes: a FnX when an arity is
+   past 4 (D83's layout: its codes for 5.. follow the variadic slot), a FnV
+   when one is a variadic arity (:v [k name]), else a Fn."
+  [codes]
+  (cond (some #(and (int? %) (> % 4)) (keys codes)) "$FnX"
+        (:v codes) "$FnV"
+        :else "$Fn"))
+
+(defn ll-fn-fields
+  "[type value] of each Fn field after the id; a FnV's variadic code and its
+   fixed count k follow (D83's layout)."
+  [codes env info]
+  (let [c (fn [a] (if-let [n (get codes a)] (ll-q n) "null")) w (ll-word)]
+    (case (ll-fn-type codes)
+      "$Fn" [["ptr" (c 0)] ["ptr" (c 1)] ["ptr" (c 2)] [w env] ["ptr" (c 3)] ["ptr" (c 4)] [w info] ["i64" "0"]]
+      "$FnV" [["ptr" (c 0)] ["ptr" (c 1)] ["ptr" (c 2)] [w env] ["ptr" (c 3)] ["ptr" (c 4)] [w info] ["i64" "0"]
+              ["ptr" (ll-q (second (:v codes)))] ["i32" (str (first (:v codes)))]]
+      ;; a FnX's variadic slot is null and k -1 unless it has a variadic arity
+      "$FnX" (into [["ptr" (c 0)] ["ptr" (c 1)] ["ptr" (c 2)] [w env] ["ptr" (c 3)] ["ptr" (c 4)] [w info] ["i64" "0"]
+                    ["ptr" (if (:v codes) (ll-q (second (:v codes))) "null")] ["i32" (if (:v codes) (str (first (:v codes))) "-1")]]
+                   (for [a (range 5 (inc max-arity-x))] ["ptr" (c a)])))))
+
+(defn ll-fn-object!
+  "A Fn global named id with code per arity (arity -> fn name) and FnInfo
+   symbol info; returns its word operand. Its hash is cached at run time, so it is not constant."
+  [id codes info]
+  (let [g (str "fnval." id) w (ll-word) tn (ll-fn-type codes)]
+    (ll-global! (ll-glob g "internal global" (ll-sty tn)
+                         (str "{ " w " " (ll-tid tn) (apply str (map (fn [[t v]] (str ", " t " " v)) (ll-fn-fields codes "0" (ll-sym-word info)))) " }")))
+    (str "ptrtoint (ptr " (lir/ref g) " to " w ")")))
+
+(defn ll-closure!
+  "Lambda-lift every arity of the closure built at nid (each a closure code
+   fn taking k, the closure and its args) and return the closure's word: a
+   global Fn without captures, a fresh Fn and env object with them."
+  [nid]
+  (let [{:keys [tpl caps]} (closure-of nid)
+        multi? (= :multi-fn-template (:kind tpl))
+        tpls (if multi? (:fns tpl) [tpl])
+        cap-kinds (mapv ty caps)
+        base (str *fname* "__fn" nid)
+        nm (let [n (ir/fn-name (:fn (first tpls)))] (when-not (= n "fn*") n))
+        ;; a variadic template's arity counts the rest param (k fixed + 1);
+        ;; its code is the FnV's variadic slot
+        codes (into {} (for [{tfn :fn :keys [arity variadic?]} tpls]
+                         (do (when (and (not variadic?) (> arity ll-max-invoke))
+                               (ll-fail (str "unsupported closure arity > " ll-max-invoke) {:arity arity}))
+                             (when (and variadic? (> (dec arity) ll-max-invoke))
+                               (ll-fail "unsupported variadic closure with more fixed params than lg_invoke takes" {:arity arity}))
+                             (let [cname (str base "_" (if variadic? "v" arity))
+                                   info (assoc (binding [*box-params* true] (analyze-ir cname tfn))
+                                               :params (vec (repeat arity :box)) :ret :box
+                                               :closure? true :env-kinds cap-kinds)]
+                               (ll-region! (llvm-fn info))
+                               (if variadic? [:v [(dec arity) cname]] [arity cname])))))
+        v1 (when-not multi? (:variadic? (first tpls)))
+        info (ll-fn-info! base (cond multi? 1 v1 3 :else 0)
+                          (cond multi? 0 v1 (dec (:arity (first tpls))) :else (:arity (first tpls))) nm)
+        tn (ll-fn-type codes)]
+    (if (empty? caps)
+      (ll-fn-object! base codes info)
+      (let [es (ll-env-sty cap-kinds) env (ll-alloc! es (ll-env-tid! cap-kinds))]
+        (doseq [[i c k] (map vector (range) caps cap-kinds)]
+          (ll-emit! "  store " (ll-typed c k) ", ptr " (ll-field-ptr! es env (inc i))))
+        (let [ew (ll-word-of! env) f (ll-alloc! (ll-sty tn) (ll-tid tn))]
+          (doseq [[i [t v]] (map-indexed vector (ll-fn-fields codes ew (ll-sym-word info)))]
+            (ll-emit! "  store " t " " v ", ptr " (ll-field-ptr! (ll-sty tn) f (inc i))))
+          (ll-word-of! f))))))
+
+(defn ll-unbox-lines
+  "LLVM lines converting word x to kind k into register r."
+  [k x r]
+  (let [w (ll-word)]
+    (case k
+      :box [(str "  " r " = add " w " " x ", 0")]
+      (:int :float)
+      (let [l (subs r 1)]
+        ;; checked (as the GC lane's $rt_unbox_int): any other value raises
+        ;; unbox-error, catchable, with this function's k
+        [(str "  " r ".c = call i1 @lg_is_" (if (= k :int) "int" "num") "(" w " " x ")")
+         (str "  br i1 " r ".c, label %" l ".ok, label %" l ".bad")
+         (str l ".bad:") (ll-raise-text 'unbox-error "lg_unbox_fail")
+         (str l ".ok:")
+         (if (= k :int)
+           (str "  " r " = call i64 @lg_unbox_int(" w " " x ")")
+           (str "  " r " = call double @lg_to_f64(" w " " x ")"))])
+      :bool [(str "  " r ".a = icmp ne " w " " x ", 0") (str "  " r ".b = icmp ne " w " " x ", " (ll-false))
+             (str "  " r " = and i1 " r ".a, " r ".b")])))
+
+(defn ll-defn-wrapper
+  "Code for arity n of a defn with signature sig used as a value: unbox the
+   args per the signature, then tail-call the defn, through a boxing
+   continuation when its result is not boxed."
+  [cname sig n]
+  (let [w (ll-word) ps (range n) ret (:ret sig)]
+    (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) ps))
+    (str "entry:\n"
+         (str/join "\n" (mapcat #(ll-unbox-lines (nth (:params sig) %) (str "%a" %) (str "%u" %)) ps)) "\n"
+         (if (= :box ret) "" (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
+                                  "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
+                                  "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
+         "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
+         (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n"))))
+
+(defn ll-seq-wrapper
+  "Variadic code for a native's value through its -seq form sv: (k, self,
+   k fixed args, rest) calls sv with the leading pre args, the fixed args
+   and the rest."
+  [cname sv k pre]
+  (let [w (ll-word) sig (ll-var-sig sv (+ (count pre) k 1))
+        _ (when-not sig (ll-fail "no signature for a -seq form" {:var sv}))
+        ps (:params sig) ret (:ret sig)
+        ops (concat (map (fn [[kind o]] [kind o]) (map ll-pre-operand pre))
+                    (map (fn [i] [:box (str "%a" i)]) (range k)) [[:box "%rest"]])
+        lines (mapcat (fn [i [kind o]] (if (= :box (nth ps i))
+                                         []
+                                         (ll-unbox-lines (nth ps i) o (str "%u" i))))
+                      (range) ops)
+        args (map-indexed (fn [i [_ o]] (str ", " (ll-type (nth ps i)) " " (if (= :box (nth ps i)) o (str "%u" i)))) ops)]
+    (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) (range k)) [(str w " %rest")])
+    (str "entry:\n"
+         (str/join "\n" lines) "\n"
+         (if (= :box ret) "" (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
+                                  "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
+                                  "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
+         "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r") (apply str args) ")\n  ret void\n"))))
+
+(def ll-core-unary {:inc "sadd" :dec "ssub" :zero? "eq" :pos? "sgt" :neg? "slt"})
+(def ll-core-binary {:add "sadd" :sub "ssub" :mul "smul" :lt "slt" :lte "sle" :gt "sgt" :gte "sge"})
+
+(defn ll-core-wrapper
+  "Code for core op `op` used as a value without the runtime (inc, +, < ...):
+   unbox, compute with native's overflow check, box, call k."
+  [cname op n]
+  (let [w (ll-word) arith? (contains? #{:inc :dec :add :sub :mul} op)
+        cmp (if (= n 1) (ll-core-unary op) (ll-core-binary op))]
+    (ll-fn cname (concat ["ptr %k" (str w " %self")] (map #(str w " %a" %) (range n)))
+    (str "entry:\n"
+         (str/join "\n" (mapcat #(ll-unbox-lines :int (str "%a" %) (str "%u" %)) (range n))) "\n"
+         (if arith?
+           (str "  %o = call {i64, i1} @llvm." cmp ".with.overflow.i64(i64 %u0, i64 " (if (= n 1) "1" "%u1") ")\n"
+                "  %v = extractvalue {i64, i1} %o, 0\n  %f = extractvalue {i64, i1} %o, 1\n"
+                "  br i1 %f, label %ovf, label %ok\novf:\n  call void @lg_overflow()\n  unreachable\nok:\n"
+                "  %b = call " w " @lg_box_int(i64 %v)\n")
+           (str "  %c = icmp " cmp " i64 %u0, " (if (= n 1) "0" "%u1") "\n  %b = select i1 %c, " w " " (ll-true) ", " w " " (ll-false) "\n"))
+         "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n"))))
+
+(defn ll-var-value
+  "The word operand of var v used as a value: a defn's, a runtime twin's or
+   (without the runtime) a core op's fn object, made once per session."
+  [v0]
+  (let [v (get value-substs v0 v0)]
+  ;; a defn used as a value: its wrapper unboxes per the signature, so the
+  ;; driver boxes its typed params (defn-fn-global's note)
+  (when *abi-notes* (swap! *abi-notes* update :value (fnil conj #{}) v))
+  ;; keyed by the signature entry, as defn-fn-global is: a boxing round
+  ;; changes the params the wrapper unboxes to
+  ;; the cache holds the Fn global's symbol, so each use records it
+  (if-let [g (q-fn-value [:llvm v (q-sig v)])]
+      (str "ptrtoint (ptr " (lir/ref g) " to " (ll-word) ")")
+      (let [id (str (safe-id (subs (str v) 2)) "_" (hex32 (str v)))
+            e (or (q-sig v) (when (and *rt* (rt-target v)) (callee-sig v)))
+            op (when-not *rt* (core-var-ops v))
+            codes (cond
+                    e (into (if-let [vs (:variadic e)]
+                              (let [c (str "fnval." id ".v") k (:fixed vs)]
+                                (ll-region! {:name c :items [(ll-defn-wrapper c vs (inc k))]})
+                                {:v [k c]})
+                              ;; a native past its fixed arities, through its -seq
+                              ;; form (defn-fn-global's adapter): (apply + xs)
+                              (if-let [[sv k pre] (seq-adapter e)]
+                                (let [c (str "fnval." id ".seq")]
+                                  (ll-region! {:name c :items [(ll-seq-wrapper c sv k pre)]})
+                                  {:v [k c]})
+                                {}))
+                            (for [[n sig] (:arities e) :when (<= n ll-max-invoke)]
+                              (let [c (str "fnval." id "." n)]
+                                (ll-region! {:name c :items [(ll-defn-wrapper c sig n)]})
+                                [n c])))
+                    op (into {} (for [n (cond (ll-core-unary op) [1] (ll-core-binary op) [2] :else [])]
+                                  (let [c (str "fnval." id "." n)]
+                                    (ll-region! {:name c :items [(ll-core-wrapper c op n)]})
+                                    [n c])))
+                    :else (ll-fail "a var used as a value" {:var v}))
+            v1 (and (:v codes) (= 1 (count codes)))
+            info (ll-fn-info! id (cond (> (count codes) 1) 1 v1 3 :else 0)
+                              (cond v1 (first (:v codes)) (= 1 (count codes)) (key (first codes)) :else 0)
+                              (if e (:base e) (name (symbol (subs (str v) 2)))))
+            o (ll-fn-object! id codes info)]
+        (swap! *fn-values* assoc [:llvm v (q-sig v)] (str "fnval." id))
+        o))))
+
+(def llvm-profiles (atom {}))
+
+(defn llvm-profile
+  "The session's hardware profile (D207), loaded and validated once per
+   profile argument; fields the emitter does not implement are refused."
+  []
+  (let [arg *llvm-profile-arg*]
+    (or (get @llvm-profiles arg)
+        (let [p (llvm-prof/refuse-unimplemented (llvm-prof/load-profile arg))]
+          (swap! llvm-profiles assoc arg p)
+          p))))
+
+(defn llvm-fn [{:keys [name f params ret] :as info}]
+  (llvm-profile)
+  (let [d (os/getenv "LW_LLVM_DUMP")]
+    ;; non-empty: dump every fn, or only those whose name contains it
+    (when (and (seq d) (or (= d "1") (str/includes? (str name) d))) (llvm-dump info)))
+  (binding [*f* f *memo* (atom {}) *fname* name *param-kinds* params *ret-type* ret
+            *absorbed* #{} *func-vals* (or (:func-vals info) #{})]
+    (when-not (every? #{:int :bool :box :float :func} params)
+      (ll-fail "unsupported parameter kinds" {:params params}))
+    (let [[linked tries] (closure-sets f)]
+     (binding [*linked* linked *try-srcs* tries]
+     ;; a nested fn (a closure, a try region) is lowered inside its parent's
+     ;; *ll*: cut without it, so the parent's per-instruction memos never answer
+     (let [cuts (binding [*ll* nil] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
+      (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :ovf (atom false) :counter (atom 0)
+                      :types (atom #{}) :self-type (:closure? info) :cap-kinds (:env-kinds info)
+                      :region-caps (:caps info) :plans (atom {})}]
+        (let [live (ll-liveness)]
+          (binding [*ll* (assoc *ll* :live live)]
+            (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))]
+              (let [[items refs] (lir/with-refs #(vec (doall (mapcat (fn [e] (ll-function! e (count params))) entries))))]
+                (ll-unit {:name name :types @(:types *ll*) :items items} refs)))))))))))
+
+(defn llvm-dump [{:keys [name f params ret]}]
+  (binding [*f* f *memo* (atom {})]
+    (binding [*out* *err*]
+      (println "fn" name "params" params "ret" ret "entry" (ir/entry-block f))
+      (doseq [b (ir/blocks f)]
+        (println " block" b "params" (vec (ir/block-params b f)) "preds" (vec (ir/block-preds b f)))
+        (doseq [i (ir/block-insts b f)]
+          (println "   " i (ir/op i f) (vec (ir/refs i f)) (try (pr-str (ir/aux i f)) (catch e "<aux>")) (ty i)))
+        (when-let [t (ir/block-term b f)]
+          (println "   term" t (ir/op t f) (vec (ir/refs t f)) (pr-str (ir/aux t f))))))))
+
+(def llvm-datalayouts (atom {}))
+
+(defn llvm-datalayout
+  "The data layout string clang uses for triple (spec decision 6), read once
+   per triple from clang's output for an empty C file."
+  [triple]
+  (or (get @llvm-datalayouts triple)
+      (let [bin (or (not-empty (os/getenv "LLVM_BIN")) "/opt/homebrew/opt/llvm/bin")
+            r (os/sh (str bin "/clang") (str "--target=" triple) "-S" "-emit-llvm" "-x" "c" "/dev/null" "-o" "-")
+            m (re-find #"target datalayout = \"([^\"]*)\"" (str (:out r)))]
+        (when-not m (fail "no data layout from clang for the profile's triple" {:triple triple :err (:err r)}))
+        (swap! llvm-datalayouts assoc triple (second m))
+        (second m))))
+
+(defn ll-invoke-fn
+  "lg_invoke<n>: call fn value f with n args through its code slot for n
+   (n <= 4), else through a FnV's variadic code when its fixed count k <= n,
+   the args past k as the rest List (nil when none is left); anything else
+   is native's arity or not-a-function error."
+  [n fnt fn-ids]
+  (let [w (ll-word) as (apply str (map #(str ", " w " %a" %) (range n)))
+        ;; with the runtime, a callee that is not a fn (a keyword, map, set,
+        ;; vector, var: IFn) or a fn with no code for n goes to its
+        ;; invoke-args, which calls an IFn and raises native's catchable
+        ;; arity and not-a-function errors
+        fb (when (and *rt* (<= n 4)) (get-in (callee-sig (lw-rt/rt-var 'core 'invoke-args)) [:arities 6]))
+        ;; past 4: no IFn takes that many, so the error comes from call-fail
+        cf (when (and *rt* (> n 4)) (get-in (callee-sig (lw-rt/rt-var 'core 'call-fail)) [:arities 2]))
+        xty (ll-sty "$FnX")
+        vty (ll-sty "$FnV") lty (ll-sty "$List")
+        rest-lines (fn [j]
+                     (loop [i (dec n) acc "0" out []]
+                       (if (< i j)
+                         [out acc]
+                         (let [l (str "%l" j "_" i)]
+                           (recur (dec i) (str "%w" j "_" i)
+                                  (conj out
+                                        (str "  " l " = " (ll-alloc-call lty) "\n"
+                                             "  store " w " " (ll-tid "$List") ", ptr " l "\n"
+                                             "  " l ".1 = getelementptr " lty ", ptr " l ", i32 0, i32 1\n  store " w " %a" i ", ptr " l ".1\n"
+                                             "  " l ".2 = getelementptr " lty ", ptr " l ", i32 0, i32 2\n  store " w " " acc ", ptr " l ".2\n"
+                                             "  " l ".3 = getelementptr " lty ", ptr " l ", i32 0, i32 3\n  store i64 " (- n i) ", ptr " l ".3\n"
+                                             "  " l ".4 = getelementptr " lty ", ptr " l ", i32 0, i32 4\n  store " w " 0, ptr " l ".4\n"
+                                             "  %w" j "_" i " = ptrtoint ptr " l " to " w "\n")))))))]
+    {:llvm/fn {:name (str "lg_invoke" n) :bare true :linkage "internal" :cc "tailcc" :ret "void" :attrs ll-fn-attrs
+               :params (into ["ptr %k" (str w " %f")] (map #(str w " %a" %) (range n)))
+               :body
+    (str "entry:\n"
+         "  %lo = and " w " %f, 1\n  %fx = icmp ne " w " %lo, 0\n  %nl = icmp eq " w " %f, 0\n"
+         "  %no = or i1 %fx, %nl\n  br i1 %no, label %bad, label %obj\nobj:\n"
+         "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
+         (apply str (map-indexed (fn [i id] (str "  %t" i " = icmp eq " w " %h, " id "\n")) fn-ids))
+         "  %t01 = or i1 %t0, %t1\n  %isfn = or i1 %t01, %t2\n"
+         "  br i1 %isfn, label %fn, label %bad\nfn:\n"
+         (if (<= n 4)
+           (str "  %sl = getelementptr " fnt ", ptr %p, i32 0, i32 " (ll-code-field n) "\n  %code = load ptr, ptr %sl\n"
+                "  %ok = icmp ne ptr %code, null\n  br i1 %ok, label %call, label %var\ncall:\n"
+                "  musttail call tailcc void %code(ptr %k, " w " %f" as ")\n  ret void\n")
+           (str "  %isx = icmp eq " w " %h, " (ll-tid "$FnX") "\n  br i1 %isx, label %xs, label %var\nxs:\n"
+                "  %sl = getelementptr " xty ", ptr %p, i32 0, i32 " (+ 11 (- n 5)) "\n  %code = load ptr, ptr %sl\n"
+                "  %ok = icmp ne ptr %code, null\n  br i1 %ok, label %call, label %var\ncall:\n"
+                "  musttail call tailcc void %code(ptr %k, " w " %f" as ")\n  ret void\n"))
+         "var:\n  %isv = or i1 %t1, %t2\n  br i1 %isv, label %vk, label %bad\nvk:\n"
+         "  %vp = getelementptr " vty ", ptr %p, i32 0, i32 9\n  %vc = load ptr, ptr %vp\n"
+         "  %kp = getelementptr " vty ", ptr %p, i32 0, i32 10\n  %kk = load i32, ptr %kp\n"
+         "  switch i32 %kk, label %bad [" (apply str (for [j (range (inc n))] (str " i32 " j ", label %v" j))) " ]\n"
+         (apply str (for [j (range (inc n))]
+                      (let [[lines r] (rest-lines j)]
+                        (str "v" j ":\n" (apply str lines)
+                             "  musttail call tailcc void %vc(ptr %k, " w " %f"
+                             (apply str (map #(str ", " w " %a" %) (range j))) ", " w " " r ")\n  ret void\n"))))
+         (if fb
+           (let [[_ nk & ak] (:params fb)]
+             (str "bad:\n  musttail call tailcc void " (ll-q (:name fb)) "(ptr %k, " w " %f, "
+                  (if (= nk :int) (str "i64 " n) (str w " " (inc (* 2 n))))
+                  (apply str (for [i (range 4)] (str ", " w " " (if (< i n) (str "%a" i) "0"))))
+                  ")\n  ret void\n"))
+           (if cf
+             (let [[_ nk] (:params cf)]
+               (str "bad:\n  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, "
+                    (if (= nk :int) (str "i64 " n) (str w " " (inc (* 2 n)))) ")\n  ret void\n"))
+             (str "bad:\n  call void @lg_arity_fail(" w " %f, i32 " n ")\n  unreachable\n"))))}}))
+
+(defn llvm-prelude
+  "The module's fixed part, as items: {:target {:datalayout :triple}, :types,
+   :items} (declarations, globals, descriptors and the backend's own fns)."
+  []
+  (let [p (llvm-profile) w (ll-word) fnt (ll-sty "$Fn")
+        fn-ids (map ll-tid ["$Fn" "$FnV" "$FnX"])
+        fnc ll-fn-bare
+        decl ll-declare]
+    {:target {:datalayout (llvm-datalayout (:triple p)) :triple (:triple p)}
+     ;; spec decision 9: the innermost handler frame {code, k, prior, depth, ...}
+     :types [{:llvm/type {:name (ll-kbox) :fields ["ptr" "ptr"]}}
+             {:llvm/type {:name (ll-kfin) :fields ["ptr" "ptr" w]}}
+             {:llvm/type {:name (ll-tryf) :fields ["ptr" "ptr" "ptr" w]}}
+             {:llvm/type {:name (ll-kinit) :fields ["ptr" "ptr"]}}]
+     :items
+     (concat
+      [(decl "ptr" "lg_alloc" [w "ptr"])
+       ;; the collector (host/native/gc.c): the entry check's flag and call
+       {:llvm/global {:name "lg_gc_pending" :bare true :kind "external global" :type "i8"}}
+       (decl "void" "lg_gc" ["ptr" "i32"])
+       (decl "void" "lg_overflow" [] "noreturn" "cold")
+       (decl "void" "lg_print_i64" ["i64"]) (decl "void" "lg_print_bool" ["i32"])
+       (decl "void" "lg_print_space" []) (decl "void" "lg_print_nl" []) (decl "void" "lg_print_box" [w])
+       (decl w "lg_box_int" ["i64"]) (decl "i64" "lg_unbox_int" [w]) (decl "double" "lg_to_f64" [w])
+       (decl "i1" "lg_is_int" [w]) (decl "i1" "lg_is_num" [w])
+       (decl "void" "lg_unbox_fail" [] "noreturn" "cold")
+       (decl "void" "lg_arity_fail" [w "i32"] "noreturn" "cold")
+       (decl "void" "lg_div_zero" [] "noreturn" "cold")]
+      (ll-host-declares)
+      [{:llvm/global {:name "lg_handler" :bare true :kind "internal global" :type "ptr" :init "null"}}
+       (decl "void" "lg_uncaught" [w] "noreturn" "cold")
+       (fnc "lg_throw" ["ptr %k" (str w " %exn")]
+            (str "  %F = load ptr, ptr @lg_handler\n  %none = icmp eq ptr %F, null\n"
+                 "  br i1 %none, label %unc, label %h\nunc:\n  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
+                 "  %pp = getelementptr %tryf, ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr %pp\n  store ptr %prior, ptr @lg_handler\n"
+                 "  %code = load ptr, ptr %F\n  musttail call tailcc void %code(ptr %F, " w " %exn)\n  ret void\n"))
+       (ll-desc-item (ll-kbox) [1]) (ll-desc-item (ll-kfin) [1 2]) (ll-desc-item (ll-tryf) [1 2]) (ll-desc-item (ll-kinit) [1])]
+      (for [[k t box] [[:int "i64" (str "  %b = call " w " @lg_box_int(i64 %v)\n")]
+                       [:bool "i1" (str "  %b = select i1 %v, " w " " (ll-true) ", " w " " (ll-false) "\n")]
+                       [:float "double" (str "  %fo = " (ll-alloc-call (ll-sty "$Float")) "\n"
+                                             "  store " w " " (ll-tid "$Float") ", ptr %fo\n"
+                                             "  %fv = getelementptr " (ll-sty "$Float") ", ptr %fo, i32 0, i32 1\n  store double %v, ptr %fv\n"
+                                             "  %b = ptrtoint ptr %fo to " w "\n")]]]
+        (fnc (str "lg_kbox_" (name k)) ["ptr %rec" (str t " %v")]
+             (str "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
+                  "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n")))
+      (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
+      [(fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
+       {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
+       {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :attrs ll-fn-attrs
+                  :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
+
+(defn ll-rt-fns!
+  "Lower the runtime fns the program reached (they may reach more): the
+   GC lane's rt-fixpoint! for this target."
+  []
+  (loop [out []]
+    (if-let [info (first (:pending @*rt*))]
+      (do (swap! *rt* update :pending (comp vec rest))
+          (recur (conj out (llvm-fn info))))
+      out)))
+
+(defn ll-init-steps
+  "What runs before _main, as rt-init-wat orders it: each runtime global in
+   file order, after the constants its init reads; the link step (install!)
+   when the hooks global is live; then the remaining constants, each after
+   the constants it reads, as each init fn recorded them (refs: fn name ->
+   its unit's references). live? keeps a global (by name) the shake found
+   live (D221)."
+  ([refs] (ll-init-steps refs (constantly true)))
+  ([refs live?]
+  (if-not *rt*
+    []
+    (let [st @*rt*
+          order (into {} (map-indexed (fn [i g] [(:var g) i]) lw-rt/globals))
+          gs (sort-by #(order (key %)) (filter #(live? (:name (val %))) (:globals st)))
+          consts (filter live? (:const-order st))
+          init-of (fn [g] (str (subs g 1) "__init"))
+          ;; the constants an init fn reads: the var globals it recorded
+          reads (fn [init] (set (keep #(when (str/starts-with? % "var$const_") (subs % 3)) (get refs init))))
+          const-step (fn [g] {:global g :init (init-of g)})
+          with-deps (fn with-deps [g done]
+                      (if (contains? done g) [[] done]
+                          (reduce (fn [[out d] c] (let [[o d2] (with-deps c d)] [(into out o) d2]))
+                                  [[] (conj done g)]
+                                  (remove #{g} (reads (init-of g))))))
+          add-const (fn [[out done] g]
+                      (if (contains? done g) [out done]
+                          (let [[pre d] (with-deps g (conj done g))]
+                            [(-> out (into (map const-step (remove #{g} (keep identity pre)))) (conj (const-step g))) d])))
+          [steps done] (reduce (fn [[out done] [v {:keys [name init]}]]
+                                 (let [[out2 done2] (reduce add-const [out done] (filter (set consts) (reads init)))]
+                                   [(conj out2 {:global name :init init}) done2]))
+                               [[] #{}] gs)
+          hooks (some #(when (= (lw-rt/rt-var 'seq 'hooks) (key %)) (:name (val %))) gs)
+          steps (if hooks
+                  (conj steps {:call (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))})
+                  steps)
+          [steps _] (reduce add-const [steps done] consts)]
+      steps))))
+
+(defn ll-init-chain
+  "lg_init.0 .. lg_init.N: each step runs one init fn (CPS, with a
+   continuation that stores its value in the global, if any, and runs the
+   next step); the last enters _main."
+  [steps]
+  (let [w (ll-word) n (count steps)]
+    (concat
+     (mapcat (fn [[i st]]
+               [(ll-fn-bare (str "lg_init." i) ["ptr %k"]
+                            (str "  %r = " (ll-alloc-call (ll-kinit)) "\n"
+                                 "  store ptr " (lir/ref-bare (str "lg_init." i ".done")) ", ptr %r\n  %r.1 = getelementptr %kinit, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"
+                                 "  musttail call tailcc void " (ll-q (or (:init st) (:call st))) "(ptr %r)\n  ret void\n"))
+                (ll-fn-bare (str "lg_init." i ".done") ["ptr %rec" (str w " %v")]
+                            (str (when (:global st) (str "  store " w " %v, ptr " (lir/ref (str "var" (:global st))) "\n"))
+                                 "  %ks = getelementptr %kinit, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n"
+                                 "  musttail call tailcc void " (lir/ref-bare (str "lg_init." (inc i))) "(ptr %k)\n  ret void\n"))])
+             (map-indexed vector steps))
+     [(ll-fn-bare (str "lg_init." n) ["ptr %k"] (str "  musttail call tailcc void " (lir/ref "_main") "(ptr %k)\n  ret void\n"))])))
+
+(defn ll-live
+  "The live symbols: from roots, through the units' references, adding the
+   init fn of each live runtime global (init-of: var symbol -> seq of init
+   symbols). Each unit is expanded once, however many symbols it defines."
+  [units roots init-of]
+  (let [us (vec units)
+        by-def (persistent! (reduce (fn [m [i u]] (reduce #(assoc! %1 %2 i) m (:defs u))) (transient {}) (map-indexed vector us)))]
+    (loop [live (transient #{}) done (transient #{}) todo (vec roots)]
+      (if (empty? todo)
+        (persistent! live)
+        (let [x (peek todo) todo (pop todo)]
+          (if (contains? live x)
+            (recur live done todo)
+            (let [i (get by-def x)
+                  expand? (and i (not (contains? done i)))
+                  u (when expand? (us i))
+                  todo (cond-> (into todo (init-of x)) expand? (into (concat (:defs u) (:refs u))))]
+              (recur (conj! live x) (if expand? (conj! done i) done) todo))))))))
+
+(defn llvm-module [fns]
+  (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail)))
+        rt-fns (when *rt*
+                 (let [a (ll-rt-fns!)
+                       ;; D221: the cached library's lowered runtime, with what
+                       ;; this compile lowered (a runtime fn is in one or the other)
+                       a (into (vec (sort-by :name (for [[nm l] (:lowered @*rt*)]
+                                                     (if (map? l) l (ll-fail "a runtime fn did not lower" {:fn nm :stub l})))))
+                               a)]
+                   ;; the link step needs install!, reached once the hooks global is
+                   (if (some #(= (lw-rt/rt-var 'seq 'hooks) %) (keys (:globals @*rt*)))
+                     (do (callee-sig (lw-rt/rt-var 'core 'install!)) (into a (ll-rt-fns!)))
+                     a)))
+        ;; the driver's boxing fixpoint lowers a program again: a region
+        ;; (closure code, a try region) lowered in an earlier round is replaced
+        ;; by its latest lowering
+        regions (let [rs @*regions* last-of (into {} (keep-indexed (fn [i r] (when (:name r) [(:name r) i])) rs))]
+                  (keep-indexed (fn [i r] (when (or (nil? (:name r)) (= i (last-of (:name r)))) r)) rs))
+        all (concat fns rt-fns regions)
+        w (ll-word)
+        [pre prelude-refs] (lir/with-refs llvm-prelude)
+        unit-refs (into {} (map (juxt :name :refs) all))
+        ;; the type table, fresh for this module's types (D221); before
+        ;; *globals* is read, since its names are Bytes constants; the shake
+        ;; drops it when no live fn reads it
+        ;; eager: making the table adds Bytes constants to *globals*, read below
+        tinfo-units (when *rt* (vec (for [[it refs] (ll-tinfo-globals)] (ll-unit {:items [it]} refs))))
+        ;; the shake (D221)
+        unit (fn [u] {:item u :defs (:defs u) :refs (:refs u)})
+        fn-units (map unit all)
+        g-units (map unit (concat tinfo-units @*globals*))
+        rt-gs (when *rt* (vals (:globals @*rt*)))
+        hooks (when *rt* (:name (get (:globals @*rt*) (lw-rt/rt-var 'seq 'hooks))))
+        install (when hooks (lir/sym (:name (get-in (callee-sig (lw-rt/rt-var 'core 'install!)) [:arities 0]))))
+        init-of (merge (into {} (for [g rt-gs] [(str "var" (:name g))
+                                                (cond-> [(lir/sym (:init g))] (= hooks (:name g)) (conj install))]))
+                       (into {} (for [g (when *rt* (:const-order @*rt*))] [(str "var" g) [(lir/sym (str (subs g 1) "__init"))]])))
+        live (ll-live (concat fn-units g-units)
+                      (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs)
+                      #(get init-of % []))
+        _ (when ll-refcheck?
+            ;; the module's symbols: units' and every var global (not units)
+            ((resolve 'lower-llvm-refcheck/report!)
+             (concat (mapcat :defs (concat fn-units g-units))
+                     (map #(str "var" %) (concat (vals *var-globals*) (map :name rt-gs) (when *rt* (:const-order @*rt*)))))))
+        live? #(contains? live (str "var" %))
+        kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
+        kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))
+        inits (ll-init-chain (ll-init-steps unit-refs live?))
+        gvars (distinct (concat (vals *var-globals*)
+                                (when *rt* (filter live? (map :name rt-gs)))
+                                (when *rt* (filter live? (:const-order @*rt*)))))
+        binding-roots (sort (filter #(str/starts-with? % "binding.")
+                                   (mapcat :defs kept-globals)))]
+    ;; named types come first: a constant GEP needs its type sized when parsed
+    (str "target datalayout = \"" (:datalayout (:target pre)) "\"\n"
+         "target triple = \"" (:triple (:target pre)) "\"\n"
+         (str/join "\n" (map lir/render (:types pre))) "\n"
+         (str/join "\n" (map lir/render (ll-type-defs))) "\n"
+         (str/join "\n" (map lir/render (:items pre))) "\n"
+         (str/join "\n" (sort (distinct (map lir/render (mapcat :types kept))))) "\n\n"
+         (str/join "\n" (map lir/render (ll-object-globals))) "\n"
+         (str/join "\n" (for [g (sort gvars)] (lir/render (ll-glob (str "var" g) "internal global" w "0")))) "\n"
+         ;; Static type objects are outside the heap, so root their mutable
+         ;; method-table slots directly. Only name globals retained by shaking.
+         (let [roots (concat (for [g (sort gvars)] (str "ptr " (lir/ref (str "var" g))))
+                             (map #(str "ptr " (lir/ref %)) binding-roots)
+                             (map (fn [g]
+                                    (str "ptr getelementptr (" (ll-sty (lw-rt/type-name (resolve 'llvm.core/TypeVal)))
+                                         ", ptr " (lir/ref g) ", i32 0, i32 4)"))
+                                  (sort (filter #(str/starts-with? % "lg_type.") (mapcat :defs kept-globals))))
+                             ["ptr @lg_handler"])]
+           (str/join "\n" (map lir/render
+                               [(assoc-in (ll-glob "lg_gc_globals" "constant" (str "[" (count roots) " x ptr]") (str "[" (str/join ", " roots) "]")) [:llvm/global :bare] true)
+                                (assoc-in (ll-glob "lg_gc_nglobals" "constant" "i32" (str (count roots))) [:llvm/global :bare] true)])))
+         "\n"
+         (str/join "\n" (map lir/render (ll-type-descs))) "\n"
+         (str/join "\n" (map :text kept-globals)) "\n\n"
+         (str/join "\n" (map lir/render inits)) "\n"
+         (str/join "\n" (map :text kept)))))
+
+(defn ll-stub-fn
+  "lower-wasm/stub-fn under --target llvm: a runtime fn that failed to lower
+   keeps its name and signature and raises the named error when called."
+  [{:keys [name params]} msg]
+  (let [w (ll-word) m (str "lower-wasm: " name " did not compile (" msg ")")
+        raise (:name (get-in (callee-sig (lw-rt/rt-var 'core 'raise)) [:arities 1]))]
+    (apply ll-unit
+     (lir/with-refs
+      #(hash-map :name name :types []
+      :items [(ll-fn name (cons "ptr %k" (map-indexed (fn [i k] (str (ll-type k) " %p" i)) params))
+                     (str "  musttail call tailcc void " (ll-q raise) "(ptr %k, " w " " (ll-bytes-const! m) ")\n  ret void\n")
+                     nil)])))))
+
+;; --- the runtime library cache (D221) ----------------------------------------
+;; The GC lane's (D181): the whole runtime analysed and lowered once, the
+;; session saved under LW_RTLIB_DIR and restored by each compile. These are
+;; the llvm lane's parts of its key, snapshot and restore.
+
+(defn ll-rtlib-key-extra
+  "The llvm compiler's sources and the resolved profile: both shape every
+   lowered line (the lg binary and lower_wasm.lg are in the shared key)."
+  []
+  (str (apply str (map #(slurp (str lw-rt/src-dir "/" %))
+                       ["lower_llvm.lg" "lower_llvm_rt.lg" "lower_llvm_profile.lg" "lower_llvm_poly.lg"
+                        "lower_llvm_ir.lg" "lower_llvm_cache.lg"]))
+       "|profile=" (pr-str (llvm-profile))))
+
+(defn- ll-snap-key? [k]
+  ;; the derived type lists are recomputed; :llvm-try memos hold an atom
+  (and (vector? k) (#{:llvm :llvm-ref} (first k))
+       (not (contains? #{[:llvm :types] [:llvm :tids]} k))))
+
+(defn- ll-encode [x] (clojure.walk/postwalk #(if (var? %) [::var (str (var-sym %))] %) x))
+(defn- ll-decode [x]
+  (clojure.walk/postwalk #(if (and (vector? %) (= 2 (count %)) (= ::var (first %))) (sym-var (symbol (second %))) %) x))
+
+(defn ll-rtlib-snapshot
+  "The llvm session state the cached runtime text names: environment and
+   program type ids, constant names, the fn-value wrappers and helpers."
+  []
+  {:ll-fn-values (ll-encode (into {} (filter (comp ll-snap-key? key) @*fn-values*)))})
+
+(defn ll-rtlib-restore! [snap]
+  (swap! *fn-values* merge (ll-decode (:ll-fn-values snap))))
+
+(require 'lower-llvm-rt)

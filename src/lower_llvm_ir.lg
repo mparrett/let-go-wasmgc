@@ -1,0 +1,109 @@
+;; lower-llvm-ir: the llvm target's module items as data, one printer, and
+;; symbol references recorded as they are written.
+;;
+;; A module is functions, globals, declarations and named types. Each is a
+;; map, {:llvm/fn ..}, {:llvm/global ..}, {:llvm/declare ..} or {:llvm/type ..},
+;; and `render` is the one place its text is made, so attributes, linkage
+;; and names are fields, not text to edit afterwards. Instruction bodies are
+;; still lines of text, written by the lowering.
+;;
+;; A module symbol enters text only through `ref` (or `ref-bare`), which
+;; returns the operand and records the symbol into the unit being built
+;; (`with-refs`). A unit (`unit`) is an item with the symbols it defines,
+;; taken from its name, and the symbols it names, as recorded, which is what
+;; the module's shake (lower_llvm.lg, D221) follows. Nothing reads them back
+;; out of the text.
+(ns lower-llvm-ir
+  (:refer-clojure :exclude [ref])
+  (:require [clojure.string :as str]))
+
+;; --- symbols ------------------------------------------------------------------
+
+(defn sym
+  "The symbol name s is emitted as: LLVM reserves the llvm. prefix for its
+   intrinsics, so the runtime's llvm.* names become lg.llvm.*."
+  [s]
+  (let [s (str s)] (if (str/starts-with? s "llvm.") (str "lg." s) s)))
+
+(def ^:dynamic *refs* nil)   ; an atom of the bound unit's referenced symbols
+
+(defn- note! [s] (when *refs* (swap! *refs* conj s)) s)
+
+(defn ref
+  "The quoted operand for module symbol s (@\"s\"), recorded in the unit."
+  [s]
+  (str "@\"" (note! (sym s)) "\""))
+
+(defn ref-bare
+  "The unquoted operand for module symbol s (@s, for names LLVM needs no
+   quotes around: the backend's own lg_* helpers), recorded in the unit."
+  [s]
+  (str "@" (note! (sym s))))
+
+(defn- realize
+  "x with every lazy seq inside it realized."
+  [x]
+  (cond (map? x) (into (empty x) (map (fn [[k v]] [(realize k) (realize v)]) x))
+        (vector? x) (mapv realize x)
+        (set? x) (into (empty x) (map realize x))
+        (seq? x) (doall (map realize x))
+        :else x))
+
+(defn with-refs
+  "Call f with a fresh unit bound; [its value, the symbols it referenced].
+   A nested call records into its own unit only. The value is realized in
+   full before the unit closes: a lazy seq inside it would otherwise name
+   its symbols later, outside the unit, and they would be lost."
+  [f]
+  (let [refs (atom #{})
+        v (binding [*refs* refs] (realize (f)))]
+    [v @refs]))
+
+;; --- named types ----------------------------------------------------------------
+;; A named type's operand (%kbox, %"T.Int") is made here and remembered, so
+;; what it names is a lookup, never read back out of the operand's text.
+
+(def ^:private type-names (atom {}))   ; operand -> name
+
+(defn type-op
+  "The operand of named type nm: %nm when bare (a backend type), else %\"nm\"."
+  ([nm] (type-op nm false))
+  ([nm bare]
+   (let [op (if bare (str "%" nm) (str "%\"" nm "\""))]
+     (swap! type-names assoc op nm)
+     op)))
+
+(defn type-name
+  "The name of named type operand op (one type-op made)."
+  [op]
+  (or (get @type-names op) (throw (ex-info "lower-llvm-ir: not a named type operand" {:op op}))))
+
+;; --- items ----------------------------------------------------------------------
+
+(defn- operand [{:keys [name bare]}] (if bare (str "@" (sym name)) (str "@\"" (sym name) "\"")))
+(defn- attrs [as] (apply str (map #(str " " %) as)))
+
+(defn render
+  "The text of one module item."
+  [item]
+  (if-let [{:keys [linkage cc ret params body] :as f} (:llvm/fn item)]
+    (str "define " (when linkage (str linkage " ")) (when cc (str cc " ")) ret " " (operand f)
+         "(" (str/join ", " params) ")" (attrs (:attrs f)) " {\n" body "}\n")
+    (if-let [{:keys [kind type init] :as g} (:llvm/global item)]
+      (str (operand g) " = " kind " " type (when init (str " " init)) (attrs (:attrs g)))
+      (if-let [{:keys [ret params] :as d} (:llvm/declare item)]
+        ;; a declaration names a host or LLVM function exactly (@llvm.ctpop.i64)
+        (str "declare " ret " @" (:name d) "(" (str/join ", " params) ")" (attrs (:attrs d)))
+        (if-let [{:keys [name fields]} (:llvm/type item)]
+          (str name " = type { " (str/join ", " fields) " }")
+          (throw (ex-info "lower-llvm-ir: not a module item" {:item item})))))))
+
+(defn defines
+  "The module symbol item defines: a fn's or a global's name, or nil."
+  [item]
+  (when-let [x (or (:llvm/fn item) (:llvm/global item))] (sym (:name x))))
+
+(defn unit
+  "item with the symbols it defines and names (refs, as recorded)."
+  [item refs]
+  {:item item :defs (if-let [d (defines item)] #{d} #{}) :refs (set refs)})

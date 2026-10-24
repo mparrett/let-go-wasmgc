@@ -1,0 +1,22 @@
+;; Variadic closures and variadic defns called through fn values (FnV, D83's
+;; layout): the rest is a list, nil when no arg is left over; exact arities
+;; win over the variadic one.
+(defn vd [a & more] [a more])
+(defn pick ([x] [:one x]) ([x & r] [:many x r]))
+(defn call-with [f & args]
+  (case (count args)
+    0 (f) 1 (f (first args)) 2 (f (first args) (second args))
+    5 (f 1 2 3 4 5)
+    7 (f 1 2 3 4 5 6 7)))
+(let [r (fn [& xs] xs)
+      k (fn [a b & xs] (list a b xs))
+      n 10
+      c (fn [& xs] (+ n (count xs)))]
+  (println (call-with r) (call-with r 1) (call-with r 1 2 3 4 5 6 7))
+  (println (call-with k 1 2) (call-with k 1 2 3 4 5))
+  (println (call-with c) (call-with c 1 2 3 4 5 6 7))
+  (println (call-with vd 1) (call-with vd 1 2) (call-with vd 1 2 3 4 5))
+  (println (call-with pick 1) (call-with pick 1 2))
+  (println (seq? (call-with r 1)) (nil? (call-with r))))
+(println ((fn [a & r] r) 1))
+(call-with (fn [a b & r] r) 1)

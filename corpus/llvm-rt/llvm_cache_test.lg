@@ -1,0 +1,77 @@
+;; lower-llvm-cache (src/lower_llvm_cache.lg) under native lg: the trace a
+;; lowering records (the questions it asked, by a hash of each answer, and
+;; the compiler functions it ran) and the De Bruijn form normalizer the
+;; function cache keys on.
+(ns llvm-cache-test
+  (:require [test :refer [deftest is]]
+            [lower-llvm-cache :as lc]))
+
+(deftest ask-records-inside-a-trace-only
+  (is (= 3 (lc/ask [:k 1] (fn [] 3))) "outside a trace: just the answer")
+  (let [[v t] (lc/with-trace #(lc/ask [:k 1] (fn [] {:a 1})))]
+    (is (= {:a 1} v))
+    (is (= {[:k 1] (lc/answer-hash {:a 1})} (:asks t)))))
+
+(deftest answers-hash-canonically
+  (is (= (lc/answer-hash {:a 1 :b 2}) (lc/answer-hash (assoc {:b 2} :a 1))))
+  (is (= (lc/answer-hash #{1 2 3}) (lc/answer-hash (conj #{3 2} 1))))
+  (is (= [:lw/var "clojure.core/inc"] (lc/encode #'inc)))
+  (is (= (lc/answer-hash (map inc [1 2])) (lc/answer-hash '(2 3))) "a lazy answer is realized: it hashes as the list it realizes to")
+  (is (not= (lc/answer-hash '(inc x)) (lc/answer-hash '[inc x])) "a list is not a vector: forms keep the difference")
+  (is (thrown? Exception (lc/answer-hash (atom 1))))
+  (is (thrown? Exception (lc/answer-hash inc))))
+
+(deftest a-changed-answer-is-unstable
+  (let [a (atom 1)
+        [_ t] (lc/with-trace #(do (lc/ask [:x] (fn [] @a)) (reset! a 2) (lc/ask [:x] (fn [] @a))))]
+    (is (= :unstable (get (:asks t) [:x])))))
+
+(deftest nested-traces-are-separate
+  (let [inner (atom nil)
+        [_ outer] (lc/with-trace
+                    (fn [] (lc/ask [:outer] (fn [] 1)) (lc/ran! 'lower-wasm/a "h1")
+                      (reset! inner (second (lc/with-trace #(do (lc/ask [:inner] (fn [] 2)) (lc/ran! 'lower-wasm/b "h2")))))))]
+    (is (= #{[:outer]} (set (keys (:asks outer)))))
+    (is (= {'lower-wasm/a "h1"} (:ran outer)))
+    (is (= #{[:inner]} (set (keys (:asks @inner)))))
+    (is (= {'lower-wasm/b "h2"} (:ran @inner)))))
+
+(defn- res [s] (if-let [v (resolve s)] (lc/encode v) s))
+(defn- fh [form] (lc/answer-hash (lc/normalize form res)))
+
+(deftest renamed-locals-hash-equal
+  (is (= (fh '(fn* ([x] (let* [y (inc x)] (+ x y)))))
+         (fh '(fn* ([a__12] (let* [b__99 (inc a__12)] (+ a__12 b__99))))))))
+
+(deftest indices-count-binders-outward
+  (is (= '(fn* ([:lw/bind] (let* [:lw/bind [:lw/local 0]] [:lw/local 1])))
+         (lc/normalize '(fn* ([x] (let* [y x] x))) res))
+      "x is 0 in y's init (not yet under y), 1 in the let's body")
+  (is (not= (fh '(fn* ([x] (fn* ([y] x))))) (fh '(fn* ([x] (fn* ([y] y))))))
+      "which binder a use names is kept"))
+
+(deftest a-subform-hashes-the-same-in-any-context
+  ;; De Bruijn indices, not binding order: a closed inner fn is independent
+  ;; of how many locals its parent binds before it
+  (let [inner '(fn* ([z] (inc z)))]
+    (is (= (fh inner)
+           (lc/answer-hash (nth (lc/normalize (list 'let* '[a 1 b 2] inner) res) 2))
+           (lc/answer-hash (nth (lc/normalize (list 'let* '[c 3] inner) res) 2))))))
+
+(deftest shadowing-letfn-loop-catch
+  (is (= (fh '(let* [x 1 x (inc x)] x)) (fh '(let* [p 1 q (inc p)] q))) "a later binding shadows")
+  (is (= (fh '(letfn* [f (fn* f ([n] (g n))) g (fn* g ([m] (f m)))] (f 1)))
+         (fh '(letfn* [h (fn* h ([n] (k n))) k (fn* k ([m] (h m)))] (h 1)))))
+  (is (= (fh '(loop* [i 0] (recur (inc i)))) (fh '(loop* [j 0] (recur (inc j))))))
+  (is (= (fh '(try (f) (catch Exception e e))) (fh '(try (f) (catch Exception e2 e2))))))
+
+(deftest free-vars-and-quotes-keep-their-names
+  (is (not= (fh '(fn* ([x] (inc x)))) (fh '(fn* ([x] (dec x))))) "a free var is its qualified name")
+  (is (not= (fh '(quote x)) (fh '(quote y))) "quoted symbols are data, not locals"))
+
+(lc/defquestion q-double [n] [:double n] (* 2 n))
+
+(deftest defquestion-asks
+  (let [[v t] (lc/with-trace #(q-double 4))]
+    (is (= 8 v))
+    (is (contains? (:asks t) [:double 4]))))

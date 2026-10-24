@@ -1,0 +1,243 @@
+;; llvm.xxhash — P3.1: XXH3-64 with a seed, the hash xsofy's determinism
+;; rests on (xsofy/hash.lg's xxh3-64 calls (xxh3/HashSeed ba seed) for
+;; every det/* roll). In the runtime dialect of seq.lg.
+;;
+;; Ground truth: let-go ff1e6dac binds xxh3/HashSeed to
+;; github.com/zeebo/xxh3 v1.1.0 HashSeed (pkg/rt/interop_xxh3.go:19, an
+;; lginterop reflection wrapper; go.mod:15). The port follows that
+;; package's hash64_seed.go (hashAnySeed: the 0-16, 17-128, 129-240 byte
+;; paths, and >240 through accumScalarSeed, accum_generic.go, with
+;; initSecret, utils.go, for a non-zero seed) and utils.go's mixers. Its
+;; SIMD accumulators compute the same lanes. That package is canonical
+;; XXH3-64 (xsofy's own tests pin it against xxh3sum).
+;;
+;; Seed handling (the reflection boundary, vm/native_func.go): the seed is
+;; an lg Int converted to uint64 by two's complement, so -1 is 2^64-1 and
+;; MinInt64 is 2^63; nil converts to 0. The result is a uint64 boxed as an
+;; Int by vm.Int(v.Uint()), so it wraps to a signed int64 (hello -> a
+;; negative number). Input: a byte-array's bytes; a String as the boundary
+;; converts it, a seq of Chars each truncated to its low byte (so "hello" is
+;; its bytes but "é" hashes as the one byte 0xE9, not its UTF-8); nil as
+;; empty. Other reflection coercions (a vector or int-array
+;; converted element-wise, a Float or Char seed) are named limits.
+;;
+;; All arithmetic is wrapping i64 (llvm.arch i64-*), shifts unsigned;
+;; the 64x64->128 multiply of mulFold64 is four 32x32 products.
+(ns llvm.xxhash
+  (:require [llvm.arch :as arch]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.arrays :as arr]))
+
+;; The one runtime global (D39): the default 192-byte secret, built on first use.
+(arch/defstruct XGlobals [[:mut :ref]])
+(def globals (arch/new XGlobals (arch/null)))
+
+(defn- w64! [b o v]                                      ; writeU64: little-endian
+  (loop [i 0] (when (< i 8) (arch/bset! b (+ o i) (bit-and (arch/i64-shr-u v (* 8 i)) 255)) (recur (inc i)))))
+
+;; consts.go `key`, as its 24 little-endian u64 words (signed spelling).
+(defn- key-word [i]
+  (cond (= i 0) -4734510112055689544 (= i 1) 2066345149520216444 (= i 2) -2623469361688619810
+        (= i 3) 2262974939099578482 (= i 4) 8711581037947681227 (= i 5) 2410270004345854594
+        (= i 6) -8204357891075471176 (= i 7) 5487137525590930912 (= i 8) -3818837453329782724
+        (= i 9) -6688317018830679928 (= i 10) 5690594596133299313 (= i 11) -2833645246901970632
+        (= i 12) 4554437623014685352 (= i 13) 2111919702937427193 (= i 14) 3556072174620004746
+        (= i 15) 7238261902898274248 (= i 16) -4329134394285701654 (= i 17) -1485321483350670907
+        (= i 18) 5321830579834785047 (= i 19) -7032137544937171245 (= i 20) -242834301215959509
+        (= i 21) -3588858202114426737 (= i 22) 2883454493032893253 :else 9097354517224871855))
+
+(defn default-secret []
+  (let [k (arch/get XGlobals 0 globals)]
+    (if (arch/null? k)
+      (let [b (arch/bytes-new 192)]
+        (loop [i 0] (when (< i 24) (w64! b (* 8 i) (key-word i)) (recur (inc i))))
+        (arch/set! XGlobals 0 globals b)
+        b)
+      k)))
+
+;; ---------------------------------------------------------------------------
+;; utils.go
+
+(defn- r8 [b o] (arch/bget b o))
+(defn- r16 [b o] (bit-or (arch/bget b o) (arch/i64-shl (arch/bget b (+ o 1)) 8)))
+(defn- r32 [b o] (bit-or (r16 b o) (arch/i64-shl (r16 b (+ o 2)) 16)))
+(defn- r64 [b o] (bit-or (r32 b o) (arch/i64-shl (r32 b (+ o 4)) 32)))
+
+(defn- lo32 [x] (bit-and x 0xffffffff))
+(defn- hi32 [x] (arch/i64-shr-u x 32))
+(defn- rotl [x r] (bit-or (arch/i64-shl x r) (arch/i64-shr-u x (- 64 r))))
+(defn- bswap32 [x]
+  (bit-or (bit-or (arch/i64-shl (bit-and x 0xff) 24) (arch/i64-shl (bit-and (arch/i64-shr-u x 8) 0xff) 16))
+          (bit-or (arch/i64-shl (bit-and (arch/i64-shr-u x 16) 0xff) 8) (bit-and (arch/i64-shr-u x 24) 0xff))))
+(defn- bswap64 [x] (bit-or (arch/i64-shl (bswap32 (lo32 x)) 32) (bswap32 (hi32 x))))
+
+(defn mul-fold "mulFold64: hi ^ lo of the 128-bit product x*y." [x y]
+  (let [xl (lo32 x) xh (hi32 x) yl (lo32 y) yh (hi32 y)
+        ll (arch/i64-mul xl yl) hl (arch/i64-mul xh yl) lh (arch/i64-mul xl yh) hh (arch/i64-mul xh yh)
+        cross (arch/i64-add (arch/i64-add (hi32 ll) (lo32 hl)) lh)
+        upper (arch/i64-add (arch/i64-add (hi32 hl) (hi32 cross)) hh)
+        lower (bit-or (arch/i64-shl cross 32) (lo32 ll))]
+    (bit-xor upper lower)))
+
+(defn- avalanche [x]                                     ; xxh3Avalanche
+  (let [x (bit-xor x (arch/i64-shr-u x 37))
+        x (arch/i64-mul x 1609587791953885689)           ; 0x165667919e3779f9
+        x (bit-xor x (arch/i64-shr-u x 32))]
+    x))
+
+(defn- avalanche-small [x]                               ; xxhAvalancheSmall
+  (let [x (bit-xor x (arch/i64-shr-u x 33))
+        x (arch/i64-mul x -4417276706812531889)          ; prime64_2
+        x (bit-xor x (arch/i64-shr-u x 29))
+        x (arch/i64-mul x 1609587929392839161)           ; prime64_3
+        x (bit-xor x (arch/i64-shr-u x 32))]
+    x))
+
+(defn- rrmxmx [h len]
+  (let [h (bit-xor h (bit-xor (rotl h 49) (rotl h 24)))
+        h (arch/i64-mul h -6939452855193903323)          ; 0x9fb21c651e98df25
+        h (bit-xor h (arch/i64-add (arch/i64-shr-u h 35) len))
+        h (arch/i64-mul h -6939452855193903323)]
+    (bit-xor h (arch/i64-shr-u h 28))))
+
+;; ---------------------------------------------------------------------------
+;; hashAnySeed (hash64_seed.go). K is the default secret: K's word at byte
+;; offset n is the package's key64_n constant.
+
+(defn- h-short [p l seed K]                                ; l <= 16
+  (cond (> l 8)
+        (let [inputlo (bit-xor (r64 p 0) (arch/i64-add (bit-xor (r64 K 24) (r64 K 32)) seed))
+              inputhi (bit-xor (r64 p (- l 8)) (arch/i64-sub (bit-xor (r64 K 40) (r64 K 48)) seed))
+              folded (mul-fold inputlo inputhi)]
+          (avalanche (arch/i64-add (arch/i64-add (arch/i64-add l (bswap64 inputlo)) inputhi) folded)))
+        (> l 3)
+        (let [seed (bit-xor seed (arch/i64-shl (bswap32 (lo32 seed)) 32))
+              input64 (arch/i64-add (r32 p (- l 4)) (arch/i64-shl (r32 p 0) 32))
+              keyed (bit-xor input64 (arch/i64-sub (bit-xor (r64 K 8) (r64 K 16)) seed))]
+          (rrmxmx keyed l))
+        (= l 0) (avalanche-small (bit-xor (bit-xor seed (r64 K 56)) (r64 K 64)))
+        :else
+        (let [acc (cond (= l 3) (+ (+ (* (r16 p 0) 65536) (r8 p 2)) 768)
+                        (= l 2) (+ (arch/i64-shr-u (* (r16 p 0) 16777217) 8) 512)
+                        :else (+ (* (r8 p 0) 16842753) 256))]
+          (avalanche-small (bit-xor acc (arch/i64-add 2267503259 seed))))))  ; u64(key32_000^key32_004) + seed
+
+(defn- mix16 [p po K ko seed]                            ; mulFold64(p[po]^(K[ko]+seed), p[po+8]^(K[ko+8]-seed))
+  (mul-fold (bit-xor (r64 p po) (arch/i64-add (r64 K ko) seed))
+            (bit-xor (r64 p (+ po 8)) (arch/i64-sub (r64 K (+ ko 8)) seed))))
+
+(defn- h-medium [p l seed K]                               ; 17 <= l <= 128
+  (let [acc (arch/i64-mul l -7046029288634856825)       ; prime64_1
+        acc (if (> l 32)
+              (let [acc (if (> l 64)
+                          (let [acc (if (> l 96)
+                                      (arch/i64-add (arch/i64-add acc (mix16 p 48 K 96 seed)) (mix16 p (- l 64) K 112 seed))
+                                      acc)]
+                            (arch/i64-add (arch/i64-add acc (mix16 p 32 K 64 seed)) (mix16 p (- l 48) K 80 seed)))
+                          acc)]
+                (arch/i64-add (arch/i64-add acc (mix16 p 16 K 32 seed)) (mix16 p (- l 32) K 48 seed)))
+              acc)
+        acc (arch/i64-add (arch/i64-add acc (mix16 p 0 K 0 seed)) (mix16 p (- l 16) K 16 seed))]
+    (avalanche acc)))
+
+(defn- h-midsize [p l seed K]                              ; 129 <= l <= 240
+  (let [acc (loop [i 0 acc (arch/i64-mul l -7046029288634856825)]
+              (if (< i 8) (recur (inc i) (arch/i64-add acc (mix16 p (* 16 i) K (* 16 i) seed))) acc))
+        acc (avalanche acc)
+        top (bit-and l -16)
+        acc (loop [i 128 acc acc]                        ; trailing groups after 128: K[i-125]
+              (if (< i top) (recur (+ i 16) (arch/i64-add acc (mix16 p i K (- i 125) seed))) acc))]
+    (avalanche (arch/i64-add acc (mix16 p (- l 16) K 119 seed)))))
+
+;; The long path: eight lanes over 64-byte stripes (accumScalarSeed).
+(defn- stripe! [accs p dp sec kp]
+  (loop [j 0]
+    (when (< j 8)
+      (let [dv (r64 p (+ dp (* 8 j)))
+            dk (bit-xor dv (r64 sec (+ kp (* 8 j))))
+            o (bit-xor j 1)]
+        (arch/aset! arr/I64s accs o (arch/i64-add (arch/aget arr/I64s accs o) dv))
+        (arch/aset! arr/I64s accs j (arch/i64-add (arch/aget arr/I64s accs j) (arch/i64-mul (lo32 dk) (hi32 dk))))
+        (recur (inc j))))))
+
+(defn- scramble! [accs sec]
+  (loop [j 0]
+    (when (< j 8)
+      (let [a (arch/aget arr/I64s accs j)
+            a (bit-xor a (arch/i64-shr-u a 47))
+            a (bit-xor a (r64 sec (+ 128 (* 8 j))))]
+        (arch/aset! arr/I64s accs j (arch/i64-mul a 2654435761))   ; prime32_1
+        (recur (inc j))))))
+
+(defn- init-secret [K seed]                              ; initSecret
+  (let [b (arch/bytes-new 192)]
+    (loop [i 0]
+      (when (< i 12)
+        (w64! b (* 16 i) (arch/i64-add (r64 K (* 16 i)) seed))
+        (w64! b (+ (* 16 i) 8) (arch/i64-sub (r64 K (+ (* 16 i) 8)) seed))
+        (recur (inc i))))
+    b))
+
+(defn- h-long [p l seed K]                                 ; l > 240
+  (let [sec (if (= seed 0) K (init-secret K seed))
+        accs (arch/array-new arr/I64s 8 0)]
+    (arch/aset! arr/I64s accs 0 3266489917)              ; prime32_3
+    (arch/aset! arr/I64s accs 1 -7046029288634856825)    ; prime64_1
+    (arch/aset! arr/I64s accs 2 -4417276706812531889)    ; prime64_2
+    (arch/aset! arr/I64s accs 3 1609587929392839161)     ; prime64_3
+    (arch/aset! arr/I64s accs 4 -8796714831421723037)    ; prime64_4
+    (arch/aset! arr/I64s accs 5 2246822519)              ; prime32_2
+    (arch/aset! arr/I64s accs 6 2870177450012600261)     ; prime64_5
+    (arch/aset! arr/I64s accs 7 2654435761)              ; prime32_1
+    (let [dp (loop [rem l dp 0]                          ; whole 1024-byte blocks while more than one remains
+               (if (> rem 1024)
+                 (do (loop [i 0] (when (< i 16) (stripe! accs p (+ dp (* 64 i)) sec (* 8 i)) (recur (inc i))))
+                     (scramble! accs sec)
+                     (recur (- rem 1024) (+ dp 1024)))
+                 dp))
+          rem (- l dp)
+          t (quot (- rem 1) 64)]
+      (loop [i 0] (when (< i t) (stripe! accs p (+ dp (* 64 i)) sec (* 8 i)) (recur (inc i))))
+      (stripe! accs p (- l 64) sec 121))                 ; the last stripe, ending at the input's end
+    (avalanche
+     (loop [i 0 acc (arch/i64-mul l -7046029288634856825)]
+       (if (< i 4)
+         (recur (inc i) (arch/i64-add acc (mul-fold (bit-xor (arch/aget arr/I64s accs (* 2 i)) (r64 sec (+ 11 (* 16 i))))
+                                                    (bit-xor (arch/aget arr/I64s accs (inc (* 2 i))) (r64 sec (+ 19 (* 16 i)))))))
+         acc)))))
+
+(defn hash-bytes "XXH3-64 of Bytes b with a u64 seed (as i64 bits)." [b seed]
+  (let [l (arch/alen b) K (default-secret)]
+    (cond (<= l 16) (h-short b l seed K)
+          (<= l 128) (h-medium b l seed K)
+          (<= l 240) (h-midsize b l seed K)
+          :else (h-long b l seed K))))
+
+;; ---------------------------------------------------------------------------
+;; The natives
+
+(defn- rune-bytes [bs]                                  ; each rune's low 8 bits (uint8(rune))
+  (let [n (arch/alen bs) out (arch/bytes-new (sq/rune-count* bs))]
+    (loop [i 0 j 0]
+      (if (< i n)
+        (let [d (sq/decode-at bs i n)]
+          (arch/bset! out j (bit-and (arch/i64-shr-u d 3) 255))
+          (recur (+ i (bit-and d 7)) (inc j)))
+        out))))
+
+(defn- input-bytes [x]
+  (let [k (sq/kind x)]
+    (cond (= k 0) (arch/bytes-new 0)
+          (= k 17) (rune-bytes (s/str-bytes x))
+          (arch/null? (arr/byte-data x)) (arch/trap "lower-wasm: xxh3 of a value other than a byte-array, String or nil (reflection coercion not ported)")
+          :else (arr/byte-data x))))
+
+(defn- seed-bits [x]
+  (let [k (sq/kind x)]
+    (cond (= k 0) 0
+          (= k 1) (sq/unbox-int x)
+          :else (arch/trap "lower-wasm: xxh3 seed other than an Int or nil (reflection coercion not ported)"))))
+
+(defn ^{:twin "xxh3/HashSeed"} hash-seed [b seed] (sq/box-int (hash-bytes (input-bytes b) (seed-bits seed))))
+(defn ^{:twin "xxh3/Hash"} hash0 [b] (sq/box-int (hash-bytes (input-bytes b) 0)))

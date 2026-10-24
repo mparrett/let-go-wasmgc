@@ -1,0 +1,17 @@
+;; Task 5 (spec decision 10): closures over ints and over other closures,
+;; fns passed and returned as values, a direct 5-arity call, and a boxed-
+;; return fn whose tail call returns an unboxed int (the continuation must
+;; box it, not pass k through).
+(defn make-adder [n] (fn [x] (+ x n)))
+(defn twice [f x] (f (f x)))
+(defn compose [f g] (fn [x] (f (g x))))
+(defn apply-n [f n x] (if (zero? n) x (apply-n f (dec n) (f x))))
+(defn five [a b c d e] (+ a (+ b (+ c (+ d e)))))
+(defn kind-mix [x] (if (pos? x) (five x 1 1 1 1) nil))
+(println ((make-adder 3) 4))
+(println (twice (make-adder 10) 1))
+(println ((compose (make-adder 1) (make-adder 2)) 0))
+(println (apply-n (make-adder 2) 1000 0))
+(println (five 1 2 3 4 5))
+(println (kind-mix 3) (kind-mix -1))
+(println (twice inc 40))

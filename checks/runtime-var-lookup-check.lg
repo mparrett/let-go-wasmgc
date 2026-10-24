@@ -1,0 +1,43 @@
+(ns runtime-var-lookup-check
+  (:require [lw-rt :as rt] [test :refer [deftest is]]))
+
+(def public-value 1)
+(def ^:private private-value 2)
+
+(deftest lookup-preserves-var-identity
+  (doseq [n ['runtime-var-lookup-check (the-ns 'runtime-var-lookup-check)]]
+    (is (identical? #'public-value (rt/ns-var n 'public-value)))
+    (is (identical? #'private-value (rt/ns-var n 'private-value)))
+    (is (nil? (rt/ns-var n 'missing)))
+    (is (nil? (rt/ns-var n 'map))))
+  (is (identical? #'map (rt/ns-var 'clojure.core 'map)))
+  (doseq [key [nil "public-value" :public-value 'another/public-value]]
+    (is (nil? (rt/ns-var 'runtime-var-lookup-check key))))
+  (is (try (rt/ns-var 'runtime-var-lookup-no-such-ns 'missing) false (catch e true))))
+
+(deftest lookup-sees-namespace-mutations
+  (let [n (create-ns 'runtime-var-lookup-temp)]
+    (is (nil? (rt/ns-var n 'fresh)))
+    (let [v (intern n 'fresh 42)]
+      (is (identical? v (rt/ns-var n 'fresh)))
+      (ns-unmap n 'fresh)
+      (is (nil? (rt/ns-var n 'fresh)))
+      (let [replacement (intern n 'fresh 43)]
+        (is (identical? replacement (rt/ns-var n 'fresh)))
+        (is (not (identical? v replacement)))))
+    (remove-ns 'runtime-var-lookup-temp)
+    (is (= 43 @(rt/ns-var n 'fresh)))))
+
+(deftest indexed-vars-match-native-namespace-tables
+  (doseq [n (conj rt/rt-nss 'core 'string 'lw-ext)
+          entry (ns-interns n)]
+    (is (identical? (val entry) (rt/ns-var n (key entry))))))
+
+(deftest lookup-does-not-materialize-the-whole-namespace
+  (let [calls (atom 0) original ns-interns]
+    (with-redefs [ns-interns (fn [n] (swap! calls inc) (original n))]
+      (dotimes [i 100] (rt/ns-var 'core 'map)))
+    (is (= 0 @calls))))
+
+(let [r (test/run-tests 'runtime-var-lookup-check)]
+  (os/exit (if (and (= 4 (:test r)) (test/successful? r)) 0 1)))
