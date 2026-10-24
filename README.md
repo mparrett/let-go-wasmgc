@@ -60,8 +60,8 @@ stand in, because it spills locals to linear memory and these modules hold
 GC references in locals (`wasm-opt --asyncify` asserts on them).
 
 Named limits, as of 2026-10-20: Ratio and BigInt results are named errors
-(D15; `rt/wasm/bignum.lg` holds a BigInt and Ratio library checked against
-native lg, which nothing calls yet); `go` blocks and channels are not
+(D15; `rt/let-go/lang/bignum.lg` holds a BigInt and Ratio library checked
+against native lg, which nothing calls yet); `go` blocks and channels are not
 supported, and `future` runs its body at the call (D162); the evaluator has
 no interop, `deftype`, `defprotocol` or `defmulti` (D160). A library
 namespace (one under `-source-paths`, since 2026-10-07) and a program's own
