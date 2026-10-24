@@ -1,0 +1,22 @@
+id: 7bc0bae
+v: 2
+title: The llvm target refuses legmacs: *command-line-args* used as a value
+status: open
+priority: medium
+created: 2026-10-24T19:03:47Z
+updated: 2026-10-24T19:03:47Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: The llvm target refuses legmacs: lowering `main.lg` fails with `lower-wasm: a var used as a value (llvm) {:fn "u_main", :var "#'core/*command-line-args*"}`. The GC target compiles the same program, so legmacs has no llvm build and no llvm compile-time number.
+ 
+ Repro, at llvm-poly's head:
+ 
+     lg -source-paths src:$LEGMACS src/driver.lg --target llvm -source-paths $LEGMACS $LEGMACS/main.lg out.ll
+ 
+ xsofy's world dump compiles under the same command shape (P12.38 passes, 20/20 MATCH), so the gap is the var, not the program's size. git-issue:146e45b is a different limit: `os/args` as the host's argv.
+ 
+ Facts that close it:
+ 
+ - F1 the command above exits 0 (command and exit).
+ - F2 the binary behaves like native lg on a legmacs session: an oracle row for the llvm lane (checks/native-run.sh) MATCHes (command and exit).
