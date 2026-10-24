@@ -10,3 +10,14 @@ assignee: Matt Parrett
 hash_source: content
 labels: corpus:apps
 description: The size/boot tables measure download and init; nothing times the game once it runs. checks/turn-time.sh + checks/browser-boot.mjs --turn-time record keydown-to-stats-event latency with in-page timestamps in both lane5 lanes and write corpus/xsofy/turn-time.md (one file, the corpus:apps room this issue grants). First measurement 2026-10-21: lower-wasm 42.9 ms median, stock Go 164.1 ms, identical turn logs.
+
+## Comments
+[2026-10-24T14:26:51Z] Matt Parrett: Facts that close it (status, then the witness each needs):
+ 
+ - F1 the row runs through the gate: `checks/run.sh P4.4` exits 0 on a machine with Chromium, and prints SKIP exit 2 without one (command and exit each).
+ - F2 `checks/affected.sh` maps host/, checks/turn-time.sh, checks/browser-boot.mjs and checks/browser-probe.mjs to P4.4 (the row in its table).
+ - F3 LW_REQUIRE_BROWSER=1 with no Chromium fails before either lane builds (command, exit 1, wall time under 5 s).
+ - F4 corpus/xsofy/turn-time.md is the one file this issue grants under corpus:apps; `checks/corpus-lint.sh` is within budget (command and exit).
+ - M1 the table in corpus/xsofy/turn-time.md carries revision, lg, seed, keys, runs, load average; lower-wasm and stock Go medians with the ratio (the file header and the ratio line).
+ 
+ F1 to F4 and M1 are PR #59 at its head; the issue closes when it merges.
