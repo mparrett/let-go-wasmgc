@@ -1,0 +1,20 @@
+id: 51c6096
+v: 2
+title: bignum_test.lg states its arithmetic as check properties; examples only for base cases
+status: open
+priority: medium
+created: 2026-10-24T17:02:02Z
+updated: 2026-10-24T17:02:02Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: `corpus/intrinsics/bignum_test.lg` tests arithmetic mostly by example, and its random half does not shrink. For a numeric library checked against native lg, properties should carry the suite; examples stay only for base cases.
+ 
+ Today one of its 13 tests, `properties`, uses `check` (150 trials of generated limb vectors, shrinking on failure). `randomized-sweep` runs 400 pairs from a hand-written LCG with edge-biased limbs. A failure there reports the raw operands, up to seven limbs, with no shrinking. The other 11 tests are crafted examples.
+ 
+ Fix:
+ - Fold `randomized-sweep` into `check` properties: draw limbs from {0, 1, 2^31−1, 2^31, 2^32−1} or a random value with `gen-frequency`, and make its print/parse round-trip and its `to-f64`/`rat->f64` agreement into property clauses.
+ - State each remaining example group (parse and print, float conversion, gcd, ratio, simplify, long carries) as a property against native where one exists.
+ - Keep as examples only the base cases a generator would rarely reach: the 2^31/2^32/2^63/2^64 boundaries and MinInt64, and the Knuth division-correction operands, each saying why it is an example.
+ 
+ Done when every arithmetic claim the file makes is a `check` property with a fixed seed. The remaining examples are only base cases, and the file passes under native lg (P2.9).
