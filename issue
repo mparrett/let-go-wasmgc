@@ -1,0 +1,13 @@
+id: a16960c
+v: 2
+title: P5.4 tests attestation by running the real gate 2 twice
+status: open
+priority: medium
+created: 2026-10-24T16:00:53Z
+updated: 2026-10-24T16:00:53Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: P5.4 checks the attestation claim (a second gate on an unchanged tree reruns nothing) by running `checks/gate.sh 2` twice over the real rows. That repeats gate 2's own coverage, takes 35–50 minutes on a laptop, and fails whenever gate 2 is red for an unrelated reason ("cannot be tested on a red tree"), so the claim goes untested exactly when a tree is broken.
+ 
+ Fix: test attestation the way P0.7 tests the gate's TAP, on stub rows. `attest.sh` keys a row from the real `affected.sh` table and `checks/items.tsv`; let it take an items file, an inputs table and a store directory, then check with one stub row that a second run reports `(attested)` without rerunning it, and that touching an input reruns it. P5.4's key checks stay as they are. Done when P5.4 runs no real gate and finishes in seconds.
