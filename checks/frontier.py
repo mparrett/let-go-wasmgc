@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """checks/frontier.py — which steps of an issue's lifecycle are realized, and
 which are ready: a pure function over the graph in checks/lifecycle.mk, the
-issue's ledger and the tree's current hashes. It records nothing; reading
-rebuilds the local cache (checks/state.sh local) and hashes the diff through a
-temporary file.
+issue's ledger and the current hashes. It records nothing; reading rebuilds
+the local cache (checks/state.sh local), and the diff's hash comes from
+checks/workflow.sh diff-sha <issue>.
 
   frontier.py <issue>      reads the local ledger (checks/state.sh local: this
                            machine's journal only, never the issue's comments), hashes the
-                           branch's diff (checks/workflow.sh diff-sha), prints
+                           diff of the issue's tree (checks/workflow.sh
+                           diff-sha <issue>), prints
                            `realized <step>`, `ready <step> <entry> <rule>` and
                            `deferred <step>`; exit 0, or 2 when it cannot read
   frontier.py              self-test
@@ -248,9 +249,11 @@ def main(issue):
     d = p.stdout.strip()
     raw = {f[:-3]: open(os.path.join(d, f), "rb").read() for f in os.listdir(d) if f.endswith(".md")}
     ledger = {k: v.decode("utf-8", "replace") for k, v in raw.items()}
-    q = run("checks/workflow.sh", "diff-sha")
-    # exit 3: no change yet, so no diff-bound step can be realized
-    if q.returncode not in (0, 3) or (q.returncode == 0 and not q.stdout.strip()):
+    # the issue's own tree, which need not be this checkout
+    q = run("checks/workflow.sh", "diff-sha", issue)
+    # exit 3: no change yet; exit 4: the issue has no tree yet. Either way no
+    # diff-bound step can be realized, and the plan steps still show
+    if q.returncode not in (0, 3, 4) or (q.returncode == 0 and not q.stdout.strip()):
         print("frontier: checks/workflow.sh diff-sha failed: %s" % q.stderr.strip(), file=sys.stderr)
         return 2
     # the entry the graph's facts step names, as raw bytes, as declare hashes it

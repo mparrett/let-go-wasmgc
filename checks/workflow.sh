@@ -25,10 +25,11 @@
 #   workflow.sh ci <pr>            the PR's checks, asked once: 0 all passed,
 #                                  1 one failed, 3 still running (ask again
 #                                  later; never a polling loop)
-#   workflow.sh diff-sha           sha256 of the branch's diff from its base,
+#   workflow.sh diff-sha [<issue>] sha256 of the branch's diff from its base,
 #                                  untracked files included: what Diff-Sha
 #                                  entries bind to (checks/frontier.py);
-#                                  exit 3 when there is no change
+#                                  exit 3 when there is no change, 4 when
+#                                  the issue has no tree
 #   workflow.sh critic <issue>     that diff, written to
 #                                  $LW_STATE/<issue>.critic.diff with its
 #                                  sha256: what the un-primed, read-only critic
@@ -46,8 +47,18 @@
 #                                  the facts or the diff it approves. Run it in
 #                                  your own shell; an agent never does.
 #   workflow.sh                    self-test
+#
+# A command given an <issue> works on that issue's tree, not on this checkout:
+# $LW_TREE when set, else the 10_issue entry's `Workspace:` header (a worktree
+# of this repository), else the worktree of $LW_REPO (default this checkout's
+# repository) that has its `Branch:` checked out. With none of them it exits 4.
+# Its rows, gates and diff are that tree's; the ledger and the graph are this
+# checkout's.
 set -uo pipefail
+# a relative LW_TREE is the caller's, not this checkout's
+case ${LW_TREE:-/} in /*) ;; *) LW_TREE=$(cd "$LW_TREE" 2>/dev/null && pwd -P) || LW_TREE=/nonexistent ;; esac
 cd "$(dirname "$0")/.."
+tool=$(pwd -P)
 
 hooks() {
   local dir=${1:-$(git rev-parse --git-common-dir)/hooks} h fail=0
@@ -204,6 +215,44 @@ diff_sha() {
 }
 rev() { echo "$(ig rev-parse --short HEAD)$([ -z "$(ig status --porcelain)" ] || echo +edits)"; }
 
+# the worktree of <repo> that has <branch> checked out
+tree_of_branch() {
+  ig -C "$1" worktree list --porcelain | awk -v b="refs/heads/$2" '$1=="worktree"{w=substr($0, 10)} $1=="branch" && $2==b{print w; exit}'
+}
+# a header of an entry file: its first value, from the header block only (a
+# blank line ends it), without surrounding blanks
+entry_header() {
+  awk -v k="$2:" '/^$/{exit} $1==k{sub(/^[^:]*:[ \t]*/, ""); sub(/[ \t]+$/, ""); print; exit}' "$1" 2>/dev/null
+}
+# the tree an issue's commands work on (see the header): exit 2 when the
+# ledger cannot be read, 4 when the issue has no tree
+issue_tree() {
+  local issue=$1 d t b repo=${LW_REPO:-$tool} common
+  if [ -n "${LW_TREE:-}" ]; then t=$LW_TREE
+  else
+    d=$("$tool/checks/state.sh" local "$issue") || { echo "$issue: the local ledger cannot be read" >&2; return 2; }
+    t=$(entry_header "$d/10_issue.md" Workspace)
+    [ -n "$t" ] || { b=$(entry_header "$d/10_issue.md" Branch); [ -z "$b" ] || t=$(tree_of_branch "$repo" "$b"); }
+  fi
+  [ -n "$t" ] && [ -d "$t" ] || { echo "$issue: no tree (set Workspace: in its 10_issue, check out its Branch: in a worktree, or set LW_TREE)" >&2; return 4; }
+  # a Workspace: or LW_TREE must be the top of a worktree of this repository
+  t=$(cd "$t" && pwd -P) || return 4
+  common=$(ig -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  [ -n "$common" ] && [ "$(ig -C "$t" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$common" ] \
+    && [ "$(cd "$(ig -C "$t" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null && pwd -P)" = "$t" ] || {
+    echo "$issue: $t is not the top of a worktree of $repo" >&2; return 4; }
+  echo "$t"
+}
+# cd into an issue's tree, in the caller's (sub)shell; LW_STATE is made
+# absolute first, so it still names the ledger from the tree
+to_tree() {
+  local t; t=$(issue_tree "$1") || return
+  [ -z "${LW_STATE:-}" ] || LW_STATE=$(mkdir -p "$LW_STATE" && cd "$LW_STATE" && pwd -P) || return 2
+  cd "$t"
+}
+# run <fn> <issue> [args] in the issue's tree
+in_tree() { local fn=$1; shift; to_tree "${1:?issue}" || exit; "$fn" "$@"; }
+
 critic() {
   local issue=${1:?issue} f t
   f=$LW_STATE/$issue.critic.diff; mkdir -p "$LW_STATE"; t=$(mktemp) || return 2
@@ -234,7 +283,7 @@ record_rows() {
   if grep -qE 'base=( |$)|tree=( |$)' <<<"$pairs"; then
     printf '%s\n' "$pairs" > "$log"; echo "record-rows: a row has no result on one side; see $log" >&2; return 2
   fi
-  printf 'Rev: %s\nDiff-Sha: %s\n%s\n' "$(rev)" "$h" "$pairs" | checks/state.sh put "$issue" 30_rows
+  printf 'Rev: %s\nDiff-Sha: %s\n%s\n' "$(rev)" "$h" "$pairs" | "$tool/checks/state.sh" put "$issue" 30_rows
 }
 
 record_gate() {
@@ -250,22 +299,25 @@ record_gate() {
   done
   [ $rc = 0 ] || { printf '%s' "$out" >&2; echo "record-gate: a phase fails; see $log" >&2; return 1; }
   [ "$(diff_sha)" = "$h" ] || { echo "record-gate: the tree changed while the gates ran; nothing recorded" >&2; return 1; }
-  printf 'Rev: %s\nDiff-Sha: %s\n%s' "$(rev)" "$h" "$out" | checks/state.sh put "$issue" 35_gate
+  printf 'Rev: %s\nDiff-Sha: %s\n%s' "$(rev)" "$h" "$out" | "$tool/checks/state.sh" put "$issue" 35_gate
 }
 
 declare_() {
   local issue=${1:?issue} entry=${2:?entry} note=${3:-} bind f h
   case $entry in
-    20_plan) f=$(checks/state.sh local "$issue") || { echo "declare: the local ledger cannot be read" >&2; return 2; }
-             f=$f/$(awk '$1=="#:" && $4=="facts"{print $3}' checks/lifecycle.mk).md
+    20_plan) f=$("$tool/checks/state.sh" local "$issue") || { echo "declare: the local ledger cannot be read" >&2; return 2; }
+             f=$f/$(awk '$1=="#:" && $4=="facts"{print $3}' "$tool/checks/lifecycle.mk").md
              [ -s "$f" ] || { echo "declare: no facts recorded; nothing for the plan to rest on" >&2; return 2; }
              bind="Facts-Sha: $(shasum -a 256 < "$f" | cut -d' ' -f1)" ;;
-    45_review_ok|50_commit|60_push) h=$(diff_sha) || { echo "declare: no diff hash" >&2; return 2; }
+    45_review_ok|50_commit|60_push) h=$(to_tree "$issue" && diff_sha) || { local rc=$?; echo "declare: no diff hash" >&2; return $rc; }
              bind="Diff-Sha: $h" ;;
     *) echo "declare: $entry is not a declaration (20_plan, 45_review_ok, 50_commit, 60_push)" >&2; return 2 ;;
   esac
-  # a blank line ends the header block, so a note cannot override a header
-  printf 'Declared-By: operator\n%s\nRev: %s\n\n%s\n' "$bind" "$(rev)" "$note" | checks/state.sh put "$issue" "$entry"
+  # a blank line ends the header block, so a note cannot override a header.
+  # Rev is the issue's tree's; a plan can be declared before the tree exists
+  local r rc; r=$(to_tree "$issue" 2>/dev/null && rev); rc=$?
+  case $rc in 0) ;; 4) r=none ;; *) echo "declare: the issue's tree cannot be read" >&2; return 2 ;; esac
+  printf 'Declared-By: operator\n%s\nRev: %s\n\n%s\n' "$bind" "$r" "$note" | "$tool/checks/state.sh" put "$issue" "$entry"
 }
 
 selftest_diff() {  # diff-sha and branch_files, in a throwaway repository
@@ -286,6 +338,35 @@ selftest_diff() {  # diff-sha and branch_files, in a throwaway repository
   ck 'and listing files succeeds when it is the only untracked entry' '(cd "$t/r" && branch_files >/dev/null)'
   ( cd "$t/r" && echo z > ./--all )
   ck 'a changed file named like an option is listed as a path' '(cd "$t/r" && branch_files | tr "\\0" "\\n" | grep -qx -- --all)'
+  # an issue's commands hash the issue's tree, wherever they are run from
+  # (side-x's worktree sorts before side's, so a prefix match would find it)
+  ( cd "$t/r" && rm -f ./--all && git branch -q side && git branch -q side-x && git worktree add -q "$t/v" side-x \
+      && git worktree add -q "$t/w" side && cd "$t/w" && echo three >> a.txt && git -c user.name=t -c user.email=t@t commit -q -am three )
+  local w; w=$(cd "$t/w" && LW_STATE=$t/st diff_sha)
+  wf() { (export LW_STATE=$t/st LW_REPO=$t/r; unset LW_TREE; cd "$t/r" && "$tool/checks/workflow.sh" "$@"); }
+  put() { LW_STATE=$t/st "$tool/checks/state.sh" put "$1" "$2"; }
+  ck 'the worktree on a branch is found, not one on a branch it prefixes' '[ "$(cd "$(tree_of_branch "$t/r" side)" && pwd -P)" = "$(cd "$t/w" && pwd -P)" ]'
+  printf 'Issue: x\nWorkspace: %s  \n' "$t/w" | put abc0001 10_issue
+  ck 'diff-sha <issue> hashes its Workspace: from another tree' '[ "$(wf diff-sha abc0001)" = "$w" ]'
+  ck 'and critic writes that same diff' '[ "$(wf critic abc0001 | sed -n "s/^Diff-Sha: //p")" = "$w" ]'
+  printf 'Issue: x\nBranch: side\n' | put abc0002 10_issue
+  ck 'an issue with only a Branch: is hashed in the worktree on it' '[ "$(wf diff-sha abc0002)" = "$w" ]'
+  printf 'Issue: x\nBranch: side-x\n\nWorkspace: %s\n' "$t/w" | put abc0003 10_issue
+  ck 'a Workspace: below the header block is not read: its Branch: decides' '[ "$(wf diff-sha abc0003)" = "$(cd "$t/v" && LW_STATE=$t/st diff_sha)" ] && [ "$(wf diff-sha abc0003)" != "$w" ]'
+  ck 'LW_TREE names the tree whatever the ledger says' '[ "$(export LW_TREE=$t/w; cd "$t/r" && LW_STATE=$t/st LW_REPO=$t/r "$tool/checks/workflow.sh" diff-sha abc0003)" = "$w" ]'
+  ( mkdir -p "$t/o" && cd "$t/o" && git init -q )
+  printf 'Issue: x\nWorkspace: %s\n' "$t/o" | put abc0004 10_issue
+  ck 'a Workspace: in another repository is refused (exit 4)' 'wf diff-sha abc0004 >/dev/null 2>&1; [ $? = 4 ]'
+  printf 'Issue: y\n' | put abc0005 10_issue
+  ck 'an issue with no tree is refused, not hashed here (exit 4)' 'wf diff-sha abc0005 >/dev/null 2>&1; [ $? = 4 ]'
+  printf '| ID | Proposition | Status | Evidence | DependsOn |\n|---|---|---|---|---|\n| F1 | p | ESTABLISHED | e | - |\n' | put abc0005 15_facts
+  ck 'a plan is declared, quietly, before the issue has a tree' '[ -z "$(wf declare abc0005 20_plan n 2>&1 >/dev/null)" ] && wf declare abc0005 20_plan n >/dev/null 2>&1'
+  ck 'and records Rev: none' 'grep -qx "Rev: none" "$(LW_STATE=$t/st "$tool/checks/state.sh" local abc0005)/20_plan.md"'
+  ck 'a review is declared against the issue'"'"'s tree, from another one' 'wf declare abc0001 45_review_ok n >/dev/null 2>&1 && grep -qx "Diff-Sha: $w" "$(LW_STATE=$t/st "$tool/checks/state.sh" local abc0001)/45_review_ok.md"'
+  ck 'with that tree'"'"'s Rev' 'grep -qx "Rev: $(cd "$t/w" && rev)" "$(LW_STATE=$t/st "$tool/checks/state.sh" local abc0001)/45_review_ok.md"'
+  ck 'a review with no tree is refused (exit 4)' 'wf declare abc0005 45_review_ok n >/dev/null 2>&1; [ $? = 4 ]'
+  ck 'a subdirectory of a worktree is not a tree' '(mkdir -p "$t/w/sub"; export LW_TREE=$t/w/sub; cd "$t/r" && LW_STATE=$t/st LW_REPO=$t/r "$tool/checks/workflow.sh" diff-sha abc0005 >/dev/null 2>&1); [ $? = 4 ]'
+  ck 'a relative LW_TREE is the caller'"'"'s' '[ "$(cd "$t" && LW_TREE=w LW_STATE=$t/st LW_REPO=$t/r "$tool/checks/workflow.sh" diff-sha abc0005)" = "$w" ]'
   rm -rf "$t"
   return $f
 }
@@ -343,10 +424,10 @@ case ${1:-} in
   baseline) shift; . checks/env.sh; baseline "$@" ;;
   pushed)   shift; pushed "$@" ;;
   pr-ready) shift; pr_ready "$@" ;;
-  critic)   shift; . checks/env.sh; critic "$@" ;;
-  diff-sha) . checks/env.sh; diff_sha ;;
-  record-rows) shift; . checks/env.sh; record_rows "$@" ;;
-  record-gate) shift; . checks/env.sh; record_gate "$@" ;;
+  critic)   shift; . checks/env.sh; in_tree critic "$@" ;;
+  diff-sha) shift; . checks/env.sh; if [ $# -gt 0 ]; then to_tree "$1" || exit; fi; diff_sha ;;
+  record-rows) shift; . checks/env.sh; in_tree record_rows "$@" ;;
+  record-gate) shift; . checks/env.sh; in_tree record_gate "$@" ;;
   declare)  shift; . checks/env.sh; declare_ "$@" ;;
   ci)       shift; ci "$@" ;;
   '')       selftest; r1=$?; selftest_diff; r2=$?; [ $r1 = 0 ] && [ $r2 = 0 ] ;;

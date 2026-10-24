@@ -50,6 +50,6 @@ plan-approved: facts-recorded
 facts-recorded: issue-opened
 	@echo "[15] the facts the plan rests on, a Belnap table row each: | ID | Proposition | Status | Evidence | DependsOn |"
 issue-opened: in-flight-reviewed
-	@echo "[10] the request: branch, base, conditions of satisfaction"
+	@echo "[10] the request: Branch:, Base:, Workspace: (the issue's worktree, where its diff is hashed), Conditions-Of-Satisfaction:"
 in-flight-reviewed:
 	@echo "[05] make -f checks/workflow.mk start; a disposition for every in-flight item"
