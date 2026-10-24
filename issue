@@ -1,0 +1,18 @@
+id: 294f118
+v: 2
+title: analyze+lower takes 15 s for a large program on both targets
+status: open
+priority: medium
+created: 2026-10-24T19:19:58Z
+updated: 2026-10-24T19:19:58Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: analyze+lower takes about 15 s for a large program on both targets: 13.99 s on gc and 14.97 s on llvm for xsofy's world dump, against 15–22 ms for a small one (git-issue:7be2318). It is gc's largest cost and llvm's second.
+ 
+ This is the program's own analysis and lowering, re-run on every compile of an unchanged program, including the boxing rounds `compile-text*` repeats until no defn needs boxed params.
+ 
+ Measurements that close it, each with its conditions (revision, load average, run count, through checks/quiet.sh):
+ 
+ - M1 analyze+lower split into analysis, lowering and the number of boxing rounds, on the world dump for both targets, median of 5.
+ - M2 after a change: analyze+lower on the world dump for both targets, median of 5, with behavior unchanged (gate 2 and the llvm lane's oracle rows).
