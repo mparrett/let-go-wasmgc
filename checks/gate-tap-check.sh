@@ -5,6 +5,8 @@
 # directives sit are judged by a TAP parser rather than by eye.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# an outer gate's row selection must not replace the stub rows
+unset LW_GATE_ROWS
 command -v prove >/dev/null || { echo "SKIP no prove on PATH (it ships with Perl)"; exit 2; }
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 fail=0

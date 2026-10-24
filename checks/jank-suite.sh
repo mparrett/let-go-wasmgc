@@ -44,7 +44,7 @@ commit=$(sed -nE 's/^\(def letgo-commit "([0-9a-f]+)"\)$/\1/p' "$here/src/lw_rt.
 suite=$LETGO/test/clojure-test-suite/test
 want=$(git -C "$LETGO" ls-tree "$commit" test/clojure-test-suite | awk '{print $3}')
 have=$(git -C "$LETGO/test/clojure-test-suite" rev-parse HEAD 2>/dev/null)
-[ -n "$want" ] && [ "$have" = "$want" ] || { echo "SKIP jank-suite: $LETGO/test/clojure-test-suite is at ${have:-nothing}, the pin $commit records $want" >&2; exit 2; }
+[ -n "$want" ] && [ "$have" = "$want" ] || { echo "SKIP jank-suite: $LETGO/test/clojure-test-suite is at ${have:-nothing}, the pin $commit records $want"; exit 2; }
 # let-go's test/compat at the pin (the portability shim the native harness loads)
 compat=${LW_CACHE:-$HOME/.cache/let-go-wasmgc}/letgo-compat-$commit/test/compat
 if [ ! -f "$compat/clojure/core-test/portability.lg" ]; then
