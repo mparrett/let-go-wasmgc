@@ -9,9 +9,25 @@
 # bonus `ok n - <id> # TODO …` and fails the gate, since the issue's entry is
 # then stale. Exit 3 without an owning issue, exit 2 whose last line is not a
 # SKIP line (the word SKIP, then a space or the line's end), and 1 fail. A `#`
-# in a reason is written `\#`, and a backslash `\\`. An empty phase prints
-# `1..0`. The plan line `1..N` comes first; there is no version line. The gate
-# exits 1 when anything fails.
+# in a reason is written `\#`, and a backslash `\\`. The stream is TAP 13: the
+# version line, then the plan line `1..N` (`1..0` for an empty phase), then
+# each row's line and under it a YAML block: `duration_ms`, the row's wall time
+# less the time it was blocked on the slot pool (an attested row's is the time
+# its freshness check took), and that blocked time, `wait_ms`. Two rows that
+# run at once (LW_GATE_J) still share the machine, so rank rows by cost from a
+# quiet run with LW_GATE_J=1. A row that runs a gate itself does not see its
+# inner rows' waits, which the inner gate traces per row, so they count as its
+# work. The gate exits 1 when anything fails.
+#
+# Each row also appends one line to the timings ledger, $LW_GATE_TIMES
+# (default $LW_STATE/gate-times.tsv, per machine and untracked): when the gate
+# started (UTC), the revision (+edits when the tree has changes), the host, the
+# phase, the row, its exit, duration_ms, wait_ms, attested (1 or 0), the
+# LW_GATE_J it ran under, and the 1-minute load average and the slots held
+# (checks/sem.sh) when the gate started. A row is logged when its line prints,
+# so an interrupted gate logs only the rows it printed. A ledger with another
+# header (an older format) is moved aside to <ledger>.<time>.old, and a new
+# one is started.
 #
 # D106 (1c): the phase's rows run LW_GATE_J at a time (default 2; 1 = one
 # after another), and their lines come in items.tsv order (printed as soon as
@@ -43,7 +59,19 @@ while IFS= read -r id; do ids+=("$id"); done < <(awk -F'\t' -v p="$ph" '$1 !~ /^
 # beside P7.5's (D194)
 case $ph in 7) ids+=(P10.3) ;; esac
 if [ -n "${LW_GATE_ROWS:-}" ]; then ids=(); for id in $LW_GATE_ROWS; do ids+=("$id"); done; fi   # test hook (attest.sh)
-[ ${#ids[@]} -gt 0 ] || { echo "1..0"; exit 0; }
+[ ${#ids[@]} -gt 0 ] || { printf 'TAP version 13\n1..0\n'; exit 0; }
+# the run's conditions, taken before any row starts
+times=${LW_GATE_TIMES:-$LW_STATE/gate-times.tsv}
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+rev=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)$([ -z "$(git status --porcelain 2>/dev/null)" ] || echo +edits)
+load1=$(uptime | sed 's/.*load averages*: *//; s/[, ].*//')
+held=$(ls -d "$LW_SEM"/slot*/ 2>/dev/null | wc -l | tr -d ' ')
+mkdir -p "$(dirname "$times")"
+header=$(printf 'started\trev\thost\tphase\trow\texit\tduration_ms\twait_ms\tattested\tjobs\tload1\tslots_held')
+[ ! -s "$times" ] || [ "$(head -1 "$times")" = "$header" ] || command mv "$times" "$times.$(date -u +%Y%m%dT%H%M%SZ).old"
+# noclobber: two first gates at once write one header
+[ -s "$times" ] || (set -C; printf '%s\n' "$header" >"$times") 2>/dev/null
+host=$(hostname -s 2>/dev/null || uname -n)
 
 logd=${TMPDIR:-/tmp}; logd=${logd%/}/lw-gate-$ph; mkdir -p "$logd"
 rcd=$(mktemp -d); xp=""
@@ -76,20 +104,38 @@ fi
 # P5.4: a row whose inputs (checks/attest.sh key) are unchanged since its last
 # green run is not rerun; it reports `ok <id> (attested)`. LW_ATTEST=0 runs
 # everything (phase-gate decisions are taken that way, see attest.sh header).
+# ms since the epoch: bash 5's EPOCHREALTIME, else perl (a process per call)
+now_ms() { if [ -n "${EPOCHREALTIME:-}" ]; then local u=${EPOCHREALTIME/[.,]/}; echo $(( u / 1000 )); else perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; fi; }
+# the ms a row spent blocked on the slot pool: some sem.sh of the row waiting
+# and none holding a slot (its intervals from LW_SEM_TRACE), so a worker that
+# waits while another of the row's works is not counted, beyond the up to
+# 0.5 s it takes to retry after a release
+blocked_ms() {
+  [ -s "$1" ] || { echo 0; return; }
+  awk '{ e[n++] = $1 " 1 0"; e[n++] = $2 " -1 1"; e[n++] = $3 " 0 -1" }
+    END { for (i = 0; i < n; i++) print e[i] }' "$1" | sort -n -k1,1 |
+  awk '{ if (NR > 1 && w > 0 && h == 0) b += $1 - t; t = $1; w += $2; h += $3 } END { print b + 0 }'
+}
+# a row's work time (wall minus blocked) and blocked time go to
+# $rcd/<id>.ms and <id>.wait before its exit to <id>.rc, which the output
+# loop waits for
 row() {
+  local t0 w; t0=$(now_ms); export LW_SEM_TRACE=$rcd/$1.sem
   if [ "${LW_ATTEST:-1}" != 0 ] && checks/attest.sh fresh "$1" 2>/dev/null; then
-    : >"$rcd/$1.att"; echo 0 >"$rcd/$1.tmp"; command mv "$rcd/$1.tmp" "$rcd/$1.rc"; return
+    : >"$rcd/$1.att"; echo $(( $(now_ms) - t0 )) >"$rcd/$1.ms"; echo 0 >"$rcd/$1.wait"
+    echo 0 >"$rcd/$1.tmp"; command mv "$rcd/$1.tmp" "$rcd/$1.rc"; return
   fi
   LW_ITEMS=$items checks/run.sh "$1" >"$logd/$1.log" 2>&1
-  rc=$?; [ $rc = 0 ] && [ "${LW_ATTEST:-1}" != 0 ] && checks/attest.sh record "$1" 2>/dev/null
+  rc=$?; w=$(blocked_ms "$rcd/$1.sem"); echo $(( $(now_ms) - t0 - w )) >"$rcd/$1.ms"; echo "$w" >"$rcd/$1.wait"
+  [ $rc = 0 ] && [ "${LW_ATTEST:-1}" != 0 ] && checks/attest.sh record "$1" 2>/dev/null
   echo $rc >"$rcd/$1.tmp"; command mv "$rcd/$1.tmp" "$rcd/$1.rc"
 }
-export -f row
+export -f row now_ms blocked_ms
 printf '%s\0' "${ids[@]}" | xargs -0 -n 1 -P "$j" bash -c 'row "$1"' _ &
 xp=$!
 # `#` would start a TAP directive inside a description or a reason
 tapesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/#/\\#/g'; }
-echo "1..${#ids[@]}"
+printf 'TAP version 13\n1..%s\n' "${#ids[@]}"
 n=0
 for id in "${ids[@]}"; do
   n=$((n + 1))
@@ -114,6 +160,11 @@ for id in "${ids[@]}"; do
     case $rc in 2) why="exit 2, and its last line is not a SKIP line" ;; 3) why="not built, and no owning issue in items.tsv" ;; *) why="exit $rc" ;; esac
     echo "not ok $n - $(tapesc "$id") ($why)"; echo "gate: $id output kept in $logd/$id.log" >&2; fail=1
   fi
+  ms=$(cat "$rcd/$id.ms" 2>/dev/null); case $ms in ''|*[!0-9]*) ms=null ;; esac
+  wt=$(cat "$rcd/$id.wait" 2>/dev/null); case $wt in ''|*[!0-9]*) wt=null ;; esac
+  printf '  ---\n  duration_ms: %s\n  wait_ms: %s\n  ...\n' "$ms" "$wt"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$started" "$rev" "$host" "$ph" "$id" "$rc" "$ms" "$wt" \
+    "$([ -e "$rcd/$id.att" ] && echo 1 || echo 0)" "$j" "$load1" "$held" >>"$times"
 done
 wait "$xp" 2>/dev/null; xp=""
 exit $fail
