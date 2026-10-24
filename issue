@@ -1,0 +1,15 @@
+id: 7e15c35
+v: 2
+title: A row that skips one lane still reports a plain ok
+status: open
+priority: medium
+created: 2026-10-24T14:46:19Z
+updated: 2026-10-24T14:46:19Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: A row that skips one of its lanes still reports a plain `ok`, so the gate's TAP hides the skip.
+ 
+ `checks/wasmbin-roundtrip.sh` (P10.0) prints `SKIP legmacs (no LEGMACS checkout)`, checks xsofy, and exits 0. `checks/eval-hosts.sh` and `checks/browser-boot.sh` (D227) pass when the browser lane is absent and the other lanes decide. Under D228 a skip shows only when the row exits 2 with `SKIP` on its last line, so none of these show as skipped.
+ 
+ Decide one rule: either a row with a skipped lane exits 2 (the lanes that ran are then not reported as passing), or such a row is split so each lane is its own row and can skip alone.
