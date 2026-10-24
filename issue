@@ -8,6 +8,7 @@ updated: 2026-10-24T19:19:58Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
+relates_to: 7be2318
 description: Every llvm compile parses an 81 MB runtime snapshot: the restore takes 3.47 s, 84% of a 4.1 s compile of `(println 1)`, against 0.22 s for gc's 8.1 MB snapshot (git-issue:7be2318).
  
  Of the 3.47 s, `slurp` takes 63 ms, `read-string` 3.03 s, and the restore itself about 0.38 s. `:lowered` holds 67 MB of the 81 MB. Each of its entries stores a function twice: the structured `:items` (29.8 MB) and the `:text` rendered from them (28.6 MB). After a unit is built, only `:text`, `:defs` and `:refs` are read. The shake then keeps only the live units, so most of what is parsed is not used.
