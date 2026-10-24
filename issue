@@ -19,3 +19,25 @@ description: Re-measure how much slower the llvm driver compiles than the GC dri
  - M1 compile time per program for both drivers over a fixed set: a one-line program, corpus/scalar/fib.clj, and one legmacs-sized program; median of 5.
  - M2 for the llvm driver, the split between runtime analysis and the program's own lowering.
  - M3 the ratio of M1's llvm and GC medians, stated as a bound (llvm/GC <= r) under M1's conditions.
+
+## Comments
+[2026-10-24T19:20:09Z] Norman Nunley, Jr: M1–M3 are measured. The make target waits for the rebase (git-issue:d828fec), so this stays open.
+ 
+ M1, median wall time of 5 compiles with the runtime cache warm (spread under 1%):
+ 
+ | program | gc | llvm |
+ |---|---|---|
+ | `(println 1)` | 0.70 s | 4.14 s |
+ | `corpus/scalar/fib.clj` | 0.70 s | 4.16 s |
+ | `corpus/dump-world.lg` (xsofy) | 21.95 s | 65.83 s |
+ 
+ M2, the llvm phases (`LW_PHASE_TIMES=1`). For the small programs the runtime restore takes 3.47 s (84%), the program's own analyze+lower 15–22 ms, assemble 0.32 s. For the world dump, analyze+lower takes 14.97 s (23%), assemble 46.45 s (71%), the restore 3.51 s. gc on the world dump: analyze+lower 13.99 s, assemble 6.97 s.
+ 
+ M3: llvm/gc ≤ 6.0 on this set (5.95 for the small programs, 3.00 for the world dump).
+ 
+ Conditions: llvm-poly at its head plus the phase timer (branch `llvm-phase-times`), Linux x86_64 with 16 cores, lg e9789b7d, xsofy 3aa864d, clang 23.1.4, through `checks/quiet.sh` (load average 1.15 before, 2.35 after). legmacs does not compile on llvm (git-issue:7bc0bae).
+ 
+ Three costs to work on:
+ - analyze+lower, about 15 s for a large program on both targets (git-issue:294f118);
+ - llvm's assemble (`llvm-module` and its shake), 46 s against gc's 7 s (git-issue:30a9361);
+ - the 3.5 s runtime restore, which dominates small programs: 3.0 s of it is `read-string` over an 81 MB snapshot. About 30 MB of that holds each function twice, as `:items` and as the `:text` rendered from them (git-issue:998c561).
