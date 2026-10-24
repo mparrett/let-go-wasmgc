@@ -8,6 +8,7 @@ updated: 2026-10-24T19:19:58Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
+relates_to: 7be2318
 description: On xsofy's world dump the llvm driver spends 46.45 s in assemble (`llvm-module` and its shake), against 6.97 s for gc: 71% of a 65.8 s compile (git-issue:7be2318). For a large program it is the largest llvm cost.
  
  Assemble keeps the live units of the cached runtime and the program and joins their text. On 2026-10-09 it kept 398 of 3,049 runtime fn units for `(println 1)`. The world dump keeps far more, and `LW_PHASE_TIMES` does not yet say which part of assemble takes the time.
