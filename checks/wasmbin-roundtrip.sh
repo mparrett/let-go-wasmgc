@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
     *) echo "usage: $0 [--wat-dir DIR]" >&2; exit 2 ;;
   esac
 done
-command -v wasm-tools >/dev/null || { echo "wasm-tools not on PATH" >&2; exit 2; }
+command -v wasm-tools >/dev/null || { echo "SKIP wasm-tools not on PATH"; exit 2; }
 par=${LW_PAR:-3}
 case $par in ''|*[!0-9]*|0) echo "LW_PAR must be a positive integer (got '$par')" >&2; exit 2;; esac
 cd "$root"

@@ -23,8 +23,8 @@
 # A reached native without a twin that the file names is listed on a
 # SKIPPED line with its reason and not counted as missing. The file cannot
 # rot: an entry that is not in the reach list (after --exclude), that has a
-# twin, that is listed twice, or that has no reason is a SKIP ERROR, and
-# any SKIP ERROR makes the exit 2 whatever the missing count.
+# twin, that is listed twice, or that has no reason is a BAD SKIP ENTRY, and
+# any BAD SKIP ENTRY makes the exit 1 whatever the missing count.
 #
 # A twin covers every var bound to the same NativeFn (the inventory's
 # same-fn-as column): a twin for core/trim covers string/trim.
@@ -146,11 +146,11 @@ awk -F'\t' -v invf="$inv" -v manf="$tmp/manifest" -v ex="$exclude" -v skipf="$tm
       printf "== SKIPPED (%d)\n", skipped
       for (i = 1; i <= nskip; i++) { q = skiporder[i]; g = (q in grp) ? grp[q] : q; if ((q in inreach) && !(g in claimed)) printf "  %-36s %s\n", q, skipwhy[q] }
     }
-    for (i = 1; i <= nerr; i++) printf "SKIP ERROR %s\n", skiperr[i]
+    for (i = 1; i <= nerr; i++) printf "BAD SKIP ENTRY %s\n", skiperr[i]
     if (excluded > 0) printf "EXCLUDED %d (%s)\n", excluded, ex
     if (skipped > 0) printf "SKIPPED %d\n", skipped
     printf "MISSING %d / REACHED %d\n", missing + 0, reached + 0
-    if (nerr > 0) exit 2
+    if (nerr > 0) exit 1
     exit (missing > 0) ? 1 : 0
   }
 ' "$reach"

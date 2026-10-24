@@ -2,7 +2,7 @@
 # checks/linear-gc.sh <row> — rows P11.0-P11.7, the linear target's M2
 # collector (docs/LINEAR-TARGET-SPEC.md, "Milestone 2", D197). Each phase's
 # pull request replaces its rows' placeholder with the real check. Exit 0
-# pass, 1 fail, 2 the phase is not built yet.
+# pass, 1 fail, 3 the phase is not built yet.
 set -uo pipefail
 row=${1:?usage: linear-gc.sh <row>}
 case $row in
@@ -13,4 +13,4 @@ case $row in
   *) echo "linear-gc.sh: unknown row $row" >&2; exit 2 ;;
 esac
 echo "$row: linear M2 phase $phase is not built yet (docs/LINEAR-TARGET-SPEC.md, D197)"
-exit 2
+exit 3

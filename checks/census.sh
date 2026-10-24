@@ -96,10 +96,11 @@ census_key() {
   } | shasum -a 256 | cut -d' ' -f1
 }
 
-fail=0
+fail=0 skip=
 for c in "${corpora[@]}"; do
   root=$LW_ROOT/$c
-  [ -d "$root" ] || { echo "no corpus at $root" >&2; exit 2; }
+  # a missing corpus skips the row only when every corpus that ran passed
+  [ -d "$root" ] || { skip="SKIP no corpus at $root"; continue; }
   # same file lists as ../emit-wasm-probe/census/coverage-report.md
   case $c in
     xsofy)   (cd "$root" && { echo main.lg; find xsofy -name '*.lg' | LC_ALL=C sort; }) > "$t/$c-files" ;;
@@ -185,4 +186,6 @@ PYEOF
   [ $prc -eq 0 ] || fail=1
   lock_release
 done
-exit $fail
+[ $fail = 0 ] || exit 1
+[ -z "$skip" ] || { echo "$skip"; exit 2; }
+exit 0

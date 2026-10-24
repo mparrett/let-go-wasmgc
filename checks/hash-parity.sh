@@ -13,7 +13,7 @@
 # process, and compare with the Go table. This proves the table is what lg
 # itself computes, and is the falsification path for the table's format.
 #
-# Exit: 0 = every row matches; 1 = at least one miss; 2 = hook missing.
+# Exit: 0 = every row matches; 1 = at least one miss; 3 = hook missing (not built).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/env.sh"
@@ -21,7 +21,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 self=0
 if [ "${1:-}" = --self ]; then self=1; shift; fi
 tsv=${1:-$here/../corpus/hash/vectors.tsv}
-[ -r "$tsv" ] || { echo "no vectors file: $tsv"; exit 2; }
+[ -r "$tsv" ] || { echo "NOT IMPLEMENTED: no vectors file $tsv"; exit 3; }
 tsv=$(cd "$(dirname "$tsv")" && pwd)/$(basename "$tsv")
 
 if [ "$self" = 1 ]; then
@@ -50,7 +50,7 @@ if [ "$self" = 1 ]; then
 fi
 
 hook=${WASM_HASH:-$here/wasm-hash.sh}  # override to test the loop
-[ -x "$hook" ] || { echo "NOT IMPLEMENTED: $hook missing"; exit 2; }
+[ -x "$hook" ] || { echo "NOT IMPLEMENTED: $hook missing"; exit 3; }
 rows=0 misses=0 limits=0
 while IFS=$'\t' read -r kind edn want; do
   case $kind in ''|'#'*) continue ;; esac

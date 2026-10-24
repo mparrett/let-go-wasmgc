@@ -27,16 +27,18 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 if (!fs.existsSync(path.join(root, 'host/explorer.html')) || !fs.existsSync(path.join(root, 'host/build-explorer-serve.sh'))) {
   console.log('NOT IMPLEMENTED: host/explorer.html or host/build-explorer-serve.sh missing');
-  process.exit(2);
+  process.exit(3);
 }
 const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
 const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
-const pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href);
+let pw;
+try { pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href); }
+catch { console.log(`SKIP no playwright under ${pwDir} (set LW_BROWSER_TOOLS)`); process.exit(2); }
 const chromium = pw.chromium || pw.default.chromium;   // resolve() lands on the CJS entry
 
 // native's reader error for the third source, the text both panes must show
 const LG = process.env.LG;
-if (!LG) { console.log('LG unset (source checks/env.sh)'); process.exit(2); }
+if (!LG) { console.log('SKIP LG unset (source checks/env.sh)'); process.exit(2); }
 const READER_SRC = '(+ 1 2))';
 const nat = spawnSync(LG, ['-e', READER_SRC], { encoding: 'utf8' });
 const nativeReader = (nat.stdout + nat.stderr).replace(/\x1b\[[0-9;]*m/g, '').trimEnd();
