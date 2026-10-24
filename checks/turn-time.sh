@@ -14,9 +14,10 @@
 # load drifts hit both; a run's statistic is its median over the counted turns.
 #
 # Writes corpus/xsofy/turn-time.md and prints it. Exit 0 iff every run counted
-# at least KEYS/2 turns in both lanes; 2 when checks/browser-probe.mjs finds no
-# Chromium (after the lanes built) or a run times out; 1 on a build failure, or
-# before any build when LW_REQUIRE_BROWSER=1 and the probe fails.
+# at least KEYS/2 turns in both lanes; 2 (SKIP) when checks/browser-probe.mjs
+# finds no Chromium, after the lanes built; 1 on a build failure, on a harness
+# failure (a run timed out or counted too few turns; D228), or before any build
+# when LW_REQUIRE_BROWSER=1 and the probe fails.
 # Env: LG, XSOFY, LETGO, SEED, KEYS, REPS, KEEP=1, LW_LANE5_CACHE, LW_BROWSER_TOOLS,
 # LW_REQUIRE_BROWSER.
 set -uo pipefail
@@ -114,10 +115,10 @@ for lane in ('lw', 'stock'):
         else: out.append(f'{lane} run {i} turns: {x.get("turnLog", "")}')
 text = '\n'.join(out) + '\n'
 open(md, 'w').write(text); print(text)
-sys.exit(0 if ok else 2)
+sys.exit(0 if ok else 1)
 PY
 r=$?
-[ "$harness" = 1 ] && r=2
+[ "$harness" = 1 ] && r=1
 if [ "$r" = 0 ]; then echo "PASS (turn-time: table written to corpus/xsofy/turn-time.md; every run counted at least $((KEYS/2)) turns in both lanes)"
 else echo "HARNESS FAIL (turn-time: a run timed out or counted too few turns; table written to corpus/xsofy/turn-time.md)"; fi
 exit "$r"
