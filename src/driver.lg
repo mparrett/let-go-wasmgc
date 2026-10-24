@@ -1453,6 +1453,22 @@
           (clojure.string/starts-with? x "--profile=") (recur (rest xs) out target (subs x 10))
           :else (recur (rest xs) (conj out x) target profile))))))
 
+;; LW_PHASE_TIMES=1: each compile phase prints `phase <name> <ms>` to stderr
+;; (checks/compile-times.sh reads them). `read` is the program file; its
+;; libraries are read during `load`. No destructuring here: a destructuring
+;; binding takes a gensym when this file loads.
+(def ^:private phase-times? (= "1" (os/getenv "LW_PHASE_TIMES")))
+(defn- phase
+  "f's value; with LW_PHASE_TIMES=1, also the wall time f took, as a phase line."
+  [nm f]
+  (if phase-times?
+    (let [t0 (System/nanoTime)
+          v (f)]
+      (binding [*out* *err*]
+        (println (str "phase " nm " " (quot (- (System/nanoTime) t0) 1000000))))
+      v)
+    (f)))
+
 (defn compile-text*
   "The module text for the program at path in, the WAT -main writes to its
    output file. A library entry (P12.4): the backend carried as a program
@@ -1473,7 +1489,7 @@
         skip (:skip opts)
         opts (assoc {:target (:target opts) :profile (:profile opts) :rt (:rt opts) :shake (:shake opts)} :trap-throws (boolean test?))
         ;; read in user, as native loads a program (::k is :user/k)
-        forms (mapcat splice-do (in-ns-call 'user #(read-program in)))
+        forms (phase "read" (fn [] (doall (mapcat splice-do (in-ns-call 'user (fn [] (read-program in)))))))
         tests (atom [])
         forms (if test?
                 (let [[pre post] (split-with #(not (and (seq? %) (= 'ns (first %)))) forms)
@@ -1631,7 +1647,7 @@
                                    (do (process! (stub-deftest (def-sym form))) nil)
                                    (reduced m))
                                  (throw e)))))
-        compile-error (reduce step nil forms)
+        compile-error (phase "load" (fn [] (reduce step nil forms)))
         ;; Own methods are program definitions; library methods acquire the new arms.
         compile-error (let [own (ns-name *ns*)
                             es (filter (fn [e] (= own (:ns e))) (vals @protocol-methods))
@@ -1742,7 +1758,7 @@
                                                           (contains? own (some-> (:ns (meta %)) ns-name)))
                                                      (if @alter-fallback @rooted-vars @altered-vars))))]
          ;; the cached, fully lowered runtime (lower-wasm/load-rtlib!)
-         (when rtlib? (lw/load-rtlib!))
+         (when rtlib? (phase "rtlib" (fn [] (lw/load-rtlib!))))
          (doseq [v @decls] (lw/add-decl! v))
          ;; bug-01: a param stays typed (i64) only while every call passes
          ;; an int and the defn is never used as a value; lowering reports
@@ -1760,13 +1776,15 @@
                                 :else (lw/lower-fn %))
                cache (when (= :llvm lw/*target*)
                        (lower-llvm-analysis-cache/new-cache (not= "0" (os/getenv "LW_LL_ANALYSIS_REUSE"))))
-               fns (loop [boxed #{}]
-                     (when cache (lower-llvm-analysis-cache/next-round! cache))
-                     (let [infos (analyze-program! @defns main-src boxed (boolean test?) cache)
-                           notes (atom {})
-                           fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
-                           more (remove boxed (boxing-needed @notes prog-vars))]
-                       (if (empty? more) fns (recur (into boxed more)))))]
+               fns (phase "analyze+lower"
+                     (fn []
+                       (loop [boxed #{}]
+                         (when cache (lower-llvm-analysis-cache/next-round! cache))
+                         (let [infos (analyze-program! @defns main-src boxed (boolean test?) cache)
+                               notes (atom {})
+                               fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
+                               more (remove boxed (boxing-needed @notes prog-vars))]
+                           (if (empty? more) fns (recur (into boxed more)))))))]
            (when (and cache (= "1" (os/getenv "LW_LL_ANALYSIS_STATS")))
              (let [s (lower-llvm-analysis-cache/stats cache)]
                (binding [*out* *err*]
@@ -1779,7 +1797,7 @@
            ;; --no-shake: the whole runtime, for the size comparison
            (when (and (:rt opts) (not rtlib?) (not (:shake opts)))
              (doseq [d lw-rt/defns] (lw/rt-analyze! (:var d))))
-           (lw/session-module ss fns))))))))
+           (phase "assemble" (fn [] (lw/session-module ss fns))))))))))
 
 (defn qualify-test-template
   "Qualify shim references in a macro template, before user forms enter it."
@@ -1850,9 +1868,10 @@
         _ (when (flags "--read-clj") (set-read-clj! true))
         [in out] (remove flags argv)
         rt? (not (flags "--no-rt"))]
-    (spit out (compile-text in {:target target :profile profile :rt rt? :shake (not (flags "--no-shake"))
-                                :rtlib (and rt? (not (flags "--no-rtlib")))
-                                :test (boolean (flags "--test")) :skip skip}))))
+    (let [text (compile-text in {:target target :profile profile :rt rt? :shake (not (flags "--no-shake"))
+                                 :rtlib (and rt? (not (flags "--no-rtlib")))
+                                 :test (boolean (flags "--test")) :skip skip})]
+      (phase "write" (fn [] (spit out text))))))
 
 ;; Only the driver run as lg's program file compiles: the namespace-renamed
 ;; copy the self-host checks carry (lwx.driver) is required as a library and
