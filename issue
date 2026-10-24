@@ -16,3 +16,6 @@ description: gate.sh prints each row's wall time and records it, so we can see w
  - F1 every ok and FAIL line carries the row's wall seconds: gate.sh's self-test through LW_GATE_ROWS (command and output).
  - F2 each run appends one line per row to a timings ledger with the revision, the load average and the slots held when it started (a file:line of the format, and a sample).
  - F3 everything that reads gate output still reads it: a search for its consumers, and their rows pass (command and exit).
+
+## Comments
+[2026-10-24T21:35:42Z] Matt Parrett: Closed by #71 (7469958): gate.sh prints TAP 13 duration_ms/wait_ms blocks and appends to $LW_GATE_TIMES (D229). Verified at the merged head: P0.7 32/32 on three runs, gates 0 and 3 parse under prove, ledger rows carry rev, host, load1 and attested.
