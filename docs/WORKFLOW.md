@@ -32,9 +32,11 @@ can start.
 
 ## Workflow state
 
-`checks/state.sh` keeps an issue's working state as comments led by
-`State: NN_name`, and `checks/workflow.sh` and `checks/workflow.mk` wrap the
-steps a script can decide:
+`checks/state.sh` keeps an issue's working state as entries led by
+`State: NN_name` in a local journal, the authority; with `LW_STATE_POST=1` an
+entry is also posted as a comment on the issue, for others to see (where the
+shared copy lives is 562dff4). `checks/workflow.sh` and `checks/workflow.mk`
+wrap the steps a script can decide:
 
     make -f checks/workflow.mk start      # in-flight list -> 05_inflight
     make -f checks/workflow.mk baseline   # the rows that fail on the base
@@ -52,7 +54,8 @@ taken while an in-flight item of the caller's can move.
 Commit subjects are Conventional Commits 1.0.0: `type(scope): description`,
 where the scope is the area the old prefixes named (`host`, `rt`, `checks`,
 `corpus`, `docs`). `checks/subject-lint.py` enforces it through the commit-msg
-hook (`make -f checks/workflow.mk hooks`). Every commit, including those on a
+hook that #68 adds to `.pre-commit-config.yaml` (`make -f
+checks/workflow.mk hooks` installs the hooks). Every commit, including those on a
 branch, since a squash merge keeps whichever subject the PR carries. A body
 says why; a trailer `Issue: #<id>`, `Fixes: #<id>` or `Closes: #<id>` names the
 board item.
@@ -62,23 +65,21 @@ board item.
 A PR is reviewed at its head commit, in a worktree detached at that commit,
 and the review names the commands it ran and their exits. A PR merges when
 CI is green, it has a review, every concern in the review is answered, and
-each fix was verified at the head being merged. A byte-neutral change
-(twins, aliases, ns forms, host scripts) proves itself with the GC byte
-guard (`checks/run.sh P8.0`) and gate 2; a change that moves bytes says so
-in its DECISIONS entry with the reason, and the oracle rows are what decide
-behavior (907a973).
+each fix was verified at the head being merged. A change proves itself
+with gate 2 and the oracle rows of the programs it touches; the GC byte
+guard (P8.0) is advisory and decides nothing (D228).
 
 ## Gates
 
-`checks/gate.sh <n>` runs phase n's rows and prints one line per row. Row
-exit codes: 0 passes, 1 fails, 2 skipped (the missing prerequisite is
-printed; the gate passes unless `LW_REQUIRE_<x>` is set), 3 not built. The
-gate's output format and the handling of known-failing rows are being
-settled on 907a973.
+`checks/gate.sh <n>` runs phase n's rows and reports them as TAP; the row
+exit codes, the SKIP and TODO directives and the owning-issue column are
+D228 (#69). A general `LW_REQUIRE_<runtime>` opt-in is f1a846c's proposal;
+only `LW_REQUIRE_BROWSER` exists.
 
 ## Records
 
-- `DECISIONS.md`: numbered design decisions; a new one takes the next number.
+- `DECISIONS.md`: numbered design decisions; a new one takes the next number
+  (whether it starts as a board issue is 2a446d9).
 - `STATUS.md`: the dated row table of work items.
 - `FINDINGS.md`: things learned that are not decisions.
 - The issue board: anything in flight, and every rule before it is settled.
