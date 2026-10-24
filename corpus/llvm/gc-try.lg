@@ -1,0 +1,26 @@
+;; The collector keeps pending handler frames: each iteration enters a try
+;; whose body makes garbage (forcing collections while the frame is
+;; pending), then throws; the catch and finally make garbage too and read
+;; values captured before the try. checks/llvm-gc-check.sh runs it under a
+;; 16 MB budget.
+(defn garbage [n] (loop [i 0 s ""] (if (< i n) (recur (inc i) (str "g" i)) s)))
+(defn step [i]
+  (let [tag (str "t" i) keep [i (* 2 i)]]
+    (try
+      (garbage 50)
+      (when (odd? i) (throw (ex-info (str "boom" i) {:i i :tag tag})))
+      [:ok (count tag) (nth keep 1)]
+      (catch Exception e
+        (garbage 50)
+        [:caught (get (ex-data e) :i) (count (ex-message e)) (nth keep 0)])
+      (finally (garbage 20)))))
+(defn run [n]
+  (loop [i 0 oks 0 caught 0 sum 0]
+    (if (< i n)
+      (let [[k a b] (step i)]
+        (recur (inc i) (if (= k :ok) (inc oks) oks) (if (= k :caught) (inc caught) caught) (+ sum a b)))
+      [oks caught sum])))
+(println (run 20000))
+(println (try (try (garbage 100000) (throw (ex-info "inner" {}))
+                   (finally (garbage 1000)))
+              (catch Exception e (str "outer got " (ex-message e)))))

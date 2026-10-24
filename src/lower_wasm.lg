@@ -18,9 +18,11 @@
 (ns lower-wasm
   (:require [ir.build] [ir.passes.pipeline :as p] [ir.structurize :as st] [ir.passes.typeinfer]
             [ir.passes.purity] [ir.passes.licm] [ir.passes.cse] [ir.passes.constfold] [ir.lattice :as lat] [ir.passes.infer-arg-types]
-            [clojure.string :as str] [lw-rt]))
+            [clojure.string :as str] [lw-rt] [lower-llvm-cache :as lc]))
 
 (def ^:dynamic *target* :gc)
+;; --profile / LW_PROFILE for --target llvm (D207); read by lower_llvm.lg only
+(def ^:dynamic *llvm-profile-arg* nil)
 (def ^:dynamic *f* nil)
 ;; per-*f* memo of src-of (an atom, rebound wherever *f* is): src-of walks
 ;; block-arg chains and runs for every value many times; unmemoised, a
@@ -50,9 +52,11 @@
 ;; var -> {:name "$prog.Name" :decl map}; they join the one rec group
 (def ^:dynamic *prog-decls* (atom {}))
 
+(declare q-prog-decl)   ; lowering's questions, below *externs*
+
 (defn decl-type-name
   "Wasm type name of a declaration var (runtime or program), or nil."
-  [v] (or (lw-rt/type-name v) (:name (get @*prog-decls* v))))
+  [v] (or (lw-rt/type-name v) (:name (q-prog-decl v))))
 
 (defn add-decl!
   "Register a program-level wasm/defstruct|defarray|deffunc var."
@@ -89,6 +93,21 @@
 ;; nil, so a call fails at RUN time with native's unbound-var message
 ;; (`TypeError: nil is not a function `), not at compile time (P1.5).
 (def ^:dynamic *externs* nil)
+;; --- lowering's questions (lower-llvm-cache) --------------------------------
+;; The only way lowering code reads session state: each records the question
+;; with a hash of its answer in the function being lowered (llvm), so the
+;; function cache knows what a lowering depended on. checks/llvm-funnel-lint.lg
+;; (P12.40) holds lowering to it.
+(lc/defquestion q-sig [v] [:sig v] (get @*sigs* v))
+(lc/defquestion q-var-global [v] [:var-global v] (get *var-globals* v))
+(lc/defquestion q-prog-decl [v] [:prog-decl v] (get @*prog-decls* v))
+(lc/defquestion q-prog-decls [] [:prog-decls] @*prog-decls*)
+(lc/defquestion q-fn-value [k] [:fn-value k] (get @*fn-values* k))
+(lc/defquestion q-extern [v] [:extern v] (get @*externs* v))
+(lc/defquestion q-rt-state [v] [:rt-state v] (get-in @*rt* [:state v]))
+(lc/defquestion q-rt-global [v] [:rt-global v] (get-in @*rt* [:globals v]))
+(lc/defquestion q-rt-const [k] [:rt-const k] (get-in @*rt* [:consts k]))
+(lc/defquestion q-lib-defn? [v] [:lib-defn v] (contains? @lw-rt/lib-defns v))
 ;; per-unit atom (census): {:externs #{var} :phase2 [kind ...]}
 (def ^:dynamic *unit-notes* nil)
 ;; insts structurize folded into a :switch (they carry no statement)
@@ -326,12 +345,12 @@
   "A var read from a mutable global: the program's def/declare vars (the var
    table, D54) and the runtime's top-level defs (D39)."
   [v]
-  (or (contains? *var-globals* v) (and *rt* (contains? lw-rt/global-by-var v))))
+  (or (some? (q-var-global v)) (and *rt* (lw-rt/global-def? v))))
 
 (declare rt-global!)
 
 (defn var-global [v]
-  (or (get *var-globals* v) (when (and *rt* (contains? lw-rt/global-by-var v)) (rt-global! v))))
+  (or (q-var-global v) (when (and *rt* (lw-rt/global-def? v)) (rt-global! v))))
 
 (defn var-hidden?
   "A var value that gets no local: everything but the var table's vars. Defn
@@ -892,9 +911,9 @@
   (when-let [v (:var ent)]
     (or (get seq-variant-table v)
         (let [sv (lw-rt/ns-var (symbol (namespace (var-sym v))) (symbol (str (name (var-sym v)) "-seq")))
-              d (when (and sv (not (:private (meta sv)))) (lw-rt/source-defn sv))
-              k (when d (count (first (first (:arities d)))))]
-          (when (and k (= 1 (count (:arities d))) (<= 1 k))
+              shape (when (and sv (not (:private (meta sv)))) (lw-rt/source-arity-shape sv))
+              k (when shape (first shape))]
+          (when (and k (= 1 (count shape)) (<= 1 k))
             [sv (dec k) []])))))
 
 (defn seq-variant
@@ -1126,8 +1145,8 @@
    it there saves and sets that same slot."
   [v]
   (and (var? v) (:dynamic (meta v)) (:line (meta v))
-       (not (lw-rt/source-defn v)) (not (lw-rt/runtime-var? v))
-       (not (contains? lw-rt/core-defns v))
+       (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
+       (not (lw-rt/core-defn? v))
        (not (#{"clojure.core" "let-go.core" "core"} (namespace (symbol v))))))
 
 (defn bound-var-global
@@ -1198,14 +1217,14 @@
   [v args]
   (when (and (= v #'alter-var-root) (>= (count args) 2) (var-const? (first args)))
     (let [x (const-val (first args))]
-      (when (contains? *var-globals* x) x))))
+      (when (some? (q-var-global x)) x))))
 
 (defn table-alter-wat
   "P12.0j: x's global set to (f old more..), the call's value the new root,
    as native's alterVarRoot returns it. Not atomic: the module is single
    threaded."
   [nid x args]
-  (let [g (get *var-globals* x)
+  (let [g (q-var-global x)
         more (drop 2 args)]
     (str "(global.set " g " (call $rt_invoke" (invoke-n! (inc (count more))) " " (arg-as (second args) :box)
          " (global.get " g ")" (apply str (map (fn [a] (str " " (arg-as a :box))) more)) "))"
@@ -1224,12 +1243,12 @@
     (let [x (try @v (catch e nil))]
       (cond (and (= "let-go.lang.NativeFn" (str (type x))) (nil? (:line (meta v))))
             (str "lower-wasm: " (subs (str v) 2) " has no twin")
-            (and (fn? x) (contains? lw-rt/core-defns v))
+            (and (fn? x) (lw-rt/core-defn? v))
             (str "lower-wasm: " (subs (str v) 2) " did not compile")
             :else nil))))
 
 (defn call-wat [nid v args]
-  (let [ent (get @*sigs* v)]
+  (let [ent (q-sig v)]
     (cond
       (and (= v #'neg) (= 1 (count args))) (neg-wat nid args)
       (and *rt* (rt-overrides v)) ((rt-overrides v) nid args)
@@ -1452,13 +1471,15 @@
     "capture-begin" "capture-end"})
 
 ;; every ^:intrinsic var has an emitter: a new intrinsic fails the backend's
-;; load, not a program's compile (D24: the set is read from the metadata)
-(let [missing (for [v (lw-rt/intrinsic-vars)
+;; load, not a program's compile (D24: the set is read from the metadata).
+;; The llvm target's runtime has its own set (lower-llvm-rt checks it).
+(when-not lw-rt/llvm-target?
+ (let [missing (for [v (lw-rt/intrinsic-vars)
                     :let [s (name (symbol v))]
                     :when (not (contains? emitted-intrinsics s))]
                 (symbol v))]
   (when (seq missing)
-    (throw (ex-info (str "lower-wasm: intrinsics without an emitter: " (vec (sort missing))) {}))))
+    (throw (ex-info (str "lower-wasm: intrinsics without an emitter: " (vec (sort missing))) {})))))
 
 (defn intrinsic-call-wat [nid v args]
   (let [[expr raw] (emit-intrinsic (name (symbol v)) args)
@@ -1691,7 +1712,7 @@
   "P6.8: the value of a native v with no twin: a variadic (k = 0) fn whose
    every call raises (no-twin-message v), as a direct call does (D139)."
   [v]
-  (or (get @*fn-values* [:no-twin v])
+  (or (q-fn-value [:no-twin v])
       (let [m (no-twin-message v)
             id (str (safe-id (subs (str v) 2)) "_" (hex32 (str v)))
             cname (str "notwin_" id)
@@ -1710,7 +1731,7 @@
   [v]
   (let [ent (callee-sig v)]
     (when *abi-notes* (swap! *abi-notes* update :value (fnil conj #{}) v))
-    (or (get @*fn-values* ent)
+    (or (q-fn-value ent)
         (let [ars (into (sorted-map) (:arities ent))
               vs (:variadic ent)
               ;; P6.8: an arity past the cap is refused, never silently left
@@ -1767,7 +1788,7 @@
    #'>= [2 "(i64.ge_s (call $rt_int_gte (local.get $p0)) (call $rt_int_gte (local.get $p1))) (call $rt_box_bool)"]})
 
 (defn core-fn-global [v]
-  (or (get @*fn-values* v)
+  (or (q-fn-value v)
       (let [[n body] (core-fn-impls v)
             ;; P7 (agent A's gap report): inc/dec have no runtime twin, and
             ;; the Int-only body traps on a non-Int arg; with the runtime
@@ -1792,19 +1813,20 @@
    specially. It is never set, so it reads nil, like an unbound var."
   [v]
   (note! :externs v)
-  (or (get @*externs* v)
+  (or (q-extern v)
       (let [g (str "$ext_" (safe-id (subs (str v) 2)) "_" (hex32 (str v)))]
         (swap! *externs* assoc v g)
         g)))
 
 (def ^:dynamic *program-file* nil)   ; the driver's input path, for *file*
+(lc/defquestion q-program-file [] [:program-file] *program-file*)
 
 (defn native-scalar-const?
   "A non-dynamic var of a native namespace whose value is a number, string
    or keyword (lg defines no such var by def outside a program, whose defs
    are var-table vars and never reach var-value-wat)."
   [v]
-  (and (var? v) (not (:dynamic (meta v))) (not (lw-rt/source-defn v)) (not (lw-rt/runtime-var? v))
+  (and (var? v) (not (:dynamic (meta v))) (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
        (let [x (try @v (catch e nil))] (or (float? x) (int? x) (string? x) (keyword? x)))))
 
 (defn scalar-const-wat [x]
@@ -1817,12 +1839,13 @@
 ;; a direct call and a value read consult first, as native lg's var does.
 ;; Every other native keeps its static twin call.
 (def ^:dynamic *rooted-natives* #{})
+(lc/defquestion q-rooted? [v] [:rooted v] (contains? *rooted-natives* v))
 ;; D201: while the runtime library is built, the vars its lowering asks
 ;; about, so the library is keyed on just the rooted natives that change it
 (def natives-asked (atom nil))
 (defn rooted? [v]
   (when @natives-asked (swap! natives-asked conj v))
-  (and *rt* (contains? *rooted-natives* v)))
+  (and *rt* (q-rooted? v)))
 ;; native lg's compiler emits these (unqualified, by arity) as opcodes
 ;; (compiler.go tryFastOpcode), so a direct call never reads the var and an
 ;; altered root does not reach it; only the var's other uses do
@@ -1883,7 +1906,7 @@
         (and *rt* (= v #'os/args)) "(call $rt_os_args)"
         ;; P2.14: *file* is the program's path (native binds it while the
         ;; file loads; here the whole run is the load)
-        (and *rt* (= v #'*file*) *program-file*) (str-wat *program-file*)
+        (and *rt* (= v #'*file*) (q-program-file)) (str-wat (q-program-file))
         ;; P7 (Phase 7 seam): *ns* is the runtime registry's current
         ;; namespace, so it follows in-ns, evaluated ns forms and (since
         ;; P10.6, binding-call-wat) a (binding [*ns* ..]). Guarded while the
@@ -1967,14 +1990,15 @@
 ;; P6.8: the vars a top-level with-out-str/with-redefs thunk defs (the
 ;; driver's thunk-def-syms): their def may sit in that thunk's closure
 (def ^:dynamic *thunk-def-vars* #{})
+(lc/defquestion q-thunk-def? [v] [:thunk-def v] (contains? *thunk-def-vars* v))
 
 (defn def-wat
   "Top-level (def x v) sets x's var-table global, also inside a top-level
    try region or a top-level with-out-str/with-redefs thunk (P6.8). A def in
    any other defn or closure stays refused (P1.4)."
   [nid]
-  (let [[vr val] (ir/refs nid *f*) v (const-val vr) g (get *var-globals* v)]
-    (if (and g (or (top-level-fname? *fname*) (contains? *thunk-def-vars* v)))
+  (let [[vr val] (ir/refs nid *f*) v (const-val vr) g (q-var-global v)]
+    (if (and g (or (top-level-fname? *fname*) (q-thunk-def? v)))
       (when val (str "(global.set " g " " (arg-as val :box) ")"))
       (fail "unsupported op :def" {:op :def :var v :nid nid :fn *fname*}))))
 
@@ -2059,7 +2083,7 @@
       (rooted-call? v argc) nil
       (core-var-ops v) nil
       (and *rt* (rt-overrides v)) nil
-      (get @*sigs* v) (direct (get @*sigs* v))
+      (q-sig v) (direct (q-sig v))
       (contains? #{#'throw #'catch-matches? #'atom #'deref #'reset! #'swap! #'neg} v) nil
       (= v core-println) nil
       (and *rt* (coll-ctors v)) nil
@@ -2238,7 +2262,7 @@
                               (when-let [d (decl)]
                                 (keep-indexed (fn [i t] (when (= :funcref t) (get args (+ 2 i)))) (:params d))))
       (= nm "null?") nil
-      v (when-let [s (get-in (get @*sigs* v) [:arities (count args)])]
+      v (when-let [s (get-in (q-sig v) [:arities (count args)])]
           (keep-indexed (fn [i k] (when (= :func k) (get args i))) (:params s)))
       :else nil)))
 
@@ -2266,7 +2290,7 @@
               (= nm "aget") (when-let [d (decl)] (= :funcref (:elem d)))
               (= nm "call-ref") (when-let [d (decl)] (= :funcref (:result d)))
               nm false
-              v (= :func (:ret (get-in (get @*sigs* v) [:arities (count args)])))
+              v (= :func (:ret (get-in (q-sig v) [:arities (count args)])))
               :else false))
       (= op :block-arg)
       (let [b (ir/block-of nid *f*)
@@ -2475,7 +2499,20 @@
               (src-of (first (ir/refs i f)))))
        (set (for [i insts :when (= :try (ir/op i f)) r (ir/refs i f) n (chain r)] n))])))
 
+(declare lower-fn-wasm)
+
+(defn ensure-llvm-target! []
+  (require 'lower-llvm))
+
 (defn lower-fn
+  "One lowered function: a wasm func, or under --target llvm the LLVM text
+   of src/lower_llvm.lg (loaded on demand, as lower_linear.lg is)."
+  [info]
+  (if (= *target* :llvm)
+    (do (ensure-llvm-target!) ((resolve 'lower-wasm/llvm-fn) info))
+    (lower-fn-wasm info)))
+
+(defn lower-fn-wasm
   "One wasm function. `code` (an arity) makes it closure code of type
    $Code<code>: the closure arrives as $self, its captures are read from the
    env struct `env` (field kinds `env-kinds`). `caps` are a try region's
@@ -3510,8 +3547,13 @@
                          #'unchecked-subtract #'unchecked-multiply #'quot #'/}
                        (concat (keys core-var-ops) (keys core-fn-impls))))
 
-(defn rt-target
-  "The runtime defn var that implements v (v itself, or its twin), or nil."
+(declare rt-target*)
+;; the runtime defn var that implements v (v itself, or its twin), or nil
+(lc/defquestion rt-target [v] [:rt-target v] (rt-target* v))
+
+(defn rt-target*
+  "rt-target's resolution, asked as one question (its lookups are tables
+   of the runtime's sources and the program's library index)."
   [v]
   (when (and *rt* (var? v))
     (cond (contains? lw-rt/defn-by-var v) v
@@ -3520,7 +3562,7 @@
           (lw-rt/twin-of v) (lw-rt/twin-of v)
           (contains? lw-rt/core-defns v) v
           (contains? lw-rt/ext-defns v) v
-          (contains? @lw-rt/lib-defns v) v
+          (q-lib-defn? v) v
           ;; P2.14: lg-defined stdlib namespaces, loaded on demand
           (lw-rt/stdlib-alias v) (lw-rt/stdlib-alias v)
           (lw-rt/stdlib-twin v) (lw-rt/stdlib-twin v)
@@ -3545,22 +3587,32 @@
         (rt-analyze! v)))
     (doseq [v (form-vars form) :when (not (contains? intercepted v))]
       (when-let [t (rt-target v)] (rt-analyze! t))
-      (when (contains? lw-rt/global-by-var v) (rt-global! v)))))
+      (when (lw-rt/global-def? v) (rt-global! v)))))
 
 (declare rt-analyze*!)
+
+(defn own-source
+  "The source defn of v, which is being analysed: its own form, which the
+   function cache keys it by, so not a question of its trace."
+  [v] (lw-rt/source-defn v))
+
+(defn own-global-def
+  "The source of runtime global v, whose init fn is being built: its own
+   form, as own-source."
+  [v] (lw-rt/global-by-var v))
 
 (defn rt-analyze!
   "Analyse every arity of runtime defn v (callees first) and register its
    sig. An lg-defined core fn that does not compile is marked :failed and
    left out (its calls go through a nil slot, as before P2.1)."
   [v]
-  (when (and *rt* (not (get-in @*rt* [:state v])))
-    (if (:core-lg (lw-rt/source-defn v))
+  (when (and *rt* (not (q-rt-state v)))
+    (if (:core-lg (lw-rt/source-kind v))
       (try (rt-analyze*! v)
            (catch e (swap! *rt* assoc-in [:state v] :failed)
                     (swap! *sigs* dissoc v)
                     (swap! *rt* update :failures (fnil conj []) [(qual-name v) (ex-message e)])))
-      (if (:lib (lw-rt/source-defn v))
+      (if (:lib (lw-rt/source-kind v))
         ;; P3.2: name the library defn (callers first) in a compile error
         (try (rt-analyze*! v)
              (catch e (throw (ex-info (str "in " (qual-name v) ": " (ex-message e)) (or (ex-data e) {}) e))))
@@ -3568,9 +3620,9 @@
 
 (defn rt-analyze*!
   [v]
-  (when (and *rt* (not (get-in @*rt* [:state v])))
+  (when (and *rt* (not (q-rt-state v)))
     (swap! *rt* assoc-in [:state v] :busy)
-    (let [d (lw-rt/source-defn v)
+    (let [d (own-source v)
           multi? (> (count (:arities d)) 1)]
       (lw-rt/call-in-ns (:ns d)
         (fn [] (let [srcs (doall (for [[params & body] (:arities d)
@@ -3604,8 +3656,8 @@
   "The sig entry for a call of v: a program defn, or (analysing it now if
    need be) the runtime defn that implements v."
   [v]
-  (or (get @*sigs* v)
-      (when-let [t (rt-target v)] (rt-analyze! t) (get @*sigs* t))))
+  (or (q-sig v)
+      (when-let [t (rt-target v)] (rt-analyze! t) (q-sig t))))
 
 (defn rt-init-fn!
   "Analyse a 0-arg init fn named wname whose body is form, in ns."
@@ -3618,13 +3670,19 @@
       ;; to :ret)
       (swap! *rt* update :pending conj (assoc (analyze-fn src wname true) :export? false :ret :box))))))
 
+(defn rt-global-order
+  "The position a new runtime global is assembled in. Module assembly
+   reads it; no lowered text depends on it, so it is not a question."
+  []
+  (count (:globals @*rt*)))
+
 (defn rt-global!
   "The wasm global of a runtime top-level def (D39), its init fn analysed."
   [v]
   (let [g (str "$" (qual-name v))]
-    (when-not (get-in @*rt* [:globals v])
-      (swap! *rt* assoc-in [:globals v] {:name g :init (str (qual-name v) "__init") :order (count (:globals @*rt*))})
-      (let [{:keys [ns init]} (lw-rt/global-by-var v)]
+    (when-not (q-rt-global v)
+      (swap! *rt* assoc-in [:globals v] {:name g :init (str (qual-name v) "__init") :order (rt-global-order)})
+      (let [{:keys [ns init]} (own-global-def v)]
         (rt-init-fn! (str (qual-name v) "__init") ns init)))
     g))
 
@@ -3660,7 +3718,13 @@
                           sym (if (and (seq? raw) (= 'with-meta (first raw))) (second raw) raw)
                           v0 (when (symbol? sym) (try (resolve sym) (catch e nil)))
                           before (when (var? v0) (meta v0))
-                          r (orig form ctx)
+                          ;; The pinned builder tests val-form for truthiness,
+                          ;; confusing explicit nil/false with a declaration.
+                          ;; Quote those values so it emits the root store.
+                          build-form (if (and (> (count form) 2) (not (last form)))
+                                       (with-meta (apply list (concat (butlast form) [(list 'quote (last form))])) (meta form))
+                                       form)
+                          r (orig build-form ctx)
                           v (or v0 (when (symbol? sym) (try (resolve sym) (catch e nil))))]
                       (when (var? v)
                         (let [m (merge (meta v) {:name (symbol (name sym))} before (def-form-meta form))]
@@ -3699,9 +3763,15 @@
 (alter-var-root #'ir.build/build-form
                 (fn [orig]
                   (fn [form ctx]
-                    (if (and *in-wasm* (some? (lw-ext/regex-source form)))
+                    (cond
+                      (and *in-wasm* (some? (lw-ext/regex-source form)))
                       (ir.build/build-quote (list 'quote form) ctx)
-                      (orig form ctx)))))
+                      ;; var-value-form's read of its own var, carried in
+                      ;; the symbol's meta (privacy aside, as #'ns/p does)
+                      (and (symbol? form) (:lw/var-read (meta form)))
+                      ((get (ns-interns 'ir.build) 'add-inst!) ctx (ir.build/ctx-block ctx) :load-var []
+                       (:lw/var-read (meta form)))
+                      :else (orig form ctx)))))
 
 (alter-var-root #'ir.build/bind-local!
                 (fn [orig]
@@ -3720,8 +3790,8 @@
   "P5.9: does the module hold v's value? A var-table var (a def, a library
    global) or a program defn; not a runtime or core var."
   [v]
-  (or (contains? *var-globals* v)
-      (and (contains? @*sigs* v) (nil? (rt-target v)))))
+  (or (some? (q-var-global v))
+      (and (some? (q-sig v)) (nil? (rt-target v)))))
 
 (defn var-value-form
   "P5.9: the 0-arg fn a var stand-in keeps under :lw/var (wasm.core/var-value
@@ -3737,7 +3807,11 @@
           (and *rt* (var? v) (not (:macro (meta v)))
                (or (value-substs v) (and (rt-target v) (callee-sig v)) (core-fn-impls v)
                    (no-twin-message v) (native-scalar-const? v))))
-    (list 'fn* [] (symbol v))
+    ;; marked: build-form reads v itself, so a private v is reached from
+    ;; whatever namespace the reader is built in (resolve enforces privacy,
+    ;; and a qualified miss became a :load-var of the bare symbol: nil on
+    ;; GC, "a var used as a value" on llvm)
+    (list 'fn* [] (with-meta (symbol v) {:lw/var-read v}))
     (list 'fn* [] (list (lw-rt/rt-sym 'core 'raise)
                         (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string)
                               (str "lower-wasm: the value of " v " is not reachable from its stand-in:"
@@ -3764,10 +3838,18 @@
                       (cond (= k :ns) (assoc acc :ns (symbol (str "<ns " (ns-name x) ">")))
                             (plain-data? x) (assoc acc k x)
                             :else acc)))
-                  {} ks)]
+                  {} ks)
+        ;; LLVM program Vars expose root access separately from deref, whose
+        ;; getter observes dynamic bindings. Keep these callbacks private.
+        root (when (and (= :llvm *target*) (q-var-global v))
+               (let [k (keyword (symbol v))]
+                 (list 'fn*
+                       (list [] (list 'lower-wasm/llvm-read-root k))
+                       (list ['new-root] (list 'lower-wasm/llvm-write-root! k 'new-root)))))
+        mt (list (lw-rt/rt-sym 'core 'assoc) (const-form m) (const-form :lw/var) (var-value-form v))]
     (list (lw-rt/rt-sym 'core 'with-meta)
           (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (str "#'" (subs (str v) 2))))
-          (list (lw-rt/rt-sym 'core 'assoc) (const-form m) (const-form :lw/var) (var-value-form v)))))
+          (if root (list (lw-rt/rt-sym 'core 'assoc) mt (const-form :lw/root) root) mt))))
 
 (defn const-user-meta
   "P5.9 (review3 bug-05): the metadata a collection constant v carries into
@@ -3847,7 +3929,7 @@
   [ns f args]
   (let [v (lw-rt/ns-var ns f)]
     (rt-analyze! v)
-    (let [a (get-in @*sigs* [v :arities (count args)])]
+    (let [a (get-in (q-sig v) [:arities (count args)])]
       (when (and a (every? (fn [k] (= :box k)) (:params a)) (= :box (:ret a)))
         (str "(call $" (:name a) (apply str (map (fn [x] (str " " x)) args)) ")")))))
 
@@ -3895,9 +3977,12 @@
 
 (defn- direct-const!
   "Lower constant v's init fn wname directly into :lowered; false when v is
-   not plain data or a constructor's sig is not plain (the analysed path)."
+   not plain data or a constructor's sig is not plain (the analysed path).
+   The direct form is WAT text, so --target llvm always takes the analysed
+   path (before the rt-ns seam its wasm.* names failed to resolve there and
+   the catch below sent it down that path by accident)."
   [wname v]
-  (if (direct-const? v)
+  (if (and (not= *target* :llvm) (direct-const? v))
     (try
       (let [stmts (atom []) nloc (atom 0)
             e (direct-expr v stmts nloc)]
@@ -3913,20 +3998,22 @@
 (defn const-global!
   "A runtime-built constant (keyword, symbol, vector, map, set, list): one
    global, built once by _rt_init (D63's placeholders made real)."
-  [v]
+  ([v] (const-global! v nil))
+  ([v origin]
   (let [mk (const-meta-key v)
         ;; P5.9: ^:a [1] and ^:b [1] print alike; the meta keeps them apart
         ;; a var keys by str (#'ns/name, the text pr-str gives any var it
         ;; can print): lg's pr-str sees through a var whose root is a
         ;; collection and fails on it (seq expected Seqable)
-        k (cond-> [(const-kind v) (if (var? v) (str v) (pr-str v))] mk (conj (pr-str mk)))]
-    (or (get-in @*rt* [:consts k])
+        k (cond-> [(const-kind v) (if (var? v) (str v) (pr-str v))]
+            mk (conj (pr-str mk)) origin (conj [:origin origin]))]
+    (or (q-rt-const k)
         (let [i (hex32 (pr-str k)) g (str "$const_" i)]
           (swap! *rt* assoc-in [:consts k] g)
           (when-not (and (nil? mk) (direct-const! (str "const_" i "__init") v))
             (rt-init-fn! (str "const_" i "__init") (lw-rt/rt-ns 'core) (const-form v)))
           (swap! *rt* update :const-order conj g)
-          g))))
+          g)))))
 
 (defn slot-kind [t] (case t (:i64 :i32 :i8) :int :f64 :float :ref :box :funcref :func))
 (defn slot-wt [t] (case t :i64 "i64" (:i32 :i8) "i32" :f64 "f64" :ref "(ref null eq)" :funcref "funcref"))
@@ -3936,7 +4023,7 @@
    (wasm/funcref tn fv) refers to. The defn itself has its own (typed) sig,
    and a func type outside the rec group would not be tn anyway."
   [tn d fv]
-  (or (get @*fn-values* [:ref tn fv])
+  (or (q-fn-value [:ref tn fv])
       (let [argc (count (:params d)) ent (callee-sig fv) s (get-in ent [:arities argc])]
         (when-not s (fail "wasm/funcref target has no arity for the signature" {:var fv :sig tn :fn *fname*}))
         (let [w (str (:name s) "__ref" (subs tn 1))]
@@ -3976,7 +4063,7 @@
                 (let [t (ir/type-of (first args) f) t (if (and (vector? t) (= :const (first t))) (second t) t)]
                   (when (contains? #{:int :float} t) t))
                 (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))) :int
-                :else (let [ent (or (get @*sigs* v) (when-let [t (rt-target v)] (get @*sigs* t)))
+                :else (let [ent (or (q-sig v) (when-let [t (rt-target v)] (q-sig t)))
                             r (:ret (get-in ent [:arities (count args)]))]
                         (case r :int :int :bool :bool :float :float nil))))))))
 
@@ -4024,6 +4111,48 @@
 (alter-var-root #'ir.passes.licm/pure-op?
                 (fn [orig] (fn [op] (and (orig op) (not (contains? may-raise-ops op))))))
 
+;; A non-throwing constructor is not loop-invariant: its allocation identity
+;; is observable. Keep collection-producing calls at their evaluation sites.
+;; CSE's unique call keys below do not protect LICM's separate call path.
+(def allocation-sensitive-calls
+  #{"vector" "vec" "list" "list*" "hash-map" "array-map" "hash-set"
+    "sorted-map" "sorted-set" "into" "concat" "cons" "conj" "assoc"
+    "dissoc" "merge" "keys" "vals" "rest" "next" "constantly"})
+(alter-var-root #'ir.passes.purity/total-pure-call?
+  (fn [orig]
+    (fn [f nid var-facts]
+      (and (orig f nid var-facts)
+           (or (not= *target* :llvm)
+               (let [callee (ir/resolve-single-source f (first (ir/refs nid f)))
+                     sym (symbol (ir/aux callee f))]
+                 (not (and (= "clojure.core" (namespace sym))
+                           (contains? allocation-sensitive-calls (name sym))))))))))
+
+;; LLVM must preserve native allocation of evaluated map/set literals.
+;; Quoted collections do not pass through these builders. Empty metadata-free
+;; literals retain the native shared-empty path; metadata still evaluates.
+(alter-var-root #'ir.build/build-set
+  (fn [orig]
+    (fn [form ctx]
+      (let [elements ((get (ns-interns 'ir.build) 'set-elements) form)]
+        (if (and (= *target* :llvm) (not (sorted? form))
+                 (or (seq elements) (seq (meta form))))
+          (ir.build/with-meta-call form ctx
+            (fn [plain inner]
+              (ir.build/build-form (apply list 'clojure.core/hash-set elements) inner)))
+          (orig form ctx))))))
+
+(alter-var-root #'ir.build/build-map
+  (fn [orig]
+    (fn [form ctx]
+      (let [entries ((get (ns-interns 'ir.build) 'map-entries) form)]
+        (if (and (= *target* :llvm) (not (sorted? form))
+                 (or (seq entries) (seq (meta form))))
+          (ir.build/with-meta-call form ctx
+            (fn [plain inner]
+              (ir.build/build-form (apply list 'clojure.core/array-map (mapcat identity entries)) inner)))
+          (orig form ctx))))))
+
 ;; P2.11 (F2/F5): CSE keyed :const insts by (op refs aux) with `=`, merging
 ;; [] with () and 0.0 with -0.0 inside one fn; and it merges equal :calls of
 ;; the "pure" builtins (vector, list, hash-map, conj, ex-info, ...), each of
@@ -4037,6 +4166,18 @@
                                     :const [op refs (strict-key aux)]
                                     :call [op refs aux nid]
                                     [op refs aux])))))
+
+;; The pinned constant folder uses nil to decline folding bit-not on a
+;; noninteger, but its unary path installs that nil as a constant. Keep the
+;; operation so lowering preserves the catchable operand error.
+(alter-var-root (get (ns-interns 'ir.passes.constfold) 'try-primitive)
+                (fn [orig] (fn [nid f]
+                             (let [action (orig nid f)]
+                               (if (and (= :bit-not (ir/op nid f))
+                                        (= :const (get-in action [:replace-with :op]))
+                                        (nil? (get-in action [:replace-with :aux])))
+                                 nil
+                                 action)))))
 
 ;; P2.11 (F4 corpus nan-arith): constfold's algebraic identities ((+ x 0),
 ;; (* x 1), (* x 0) -> 0, (- x 0), the bit-op ones) hold only for an int x:
@@ -4111,7 +4252,7 @@
    compiles every runtime defn and keeps every helper (size measurement)."
   ([sigs var-globals] (new-session sigs var-globals {}))
   ([sigs var-globals opts]
-   {:target (or (:target opts) :gc) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
+   {:target (or (:target opts) :gc) :profile (:profile opts) :sigs (atom sigs) :var-globals var-globals :strings (atom {}) :regions (atom []) :globals (atom [])
     :elem (atom #{}) :env-types (atom {}) :fn-values (atom {}) :externs (atom {})
     :rt (when (:rt opts) (atom {:state {} :pending [] :lowered {} :globals {} :consts {} :const-order []}))
     :shake (not= false (:shake opts)) :trap-throws (boolean (:trap-throws opts)) :prog-decls (atom {})
@@ -4124,7 +4265,7 @@
 
 
 (defn with-session* [ss thunk]
-  (binding [*target* (or (:target ss) :gc) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
+  (binding [*target* (or (:target ss) :gc) *llvm-profile-arg* (:profile ss) *sigs* (:sigs ss) *var-globals* (:var-globals ss) *strings* (:strings ss)
             *regions* (:regions ss) *globals* (:globals ss) *elem* (:elem ss)
             *env-types* (:env-types ss) *fn-values* (:fn-values ss) *externs* (:externs ss)
             *rt* (:rt ss) *shake* (:shake ss) *trap-throws* (:trap-throws ss)
@@ -4453,22 +4594,25 @@
 (defn stub-fn
   "A runtime fn that failed to lower: same signature, throws a named error,
    so callers already lowered against its sig still validate."
-  [{:keys [name params ret]} msg]
+  [{:keys [name params ret] :as info} msg]
+  (if (= *target* :llvm)
+    ((resolve 'lower-wasm/ll-stub-fn) info msg)
   (let [m (str "lower-wasm: " name " did not compile (" msg ")")]
     (str "(func $" name (apply str (map-indexed (fn [i k] (str " (param $p" i " " (wt k) ")")) params))
-         " (result " (wt ret) ")\n  (throw $lgex " (rt-error-wat m m) "))")))
+         " (result " (wt ret) ")\n  (throw $lgex " (rt-error-wat m m) "))"))))
 
 ;; P2.14: the driver's --test mode binds this, so a library fn (a test's
 ;; helper namespace) that does not lower becomes a stub like a runtime fn:
 ;; the tests that call it report an ERROR instead of the file not compiling
 (def ^:dynamic *stub-libs* false)
+(lc/defquestion q-stub-libs [] [:stub-libs] *stub-libs*)
 
 (defn lower-pending!
   "Lower one pending runtime fn into :lowered (a stub if it fails)."
   [info]
   (swap! *rt* assoc-in [:lowered (str "$" (:name info))]
          ;; P3.2: a program library fn fails the compile (no stub)
-         (if (and (:lib info) (not *stub-libs*))
+         (if (and (:lib info) (not (q-stub-libs)))
            (lower-fn info)
            (try (lower-fn info)
               (catch e (swap! *rt* update :failures (fnil conj []) [(:name info) (ex-message e)])
@@ -4574,6 +4718,8 @@
   "The module text for session ss around the lowered program fns `fns`
    (lifted regions are appended from the session)."
   [ss fns]
+  (if (= :llvm (:target ss))
+    (with-session* ss (fn [] ((resolve 'lower-wasm/llvm-module) fns)))
   (binding [*top-forms-cache* (atom {}) *refs-memo* (atom {})]
     (with-session* ss
       (fn []
@@ -4596,7 +4742,7 @@
                (str/join "\n" (ordered "(func")) "\n"
                program "\n"
                (rt-init-wat live items)
-               ")\n")))))))
+               ")\n"))))))))
 
 (defn module
   "infos: analyze-fn results, in definition order. sigs: var -> signature.
@@ -4663,8 +4809,11 @@
 (defn rtlib-key []
   ;; D209: a restored driver read no runtime source; its snapshot holds them
   (hex32 (apply str (concat (if lw-rt/snapshot [(:text lw-rt/snapshot)] (map #(slurp (first %)) lw-rt/file-forms))
-                            (map #(slurp (str lw-rt/src-dir "/" %))
-                                 (if lw-rt/snapshot ["lower_wasm.lg" "lw_rt.lg"] ["lower_wasm.lg" "lw_rt.lg" "lw_ext.lg"]))
+                            (map #(slurp (str lw-rt/src-dir "/" %)) ["lower_wasm.lg" "lw_rt.lg"])
+                            ;; LLVM loads rt/llvm/ext.lg, including LW_RT_DIR
+                            ;; overrides. Hash that source rather than the GC
+                            ;; lane's lw_ext.lg. Snapshots already embed it.
+                            (when-not lw-rt/snapshot [(slurp lw-rt/ext-path)])
                             [(str "|lg=" @lg-binary-id)]
                             ;; P7.6: the no-eval runtime has no wasm.eval twins
                             [(str "|target=" (name *target*)) (if lw-rt/no-eval? "|no-eval" "")
@@ -4677,7 +4826,9 @@
                              (if (and lw-rt/letgo-core-dir (not lw-rt/snapshot))
                                (str "|letgo-core=" (slurp (str lw-rt/letgo-core-dir "/core.lg"))
                                     (slurp (str lw-rt/letgo-core-dir "/string.lg")))
-                               "")]))))
+                               "")]
+                            ;; D221: the llvm lowering's own sources and profile
+                            (when (= *target* :llvm) (ensure-llvm-target!) [((resolve 'lower-wasm/ll-rtlib-key-extra))])))))
 
 (defn var-sym [v] (symbol (qual-name v)))
 (defn sym-var [s] (lw-rt/ns-var (symbol (namespace s)) (symbol (name s))))
@@ -4717,7 +4868,9 @@
      ;; program's own lowering raises them again after a restore
      :var-k-max (when *var-k-max* @*var-k-max*)
      :invoke-max (when *invoke-max* @*invoke-max*)
-     :failures (into fails (:failures st))}))
+     :failures (into fails (:failures st))
+     ;; D221: the llvm lowering's session state
+     :llvm (when (= *target* :llvm) ((resolve 'lower-wasm/ll-rtlib-snapshot)))}))
 
 (defn rtlib-restore! [snap]
   (swap! *sigs* merge (into {} (for [[s e] (:sigs snap)] [(sym-var s) (assoc e :var (sym-var s))])))
@@ -4734,7 +4887,8 @@
   (swap! *elem* into (:elem snap))
   (swap! *env-types* merge (:env-types snap))
   ;; sym-var, not resolve: an extern may be private (core/special-symbols)
-  (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g]))))
+  (swap! *externs* merge (into {} (for [[s g] (:externs snap) :let [v (try (sym-var s) (catch e nil))] :when v] [v g])))
+  (when (:llvm snap) ((resolve 'lower-wasm/ll-rtlib-restore!) (:llvm snap))))
 
 (defn gensyms-taken
   "Call f and return {:result its value :gensyms how many gensyms it took}.
@@ -4795,11 +4949,13 @@
         (os/rename (str asked-f tmp) asked-f)
         (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
         (os/rename (str f tmp) f)
-        ;; a library for older sources is dead weight (~3.5 MB each); the
-        ;; rooted variants of the current one stay (D201). Another lg's
-        ;; library goes too, so alternating two lg builds rebuilds on each switch
+        ;; LLVM profiles and compiler generations are reusable content-keyed
+        ;; entries: switching A -> B -> A must not rebuild A. Keep these until
+        ;; the cache directory is explicitly cleared. Other targets retain
+        ;; their existing pruning policy; rooted variants of this key stay.
         (doseq [old (os/ls rtlib-dir)
-                :when (and (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
+                :when (and (not= *target* :llvm)
+                           (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
                                     (or (str/ends-with? old ".edn") (str/ends-with? old ".natives")))
                                ;; named before the target joined the key, so no prefix matches it
                                (re-matches #"rtlib-[0-9a-f]{8}\.edn" old)))]

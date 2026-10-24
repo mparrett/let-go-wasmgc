@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Seventeen namespaces that load together under native lg as one runtime (P2.9, P3.1),
+Twenty namespaces (nineteen by default) that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -32,6 +32,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 21 | `ir.lg` | `wasm.ir` | | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
 | 22 | `host_fs.lg` | `wasm.host-fs` | 1 4 9 | only under `LW_HOST_FS=1` (D208): `slurp` through the host's file system (`env.read_file`, host/ABI.md), plain lg like natives.lg; it claims `core/slurp` after natives.lg's no-file-system twin, so it replaces it. `spit`, `os/*` and directory reads stay natives.lg's |
 | 23 | `host_asm.lg` | `wasm.host-asm` | 1 4 9 | only under `LW_HOST_ASM=1` (D211): `assemble`, a module's own WAT text to the host's assembler (`env.assemble`, host/ABI.md), which keeps the binary and answers its length; plain lg like natives.lg, no twin (a program calls `wasm.host-asm/assemble`) |
+| 24 | `poly.lg` | `wasm.poly` | 4 9 | in PLAIN lg like natives.lg: placeholders for the natives deftype, defrecord, reify, defprotocol, extend-type, defmulti and defmethod expand to in a program; each raises "<form> is not supported on the WasmGC target" (the llvm lane implements them) |
 
 Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the

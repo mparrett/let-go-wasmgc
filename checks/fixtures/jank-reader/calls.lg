@@ -1,0 +1,68 @@
+(println (ns-name *ns*))
+; callable-predicates
+(defn sample [x] x)
+(doseq [x [nil false true 0 1.0 "x" \a [] {} #{} () :k 's sample inc
+           (with-meta 's {}) (with-meta :k {}) #"x" #'inc #'*ns* (promise)
+           (first {:a 1}) (sorted-map :a 1) (sorted-set 1)]]
+  (println (any? x) (ifn? x)))
+(println (any? (range)))
+(doseq [args [[] [1 2] [1 2 3 4 5]]]
+  (println (try (apply any? args) (catch e (ex-message e))) (apply ifn? args)))
+
+;; Predicate checks must not change the internal invocation eligibility test.
+(let [v (transient [9])] (println (v 0)))
+
+; large-value-call
+(let [f (constantly :ok)] (println (f 1 2 3 4 5 6 7 8 9 10)))
+(let [f (fn [a b & xs] [a b xs])]
+  (println (f 1 2 3 4 5 6 7 8 9 10)))
+(let [seen (atom []) f (fn [& xs] (vec xs)) step (fn [x] (swap! seen conj x) x)]
+  (println (f (step 0) (step 1) (step 2) (step 3) (step 4) (step 5) (step 6) (step 7) (step 8) (step 9)))
+  (println @seen))
+(let [f (fn [x] x)] (println (try (f 1 2 3 4 5 6 7 8 9 10) (catch e :arity))))
+
+;; Runtime regex parsing must reach extension-module constant tables.
+(doseq [class ["digit" "alpha" "space"]]
+  (let [pattern (re-pattern (str "[[:" class ":]]+"))]
+    (println (re-find pattern "abc 123"))))
+
+;; Intern can address any namespace compiled into the program.
+(ns intern-first)
+(println (ns-name *ns*))
+(def marker 1)
+(ns intern-second)
+(println (ns-name *ns*))
+(println (var-get (intern 'intern-first 'created 42)))
+(println (var-get (intern 'intern-second 'created 7)))
+(ns user)
+
+(ns intern-empty)
+(ns user)
+(println (var-get (intern 'intern-empty 'value 8)))
+
+(ns calls-final)
+(println (ns-name *ns*))
+
+;; Opcode fast paths must also work when passed as function values.
+(doseq [x [0 1 -1 -9223372036854775808 9223372036854775807]]
+  (println (apply bit-not [x]) (apply bit-and-not [x 15])))
+(doseq [args [[] [nil] [1.0] [1 2] [1 2 3 4 5 6 7 8 9]]]
+  (println (try (apply bit-not args) (catch e (ex-message e)))))
+(doseq [args [[] [1] [1 nil] [1.0 2] [1 2 3] [1 2 3 4 5 6 7 8 9]]]
+  (println (try (apply bit-and-not args) (catch e (ex-message e)))))
+
+;; Empty reductions distinguish an explicit initial value from an invalid function.
+(println (reduce nil nil nil))
+(println (try (reduce nil nil) (catch e (ex-message e))))
+
+;; Numeric equality accepts long argument lists through direct and value calls.
+(println (== 5 5.0 5 5 5 5 5 5 5 5))
+(println (== 5 5 5 5 5 5 5 5 5 6))
+(doseq [args [[] [nil] [nil nil] [1 1.0 1 1 1] [1 1 1 1 2]
+              [##NaN ##NaN ##NaN ##NaN ##NaN]]]
+  (println (apply == args)))
+
+;; JVM-style reduction methods share core reduction semantics.
+(doseq [xs [nil [] [1 2 3] '(1 2 3) (range 1 6)]]
+  (println (.reduce xs +) (.reduce xs + 10)))
+(println (.reduce [1 2 3 4] (fn [acc x] (if (= x 3) (reduced acc) (+ acc x))) 0))

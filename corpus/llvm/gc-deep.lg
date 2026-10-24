@@ -1,0 +1,9 @@
+;; The collector traces pending continuations: a non-tail recursion keeps one
+;; record per level live while each level makes garbage; the sums on the way
+;; back read the values each level saved.
+(defn down [n]
+  (if (zero? n)
+    0
+    (let [junk (str "level" n) keep (* 2 n)]
+      (+ keep (count junk) (down (dec n))))))
+(println (down 100000))

@@ -1,0 +1,42 @@
+;; Compilation-local analysis reuse. Inputs are explicit definition records;
+;; there is no session lookup, tracing, disk storage or source evaluation here.
+;; Pass implementations and source-resolution context remain fixed during one
+;; compilation. The caller owns a fresh cache for each compilation; these keys
+;; are not sufficient for persistent reuse across compiler invocations.
+;; Avoid load-time gensyms: no destructuring, for or syntax-quote auto-gensyms.
+(ns lower-llvm-analysis-cache)
+
+(defn new-cache [enabled]
+  (atom {:enabled enabled :entries {}
+         :stats {:executed 0 :reused 0 :bypassed 0 :rounds 0}}))
+
+(defn input
+  "One definition's analysis inputs. Source equality alone ignores metadata,
+   including parameter type hints, so retain metadata throughout the form."
+  [src namespace emitted-name multi? boxed? interfaces]
+  {:source src :metadata (mapv meta (tree-seq coll? seq src))
+   :namespace namespace :name emitted-name :multi? multi? :boxed? boxed?
+   :interfaces interfaces})
+
+(defn stats [cache] (:stats @cache))
+
+(defn enabled? [cache] (:enabled @cache))
+
+(defn next-round! [cache] (swap! cache update-in [:stats :rounds] inc))
+
+(defn analyze!
+  "Reuse a completed analysis only when its entire input record matches and
+   reusable? established that lowering will not mutate its IR. Exceptions
+   are never stored. The caller still discovers deps and publishes signatures."
+  [cache definition input reusable? analyze]
+  (let [state @cache entry (get-in state [:entries definition])]
+    (if (and (:enabled state) entry (= input (:input entry)))
+      (do (swap! cache update-in [:stats :reused] inc) (:info entry))
+      (do
+        (swap! cache update-in [:stats :executed] inc)
+        (let [info (analyze)]
+          (if (and (:enabled state) (reusable? info))
+            (swap! cache assoc-in [:entries definition] {:input input :info info})
+            (do (swap! cache update-in [:stats :bypassed] inc)
+                (swap! cache update :entries dissoc definition)))
+          info)))))

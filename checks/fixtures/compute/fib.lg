@@ -1,0 +1,13 @@
+;; Alternate inputs to keep every call dependent on the loop iteration.
+(defn fib [n]
+  (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+(defn work [rounds]
+  (loop [i 0 acc 0]
+    (if (< i rounds)
+      (recur (inc i) (+ acc (fib (+ 20 (mod i 2)))))
+      acc)))
+(work 10)
+(let [start (System/nanoTime)
+      checksum (work 1000)
+      elapsed (- (System/nanoTime) start)]
+  (println checksum elapsed))

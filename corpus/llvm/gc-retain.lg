@@ -1,0 +1,7 @@
+;; The collector keeps what is still reachable: a vector and a map built
+;; before a churn that forces collections are intact after it.
+(def v (vec (range 5000)))
+(def m (into {} (map (fn [i] [i (str "v" i)]) (range 5000))))
+(defn churn [n] (loop [i 0 acc nil] (if (< i n) (recur (inc i) (str "g" i)) acc)))
+(println (churn 400000))
+(println (reduce + v) (get m 4999) (count m) (get m 0))

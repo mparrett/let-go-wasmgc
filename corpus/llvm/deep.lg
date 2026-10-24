@@ -1,0 +1,8 @@
+;; Plan review focus 2: a non-tail recursion ten million deep, and ten
+;; million mutual tail calls through fn values held in vars.
+(defn down [n] (if (zero? n) 0 (inc (down (dec n)))))
+(println (down 10000000))
+(declare ev? od?)
+(def ev? (fn [n] (if (zero? n) true (od? (dec n)))))
+(def od? (fn [n] (if (zero? n) false (ev? (dec n)))))
+(println (ev? 10000000) (od? 10000001))

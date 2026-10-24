@@ -1,0 +1,14 @@
+;; checks/profile-field.lg <profile> <key>: print one field of a hardware
+;; profile (spec decision 2) for shell scripts. Vectors print space-separated,
+;; keywords without the colon. Exit 1 when the profile cannot be loaded.
+;; Run with -source-paths <repo>/src, as checks/native-run.sh and
+;; checks/llvm-profile-check.sh do.
+(require '[lower-llvm-profile :as prof])
+(let [args *command-line-args*
+      p (try (prof/load-profile (first args))
+             (catch e (binding [*out* *err*] (println (ex-message e))) (os/exit 1)))
+      v (get p (keyword (second args)))]
+  (println (cond (vector? v) (clojure.string/join " " v)
+                 (keyword? v) (name v)
+                 (nil? v) ""
+                 :else (str v))))

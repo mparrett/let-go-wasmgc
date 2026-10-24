@@ -1,0 +1,1092 @@
+;; llvm.reader — P3.0: `read-string` for data, in the runtime dialect of
+;; seq.lg (IR special forms, IR-op core fns on :int and :float, macros
+;; expanding to those, llvm.arch, and the other runtime namespaces).
+;; A near-literal port of let-go's data reader (core/read-string =
+;; newDataReaderWithResolvers + ReadSkipNoValue, pkg/compiler/eval.go:241)
+;; at ff1e6dac: pkg/compiler/reader.go and errors.go, plus Go's strconv
+;; (ParseInt, ParseFloat via its exact `decimal` path) and fmt's %x/%o scan
+;; for the cases the reader hands to them. READER.md has the grammar, the
+;; token table, every error message with its citation, and the named limits.
+;;
+;; Shape: one reader state per call (RS + Aux; `new` takes at most 8
+;; fields). Read functions return a value, the state's Void marker (a form
+;; that reads as nothing: comment, discard), or the state itself on failure,
+;; with the message chain in Aux. That mirrors Go's (Value, error) returns
+;; without try/catch, and it is what lets `#_` swallow a non-EOF error the
+;; way readFormComment does. The chain is built exactly as ReaderError.Error
+;; + errors.AddCause print it: "Syntax error reading source at
+;; (<read-string>:L:C).\n<msg>" then "\n\tcaused by <inner>" per Wrap.
+;; Line and column are tracked as LispReader.next/unread do (runes, not
+;; bytes; unread of a newline restores the previous column).
+;;
+;; Errors: the final chain is raised as the backend's exception value via
+;; llvm.core/raise (D68), msg = cmsg as for any native called as a value.
+;; Named limits (values the runtime has no box for, reader features that
+;; need *ns* or *data-readers*) are raised the same way, catchable, with a
+;; "lower-wasm: " message, because read-string's input is user data (xsofy's
+;; console wraps it in try).
+;;
+;; Code forms (P7.0, amending READER.md's limits table): `#(...)` reads as
+;; native's `(fn* [%1 ..] body)` here (readShortFn, reader.go:1195, %-args
+;; at read time, positions on both lists); `::name`, `::alias/name` and
+;; syntax-quote need the current ns, and #"regex" a compiler only plain
+;; lg has (lw-ext's re-pattern), so they go through the code hook
+;; llvm.eval installs (see `hook`): with it, native's forms; without it (no
+;; eval in the program yet, or native lg's tests) the named limits stand.
+;; New named limit: an `unquote-splicing used outside of a list` error
+;; inside syntax-quote has no line:column (the hook sees a form, not the
+;; text).
+(ns llvm.reader
+  (:refer-clojure :exclude [read-string])
+  (:require [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.phm :as m]
+            [llvm.phs :as hs]
+            [llvm.core :as c]))
+
+;; ---------------------------------------------------------------------------
+;; State (`new` takes at most 7 fields). RS: input bytes, length, byte
+;; position, rune position (Go's r.pos), line, column, Aux. Aux: lastCol,
+;; lastRune, lastSize, error chain (Str), caused-by-EOF flag, the Void
+;; marker, the :line/:column keywords (Kws), and the #( state (null outside
+;; a fn literal, else its ShortFn: the highest %N seen, readShortFn's
+;; maxPercent).
+(arch/defstruct RS [:ref :i64 [:mut :i64] [:mut :i64] [:mut :i64] [:mut :i64] :ref])
+(arch/defstruct Aux [[:mut :i64] [:mut :i64] [:mut :i64] [:mut :ref] [:mut :i64] :ref :ref [:mut :ref]])
+(arch/defstruct Kws [:ref :ref])
+(arch/defstruct Void [:i64])
+(arch/defstruct ShortFn [[:mut :i64]])
+;; P7.0: the code hook llvm.eval installs, a plain 2-arg fn. op 0 + a Str
+;; name: the Str "<cur-ns>/name" of `::name`; op 1 + a Str alias: the Str ns
+;; it names in the current ns, or nil; op 2 + a form: the syntax-quote
+;; expansion of `form; op 3 + a Str: the Regex of #"src" (re-pattern; with
+;; no hook it stays a named limit). No runtime global here (the dialect deftest): the
+;; hook is the root llvm.core keeps for the pseudo-var
+;; #'llvm.reader/code-hook (Globals field 2, alter-var-root's roots). With no
+;; hook the three stay named limits (they need *ns*), as under native lg's
+;; tests, which never install one.
+(defn- hook []
+  (let [v (c/with-meta (s/sym-of-bytes (arch/bytes-of-string "#'llvm.reader/code-hook")) (m/empty-map))]
+    (if (c/var-root-set? v) (c/var-value v) (arch/null))))
+(arch/defstruct RBuf [[:mut :ref] [:mut :i64]])                ; bytes, length
+(arch/defstruct RDec [:ref [:mut :i64] [:mut :i64] [:mut :i64]]) ; strconv decimal: digits 0..9, nd, dp, trunc
+
+(defn- st-new [bs from]
+  (arch/new RS bs (arch/alen bs) from 0 0 0
+            (arch/new Aux 0 -1 0 (arch/null) 0 (arch/new Void 0)
+                      (arch/new Kws (s/kw-of-bytes (arch/bytes-of-string "line"))
+                                (s/kw-of-bytes (arch/bytes-of-string "column")))
+                      (arch/null))))
+(defn- aux [st] (arch/get RS 6 st))
+(defn- void [st] (arch/get Aux 5 (aux st)))
+(defn- failed? [st v] (arch/ref-eq v st))
+(defn- void? [st v] (arch/ref-eq v (void st)))
+
+;; LispReader.next (reader.go:151): -1 at EOF, nothing consumed.
+(defn- next! [st]
+  (let [pos (arch/get RS 2 st) n (arch/get RS 1 st)]
+    (if (>= pos n)
+      -1
+      (let [d (sq/decode-at (arch/get RS 0 st) pos n)
+            r (unsigned-bit-shift-right d 3)
+            ax (aux st)]
+        (arch/set! RS 2 st (+ pos (bit-and d 7)))
+        (arch/set! RS 3 st (inc (arch/get RS 3 st)))
+        (if (= r 10)
+          (do (arch/set! RS 4 st (inc (arch/get RS 4 st)))
+              (arch/set! Aux 0 ax (arch/get RS 5 st))
+              (arch/set! RS 5 st 0))
+          (arch/set! RS 5 st (inc (arch/get RS 5 st))))
+        (arch/set! Aux 1 ax r)
+        (arch/set! Aux 2 ax (bit-and d 7))
+        r))))
+
+;; LispReader.unread (reader.go:167): one rune back.
+(defn- unread! [st]
+  (let [ax (aux st)]
+    (arch/set! RS 2 st (- (arch/get RS 2 st) (arch/get Aux 2 ax)))
+    (arch/set! RS 3 st (dec (arch/get RS 3 st)))
+    (if (= 10 (arch/get Aux 1 ax))
+      (do (arch/set! RS 4 st (dec (arch/get RS 4 st))) (arch/set! RS 5 st (arch/get Aux 0 ax)))
+      (arch/set! RS 5 st (dec (arch/get RS 5 st))))))
+
+;; ---------------------------------------------------------------------------
+;; Errors. Each returns st, the failure marker.
+
+(defn- header [st]                                      ; ReaderError.Error (errors.go:37)
+  (s/str (s/str (s/lit "Syntax error reading source at (<read-string>:")
+                (sq/box-int (inc (arch/get RS 4 st))) (s/lit ":"))
+         (sq/box-int (inc (arch/get RS 5 st)))
+         (s/lit ").\n")))
+
+;; The chain is kept as a pvec of layers, innermost first, and joined once
+;; when raised: a 200-deep EOF wraps 200 times, and joining at every wrap
+;; would copy the growing chain each time.
+(defn- layer [st msg] (s/str (header st) msg))
+
+(defn- fail! [st msg]                                   ; NewReaderError(r, msg), no cause
+  (arch/set! Aux 3 (aux st) (pv/vconj (pv/empty-vec) (layer st msg)))
+  (arch/set! Aux 4 (aux st) 0)
+  st)
+
+(defn- fail-eof! [st msg]                               ; NewReaderError(r, msg).Wrap(io.EOF)
+  (arch/set! Aux 3 (aux st) (pv/vconj (pv/vconj (pv/empty-vec) (s/lit "EOF")) (layer st msg)))
+  (arch/set! Aux 4 (aux st) 1)
+  st)
+
+(defn- wrap! [st msg]                                   ; NewReaderError(r, msg).Wrap(err)
+  (arch/set! Aux 3 (aux st) (pv/vconj (arch/get Aux 3 (aux st)) (layer st msg)))
+  st)
+
+(defn- limit [what]                                     ; a named limit, catchable (see the header)
+  (c/raise (s/str-bytes (s/str (s/lit "lower-wasm: read-string: ") what))))
+
+;; ---------------------------------------------------------------------------
+;; Bytes and a growable byte buffer (str.lg's are private; READER.md, Dedupe).
+
+(defn- slice [bs from to]
+  (let [out (arch/bytes-new (- to from))]
+    (arch/array-copy arch/Bytes out 0 bs from (- to from))
+    out))
+
+(defn- buf-new [] (arch/new RBuf (arch/bytes-new 16) 0))
+
+(defn- buf-byte! [b v]
+  (let [bs (arch/get RBuf 0 b) len (arch/get RBuf 1 b)]
+    (when (>= len (arch/alen bs))
+      (let [nb (arch/bytes-new (* 2 (arch/alen bs)))]
+        (arch/array-copy arch/Bytes nb 0 bs 0 len)
+        (arch/set! RBuf 0 b nb)))
+    (arch/bset! (arch/get RBuf 0 b) len v)
+    (arch/set! RBuf 1 b (inc len))))
+
+(defn- buf-rune! [b r]                                  ; strings.Builder.WriteRune: invalid -> U+FFFD
+  (let [r (if (if (< r 0) true (if (> r 0x10FFFF) true (if (>= r 0xD800) (<= r 0xDFFF) false))) 0xFFFD r)]
+    (cond (< r 0x80) (buf-byte! b r)
+          (< r 0x800) (do (buf-byte! b (+ 0xC0 (unsigned-bit-shift-right r 6)))
+                          (buf-byte! b (+ 0x80 (bit-and r 0x3F))))
+          (< r 0x10000) (do (buf-byte! b (+ 0xE0 (unsigned-bit-shift-right r 12)))
+                            (buf-byte! b (+ 0x80 (bit-and (unsigned-bit-shift-right r 6) 0x3F)))
+                            (buf-byte! b (+ 0x80 (bit-and r 0x3F))))
+          :else (do (buf-byte! b (+ 0xF0 (unsigned-bit-shift-right r 18)))
+                    (buf-byte! b (+ 0x80 (bit-and (unsigned-bit-shift-right r 12) 0x3F)))
+                    (buf-byte! b (+ 0x80 (bit-and (unsigned-bit-shift-right r 6) 0x3F)))
+                    (buf-byte! b (+ 0x80 (bit-and r 0x3F)))))))
+
+(defn- buf-bytes [b] (slice (arch/get RBuf 0 b) 0 (arch/get RBuf 1 b)))
+
+(defn- bytes-is? [bs lit]                               ; bs equals a literal's bytes
+  (sq/bytes-eq? bs lit))
+
+(defn- hex-digit [d] (if (< d 10) (+ 48 d) (+ 55 d)))
+
+(defn- hex4 [v]                                         ; fmt %04X of a non-negative int
+  (let [b (buf-new)
+        nd (loop [k 4 x (unsigned-bit-shift-right v 16)] (if (> x 0) (recur (inc k) (unsigned-bit-shift-right x 4)) k))]
+    (loop [i (dec nd)]
+      (when (>= i 0)
+        (buf-byte! b (hex-digit (bit-and (unsigned-bit-shift-right v (* 4 i)) 15)))
+        (recur (dec i))))
+    (s/mk-str (buf-bytes b))))
+
+;; ---------------------------------------------------------------------------
+;; Character classes (reader.go:1887-1901). unicode.IsSpace and
+;; unicode.IsDigit beyond ASCII come from Go 1.27's tables: White_Space
+;; (U+0085, U+00A0, U+1680, U+2000-200A, U+2028, U+2029, U+202F, U+205F,
+;; U+3000) and category Nd, encoded below as 6 hex digits of the first code
+;; point and 2 of (run length - 1); every run is 10 long except U+116D0 (20)
+;; and U+1D7CE (50).
+
+(defn- whitespace? [r]                                  ; isWhitespace: unicode.IsSpace or ','
+  (cond (< r 0x80) (if (= r 32) true (if (= r 44) true (if (>= r 9) (<= r 13) false)))
+        (= r 0x85) true
+        (= r 0xA0) true
+        (= r 0x1680) true
+        (if (>= r 0x2000) (<= r 0x200A) false) true
+        (if (= r 0x2028) true (if (= r 0x2029) true (if (= r 0x202F) true (if (= r 0x205F) true (= r 0x3000))))) true
+        :else false))
+
+(defn- hexval [c]                                       ; ASCII hex digit value, -1 otherwise
+  (cond (if (>= c 48) (<= c 57) false) (- c 48)
+        (if (>= c 97) (<= c 102) false) (- c 87)
+        (if (>= c 65) (<= c 70) false) (- c 55)
+        :else -1))
+
+(defn- nd-digit? [r]                                    ; unicode.IsDigit
+  (if (< r 0x80)
+    (if (>= r 48) (<= r 57) false)
+    (let [t (arch/bytes-of-string "000660090006F0090007C009000966090009E609000A6609000AE609000B6609000BE609000C6609000CE609000D6609000DE609000E5009000ED009000F200900104009001090090017E00900181009001946090019D009001A8009001A9009001B5009001BB009001C4009001C500900A6200900A8D00900A9000900A9D00900A9F00900AA500900ABF00900FF10090104A009010D3009010D4009011066090110F009011136090111D0090112F009011450090114D009011650090116C0090116D013011730090118E00901195009011BF009011C5009011D5009011DA009011DE009011F500901613009016A6009016AC009016B5009016D700901CCF00901D7CE3101E1400901E2F00901E4F00901E5F10901E9500901FBF009")
+          n (arch/alen t)]
+      (loop [i 0]
+        (if (< i n)
+          (let [lo (loop [j 0 v 0] (if (< j 6) (recur (inc j) (+ (* v 16) (hexval (arch/bget t (+ i j))))) v))
+                len (+ (* 16 (hexval (arch/bget t (+ i 6)))) (hexval (arch/bget t (+ i 7))))]
+            (if (if (>= r lo) (<= r (+ lo len)) false) true (recur (+ i 8))))
+          false)))))
+
+(defn- hex-rune? [r]                                    ; isHexDigit: unicode.IsDigit or a-f A-F
+  (if (nd-digit? r) true (if (if (>= r 97) (<= r 102) false) true (if (>= r 65) (<= r 70) false))))
+
+(defn- macro? [r]                                       ; the macros table (reader.go:1921)
+  (cond (= r 40) true (= r 41) true (= r 91) true (= r 93) true (= r 123) true (= r 125) true
+        (= r 34) true (= r 92) true (= r 39) true (= r 64) true (= r 96) true (= r 126) true
+        (= r 59) true (= r 35) true (= r 94) true
+        :else false))
+
+(defn- terminating? [r]                                 ; isTerminatingMacro: a macro other than # ' %
+  (if (= r 35) false (if (= r 39) false (macro? r))))
+
+(defn- boundary? [r] (if (whitespace? r) true (terminating? r)))
+
+;; ---------------------------------------------------------------------------
+;; Tokens (readToken, reader.go:415). The first rune is already consumed and
+;; starts at byte `start`. Go builds the token with WriteRune, so an invalid
+;; byte becomes U+FFFD; a token with none is the input slice.
+
+(defn- read-token [st start]
+  (let [dirty (loop [dirty (= 1 (if (= 0xFFFD (arch/get Aux 1 (aux st))) (arch/get Aux 2 (aux st)) 0))]
+                (let [ch (next! st)]
+                  (cond (= ch -1) dirty
+                        (boundary? ch) (do (unread! st) dirty)
+                        :else (recur (if dirty true (if (= ch 0xFFFD) (= 1 (arch/get Aux 2 (aux st))) false))))))
+        bs (arch/get RS 0 st) end (arch/get RS 2 st)]
+    (if dirty
+      (let [b (buf-new)]
+        (loop [i start]
+          (when (< i end)
+            (let [d (sq/decode-at bs i end)]
+              (buf-rune! b (unsigned-bit-shift-right d 3))
+              (recur (+ i (bit-and d 7))))))
+        (buf-bytes b))
+      (slice bs start end))))
+
+(defn- last-start [st] (- (arch/get RS 2 st) (arch/get Aux 2 (aux st))))
+
+;; hasInvalidKeywordColonPart (reader.go:314) on tk[a,b)
+(defn- part-bad? [tk a b allow-leading]
+  (let [a (if allow-leading (if (< a b) (if (= 58 (arch/bget tk a)) (inc a) a) a) a)]
+    (cond (>= a b) true
+          (= 58 (arch/bget tk a)) true
+          (= 58 (arch/bget tk (dec b))) true
+          :else (loop [i a] (cond (>= (inc i) b) false
+                                  (if (= 58 (arch/bget tk i)) (= 58 (arch/bget tk (inc i))) false) true
+                                  :else (recur (inc i)))))))
+
+(defn- slash-in [tk a b] (loop [i a] (cond (>= i b) -1 (= 47 (arch/bget tk i)) i :else (recur (inc i)))))
+
+(defn- colon-bad? [tk a b]                              ; hasInvalidKeywordColon (reader.go:324)
+  (if (if (= (- b a) 1) (= 47 (arch/bget tk a)) false)
+    false
+    (let [sl (slash-in tk a b)]
+      (if (< sl 0)
+        (part-bad? tk a b false)
+        (if (part-bad? tk a sl false) true (part-bad? tk (inc sl) b true))))))
+
+(defn- alias-bad? [tk sl n]                             ; ::alias/name with an empty, slashed or colon-bad part
+  (cond (= sl 2) true
+        (= (inc sl) n) true
+        (>= (slash-in tk (inc sl) n) 0) true
+        (part-bad? tk 2 sl false) true
+        :else (part-bad? tk (inc sl) n true)))
+
+(defn- invalid-token [st tk] (fail! st (s/str (s/lit "invalid token: ") (s/mk-str tk))))
+
+;; interpretToken's %-arm (reader.go:392): inside #( a %N token raises the
+;; fn literal's arity to N when strconv.Atoi(N) succeeds with N >= 0 (so a
+;; sign is accepted and %0 counts nothing); a bare % reads as %1. Any other
+;; % token (%&, %a) is a plain symbol, and %& is NOT made a rest param:
+;; native's own quirk, reproduced.
+(defn- atoi-from [tk a n]                                ; strconv.Atoi(tk[a:n]): value, or -1 when it fails or is negative
+  (let [neg (if (< a n) (= 45 (arch/bget tk a)) false)
+        a2 (if (< a n) (if (if (= 45 (arch/bget tk a)) true (= 43 (arch/bget tk a))) (inc a) a) a)]
+    (if (>= a2 n)
+      -1
+      (let [v (loop [i a2 v 0]
+                (cond (>= i n) v
+                      (> v 100000000000000) -1                    ; past what an arity can be: Atoi's range error or far beyond 20
+                      (if (>= (arch/bget tk i) 48) (<= (arch/bget tk i) 57) false) (recur (inc i) (+ (* v 10) (- (arch/bget tk i) 48)))
+                      :else -1))]
+        (if (< v 0) -1 (if neg (if (= v 0) 0 -1) v))))))
+
+(defn- short-fn-arg [st tk]
+  (let [sf (arch/get Aux 7 (aux st)) n (arch/alen tk)
+        k (if (= n 1) 1 (atoi-from tk 1 n))]
+    (when (> k (arch/get ShortFn 0 sf)) (arch/set! ShortFn 0 sf k))
+    (if (= n 1) (s/sym-of-bytes (arch/bytes-of-string "%1")) (s/sym-of-bytes tk))))
+
+;; interpretToken (reader.go:336)
+(defn- interpret [st tk]
+  (let [n (arch/alen tk)]
+    (cond
+      (= 58 (arch/bget tk 0))
+      (cond (= n 1) (invalid-token st tk)
+            (= 58 (arch/bget tk 1))
+            (let [sl (slash-in tk 2 n)]
+              (if (< sl 0)
+                (cond (colon-bad? tk 2 n) (invalid-token st tk)
+                      (arch/null? (hook)) (limit (s/lit "auto-resolved keyword ::name needs *ns* (named limit)"))
+                      :else (s/kw-of-bytes (s/str-bytes (sq/invoke2 (hook) (sq/box-int 0) (s/mk-str (slice tk 2 n))))))
+                (cond (alias-bad? tk sl n) (invalid-token st tk)
+                      (arch/null? (hook)) (limit (s/lit "auto-resolved keyword ::alias/name needs the ns alias table (named limit)"))
+                      :else
+                      (let [r (sq/invoke2 (hook) (sq/box-int 1) (s/mk-str (slice tk 2 sl)))]
+                        (if (arch/null? r)
+                          (fail! st (s/str (s/str (s/str (s/lit "invalid token: ") (s/mk-str tk)) (s/lit ", namespace alias "))
+                                           (s/str (s/mk-str (slice tk 2 sl)) (s/lit " not found"))))
+                          (s/kw-of-bytes (s/str-bytes (s/str (s/str r (s/lit "/")) (s/mk-str (slice tk (inc sl) n))))))))))
+            (colon-bad? tk 1 n) (invalid-token st tk)
+            :else (s/kw-of-bytes (slice tk 1 n)))
+      (bytes-is? tk (arch/bytes-of-string "nil")) (arch/null)
+      (bytes-is? tk (arch/bytes-of-string "true")) (sq/bool true)
+      (bytes-is? tk (arch/bytes-of-string "false")) (sq/bool false)
+      (if (arch/null? (arch/get Aux 7 (aux st))) false (= 37 (arch/bget tk 0))) (short-fn-arg st tk)
+      :else (s/sym-of-bytes tk))))
+
+;; ---------------------------------------------------------------------------
+;; Integers: strconv.ParseInt/Atoi, big.Int.SetString, as readNumber uses
+;; them. scan-neg-mag reads digits only (no sign) in `base` and returns the
+;; NEGATED magnitude boxed (so 2^63 fits), arch/null on a syntax error, or
+;; st when the magnitude exceeds 2^63.
+
+(defn- digit-val [c]                                    ; any base up to 36, case-insensitive; -1 otherwise
+  (cond (if (>= c 48) (<= c 57) false) (- c 48)
+        (if (>= c 97) (<= c 122) false) (- c 87)
+        (if (>= c 65) (<= c 90) false) (- c 55)
+        :else -1))
+
+(defn- scan-neg-mag [st tk a b base]
+  (if (>= a b)
+    (arch/null)
+    (let [mmin (quot -9223372036854775808 base)]
+      (loop [i a acc 0 over false]
+        (if (< i b)
+          (let [d (digit-val (arch/bget tk i))]
+            (cond (if (< d 0) true (>= d base)) (arch/null)
+                  over (recur (inc i) acc true)
+                  (< acc mmin) (recur (inc i) acc true)
+                  (< (* acc base) (+ -9223372036854775808 d)) (recur (inc i) acc true)
+                  :else (recur (inc i) (- (* acc base) d) false)))
+          (if over st (sq/box-int acc)))))))
+
+(defn- sign-at [tk a b] (if (< a b) (let [c (arch/bget tk a)] (cond (= c 45) -1 (= c 43) 1 :else 0)) 0))
+
+(defn- parse-int [st tk a b base]                       ; ParseInt(s, base, 64): value box, null (syntax), st (range)
+  (let [sg (sign-at tk a b)
+        r (scan-neg-mag st tk (if (= sg 0) a (inc a)) b base)]
+    (cond (arch/null? r) r
+          (failed? st r) r
+          (= sg -1) r
+          (= (sq/unbox-int r) -9223372036854775808) st
+          :else (sq/box-int (- 0 (sq/unbox-int r))))))
+
+(defn- neg-wrap [v] (arch/i64-sub 0 v))                 ; Go's -i: wraps MinInt64
+
+(defn- all-digits? [tk a b]                             ; [+-]?[0-9]+, as big.Int.SetString(s, 10)
+  (let [a (if (= 0 (sign-at tk a b)) a (inc a))]
+    (if (< a b)
+      (loop [i a] (cond (>= i b) true (if (>= (arch/bget tk i) 48) (<= (arch/bget tk i) 57) false) (recur (inc i)) :else false))
+      false)))
+
+(defn- index-byte [tk a b c] (loop [i a] (cond (>= i b) -1 (= c (arch/bget tk i)) i :else (recur (inc i)))))
+
+;; big.Float.Parse(s, 10) accepts [+-]? (D+ [.D*] | .D+) ([eEpP] [+-]? D+)?
+(defn- digits-from [tk i b] (loop [j i] (if (< j b) (if (if (>= (arch/bget tk j) 48) (<= (arch/bget tk j) 57) false) (recur (inc j)) j) j)))
+(defn- big-decimal-ok? [tk a b]
+  (let [a (if (= 0 (sign-at tk a b)) a (inc a))
+        i1 (digits-from tk a b)
+        dot (if (< i1 b) (= 46 (arch/bget tk i1)) false)
+        i2 (if dot (digits-from tk (inc i1) b) i1)
+        nd (- (- i2 a) (if dot 1 0))]
+    (if (> nd 0)
+      (if (= i2 b)
+        true
+        (let [c (arch/bget tk i2)]
+          (if (if (= c 101) true (if (= c 69) true (if (= c 112) true (= c 80))))
+            (let [j (if (= 0 (sign-at tk (inc i2) b)) (inc i2) (+ i2 2))
+                  k (digits-from tk j b)]
+              (if (> k j) (= k b) false))
+            false)))
+      false)))
+
+;; ---------------------------------------------------------------------------
+;; Floats: Go's ParseFloat on the decimal path. readFloat's syntax check
+;; (with underscoreOK), then decimal.set + decimal.floatBits
+;; (internal/strconv/atof.go:80, :322) with the multiprecision decimal of
+;; decimal.go, the same port str.lg's formatter uses (59-bit shift chunks).
+;; Every path ParseFloat takes yields the correctly rounded double, so the
+;; exact slow path is the whole algorithm here.
+
+(defn- lower [c] (if (if (>= c 65) (<= c 90) false) (+ c 32) c))
+(defn- dec-digit? [c] (if (>= c 48) (<= c 57) false))
+
+(defn- underscore-ok? [tk a b]                          ; underscoreOK (atoi.go:252)
+  (let [a (if (< a b) (if (= 0 (sign-at tk a b)) a (inc a)) a)
+        hexp (if (< (inc a) b) (if (= 48 (arch/bget tk a)) (let [c (lower (arch/bget tk (inc a)))] (if (= c 98) true (if (= c 111) true (= c 120)))) false) false)
+        hex (if hexp (= 120 (lower (arch/bget tk (inc a)))) false)]
+    ;; saw: 0 ^, 1 digit or prefix, 2 _, 3 other
+    (loop [i (if hexp (+ a 2) a) saw (if hexp 1 0)]
+      (if (< i b)
+        (let [c (arch/bget tk i)]
+          (cond (if (dec-digit? c) true (if hex (if (>= (lower c) 97) (<= (lower c) 102) false) false)) (recur (inc i) 1)
+                (= c 95) (if (= saw 1) (recur (inc i) 2) false)
+                (= saw 2) false
+                :else (recur (inc i) 3)))
+        (if (= saw 2) false true)))))
+
+(defn- float-syntax [tk a b]                            ; readFloat + n == len: 0 bad, 1 decimal, 2 hex
+  (let [i0 (if (= 0 (sign-at tk a b)) a (inc a))
+        hex (if (< (+ i0 2) b) (if (= 48 (arch/bget tk i0)) (= 120 (lower (arch/bget tk (inc i0)))) false) false)
+        i1 (if hex (+ i0 2) i0)
+        ;; mantissa: digits, '_', one '.'; returns end index * 4 + flags (1 sawdigits, 2 underscores)
+        mant (loop [i i1 dot false dig false us false]
+               (if (< i b)
+                 (let [c (arch/bget tk i)]
+                   (cond (= c 95) (recur (inc i) dot dig true)
+                         (= c 46) (if dot (+ (* i 4) (if dig 1 0) (if us 2 0)) (recur (inc i) true dig us))
+                         (dec-digit? c) (recur (inc i) dot true us)
+                         (if hex (if (>= (lower c) 97) (<= (lower c) 102) false) false) (recur (inc i) dot true us)
+                         :else (+ (* i 4) (if dig 1 0) (if us 2 0))))
+                 (+ (* i 4) (if dig 1 0) (if us 2 0))))
+        i (quot mant 4)
+        us (= 2 (bit-and mant 2))]
+    (if (= 0 (bit-and mant 1))
+      0
+      (let [expc (if hex 112 101)
+            ;; end index after the exponent, -1 when malformed; *2 + underscore flag
+            ex (if (if (< i b) (= expc (lower (arch/bget tk i))) false)
+                 (let [j (inc i)]
+                   (if (>= j b)
+                     -2
+                     (let [j (if (= 0 (sign-at tk j b)) j (inc j))]
+                       (if (if (< j b) (dec-digit? (arch/bget tk j)) false)
+                         (loop [k j u false]
+                           (if (if (< k b) (if (dec-digit? (arch/bget tk k)) true (= 95 (arch/bget tk k))) false)
+                             (recur (inc k) (if u true (= 95 (arch/bget tk k))))
+                             (+ (* k 2) (if u 1 0))))
+                         -2))))
+                 (if hex -2 (* i 2)))]
+        (cond (< ex 0) 0
+              (if (if us true (= 1 (bit-and ex 1))) (underscore-ok? tk a (quot ex 2)) true)
+              (if (= (quot ex 2) b) (if hex 2 1) 0)
+              :else 0)))))
+
+(defn- dec-new [] (arch/new RDec (arch/bytes-new 800) 0 0 0))
+(defn- d-nd [a] (arch/get RDec 1 a))
+(defn- d-dp [a] (arch/get RDec 2 a))
+(defn- d-at [a i] (arch/bget (arch/get RDec 0 a) i))
+
+(defn- dec-trim! [a]
+  (let [nd (loop [nd (d-nd a)] (if (if (> nd 0) (= 0 (d-at a (dec nd))) false) (recur (dec nd)) nd))]
+    (arch/set! RDec 1 a nd)
+    (when (= nd 0) (arch/set! RDec 2 a 0))))
+
+(defn- times-ten-pow [n x] (loop [n n x x] (if (> x 0) (recur (* n 10) (dec x)) n)))
+
+(defn- right-shift! [a k]                                ; rightShift, k <= 59
+  (let [d (arch/get RDec 0 a) nd (d-nd a) mask (dec (bit-shift-left 1 k))
+        r1 (loop [r 0 n 0]
+             (if (if (= 0 (unsigned-bit-shift-right n k)) (< r nd) false)
+               (recur (inc r) (+ (* n 10) (arch/bget d r)))
+               r))
+        n1 (loop [i 0 n 0] (if (< i r1) (recur (inc i) (+ (* n 10) (arch/bget d i))) n))]
+    (if (= n1 0)
+      (arch/set! RDec 1 a 0)
+      (let [ext (loop [x 0 n n1] (if (= 0 (unsigned-bit-shift-right n k)) (recur (inc x) (* n 10)) x))
+            r0 (+ r1 ext)
+            w0 (if (< r0 nd) (- nd r0) 0)
+            n2 (loop [r r0 w 0 n (times-ten-pow n1 ext)]
+                 (if (< r nd)
+                   (let [c (arch/bget d r) dig (unsigned-bit-shift-right n k) n (bit-and n mask)]
+                     (arch/bset! d w dig)
+                     (recur (inc r) (inc w) (+ (* n 10) c)))
+                   n))
+            w (loop [w w0 n n2]
+                (if (> n 0)
+                  (let [dig (unsigned-bit-shift-right n k) n (bit-and n mask)]
+                    (if (< w 800)
+                      (do (arch/bset! d w dig) (recur (inc w) (* n 10)))
+                      (do (when (> dig 0) (arch/set! RDec 3 a 1)) (recur w (* n 10)))))
+                  w))]
+        (arch/set! RDec 2 a (- (d-dp a) (dec r0)))
+        (arch/set! RDec 1 a w)
+        (dec-trim! a)))))
+
+(defn- left-shift! [a k]                                 ; leftShift, k <= 59
+  (let [d (arch/get RDec 0 a) nd (d-nd a) tmp (arch/bytes-new (+ nd 20))
+        w0 (loop [r (dec nd) w 0 n 0]
+             (if (>= r 0)
+               (let [n (+ n (bit-shift-left (arch/bget d r) k)) q (quot n 10)]
+                 (arch/bset! tmp w (- n (* 10 q)))
+                 (recur (dec r) (inc w) q))
+               (loop [w w n n]
+                 (if (> n 0)
+                   (let [q (quot n 10)] (arch/bset! tmp w (- n (* 10 q))) (recur (inc w) q))
+                   w))))
+        keep (if (> w0 800) 800 w0)]
+    (loop [i 0] (when (< i keep) (arch/bset! d i (arch/bget tmp (- w0 (inc i)))) (recur (inc i))))
+    (loop [i keep] (when (< i w0) (when (> (arch/bget tmp (- w0 (inc i))) 0) (arch/set! RDec 3 a 1)) (recur (inc i))))
+    (arch/set! RDec 1 a keep)
+    (arch/set! RDec 2 a (+ (d-dp a) (- w0 nd)))
+    (dec-trim! a)))
+
+(defn- dec-shift! [a k]
+  (cond (= 0 (d-nd a)) nil
+        (> k 0) (loop [k k] (if (> k 59) (do (left-shift! a 59) (recur (- k 59))) (left-shift! a k)))
+        (< k 0) (loop [k k] (if (< k -59) (do (right-shift! a 59) (recur (+ k 59))) (right-shift! a (- 0 k))))
+        :else nil))
+
+(defn- should-round-up? [a nd]
+  (cond (if (< nd 0) true (>= nd (d-nd a))) false
+        (if (= 5 (d-at a nd)) (= (inc nd) (d-nd a)) false)
+        (if (= 1 (arch/get RDec 3 a)) true (if (> nd 0) (= 1 (bit-and (d-at a (dec nd)) 1)) false))
+        :else (>= (d-at a nd) 5)))
+
+(defn- rounded-integer [a]                               ; RoundedInteger (decimal.go:399); dp <= 20 here
+  (let [dp (d-dp a) nd (d-nd a)
+        n (loop [i 0 n 0] (if (if (< i dp) (< i nd) false) (recur (inc i) (+ (* n 10) (d-at a i))) n))
+        n (loop [i (if (< nd dp) nd dp) n n] (if (< i dp) (recur (inc i) (* n 10)) n))]
+    (if (should-round-up? a dp) (inc n) n)))
+
+(defn- dec-set! [a tk lo hi]                             ; decimal.set on a string readFloat accepted
+  (let [i0 (if (= 0 (sign-at tk lo hi)) lo (inc lo))
+        d (arch/get RDec 0 a)
+        i (loop [i i0 dot false]
+            (if (< i hi)
+              (let [c (arch/bget tk i)]
+                (cond (= c 95) (recur (inc i) dot)
+                      (= c 46) (do (arch/set! RDec 2 a (d-nd a)) (recur (inc i) true))
+                      (dec-digit? c)
+                      (do (cond (if (= c 48) (= 0 (d-nd a)) false) (arch/set! RDec 2 a (dec (d-dp a)))
+                                (< (d-nd a) 800) (do (arch/bset! d (d-nd a) (- c 48)) (arch/set! RDec 1 a (inc (d-nd a))))
+                                (= c 48) nil
+                                :else (arch/set! RDec 3 a 1))
+                          (recur (inc i) dot))
+                      :else (do (when-not dot (arch/set! RDec 2 a (d-nd a))) i)))
+              (do (when-not dot (arch/set! RDec 2 a (d-nd a))) i)))]
+    (when (< i hi)                                       ; exponent, capped as Go caps it
+      (let [j (inc i) sg (sign-at tk j hi) j (if (= sg 0) j (inc j))
+            e (loop [k j e 0]
+                (if (< k hi)
+                  (let [c (arch/bget tk k)]
+                    (recur (inc k) (if (= c 95) e (if (< e 10000) (+ (* e 10) (- c 48)) e))))
+                  e))]
+        (arch/set! RDec 2 a (+ (d-dp a) (if (= sg -1) (- 0 e) e)))))))
+
+(defn- powtab [k]                                       ; powtab (atof.go:320), 27 past its end
+  (cond (>= k 9) 27 (= k 0) 1 (= k 1) 3 (= k 2) 6 (= k 3) 9 (= k 4) 13 (= k 5) 16 (= k 6) 19 (= k 7) 23 :else 26))
+
+(defn- scale2 [x e]                                      ; x * 2^e, exact for floatBits' results
+  (let [x (loop [x x e e] (if (>= e 32) (recur (* x 4294967296.0) (- e 32)) (loop [x x e e] (if (> e 0) (recur (* x 2.0) (dec e)) x))))]
+    (loop [x x e e] (if (<= e -32) (recur (* x 2.3283064365386963e-10) (+ e 32)) (loop [x x e e] (if (< e 0) (recur (* x 0.5) (inc e)) x))))))
+
+(defn- parse-float [tk a b]                              ; boxed Float, or null on ErrRange (overflow)
+  (let [d (dec-new)
+        neg (= -1 (sign-at tk a b))
+        _ (dec-set! d tk a b)
+        r (cond (= 0 (d-nd d)) 0.0
+                (> (d-dp d) 310) -1.0
+                (< (d-dp d) -330) 0.0
+                :else
+                (let [e1 (loop [e 0] (if (> (d-dp d) 0) (let [n (powtab (d-dp d))] (dec-shift! d (- 0 n)) (recur (+ e n))) e))
+                      e2 (loop [e e1] (if (if (< (d-dp d) 0) true (if (= 0 (d-dp d)) (< (d-at d 0) 5) false))
+                                        (let [n (powtab (- 0 (d-dp d)))] (dec-shift! d n) (recur (- e n)))
+                                        e))
+                      e3 (dec e2)
+                      e4 (if (< e3 -1022) (let [n (- -1022 e3)] (dec-shift! d (- 0 n)) (+ e3 n)) e3)]
+                  (if (>= (+ e4 1023) 2047)
+                    -1.0
+                    (let [_ (dec-shift! d 53)
+                          mant (rounded-integer d)
+                          up (= mant 9007199254740992)
+                          mant (if up 4503599627370496 mant)
+                          e5 (if up (inc e4) e4)]
+                      (if (>= (+ e5 1023) 2047) -1.0 (scale2 (arch/i64-to-f64 mant) (- e5 52)))))))]
+    (if (< r 0.0) (arch/null) (s/box-float (if neg (* -1.0 r) r)))))
+
+;; ---------------------------------------------------------------------------
+;; readNumber (reader.go:638): the token, then the same cascade of parsers.
+
+(defn- invalid-number [st tk] (fail! st (s/str (s/lit "invalid number: ") (s/mk-str tk))))
+
+(defn- big-limit [tk why]
+  (limit (s/str (s/lit "BigInt literal ") (s/mk-str tk) why)))
+
+(defn- num-hex [st tk neg a n]                           ; 0x…: big.Int.SetString(hex, 16), its own sign
+  (if (if (> (- n a) 2) (if (= 48 (arch/bget tk a)) (let [c (arch/bget tk (inc a))] (if (= c 120) true (= c 88))) false) false)
+    (let [h (+ a 2) sg (sign-at tk h n)
+          r (scan-neg-mag st tk (if (= sg 0) h (inc h)) n 16)]
+      (cond (arch/null? r) r
+            (failed? st r) (big-limit tk (s/lit " (hex past int64; named limit)"))
+            :else (let [fneg (if neg (if (= sg -1) false true) (= sg -1)) ; -0x-5 is 5
+                        v (sq/unbox-int r)]
+                    (cond fneg r
+                          (= v -9223372036854775808) (big-limit tk (s/lit " (hex past int64; named limit)"))
+                          :else (sq/box-int (- 0 v))))))
+    (arch/null)))
+
+(defn- ok-int? [st r] (if (arch/null? r) false (if (failed? st r) false true)))
+(defn- negate-if [neg r] (if neg (sq/box-int (neg-wrap (sq/unbox-int r))) r))
+
+(defn- num-oct [st tk neg a n]                           ; 0[0-7]…: ParseInt(numStr[1:], 8)
+  (if (if (> (- n a) 1) (if (= 48 (arch/bget tk a)) (let [c (arch/bget tk (inc a))] (if (>= c 48) (<= c 55) false)) false) false)
+    (let [r (parse-int st tk (inc a) n 8)] (if (ok-int? st r) (negate-if neg r) (arch/null)))
+    (arch/null)))
+
+(defn- num-radix [st tk neg a n]                         ; NrDDD: Atoi(N) in 2..36, ParseInt(DDD, N)
+  (let [ri (index-byte tk a n 114)]
+    (if (> ri a)
+      (let [rr (parse-int st tk a ri 10)
+            radix (if (ok-int? st rr) (sq/unbox-int rr) 0)]
+        (if (if (>= radix 2) (<= radix 36) false)
+          (let [r (parse-int st tk (inc ri) n radix)] (if (ok-int? st r) (negate-if neg r) (arch/null)))
+          (arch/null)))
+      (arch/null))))
+
+(defn- num-ratio [st tk n]                               ; N/D: big.Rat, an Int when it divides
+  (let [si (index-byte tk 0 n 47)]
+    (if (> si 0)
+      (let [num (parse-int st tk 0 si 10) den (parse-int st tk (inc si) n 10)]
+        (if (if (ok-int? st num) (if (ok-int? st den) (if (= 0 (sq/unbox-int den)) false true) false) false)
+          (let [x (sq/unbox-int num) y (sq/unbox-int den)]
+            (cond (= y -1) (if (= x -9223372036854775808)
+                             (big-limit tk (s/lit " (a ratio past int64; named limit)"))
+                             (sq/box-int (- 0 x)))
+                  (= x (* (quot x y) y)) (sq/box-int (quot x y))
+                  :else (limit (s/str (s/lit "Ratio literal ") (s/mk-str tk) (s/lit " (no Ratio in the runtime; named limit)")))))
+          (arch/null)))
+      (arch/null))))
+
+(defn- num-dec [st tk n]                                 ; ParseInt(sn, 10), then ParseFloat(sn)
+  (let [ir (parse-int st tk 0 n 10)]
+    (cond (failed? st ir) (big-limit tk (s/lit " (past int64; named limit)"))
+          (arch/null? ir)
+          (let [fs (float-syntax tk 0 n)]
+            (cond (= fs 0) (invalid-number st tk)
+                  (= fs 2) (limit (s/str (s/lit "hex float literal ") (s/mk-str tk) (s/lit " (named limit)")))
+                  :else (let [f (parse-float tk 0 n)] (if (arch/null? f) (invalid-number st tk) f))))
+          :else ir)))
+
+(defn- parse-number [st tk]
+  (let [n (arch/alen tk) last (arch/bget tk (dec n))
+        neg (= 45 (arch/bget tk 0))
+        a (if neg 1 0)]
+    (if (if (> n 1) (if (if (= last 78) true (= last 110)) (all-digits? tk 0 (dec n)) false) false)
+      (big-limit tk (s/lit " (no BigInt in the runtime; named limit)"))
+      (if (if (> n 1) (if (if (= last 77) true (= last 109)) (big-decimal-ok? tk 0 (dec n)) false) false)
+        (limit (s/str (s/lit "BigDecimal literal ") (s/mk-str tk) (s/lit " (named limit)")))
+        (let [h (num-hex st tk neg a n)]
+          (if (arch/null? h)
+            (let [o (num-oct st tk neg a n)]
+              (if (arch/null? o)
+                (let [r (num-radix st tk neg a n)]
+                  (if (arch/null? r)
+                    (let [q (num-ratio st tk n)] (if (arch/null? q) (num-dec st tk n) q))
+                    r))
+                o))
+            h))))))
+
+(defn- read-number [st start]
+  (let [tk (read-token st start)] (parse-number st tk)))
+
+;; ---------------------------------------------------------------------------
+;; Strings and characters
+
+(defn- read-hex-escape [st]                              ; readHexEscape (reader.go:549): code point, or -2
+  (let [b (buf-new)
+        r (loop [k 0]
+            (if (< k 4)
+              (let [ch (next! st)]
+                (if (if (= ch -1) true (if (hex-rune? ch) false true))
+                  -2
+                  (do (buf-rune! b ch) (recur (inc k)))))
+              -1))]
+    (if (= r -2)
+      (do (fail! st (s/str (s/lit "invalid escape sequence \\u") (s/mk-str (buf-bytes b)))) -2)
+      ;; fmt.Sscanf("%x"): the leading ASCII hex digits (a Unicode digit stops it)
+      (let [bs (buf-bytes b)
+            v (loop [i 0 v 0] (if (if (< i 4) (>= (hexval (arch/bget bs i)) 0) false) (recur (inc i) (+ (* v 16) (hexval (arch/bget bs i)))) (if (= i 0) -1 v)))]
+        (if (< v 0)
+          (do (fail! st (s/str (s/lit "invalid escape sequence \\u") (s/mk-str bs))) -2)
+          v)))))
+
+(defn- read-string-lit [st]                              ; readString (reader.go:436)
+  (let [b (buf-new)]
+    (loop []
+      (let [ch (next! st)]
+        (cond
+          (= ch -1) (fail-eof! st (s/lit "unexpected error"))
+          (= ch 34) (s/mk-str (buf-bytes b))
+          (= ch 92)
+          (let [e (next! st)]
+            (cond (= e -1) (fail-eof! st (s/lit "unexpected error"))
+                  (= e 116) (do (buf-byte! b 9) (recur))
+                  (= e 114) (do (buf-byte! b 13) (recur))
+                  (= e 110) (do (buf-byte! b 10) (recur))
+                  (= e 98) (do (buf-byte! b 8) (recur))
+                  (= e 102) (do (buf-byte! b 12) (recur))
+                  (if (= e 92) true (= e 34)) (do (buf-byte! b e) (recur))
+                  (= e 117)
+                  (let [h (read-hex-escape st)]
+                    (cond
+                      (= h -2) st
+                      (if (>= h 0xD800) (<= h 0xDBFF) false)
+                      (let [unpaired (s/str (s/lit "unpaired high surrogate \\u") (hex4 h))]
+                        (if (= 92 (next! st))
+                          (if (= 117 (next! st))
+                            (let [lo (read-hex-escape st)]
+                              (cond (= lo -2) st
+                                    (if (< lo 0xDC00) true (> lo 0xDFFF))
+                                    (fail! st (s/str (s/lit "invalid low surrogate \\u") (hex4 lo)))
+                                    :else (do (buf-rune! b (+ 0x10000 (+ (bit-shift-left (- h 0xD800) 10) (- lo 0xDC00)))) (recur))))
+                            (fail! st unpaired))
+                          (fail! st unpaired)))
+                      (if (>= h 0xDC00) (<= h 0xDFFF) false)
+                      (fail! st (s/str (s/lit "unpaired low surrogate \\u") (hex4 h)))
+                      :else (do (buf-rune! b h) (recur))))
+                  :else (fail! st (s/str (s/lit "unknown escape sequence \\") (s/mk-char e)))))
+          :else (do (buf-rune! b ch) (recur)))))))
+
+;; fmt.Sscanf(tk[from:], "%x" / "%o"): optional sign, then the longest run of
+;; base digits (at least one), ParseInt(…, 64) on it; trailing text ignored.
+;; Returns the int, or `fallback` on any scan error.
+(defn- sscan [st tk from base fallback]
+  (let [n (arch/alen tk)
+        sg (sign-at tk from n)
+        a (if (= sg 0) from (inc from))
+        b (loop [i a] (if (< i n) (let [d (hexval (arch/bget tk i))] (if (if (>= d 0) (< d base) false) (recur (inc i)) i)) i))
+        r (parse-int st tk (if (= sg 0) a (dec a)) b base)]
+    (if (if (= a b) true (if (arch/null? r) true (failed? st r))) fallback (sq/unbox-int r))))
+
+(defn- bad-char [st tk] (fail! st (s/str (s/lit "invalid char constant \\") (s/mk-str tk))))
+
+(defn- read-char [st]                                    ; readChar (reader.go:579)
+  (let [ch (next! st)]
+    (if (= ch -1)
+      (fail-eof! st (s/lit "unexpected error"))
+      (let [tk (read-token st (last-start st))
+            n (arch/alen tk)
+            d (sq/decode-at tk 0 n)]
+        (cond (= n (bit-and d 7)) (s/mk-char (unsigned-bit-shift-right d 3))
+              (bytes-is? tk (arch/bytes-of-string "space")) (s/mk-char 32)
+              (bytes-is? tk (arch/bytes-of-string "tab")) (s/mk-char 9)
+              (bytes-is? tk (arch/bytes-of-string "backspace")) (s/mk-char 8)
+              (bytes-is? tk (arch/bytes-of-string "newline")) (s/mk-char 10)
+              (bytes-is? tk (arch/bytes-of-string "formfeed")) (s/mk-char 12)
+              (bytes-is? tk (arch/bytes-of-string "return")) (s/mk-char 13)
+              (= 117 (arch/bget tk 0))
+              (if (< (- n 1) 4)
+                (bad-char st tk)
+                (let [v (sscan st tk 1 16 -9223372036854775808)]
+                  ;; rune(hexi): Go truncates to int32 (the surrogate test is on the full int)
+                  (if (if (= v -9223372036854775808) true (if (>= v 0xD800) (<= v 0xDFFF) false)) (bad-char st tk) (s/mk-char (arch/i32-wrap v)))))
+              (= 111 (arch/bget tk 0))
+              (if (> (- n 1) 3)
+                (bad-char st tk)
+                (let [v (sscan st tk 1 8 -9223372036854775808)]
+                  (if (if (= v -9223372036854775808) true (> v 255)) (bad-char st tk) (s/mk-char (arch/i32-wrap v)))))
+              :else (bad-char st tk))))))
+
+;; ---------------------------------------------------------------------------
+;; Collections
+
+(declare read1)
+
+(defn- next-non-ws [st]                                  ; eatWhitespace (reader.go:210): rune, or -2 at EOF
+  (let [ch (loop [] (let [ch (next! st)] (if (if (>= ch 0) (whitespace? ch) false) (recur) ch)))]
+    (if (= ch -1) (do (fail-eof! st (s/lit "unexpected error")) -2) ch)))
+
+
+(defn- vec->list [v]
+  (loop [i (dec (pv/vcount v)) l (sq/empty-list)] (if (>= i 0) (recur (dec i) (sq/conj l (pv/vnth v i))) l)))
+
+;; The forms up to `close`, Void dropped (appendNonVoid); st on failure.
+(defn- read-forms [st close]
+  (loop [acc (pv/empty-vec)]
+    (let [ch (next-non-ws st)]
+      (cond (= ch -2) (wrap! st (s/lit "unexpected error"))
+            (= ch close) acc
+            :else (do (unread! st)
+                      (let [f (read1 st)]
+                        (cond (failed? st f) (wrap! st (s/lit "unexpected error"))
+                              (void? st f) (recur acc)
+                              :else (recur (pv/vconj acc f)))))))))
+
+(defn- pos-meta [st line col]                            ; the FormSource position meta reads back (lang.go:3465)
+  (m/massoc (m/massoc (m/empty-map) (arch/get Kws 0 (arch/get Aux 6 (aux st))) (sq/box-int (inc line)))
+            (arch/get Kws 1 (arch/get Aux 6 (aux st))) (sq/box-int (inc col))))
+
+(defn- read-list [st]                                    ; readList (reader.go:753)
+  (let [line (arch/get RS 4 st) col (let [c (dec (arch/get RS 5 st))] (if (< c 0) 0 c))
+        fs (read-forms st 41)]
+    (if (failed? st fs) st (sq/list-with-meta (vec->list fs) (pos-meta st line col)))))
+
+(defn- read-vector [st]                                  ; readVector (reader.go:787): an ArrayVector at any size
+  (let [fs (read-forms st 93)] (if (failed? st fs) fs (pv/varray fs))))
+
+(defn- read-map [st]                                     ; readMap (reader.go:816), data semantics
+  (let [fs (read-forms st 125)]
+    (if (failed? st fs)
+      st
+      (let [n (pv/vcount fs)]
+        (if (= 1 (bit-and n 1))
+          (fail! st (s/lit "map literal must contain even number of forms"))
+          (let [dup (loop [i 0]
+                      (if (< i n)
+                        (let [k (pv/vnth fs i)
+                              hit (loop [j (+ i 2)] (cond (>= j n) false (sq/equiv? k (pv/vnth fs j)) true :else (recur (+ j 2))))]
+                          (if hit i (recur (+ i 2))))
+                        -1))]
+            (if (>= dup 0)
+              (fail! st (s/str (s/lit "duplicate key in map literal: ") (s/value-string (pv/vnth fs dup))))
+              (if (= n 0)
+                (m/empty-map)
+                (let [t (m/transient-map (m/empty-map))]  ; NewArrayMap (persistent_map.go:743)
+                  (loop [i 0] (when (< i n) (m/tassoc! t (pv/vnth fs i) (pv/vnth fs (inc i))) (recur (+ i 2))))
+                  (m/tpersistent! t))))))))))
+
+(defn- read-set [st]                                     ; readSet (reader.go:867)
+  (let [fs (read-forms st 125)]
+    (if (failed? st fs)
+      st
+      (let [n (pv/vcount fs)]
+        (loop [i 0 out (hs/empty-set)]
+          (if (< i n)
+            (let [x (pv/vnth fs i)]
+              (if (hs/scontains? out x)
+                (fail! st (s/str (s/lit "Duplicate key: ") (s/value-string x)))
+                (recur (inc i) (hs/sconj out x))))
+            out))))))
+
+(defn- list2 [a b] (sq/conj (sq/conj (sq/empty-list) b) a))
+(defn- sym [bs] (s/sym-of-bytes bs))
+
+(defn- no-value [what] (limit (s/str what (s/lit " of a form that reads as nothing (Go's VOID; named limit)"))))
+
+(defn- read-wrapped [st head ctx]                        ; readQuote / readDeref (reader.go:912, :925)
+  (let [f (read1 st)]
+    (cond (failed? st f) (wrap! st ctx)
+          (void? st f) (no-value (s/str (s/lit "quote/deref/unquote")))
+          :else (list2 head f))))
+
+(defn- read-unquote [st]                                 ; readUnquote (reader.go:1155)
+  (let [ch (next! st)]
+    (if (= ch -1)
+      (fail-eof! st (s/lit "reading unquote prefix"))
+      (let [head (if (= ch 64) (sym (arch/bytes-of-string "unquote-splicing"))
+                     (do (unread! st) (sym (arch/bytes-of-string "unquote"))))]
+        (read-wrapped st head (s/lit "reading unquoted form"))))))
+
+(defn- read-var-quote [st]                               ; readVarQuote (reader.go:1180)
+  (let [f (read1 st)]
+    (cond (failed? st f) (wrap! st (s/lit "reading quoted var"))
+          (= 21 (sq/kind f)) (list2 (sym (arch/bytes-of-string "var")) f)
+          :else (fail! st (s/lit "invalid var quote")))))
+
+(defn- read-discard [st]                                 ; readFormComment (reader.go:1962)
+  (loop []
+    (let [v (read1 st)]
+      (cond (failed? st v) (if (= 1 (arch/get Aux 4 (aux st))) st (void st))
+            (void? st v) (recur)
+            :else (void st)))))
+
+(defn- read-comment [st]                                 ; readLineComment (reader.go:1951)
+  (loop [] (let [ch (next! st)] (if (if (= ch -1) true (if (= ch 10) true (= ch 13))) (void st) (recur)))))
+
+(defn- read-symbolic [st]                                ; readSymbolicValue (reader.go:1702)
+  (let [ch (next! st)]
+    (if (= ch -1)
+      (fail! st (s/lit "reading symbolic value"))
+      (let [tk (read-token st (last-start st))
+            inf (* 1.7976931348623157e308 10.0)]
+        (cond (bytes-is? tk (arch/bytes-of-string "Inf")) (s/box-float inf)
+              (bytes-is? tk (arch/bytes-of-string "-Inf")) (s/box-float (- 0.0 inf))
+              (bytes-is? tk (arch/bytes-of-string "NaN")) (s/box-float ##NaN) ; literal: Go math.NaN() payload 0x7FF8000000000001 (D103), not the canonical NaN (- inf inf) yields
+              :else (fail! st (s/str (s/lit "unknown symbolic value: ##") (s/mk-str tk))))))))
+
+(defn- pct-sym [i] (s/sym-of-bytes (s/str-bytes (s/str (s/lit "%") (sq/box-int i)))))
+
+(defn- read-short-fn [st]                                ; readShortFn (reader.go:1195)
+  (let [line (arch/get RS 4 st)
+        col (arch/get RS 5 st)
+        start-col (if (< (- col 2) 0) 0 (- col 2))
+        body-col (if (< (- col 1) 0) 0 (- col 1))
+        ax (aux st)
+        prev (arch/get Aux 7 ax)
+        sf (arch/new ShortFn 0)]
+    (arch/set! Aux 7 ax sf)
+    (let [fs (read-forms st 41)]
+      (arch/set! Aux 7 ax prev)
+      (if (failed? st fs)
+        st
+        (let [mx (arch/get ShortFn 0 sf)
+              ps (loop [i 1 v (pv/empty-vec)] (if (<= i mx) (recur (inc i) (pv/vconj v (pct-sym i))) v))
+              body (sq/list-with-meta (vec->list fs) (pos-meta st line body-col))]
+          (sq/list-with-meta (sq/conj (list2 (pv/varray ps) body) (sym (arch/bytes-of-string "fn*")))
+                             (pos-meta st line start-col)))))))
+
+(defn- read-regex [st]                                   ; readRegex (reader.go:510), through the hook
+  (let [b (buf-new)
+        r (loop []
+            (let [ch (next! st)]
+              (cond (= ch -1) (fail-eof! st (s/lit "unterminated regex"))
+                    (= ch 92) (let [c2 (next! st)]
+                                (if (= c2 -1)
+                                  (fail-eof! st (s/lit "unterminated regex escape"))
+                                  (do (buf-rune! b 92) (buf-rune! b c2) (recur))))
+                    (= ch 34) (arch/null)
+                    :else (do (buf-rune! b ch) (recur)))))]
+    (cond (failed? st r) st
+          (arch/null? (hook)) (limit (s/lit "#\"regex\" literal (no Regex in the runtime; named limit)"))
+          :else (sq/invoke2 (hook) (sq/box-int 3) (s/mk-str (buf-bytes b))))))
+
+(defn- read-syntax-quote [st]                            ; readSyntaxQuote (reader.go:958), through the hook
+  (if (arch/null? (hook))
+    (limit (s/lit "` syntax-quote (resolves symbols against *ns*; named limit)"))
+    (let [f (read1 st)]
+      (cond (failed? st f) (wrap! st (s/lit "reading quoted form"))
+            (void? st f) (no-value (s/lit "syntax-quote"))
+            :else (sq/invoke2 (hook) (sq/box-int 2) f)))))
+
+(defn- read-hash [st]                                    ; readHashMacro (reader.go:1724)
+  (let [ch (next! st)]
+    (cond (= ch -1) (fail! st (s/lit "reading hash macro"))
+          (= ch 39) (read-var-quote st)
+          (= ch 95) (read-discard st)
+          (= ch 40) (read-short-fn st)
+          (= ch 123) (read-set st)
+          (= ch 34) (read-regex st)
+          (= ch 63) (limit (s/lit "#? reader conditional (named limit)"))
+          (= ch 35) (read-symbolic st)
+          (if (if (>= ch 97) (<= ch 122) false) true (if (>= ch 65) (<= ch 90) false))
+          (limit (s/lit "#tag tagged literal (#inst, #uuid, *data-readers*; named limit)"))
+          :else (fail! st (s/lit "invalid hash macro")))))
+
+(defn- imeta? [v] (let [k (c/ckind v)] (if (= k 2) true (if (= k 3) true (if (= k 11) true (if (= k 30) true (= k 31)))))))
+
+(defn- read-meta [st]                                    ; readMeta (reader.go:1617), data semantics
+  (if (= -1 (next! st))
+    (fail! st (s/lit "reading meta"))
+    (let [tag (s/kw-of-bytes (arch/bytes-of-string "tag"))
+          ;; acc: [code-meta data-meta] as a 2-vector, or st on failure
+          acc (loop [mc (m/empty-map) md (m/empty-map)]
+                (unread! st)
+                (let [f (read1 st) k (if (failed? st f) -1 (if (void? st f) -2 (c/ckind f)))]
+                  (if (= k -1)
+                    (fail! st (s/lit "reading meta"))
+                    (let [mm (cond (= k 30) (let [es (m/entries f) n (arch/alen es)]
+                                              (loop [i 0 mc mc md md]
+                                                (if (< i n)
+                                                  (let [kk (arch/aget m/HSlots es i) vv (arch/aget m/HSlots es (inc i))]
+                                                    (recur (+ i 2) (m/massoc mc kk vv) (m/massoc md kk vv)))
+                                                  (pv/vconj (pv/vconj (pv/empty-vec) mc) md))))
+                                   (= k 20) (pv/vconj (pv/vconj (pv/empty-vec) (m/massoc mc f (sq/bool true))) (m/massoc md f (sq/bool true)))
+                                   (= k 21) (pv/vconj (pv/vconj (pv/empty-vec) (m/massoc mc tag (list2 (sym (arch/bytes-of-string "quote")) f)))
+                                                      (m/massoc md tag f))
+                                   (= k 17) (pv/vconj (pv/vconj (pv/empty-vec) (m/massoc mc tag f)) (m/massoc md tag f))
+                                   :else (arch/null))]
+                      (if (arch/null? mm)
+                        (fail! st (s/lit "unsupported meta form"))
+                        (let [ch (next-non-ws st)]
+                          (cond (= ch -2) (fail! st (s/lit "reading meta"))
+                                (= ch 94) (if (= -1 (next! st)) (fail! st (s/lit "reading meta")) (recur (pv/vnth mm 0) (pv/vnth mm 1)))
+                                :else mm)))))))]
+      (if (failed? st acc)
+        st
+        (do (unread! st)
+            (let [f (read1 st)]
+              (cond (failed? st f) (fail! st (s/lit "reading meta"))
+                    (void? st f) (no-value (s/lit "metadata"))
+                    (imeta? f) (c/with-meta f (pv/vnth acc 1))
+                    :else (sq/conj (list2 f (pv/vnth acc 0)) (sym (arch/bytes-of-string "with-meta"))))))))))
+
+(defn- read-macro [st ch]
+  (cond (= ch 40) (read-list st)
+        (= ch 91) (read-vector st)
+        (= ch 123) (read-map st)
+        (= ch 34) (read-string-lit st)
+        (= ch 92) (read-char st)
+        (= ch 39) (read-wrapped st (sym (arch/bytes-of-string "quote")) (s/lit "reading quoted form"))
+        (= ch 64) (read-wrapped st (sym (arch/bytes-of-string "deref")) (s/lit "reading deref form"))
+        (= ch 96) (read-syntax-quote st)
+        (= ch 126) (read-unquote st)
+        (= ch 59) (read-comment st)
+        (= ch 35) (read-hash st)
+        (= ch 94) (read-meta st)
+        ;; ) ] } : unmatchedDelimReader (reader.go:1881)
+        :else (fail! st (s/str (s/lit "unmatched delimiter ") (s/mk-char ch)))))
+
+(defn- read1 [st]                                        ; LispReader.Read (reader.go:260)
+  (let [ch (next-non-ws st)]
+    (cond
+      (= ch -2) (wrap! st (s/lit "unexpected error"))
+      (nd-digit? ch) (read-number st (last-start st))
+      (macro? ch) (read-macro st ch)
+      (if (= ch 43) true (= ch 45))
+      (let [ch2 (next! st)]
+        (cond (= ch2 -1) (fail-eof! st (s/lit "unexpected error"))
+              (nd-digit? ch2) (do (unread! st) (read-number st (dec (arch/get RS 2 st))))
+              :else (do (unread! st) (interpret st (read-token st (dec (arch/get RS 2 st)))))))
+      :else (interpret st (read-token st (last-start st))))))
+
+(defn- chain-bytes [st]                                 ; errors.AddCause, outermost first
+  (let [ls (arch/get Aux 3 (aux st)) b (buf-new) sep (arch/bytes-of-string "\n\tcaused by ")]
+    (loop [i (dec (pv/vcount ls))]
+      (when (>= i 0)
+        (let [bs (s/str-bytes (pv/vnth ls i))]
+          (loop [j 0] (when (< j (arch/alen bs)) (buf-byte! b (arch/bget bs j)) (recur (inc j)))))
+        (when (> i 0) (loop [j 0] (when (< j (arch/alen sep)) (buf-byte! b (arch/bget sep j)) (recur (inc j)))))
+        (recur (dec i))))
+    (buf-bytes b)))
+
+(defn- read-skip [st]                                    ; ReadSkipNoValue (reader.go:301)
+  (loop []
+    (let [v (read1 st)]
+      (cond (failed? st v) (c/raise (chain-bytes st))
+            (void? st v) (recur)
+            :else v))))
+
+;; ---------------------------------------------------------------------------
+;; Entry points
+
+(defn- go-type-name [x]                                  ; %T of read-string's argument (eval.go:247)
+  (let [k (c/ckind x)]
+    (cond (= k 0) (s/lit "*vm.Nil")
+          (= k 1) (s/lit "vm.Int")
+          (= k 22) (s/lit "vm.Float")
+          (= k 20) (s/lit "vm.Keyword")
+          (= k 21) (s/lit "vm.Symbol")
+          (= k 19) (s/lit "vm.Char")
+          (= k 15) (s/lit "vm.Boolean")
+          (= k 11) (if (= 0 (pv/vpkind x)) (s/lit "vm.ArrayVector") (s/lit "*vm.PersistentVector"))
+          (if (= k 2) true (= k 3)) (s/lit "*vm.List")
+          (= k 27) (if (= 0 (sq/arr-seq-flavour x)) (s/lit "*vm.MapSeq") (s/lit "*vm.SetSeq"))
+          (= k 30) (s/lit "*vm.PersistentMap")
+          (= k 31) (s/lit "*vm.PersistentSet")
+          (= k 7) (s/lit "*vm.Range")
+          (= k 16) (s/lit "*vm.Func")
+          :else (s/lit "a non-String"))))
+
+(defn- check-string [x]
+  (when-not (= 17 (sq/kind x))
+    (c/raise (s/str-bytes (s/str (s/lit "read-string: expected String, got ") (go-type-name x))))))
+
+(defn ^{:twin "core/read-string"} read-string
+  "The first form of s with core/read-string's data semantics."
+  [x]
+  (check-string x)
+  (read-skip (st-new (s/str-bytes x) 0)))
+
+(defn read-string*
+  "One form of s starting at rune index `start` (boxed int): a 2-vector
+   [form end], end the rune index just past what was consumed. Line and
+   column in error messages count from `start`, as reading (subs s start)
+   would. Throws, as read-string, when no form is there."
+  [x start]
+  (check-string x)
+  (let [bs (s/str-bytes x) n (arch/alen bs) want (sq/unbox-int start)
+        from (loop [i 0 r 0] (if (if (< r want) (< i n) false) (recur (+ i (bit-and (sq/decode-at bs i n) 7)) (inc r)) i))
+        st (st-new bs from)
+        v (read-skip st)]
+    (pv/vconj (pv/vconj (pv/empty-vec) v) (sq/box-int (+ want (arch/get RS 3 st))))))

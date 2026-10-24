@@ -11,12 +11,22 @@
 ;; wasm.intrinsics' own defns are the reference implementation and are never
 ;; lowered; only its declarations (Bytes) are read.
 (ns lw-rt
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str] [lower-llvm-cache :as lc]))
 
 (def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
 ;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
 ;; patch without editing rt/; the rtlib cache key covers the sources read)
-(def rt-dir (let [d (os/getenv "LW_RT_DIR")] (if (seq d) d (str src-dir "/../rt/wasm"))))
+;; --target llvm compiles its own runtime, rt/llvm (D211, D213):
+;; the target is read from the command line or LW_TARGET here, because the
+;; runtime loads before the driver parses its flags.
+(def llvm-target?
+  (let [args (vec *command-line-args*)
+        flag (some (fn [i] (cond (= "--target" (nth args i)) (get args (inc i))
+                                 (str/starts-with? (nth args i) "--target=") (subs (nth args i) 9)))
+                   (range (count args)))]
+    (= "llvm" (or flag (os/getenv "LW_TARGET")))))
+(def rt-dir (let [d (os/getenv "LW_RT_DIR")]
+              (if (seq d) d (str src-dir (if llvm-target? "/../rt/llvm" "/../rt/wasm")))))
 
 (def ^:private row-file #"^\| [0-9]+ \| `([A-Za-z0-9_.-]+\.lg)` \|")
 ;; LW_RUNTIME_COMPILE=1 (self-host stage 3b, D193): also load the rows whose
@@ -314,13 +324,14 @@
 ;; runtime ns; since, it restores *ns*. Either way, continue in lw-rt.
 (in-ns 'lw-rt)
 
-;; The runtime interface (D218). The compiler names a runtime var only through
-;; rt-ns, rt-var and rt-sym (and a declaration's kind through decl-kind), so
-;; the vars it names are the contract a target's runtime provides. The gc and
-;; linear targets compile rt/wasm (namespaces wasm.*, intrinsics
-;; wasm.intrinsics); a target with its own runtime sets these two.
-(def rt-prefix "wasm")
-(def intrinsics-ns 'wasm.intrinsics)
+;; The runtime interface (D218; the llvm branch's D213). The compiler names a
+;; runtime var only through rt-ns, rt-var and rt-sym (and a declaration's kind
+;; through decl-kind), so the vars it names are the contract a target's
+;; runtime provides. The gc and linear targets compile rt/wasm (namespaces
+;; wasm.*, intrinsics wasm.intrinsics); --target llvm compiles its own
+;; runtime, rt/llvm (llvm.*, intrinsics llvm.arch), and sets these two.
+(def rt-prefix (if llvm-target? "llvm" "wasm"))
+(def intrinsics-ns (if llvm-target? 'llvm.arch 'wasm.intrinsics))
 (defn rt-ns
   "The target runtime's namespace for logical name n (seq, core, intrinsics ...)."
   [n] (if (= "intrinsics" (str n)) intrinsics-ns (symbol (str rt-prefix "." n))))
@@ -338,7 +349,18 @@
    In the module, find-var: ns-interns there knows only the registry's
    namespaces, not the program's own (lw-ext, carried in, is in the program
    table), and find-var reads both (rt/wasm/natives.lg lookup)."
-  [ns-sym nm] (if *in-wasm* (find-var (symbol (str ns-sym) (str nm))) (get (ns-interns ns-sym) nm)))
+  [ns-sym nm]
+  (if *in-wasm*
+    (find-var (symbol (str ns-sym) (str nm)))
+    ;; ns-interns copies every var into a persistent map. Runtime indexing
+    ;; calls this thousands of times; find-var reads one local var directly,
+    ;; including private vars, without following refers. Validate the namespace
+    ;; first to retain the missing-namespace error. Keep the map semantics for
+    ;; Namespace objects (including detached ones) and unusual lookup keys.
+    (if (and (symbol? ns-sym) (nil? (namespace ns-sym))
+             (symbol? nm) (nil? (namespace nm)))
+      (do (the-ns ns-sym) (find-var (symbol (str ns-sym) (str nm))))
+      (get (ns-interns ns-sym) nm))))
 
 (defn rt-var
   "The var nm of the target runtime's namespace n, or nil."
@@ -385,9 +407,7 @@
                          seg (last (str/split (str (:ns d)) #"\."))]]
                [(:var d) (str "$" (if clash? (str seg "." nm) nm))]))))
 
-(defn type-name
-  "Wasm type name of a declaration var, or nil."
-  [v] (get type-names v))
+(lc/defquestion type-name [v] [:type-name v] (get type-names v))   ; a declaration var's type name, or nil
 
 (def decl-by-name (into {} (for [d decls] [(type-name (:var d)) (:decl d)])))
 
@@ -414,9 +434,21 @@
 
 (def defn-by-var (into {} (for [d defns] [(:var d) d])))
 
+;; P2.12: lg defns the backend adds where rt/ has no form for a native's
+;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
+;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
+(def ext-path (if llvm-target? (str rt-dir "/ext.lg") (str src-dir "/lw_ext.lg")))
+(if snapshot (restore-ext! snapshot) (load-string (slurp ext-path)))
+(in-ns 'lw-rt)
+
+(def ext-forms (if snapshot (:ext-forms snapshot) (read-forms ext-path)))
+
 (def globals
-  ;; runtime top-level defs that are not declarations: [{:var :ns :init form}]
-  (vec (for [[_ ns-sym forms] file-forms
+  ;; runtime top-level defs that are not declarations: [{:var :ns :init form}].
+  ;; rt/llvm/ext.lg's defs are runtime globals on llvm; on GC lw_ext.lg's
+  ;; stay extern, as before 4a1095e (P8.0: lowering them there grew every
+  ;; module carrying the evaluator by ~26 KB with no change in behavior)
+  (vec (for [[_ ns-sym forms] (if llvm-target? (conj file-forms [ext-path 'lw-ext ext-forms]) file-forms)
              :when (not= ns-sym intrinsics-ns)
              form forms
              :when (and (seq? form) (= 'def (first form)))
@@ -427,18 +459,19 @@
 
 (def global-by-var (into {} (for [g globals] [(:var g) g])))
 
-(defn runtime-var? [v] (or (contains? defn-by-var v) (contains? global-by-var v)))
+(lc/defquestion runtime-var? [v] [:runtime-var v] (or (contains? defn-by-var v) (contains? global-by-var v)))
 
-(defn intrinsic? [v]
+(defn- intrinsic?* [v]
   (and (var? v) (intrinsic-meta? v)
        ;; P4.1: src/lw_ext.lg declares the backend's own host intrinsics
        ;; (host-emit, host-url-param) until rt/ carries them
        (let [n (ns-name (:ns (meta v)))] (or (contains? rt-nss n) (= n 'lw-ext)))))
 
-(defn intrinsic-vars
-  "Every intrinsic var of the loaded runtime, for the backend's emitter check."
-  []
-  (for [ns-sym rt-nss [_ v] (ns-publics ns-sym) :when (intrinsic? v)] v))
+(lc/defquestion intrinsic? [v] [:intrinsic v] (intrinsic?* v))
+
+;; every intrinsic var of the loaded runtime, for the backend's emitter check
+(lc/defquestion intrinsic-vars [] [:intrinsic-vars]
+  (vec (for [ns-sym rt-nss [_ v] (ns-publics ns-sym) :when (intrinsic?* v)] v)))
 
 ;; P7.6: LW_NO_EVAL=1 builds a module without the evaluator: wasm.eval's
 ;; twins are dropped, so core/eval is again a native with no twin (D139's
@@ -476,7 +509,7 @@
 (def twins-by-value
   (if *in-wasm* {} (into {} (for [[nv rv] twins] [@nv rv]))))
 
-(defn twin-of [v]
+(defn- twin-of* [v]
   (or (get twins v) (get extra-twins v)
       (when (var? v) (let [x (try @v (catch e nil))] (when (some? x) (get twins-by-value x))))))
 
@@ -490,7 +523,7 @@
 (def letgo-commit "e9789b7d")
 ;; LETGO (exported by checks/env.sh), else $LW_ROOT/let-go, else a sibling of
 ;; the current directory; embedded-forms says so loudly when it cannot read it.
-(def letgo-dir (or (os/getenv "LETGO") (when-let [r (os/getenv "LW_ROOT")] (str r "/let-go")) "../let-go"))
+(def letgo-dir (or (not-empty (os/getenv "LETGO")) (when-let [r (not-empty (os/getenv "LW_ROOT"))] (str r "/let-go")) "../let-go"))
 
 ;; LW_LETGO_CORE (D208): a directory holding pkg/rt/core's files at
 ;; letgo-commit, read with slurp in place of `git show`. The backend carried
@@ -518,9 +551,22 @@
   ([v] (lg-defined? v 'core))
   ([v ns-sym] (let [m (meta v)] (and (= (str "<embedded:" ns-sym ">") (:file m)) (:line m)))))
 
+(defn embedded-fn-form
+  "Normalize embedded anonymous (def name (fn ...)) functions for source
+   indexing. Aliases, arbitrary initializers and named local fns stay out."
+  [form]
+  (when (seq? form)
+    (cond (#{'defn 'defn-} (first form)) form
+          (= 'def (first form))
+          (let [value (last form)]
+            (when (and (seq? value) (#{'fn 'fn*} (first value))
+                       (not (symbol? (second value))))
+              (apply list 'defn (second form) (rest value)))))))
+
 (defn embedded-defns [ns-sym forms]
-  (into {} (for [form forms
-                 :when (and (seq? form) (#{'defn 'defn-} (first form)))
+  (into {} (for [raw forms
+                 :let [form (embedded-fn-form raw)]
+                 :when form
                  :let [[nm _] (strip-meta-name (second form))
                        ;; the module has no string entry in its program table
                        v (or (ns-var ns-sym nm) (when *in-wasm* (find-var (symbol (str ns-sym) (str nm)))))
@@ -537,15 +583,8 @@
   (merge (embedded-defns 'core core-forms)
          (embedded-defns 'string (if snapshot (:string-forms snapshot) (embedded-forms "string.lg" 'string)))))
 
-;; P2.12: lg defns the backend adds where rt/ has no form for a native's
-;; variadic use (src/lw_ext.lg: map* over several colls). Compiled like the
-;; lg core fns; a native reaches one through lower-wasm's seq-variant-table.
-(def ext-path (str src-dir "/lw_ext.lg"))
-(if snapshot (restore-ext! snapshot) (load-string (slurp ext-path)))
-(in-ns 'lw-rt)
-
 (def ext-defns
-  (into {} (for [form (if snapshot (:ext-forms snapshot) (read-forms ext-path))
+  (into {} (for [form ext-forms
                  :when (and (seq? form) (#{'defn 'defn-} (first form)))
                  :let [[nm _] (strip-meta-name (second form))
                        v (ns-var 'lw-ext nm)]
@@ -574,6 +613,8 @@
    #'core/array-map #'lw-ext/array-map-v #'core/hash-map #'lw-ext/hash-map-v #'core/dissoc! #'lw-ext/dissoc!-v
    #'core/map-entry? #'lw-ext/map-entry?-v #'core/lazy-seq? #'lw-ext/lazy-seq?-v
    #'core/shutdown-agents #'lw-ext/shutdown-agents-v
+   ;; Pinned core defines send-off as the same synchronous function as send.
+   #'core/send-off #'core/send
    (native-var 'let-go.core/str-replace-first) #'lw-ext/str-replace-first-rx-v
    ;; P2.14: regexes (lw_ext.lg's engine); a String separator/match still
    ;; reaches the runtime's split / str-replace
@@ -597,6 +638,10 @@
    #'core/concat* #'lw-ext/concat*-v
    ;; P5.1: rt/wasm/sorted.lg (variadic constructors over its fixed-arity ops)
    #'core/sorted-map #'lw-ext/sorted-map-v #'core/sorted-set #'lw-ext/sorted-set-v}
+  (when llvm-target?
+    {#'core/. (ns-var 'lw-ext 'invoke-member-v)
+     #'core/sorted-map-by (ns-var 'lw-ext 'sorted-map-by-v)
+     #'core/sorted-set-by (ns-var 'lw-ext 'sorted-set-by-v)})
   ;; D100: js/emit and js/url-param through the host imports, until rt/'s
   ;; host.lg twins call the intrinsics themselves (the requested patch
   ;; defines wasm.host/host-emit; then the runtime twins are used as is)
@@ -674,6 +719,8 @@
         (swap! stdlib-index assoc ns-sym idx)
         idx)))
 
+(lc/defquestion twin-of [v] [:twin-of v] (twin-of* v))
+
 (defn stdlib-defn
   "v's source defn when v is an lg-defined stdlib fn outside core/string."
   [v]
@@ -682,22 +729,34 @@
         (when (and n (not (#{'core 'string} n)))
           (get (stdlib-ns! n) v)))))
 
-(defn stdlib-twin
+(declare stdlib-twin*)
+(lc/defquestion stdlib-twin [v] [:stdlib-twin v] (stdlib-twin* v))
+
+(defn- stdlib-twin*
   "The synthesized fill of a stdlib protocol method var (see above), or nil."
   [v]
   (when (var? v)
-    (or (get @stdlib-twin-map v)
-        (let [m (meta v) n (when (:ns m) (ns-name (:ns m)))]
-          ;; a protocol method var carries :ns but no :file; index its
-          ;; namespace when that is an embedded stdlib one
-          (when (and n (nil? (:file m)) (not (#{'core 'string} n))
-                     (some #(= (str "<embedded:" n ">") (:file (meta %))) (vals (ns-interns n))))
-            (stdlib-ns! n)
-            (get @stdlib-twin-map v))))))
+    (let [hit (get @stdlib-twin-map v ::unknown)]
+      (if (not= hit ::unknown)
+        hit
+        (let [m (meta v) n (when (:ns m) (ns-name (:ns m)))
+              ;; a protocol method var carries :ns but no :file; index its
+              ;; namespace when that is an embedded stdlib one
+              r (when (and n (nil? (:file m)) (not (#{'core 'string} n))
+                           (some #(= (str "<embedded:" n ">") (:file (meta %))) (vals (ns-interns n))))
+                  (stdlib-ns! n)
+                  (get @stdlib-twin-map v))]
+          ;; a miss is remembered too: the scan above walks the namespace
+          ;; (rt-target asks per var reference, 118k times for xsofy)
+          (when-not (contains? @stdlib-twin-map v) (swap! stdlib-twin-map assoc v r))
+          r)))))
 
 (def stdlib-alias-map (atom {}))   ; unsourced var -> the embedded var whose fn it holds
 
-(defn stdlib-alias
+(declare stdlib-alias*)
+(lc/defquestion stdlib-alias [v] [:stdlib-alias v] (stdlib-alias* v))
+
+(defn- stdlib-alias*
   "The embedded stdlib var whose fn an unsourced var holds, or nil. A core
    file may define a fn in one namespace and intern its value into another
    (ir.data's accessors land in ir); the interned var carries no meta, so
@@ -705,7 +764,9 @@
    file loads before any program, and those take gensyms (P9.1)."
   [v]
   (when (and (var? v) (nil? (:file (meta v))))
-    (or (get @stdlib-alias-map v)
+    (let [hit (get @stdlib-alias-map v ::unknown)]
+      (if (not= hit ::unknown)
+        hit
         (let [x (try @v (catch e nil))]
           (when (fn? x)
             (let [src (some (fn [n]
@@ -716,14 +777,30 @@
                                         sv))
                                     (vals (ns-interns (ns-name n)))))
                             (all-ns))]
-              (when src (swap! stdlib-alias-map assoc v src))
-              src))))))
+              ;; a miss is remembered too: the scan walks every namespace
+              (swap! stdlib-alias-map assoc v src)
+              src)))))))
 
 (defn source-defn
   "The source defn the backend compiles for v: a runtime defn, an lg-defined
    core fn, one of src/lw_ext.lg's, a stdlib defn, or a program library defn."
   [v] (or (get defn-by-var v) (get core-defns v) (get ext-defns v) (get @lib-defns v)
           (stdlib-defn v)))
+
+;; --- lowering's questions about sources -----------------------------------------
+;; Narrow on purpose: a caller's trace holds only what it used of another
+;; defn, so a body edit there does not invalidate it (the function cache,
+;; docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md).
+(lc/defquestion source-kind [v] [:source-kind v]
+  (let [d (source-defn v)] (when d {:core-lg (boolean (:core-lg d)) :lib (boolean (:lib d))})))
+(lc/defquestion source-arity-shape [v] [:arity-shape v]
+  (let [d (source-defn v)] (when d (mapv (fn [a] (count (first a))) (:arities d)))))
+(lc/defquestion stdlib-defn? [v] [:stdlib-defn v] (some? (stdlib-defn v)))
+(lc/defquestion core-defn? [v] [:core-defn v] (contains? core-defns v))
+(lc/defquestion global-def? [v] [:global-def v] (contains? global-by-var v))
+;; the runtime's declarations, in order: [{:var :tn :decl}]
+(lc/defquestion rt-decls [] [:rt-decls]
+  (mapv (fn [d] {:var (:var d) :tn (get type-names (:var d)) :decl (:decl d)}) decls))
 
 ;; ---------------------------------------------------------------------------
 ;; D209: writing the snapshot (the inventory is at snapshot-in, above).

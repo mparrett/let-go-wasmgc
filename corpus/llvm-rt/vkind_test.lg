@@ -1,0 +1,103 @@
+;; D73: every runtime producer of a vector records the Go type native lg
+;; would hold (ArrayVector or PersistentVector), and type, hash, pr-str and
+;; the seq view follow it. Each producer runs at sizes 0, 1, 31, 32, 33 and
+;; 1057 on both sides; native lg is the oracle for every expectation.
+;; Elements cycle int / string / 2-key map so the PersistentVector's
+;; String()-in-every-mode printing (bug-09) is exercised too.
+(ns vkind-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.phm :as m]
+            [llvm.phs :as hs]
+            [llvm.core :as c]
+            [llvm.reader :as rd]
+            [core-test :refer [W <-w clo]]))
+
+;; Every producer runs at 0, 1, 31, 32 and 33; 1057 runs for one producer
+;; of each kind (conj: PersistentVector, vec: ArrayVector) in the default tier
+;; and for all of them under SLOW=1 (D51: the reference printer and FNV
+;; hashing are slow at that size).
+(defn- slow? [] (= "1" (os/getenv "SLOW")))
+(def ^:private sizes [0 1 31 32 33])
+(def ^:private big-by-default #{"conj from []" "vec of list"})
+
+;; Mixed elements and printed forms at 0, 1 and 33/34 (one past the
+;; PersistentVector boundary, and pop's n+1); ints and type/hash only at the
+;; other sizes, which keeps the file inside the default tier's budget.
+(defn- printed? [n] (or (<= n 1) (<= 33 n 34)))
+(defn- elem [i] (case (mod i 3) 0 i 1 (str "s" i) {:a i :b 2}))
+(defn- elems [n] (if (printed? n) (map elem (range n)) (range n)))
+
+(defn- S [w] (arch/string-of-bytes (s/str-bytes w)))
+(defn- conjw [v xs] (reduce (fn [v x] (c/conj v (W x))) v xs))
+
+(defn- nview
+  "What a vector shows: type, hash, pr-str and print-str, and the same of its
+   seq and rest (empty vectors have neither); the printed forms only at the
+   printed? sizes."
+  [v]
+  (let [p? (printed? (count v))]
+    (into [(str (type v)) (hash v) (when p? (pr-str v)) (when p? (print-str v))]
+          (when (seq v)
+            [(str (type (seq v))) (hash (seq v)) (when p? (pr-str (seq v))) (when p? (print-str (seq v)))
+             (str (type (rest v))) (hash (rest v)) (when p? (pr-str (rest v)))]))))
+
+(defn- wview [w]
+  (let [p? (printed? (pv/vcount w)) T #(arch/string-of-bytes (c/type-name %)) H #(sq/unbox-int (sq/hash %))]
+    (into [(T w) (H w) (when p? (S (s/pr-str w))) (when p? (S (s/print-str w)))]
+          (when (pos? (pv/vcount w))
+            (let [q (sq/seq w) r (sq/rest w)]
+              [(T q) (H q) (when p? (S (s/pr-str q))) (when p? (S (s/print-str q)))
+               (T r) (H r) (when p? (S (s/pr-str r)))])))))
+
+(defn- src [n] (if (> n 60) 1100 70))            ; subvec's source: past one trie level only for 1057
+
+(def ^:private producers
+  ;; [label native-fn runtime-fn], each of n
+  [["literal (read-string)" #(read-string (pr-str (vec (elems %)))) #(rd/read-string (W (pr-str (vec (elems %)))))]
+   ["(conj)" (fn [_] (conj)) (fn [_] (c/conj))]
+   ["vec of list" #(vec (apply list (elems %))) #(sq/vec (W (apply list (elems %))))]
+   ["vec of vector" #(vec (vec (elems %))) #(sq/vec (W (vec (elems %))))]
+   ["vec of PersistentVector" #(vec (reduce conj [] (elems %))) #(sq/vec (conjw (pv/empty-vec) (elems %)))]
+   ["vec of lazy seq" #(vec (map identity (range %))) #(sq/vec (sq/map* (clo identity) (sq/range (W %))))]
+   ["vec of range" #(vec (range %)) #(sq/vec (sq/range (W %)))]
+   ["vec of set" #(vec (set (range %))) #(sq/vec (reduce (fn [w i] (hs/sconj w (W i))) (hs/empty-set) (range %)))]
+   ["vec of map" #(vec (zipmap (range %) (range %))) #(sq/vec (reduce (fn [w i] (c/assoc w (W i) (W i))) (m/empty-map) (range %)))]
+   ["vec of string" #(vec (apply str (repeat % "a"))) #(sq/vec (W (apply str (repeat % "a"))))]
+   ["conj from []" #(reduce conj [] (elems %)) #(conjw (pv/empty-vec) (elems %))]
+   ["assoc at end" #(reduce (fn [v [i x]] (assoc v i x)) [] (map-indexed vector (elems %)))
+    #(reduce (fn [v [i x]] (c/assoc v (W i) (W x))) (pv/empty-vec) (map-indexed vector (elems %)))]
+   ["assoc inside" #(assoc (reduce conj [] (elems (inc %))) 0 :x) #(c/assoc (conjw (pv/empty-vec) (elems (inc %))) (W 0) (W :x))]
+   ["pop of conj n+1" #(pop (reduce conj [] (elems (inc %)))) #(c/pop (conjw (pv/empty-vec) (elems (inc %))))]
+   ["pop of literal n+1" #(pop (vec (elems (inc %)))) #(c/pop (sq/vec (W (vec (elems (inc %))))))]
+   ["subvec of literal" #(subvec (vec (elems (src %))) 0 %) #(c/subvec (sq/vec (W (vec (elems (src %))))) (W 0) (W %))]
+   ["subvec of PersistentVector" #(subvec (reduce conj [] (elems (src %))) 0 %) #(c/subvec (conjw (pv/empty-vec) (elems (src %))) (W 0) (W %))]
+   ["with-meta" #(with-meta (vec (elems %)) {:m 1}) #(c/with-meta (sq/vec (W (vec (elems %)))) (W {:m 1}))]
+   ["with-meta nil" #(with-meta (vec (elems %)) nil) #(c/with-meta (sq/vec (W (vec (elems %)))) (arch/null))]
+   ["persistent! of conj!" #(persistent! (reduce conj! (transient []) (elems %)))
+    #(c/persistent! (reduce (fn [t x] (c/conj! t (W x))) (c/transient (pv/empty-vec)) (elems %)))]
+   ["persistent! of a meta'd vector" #(persistent! (transient (with-meta (vec (elems %)) {:m 1})))
+    #(c/persistent! (c/transient (c/with-meta (sq/vec (W (vec (elems %)))) (W {:m 1}))))]
+   ["conj onto a meta'd vector" #(conj (with-meta (vec (elems %)) {:m 1}) 9) #(c/conj (c/with-meta (sq/vec (W (vec (elems %)))) (W {:m 1})) (W 9))]])
+
+(deftest vector-kind-per-producer
+  (c/install!)
+  (doseq [[label nf wf] producers
+          n (if (or (slow?) (big-by-default label)) (conj sizes 1057) sizes)]
+    (is (= (nview (nf n)) (wview (wf n))) (str label " n=" n))))
+
+(deftest vector-seq-chunking
+  ;; ArrayVectorSeq chunks grow 1, 2, 4 ... (vector.go:258); a
+  ;; PersistentVectorSeq hands out 32-wide leaves
+  (c/install!)
+  (doseq [[label nv wv] [["ArrayVector" (vec (range 40)) (sq/vec (sq/range (W 40)))]
+                         ["PersistentVector" (reduce conj [] (range 40)) (conjw (pv/empty-vec) (range 40))]]
+          k [1 3 4 5 8 33]]
+    (let [na (atom 0) wa (atom 0)]
+      (doall (take k (map (fn [x] (swap! na inc) x) nv)))
+      (let [q (sq/map* (clo (fn [x] (swap! wa inc) x)) wv)]
+        (loop [q (sq/seq q) i 1] (when (and (not (arch/null? q)) (< i k)) (recur (sq/next q) (inc i)))))
+      (is (= @na @wa) (str label " take " k)))))

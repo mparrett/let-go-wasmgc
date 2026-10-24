@@ -1,0 +1,330 @@
+;; llvm.eval, the module's host — the wasm implementation of the host seam
+;; rt/wasm/eval.lg declares (cur-ns ns-value enter-ns! canon resolve-global
+;; local-def? core-var cell-get set-cell! def-var! var-of def-root! raise
+;; var-value ensure-hook!), moved here from eval.lg (D187): the bodies are
+;; eval.lg's as they were, less the `native-tier` branches of raise,
+;; var-value, ensure-hook! and type-name.
+;;
+;; DIALECT: plain lg, as eval.lg.
+;;
+;; Selection is by load order: this file re-enters llvm.eval with its own ns
+;; form and rt/wasm/README.md's load-order table lists it right after
+;; eval.lg, so its defns land on the vars eval.lg declared. Under LW_NO_EVAL=1
+;; nothing reaches either file (P7.6). The backend calls one fn of this file
+;; by name: llvm.eval/install-program-table! (src/driver.lg).
+;;
+;; What the host is: llvm.natives' registry of cells, the backend's program
+;; table, var stand-ins, the core table (name -> fn value) evaluated code
+;; resolves against, the reader's code hook, and the core-table natives that
+;; touch the registry (in-ns, require, bound?, set-macro!, throw).
+;;
+;; Symbols resolve as the seam orders it: local, a cell of the current ns
+;; (llvm.natives' registry), the program table's :vars then :refers of the
+;; current ns, a cell interned into let-go.core (native's baseline refer;
+;; legmacs.vibe's `vibe`), the core table (unqualified); a/s through the registry aliases
+;; of the current ns, the program table's :aliases, then a/s as a full ns
+;; name (cells, program table, and for core/clojure.core/builtin namespaces
+;; the core table). Not found: native's "CompileError: Can't resolve s in
+;; this context". Deviation from the seam, following native: let-go.core/s
+;; and user/s do NOT reach the core table (native: Can't resolve).
+;;
+;; def/defn/defmacro intern a cell `cur/name` (value, meta, :macro) at
+;; compile time, as native interns the var; the cell's var is a meta'd
+;; Symbol #'cur/name with an :lw/var getter, so deref, var-get, calls through
+;; the var and llvm.natives' var fns all work on it. Evaluation never writes
+;; a program var: a redefinition shadows it for evaluated code only.
+;;
+;; Named limits of this host (each raises `lower-wasm: ... (named limit)`
+;; or is a silent difference listed here); eval.lg lists the evaluator's own:
+;;   - tail calls between evaluated fns are not trampolined: deep non-loop
+;;     recursion grows the wasm stack;
+;;   - binding of a program var or of *out*/*err* (llvm.natives' limits);
+;;     set! of a program var;
+;;   - the core table holds the names in `core-table` below; any other core
+;;     name is "Can't resolve" here (natively it resolves);
+;;   - macroexpand-1 / macroexpand are absent;
+;;   - (meta v) of a var taken before a later def re-defined it shows the
+;;     old meta (var meta rides on the stand-in, native's var is mutable);
+;;   - an invalid #"regex" literal raises re-pattern's message, not the
+;;     reader's "invalid regex literal" chain.
+(ns llvm.eval
+  (:refer-clojure :exclude [eval compile])
+  (:require [clojure.string :as string]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.core :as c]
+            [llvm.reader :as rd]
+            [llvm.natives :as n]
+            [clojure.math]))
+
+;; ---------------------------------------------------------------------------
+;; Host layer: the only module-specific calls
+
+(defn- raise [msg]
+  (c/raise (s/str-bytes msg)))
+
+;; ---------------------------------------------------------------------------
+;; The registry (llvm.natives), cells and the program table
+
+(defn- tbl [] (n/table*))
+(defn- cur-ns [] (:cur (tbl)))
+(defn- canon [nm] (n/canon* nm))
+(defn- cell [key] (get (:cells (tbl)) key))
+(defn- cell-value [cl] (if (seq (:stack cl)) (first (:stack cl)) (:val cl)))
+(defn- cell-get [key] (cell-value (cell key)))
+
+(defn- cell-var
+  "The var stand-in of the cell key \"ns/name\": #'ns/name with an :lw/var
+   getter (llvm.core/var-value), :ns and :name, so it derefs and calls."
+  ([key nsn nm] (cell-var key nsn nm nil))
+  ([key nsn nm m]
+   (with-meta (symbol (str "#'" key))
+              (merge m {(keyword "lw" "var") (fn [] (cell-get key)) :ns (symbol (str "<ns " nsn ">")) :name nm}))))
+
+(defn- intern-cell!
+  "The cell for nsn/nm, created unbound when absent; returns its key."
+  [nsn nm]
+  (let [key (str nsn "/" nm)]
+    (when-not (cell key)
+      (swap! n/registry assoc-in [:cells key] {:var (cell-var key nsn nm) :ns nsn :name nm :meta nil :stack ()}))
+    key))
+
+(defn- def-var!
+  "def at compile time: intern nsn/sym with the def's meta m; the key."
+  [nsn sym m]
+  (let [key (intern-cell! nsn sym)
+        ;; the def's meta rides on a fresh stand-in (llvm.core's meta
+        ;; reads the stand-in's own); a var taken before keeps the old
+        ;; one fn arg: the module's swap! has fixed arities (7 extra args failed)
+        nv (cell-var key nsn sym m)]
+    (swap! n/registry (fn [t] (update-in t [:cells key] (fn [cl] (assoc cl :meta m :var nv)))))
+    key))
+
+(defn- var-of [key] (:var (cell key)))
+(defn- def-root! [key x] (swap! n/registry assoc-in [:cells key :val] x))
+(defn- enter-ns! [nm] (n/set-cur! (n/add-ns* (str nm))))
+(defn- ns-value [] (n/current-ns))
+
+(defn ^{:doc "B's program table (round-3 seam), kept in the registry under :program."}
+  install-program-table! [t]
+  (tbl)
+  (ensure-hook!)
+  (swap! n/registry assoc :program t)
+  nil)
+
+(defn- prog [nsn] (get (:program (tbl)) nsn))
+
+(defn- var-value [v] (c/var-value v))
+
+(declare core-table)
+
+;; A resolved global: {:kind :cell|:prog|:core :key :var :val :macro}
+(defn- lookup-in
+  "Resolve name nm in namespace nsn (canonical): cell, then program var."
+  [nsn nm]
+  (let [key (str nsn "/" nm) cl (cell key)]
+    (cond cl {:kind :cell :key key :var (:var cl) :macro (:macro cl) :private (:private (:meta cl))}
+          (get-in (prog nsn) [:vars nm]) {:kind :prog :var (get-in (prog nsn) [:vars nm])}
+          (get-in (prog nsn) [:macros nm]) {:kind :pmacro :key key :val (get-in (prog nsn) [:macros nm])}
+          :else nil)))
+
+(defn- resolve-alias [q]
+  (let [cur (cur-ns)]
+    (or (get-in (tbl) [:aliases cur q])
+        (get-in (prog cur) [:aliases q])
+        (canon q))))
+
+(defn- builtin-in
+  "nsn/nm from the core table: core names for core/clojure.core, else the
+   table's \"string/join\"-style key."
+  [nsn nm]
+  (or (when (core-std-ns? nsn)
+        (when-let [v (get (core-table) nm)] {:kind :core :name nm :val v}))
+      (when-let [v (get (core-table) (str nsn "/" nm))] {:kind :core :name (str nsn "/" nm) :val v})))
+
+(defn- resolve-global
+  "The global symbol sym names in the current ns, or nil. A private cell of
+   another ns is not reachable as a/s (native: Can't resolve) except
+   through var (any-private? true), as native's (var a/s) is."
+  ([sym] (resolve-global sym false))
+  ([sym any-private?]
+   (let [q (namespace sym) nm (name sym) cur (cur-ns)]
+     (if (nil? q)
+       (or (lookup-in cur nm)
+           (when-let [r (or (get-in (tbl) [:refers cur nm]) (get-in (prog cur) [:refers nm]))]
+             (or (lookup-in r nm) (builtin-in r nm)))
+           ;; let-go.core is a baseline refer of every ns (Lookup walks it), so
+           ;; a var interned there at run time resolves unqualified anywhere:
+           ;; legmacs.vibe interns `vibe` so (ns weather) (vibe ...) works
+           (lookup-in "let-go.core" nm)
+           (when-let [v (get (core-table) nm)] {:kind :core :name nm :val v}))
+       (let [nsn (resolve-alias q)
+             g (lookup-in nsn nm)]
+         (or (when-not (and g (:private g) (not any-private?) (not= nsn cur)) g)
+             (builtin-in nsn nm)))))))
+
+(defn- set-cell! [key x]
+  (let [cl (cell key)]
+    (if (seq (:stack cl))
+      (swap! n/registry assoc-in [:cells key :stack] (cons x (rest (:stack cl))))
+      (swap! n/registry assoc-in [:cells key :val] x))))
+
+(def ^:private core-vars (atom nil))
+
+(defn- core-var
+  "#'core/name for a core-table entry, with an :lw/var getter so deref and
+   calls through it reach the value. Interned once per name: native's
+   #'inc is one var, so = / hash / set membership must see one stand-in."
+  [nm v]
+  (or (get @core-vars nm)
+      (let [i (string/index-of nm "/")
+            [q s] (if (and i (pos? i)) [(subs nm 0 i) (subs nm (inc i))] ["core" nm])
+            cv (with-meta (symbol (str "#'" q "/" s)) {(keyword "lw" "var") (fn [] v) :ns (symbol (str "<ns " q ">")) :name (symbol s)})]
+        (swap! core-vars assoc nm cv)
+        cv)))
+
+(defn- local-def?
+  "LookupLocal (reader.go:991): a var the current ns itself holds, a cell
+   or a program var of it."
+  [t]
+  (let [cur (cur-ns)] (or (some? (cell (str cur "/" t))) (some? (get-in (prog cur) [:vars t])))))
+
+(defn- code-hook [op x]
+  (cond (= op 0) (str (cur-ns) "/" x)
+        (= op 1) (let [cur (cur-ns)] (or (get-in (tbl) [:aliases cur (str x)]) (get-in (prog cur) [:aliases (str x)])))
+        (= op 3) (re-pattern x)
+        :else (syntax-quote x)))
+
+(def ^:private hook-set (atom false))
+(defn- ensure-hook!
+  "Give llvm.reader the code hook (once). Called by install-program-table!
+   (the backend's ns-init of a program that reaches eval) and by compile."
+  []
+  (when-not @hook-set
+    (c/set-var-root! (with-meta (symbol "#'llvm.reader/code-hook") {}) code-hook)
+    (reset! hook-set true)))
+
+;; ---------------------------------------------------------------------------
+;; Natives the core table adds (a let-go native without a value here, or
+;; evaluated-code plumbing)
+
+(defn- set-macro!* [v]
+  (let [t (str v) key (when (string/starts-with? t "#'") (subs t 2))]
+    (if (and key (cell key))
+      (do (swap! n/registry assoc-in [:cells key :macro] true) v)
+      (limit (str "set-macro! of " v ": not a var evaluated code defined")))))
+
+(defn- in-ns* [& args]
+  (let [x (first args)]
+    (cond (not= 1 (count args)) (raise (str "wrong number of arguments " (count args)))
+          (symbol? x) (let [nm (n/add-ns* (str x))]
+                        (n/set-cur! nm)
+                        (symbol (str "<ns " nm ">")))
+          :else (raise "in-ns expected Symbol"))))
+
+;; throw as a native: a wrong arg count is native's text, not an lg fn's
+(defn- throw* [& args]
+  (if (= 1 (count args))
+    (throw (first args))
+    (raise (str "wrong number of arguments " (count args)))))
+
+(defn- type-name [x] (s/mk-str (c/type-name x)))   ; type-name is Bytes
+
+(defn- known-ns? [nm] (or (n/ns-exists*? nm) (some? (prog nm))))
+
+;; CoreRequire at run time: a spec [lib :as a :refer [x ...]] records the
+;; alias and refers under the current ns (the seam's :aliases / :refers).
+(defn- require* [& specs]
+  (doseq [spec specs]
+    (let [lib (if (vector? spec) (first spec) spec)]
+      (cond (not (symbol? lib)) (raise (str "require expected Symbol or Vector, got " (type-name spec)))
+            (not (known-ns? (canon (str lib)))) (raise (str "unable to load namespace " lib))
+            (vector? spec)
+            (let [opts (apply hash-map (rest spec)) cur (cur-ns) libn (canon (str lib))]
+              (when-let [a (:as opts)] (swap! n/registry assoc-in [:aliases cur (str a)] libn))
+              (when (sequential? (:refer opts))
+                (doseq [r (:refer opts)] (swap! n/registry assoc-in [:refers cur (str r)] libn)))))))
+  nil)
+
+;; bound? (lang.go:9190): a cell is bound once a def gave it a value (def
+;; interns at compile time, so defonce's resolve already sees the cell)
+(defn- bound?* [& args]
+  (let [v (first args) t (str v) key (when (string/starts-with? t "#'") (subs t 2))]
+    (if (and (= 1 (count args)) key (cell key))
+      (contains? (cell key) :val)
+      (apply n/bound? args))))
+
+;; ---------------------------------------------------------------------------
+;; The core table: name -> fn value (the seam: "A's, in eval.lg"). Written as
+;; plain lg values so the backend links each twin because this file names
+;; it. A fn, not a def: a map literal as a runtime global came out empty in
+;; the module (natives.lg's builtin-nss note); cached after the first call.
+
+(defn- core-table* []
+  {"+" + "-" - "*" * "/" / "inc" inc "dec" dec "quot" quot "rem" rem "mod" mod "max" max "min" min
+   "=" = "==" == "not=" not= "<" < ">" > "<=" <= ">=" >= "compare" compare "identical?" identical?
+   "zero?" zero? "pos?" pos? "neg?" neg? "even?" even? "odd?" odd? "number?" number? "int?" int?
+   "integer?" integer? "float?" float? "not" not "true?" true? "false?" false? "nil?" nil? "some?" some?
+   "string?" string? "keyword?" keyword? "symbol?" symbol? "map?" map? "vector?" vector? "set?" set?
+   "seq?" seq? "list?" list? "coll?" coll? "fn?" fn? "char?" char? "sequential?" sequential?
+   "associative?" associative? "counted?" counted? "empty?" empty? "map-entry?" map-entry?
+   "first" first "second" second "rest" rest "next" next "last" last "butlast" butlast "cons" cons
+   "conj" conj "seq" seq "vec" vec "list" list "list*" list* "vector" vector "hash-map" hash-map
+   "hash-set" hash-set "array-map" array-map "set" set "into" into "concat" concat "map" map "mapv" mapv
+   "filter" filter "filterv" filterv "remove" remove "reduce" reduce "reduce-kv" reduce-kv
+   "take" take "drop" drop "take-while" take-while "drop-while" drop-while "take-last" take-last
+   "drop-last" drop-last "nth" nth "count" count "range" range "repeat" repeat "repeatedly" repeatedly
+   "iterate" iterate "interpose" interpose "interleave" interleave "partition" partition
+   "partition-all" partition-all "partition-by" partition-by "group-by" group-by "frequencies" frequencies
+   "distinct" distinct "sort" sort "sort-by" sort-by "reverse" reverse "keep" keep "keep-indexed" keep-indexed
+   "map-indexed" map-indexed "mapcat" mapcat "some" some "every?" every? "not-any?" not-any?
+   "not-every?" not-every? "apply" apply "partial" partial "comp" comp "juxt" juxt "complement" complement
+   "constantly" constantly "identity" identity "fnil" fnil "doall" doall "dorun" dorun "flatten" flatten
+   "zipmap" zipmap "split-at" split-at "split-with" split-with "nthnext" nthnext "nthrest" nthrest
+   "ffirst" ffirst "fnext" fnext "nfirst" nfirst "nnext" nnext "empty" empty "not-empty" not-empty
+   "cycle" cycle "tree-seq" tree-seq "run!" run! "transduce" transduce "sequence" sequence "dedupe" dedupe
+   "get" get "get-in" get-in "assoc" assoc "assoc-in" assoc-in "dissoc" dissoc "update" update
+   "update-in" update-in "merge" merge "merge-with" merge-with "select-keys" select-keys "keys" keys
+   "vals" vals "contains?" contains? "find" find "key" key "val" val "peek" peek "pop" pop "subvec" subvec
+   "disj" disj "update-vals" update-vals "update-keys" update-keys "max-key" max-key "min-key" min-key
+   "str" str "subs" subs "name" name "namespace" namespace "keyword" keyword "symbol" symbol
+   "format" n/format "pr-str" pr-str "print-str" print-str "println" println "print" print "prn" prn "pr" pr
+   "atom" atom "deref" deref "reset!" reset! "swap!" swap! "volatile!" volatile! "vreset!" vreset!
+   "vswap!" vswap! "meta" meta "with-meta" with-meta "vary-meta" vary-meta
+   "ex-info" ex-info "ex-message" ex-message "ex-data" ex-data "ex-cause" ex-cause "throw" throw*
+   "gensym" gensym "hash" hash "type" type "read-string" read-string "eval" eval "rand-int" rand-int
+   "boolean" boolean "char" char "int" int "long" long "double" double "float" float "parse-long" parse-long
+   "force" force "realized?" realized? "promise" promise "deliver" deliver "delay?" delay? "trampoline" trampoline "some-fn" some-fn
+   "every-pred" every-pred "memoize" memoize "transient" transient "persistent!" persistent! "conj!" conj!
+   "assoc!" assoc! "dissoc!" dissoc! "disj!" disj! "re-find" re-find "re-matches" re-matches "re-seq" re-seq
+   "re-pattern" re-pattern "sorted-map" sorted-map "sorted-set" sorted-set "read-all-string" read-all-string
+   "lazy-seq*" (fn [f] (lazy-seq (f))) "delay*" (fn [f] (delay (f))) "with-out-str*" with-out-str*
+   "llvm.eval/macro-form*" (fn [] @macro-form) "concat*" concat-star "concat-list" concat-list* "set-macro!" set-macro!* "bound-fn*" n/bound-fn*
+   "seq-to-map-for-destructuring" seq-to-map-for-destructuring "with-redefs-fn" with-redefs-fn
+   "->AssertionError" ->AssertionError "*assert*" true "*out*" *out* "*err*" *err*
+   "in-ns" in-ns* "require" require* "ns-name" ns-name "ns-resolve" n/ns-resolve "resolve" n/resolve
+   "find-ns" n/find-ns "the-ns" n/the-ns "all-ns" n/all-ns "find-var" n/find-var "var-get" n/var-get
+   "var?" n/var? "intern" n/intern "alter-var-root" n/alter-var-root "alter-meta!" n/alter-meta!
+   "push-binding!" n/push-binding! "pop-binding!" n/pop-binding! "bound?" bound?* "ns-publics" n/ns-publics
+   "string/join" string/join "string/split" string/split "string/upper-case" string/upper-case
+   "string/lower-case" string/lower-case "string/trim" string/trim "string/blank?" string/blank?
+   "string/includes?" string/includes? "string/starts-with?" string/starts-with?
+   "string/ends-with?" string/ends-with? "string/replace" string/replace "string/split-lines" string/split-lines
+   "string/index-of" string/index-of "string/capitalize" string/capitalize "string/triml" string/triml
+   "string/trimr" string/trimr "string/reverse" string/reverse
+   ;; bit ops, math and clock natives, randomness (REPL demo snippets, 2026-10-02).
+   ;; Math/* is keyed to clojure.math's twins (the Math/ natives have none);
+   ;; rand-nth is lg over rand-int (core/rand-nth is a Go native with no twin);
+   ;; floor/ceil/round/log/rand/shuffle stay out: no twin.
+   "bit-and" bit-and "bit-or" bit-or "bit-xor" bit-xor "bit-not" bit-not "bit-and-not" bit-and-not
+   "bit-shift-left" bit-shift-left "bit-shift-right" bit-shift-right
+   "unsigned-bit-shift-right" unsigned-bit-shift-right "bit-test" bit-test
+   "Math/sqrt" clojure.math/sqrt "Math/pow" clojure.math/pow "Math/exp" clojure.math/exp "Math/abs" clojure.math/abs
+   "clojure.math/sqrt" clojure.math/sqrt "clojure.math/pow" clojure.math/pow "clojure.math/exp" clojure.math/exp
+   "clojure.math/abs" clojure.math/abs "clojure.math/sin" clojure.math/sin "clojure.math/cos" clojure.math/cos
+   "clojure.math/hypot" clojure.math/hypot "clojure.math/cbrt" clojure.math/cbrt "abs" clojure.math/abs
+   "System/nanoTime" System/nanoTime "System/currentTimeMillis" System/currentTimeMillis
+   "rand-nth" (fn [coll] (nth coll (rand-int (count coll))))})
+
+(def ^:private core-cache (atom nil))
+(defn- core-table [] (or @core-cache (reset! core-cache (core-table*))))
