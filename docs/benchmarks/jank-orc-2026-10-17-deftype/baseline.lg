@@ -1,0 +1,8 @@
+(deftype Probe [x])
+(deftype EmptyProbe [])
+(let [a (->Probe 7) b (->Probe 7) e (->EmptyProbe) e2 (->EmptyProbe)]
+  (println (map? a) (keyword? a) (= a b) (identical? a b) (identical? a a))
+  (println (= (type a) Probe) (instance? Probe a) (instance? EmptyProbe a))
+  (println (map? e) (keyword? e) (= e e2) (identical? e e2))
+  (println (= (type e) EmptyProbe) (instance? EmptyProbe e))
+  (println (get a :x :missing)))
