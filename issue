@@ -10,3 +10,14 @@ assignee: Matt Parrett
 hash_source: content
 depends_on: a8b08e1
 description: checks/browser-probe.mjs (PR #57, D227) is the first probe for an optional runtime: it launches Chromium once and the browser lanes report SKIP with the reason when that fails. The other optional runtimes have no such step. wasmtime missing from PATH read as "no JSPI" on P4.0 until #57 made it a SKIP row; the llvm rows only test that native-run.sh exists and then fail when llc or clang is missing. One discovery step per runtime (wasmtime, llc/clang, and whatever the next target brings), each printing the same SKIP shape and honouring LW_REQUIRE_BROWSER-style opt-ins, would make the gate readable on a machine with a subset of the toolchain. Raised in the review of PR #57.
+
+## Comments
+[2026-10-24T14:26:52Z] Matt Parrett: Facts that close it (status, then the witness each needs):
+ 
+ - F1 each optional runtime has one probe script under checks/ (browser, wasmtime, llc/clang): a file each, and every row that needs the runtime calls it before any build (a grep of the rows for the probe).
+ - F2 a missing runtime makes the row print `SKIP (<row>: <reason>)` and exit 2; the gate passes on it (command and exit on a machine without that runtime, or with its PATH entry removed).
+ - F3 LW_REQUIRE_<RUNTIME>=1 turns that SKIP into exit 1 before any build (command, exit 1).
+ - F4 no row tests for a runtime by checking that a wrapper script exists (the llvm rows: a grep for `test -x` in items.tsv).
+ - F5 the SKIP shape matches what gate output settles on in git-issue:907a973 (the gate line for a skipped row).
+ 
+ Blocked on 907a973 for F5; F1 to F4 can land before it.
