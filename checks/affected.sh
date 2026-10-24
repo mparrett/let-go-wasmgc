@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# checks/affected.sh [--all] [<path>...]  — which items.tsv rows a change touches.
+# checks/affected.sh [--all] [--] [<path>...]  — which items.tsv rows a change touches.
 #
 # With no args: paths = `git diff --name-only HEAD` (staged and unstaged) +
 # untracked files under dev/lower-wasm (what an implementer is about to hand
@@ -31,6 +31,7 @@ P0.1	checks/run-corpus.sh checks/sem.sh checks/gate.sh checks/census.sh checks/c
 P0.2	checks/corpus-lint.sh checks/corpus-budget.tsv corpus/
 P0.3	checks/state.sh checks/env.sh
 P0.4	checks/workflow.sh checks/workflow.mk checks/subject-lint.py checks/comment-lint.py
+P0.6	checks/frontier.py checks/lifecycle.mk checks/state.sh
 P0.5	checks/subject-lint.py checks/comment-lint.py checks/subject-lint-cases.sh checks/comment-lint-cases.sh
 P1.0	oracle corpus/scalar/
 P1.1	oracle corpus/scalar/ corpus/opmatrix/ corpus/typed/ checks/run-corpus.sh
@@ -151,6 +152,8 @@ EOF
 # BSD sed has no \b: the token is always first in column 2, so match it there.
 expand() { awk -F'\t' 'BEGIN{OFS="\t"} {sub(/^oracle /, "src/ rt/ checks/oracle.sh checks/wasm-run.sh ", $2); print}'; }
 if [ "${1:-}" = --all ]; then table | expand; exit 0; fi
+# -- ends the options: a path may start with -
+[ "${1:-}" = -- ] && shift
 # bash 3.2 (macOS /bin/bash) has no mapfile. --relative keeps paths relative to
 # this dir wherever the checkout sits (a worktree, a copy inside another repo);
 # --no-renames lists both ends of a rename; `diff HEAD` covers staged and

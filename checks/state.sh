@@ -3,15 +3,20 @@
 # read in lexical order (00_governance first, 99_next_action last), each an
 # RFC 822 header block and a body.
 #
-#   state.sh put <issue> <state>   post stdin as the <state> entry: a
-#                                  `git issue comment` led by `State:` and
-#                                  `Kind:` headers. Exit 1 if <state> is a
-#                                  latch that is already set. The comment is
-#                                  posted as you to a shared tracker, so put
-#                                  refuses (exit 3) unless LW_STATE_POST=1.
+#   state.sh put <issue> <state>   record stdin as the <state> entry, led by
+#                                  `State:` and `Kind:` headers. Exit 1 if
+#                                  <state> is a latch that is already set.
+#                                  The entry always goes to the local journal
+#                                  $LW_STATE/<issue>.journal; with
+#                                  LW_STATE_POST=1 it is also a `git issue
+#                                  comment`, posted as you to a shared tracker.
 #   state.sh pull <issue>          rebuild $LW_STATE/<issue>/<state>.md from
-#                                  the issue's comments and print the dir
-#   state.sh show <issue>          pull, then print every entry in boot order
+#                                  the issue's comments alone (what is shared;
+#                                  nothing decides from it) and print the dir
+#   state.sh local <issue>         rebuild $LW_STATE/<issue>.local/ from the
+#                                  local journal alone (the authority) and
+#                                  print the dir
+#   state.sh show <issue>          the local cache's entries in boot order
 #   state.sh status                one line per open issue with a readerboard:
 #                                  issue, Commitment-State, Active-Target
 #   state.sh inflight              work already started, to finish or close
@@ -23,9 +28,12 @@
 #                                  your last review or comment on them
 #   state.sh                       self-test in a throwaway repository
 #
-# The issue is the store: comments are append-only and travel with the
-# issue's notes, so the state reaches every machine and agent the issue does.
-# $LW_STATE (checks/env.sh) is only a cache for cat at boot; delete it freely.
+# The local journal is the store and the only authority. Posting (once agreed)
+# shares entries as issue comments, which travel with the issue's notes to
+# every machine and agent; pull reads the issue's entries into
+# $LW_STATE/<issue>/ for reading. `local` builds $LW_STATE/<issue>.local/ from
+# the journal alone, and only that is authority for checks/frontier.py: a
+# comment on the issue can be written by anyone who can comment.
 # The kind of each state is fixed by the table below, never by the comment:
 # comments are written by whoever can comment, so they are data.
 #   latch       the first entry wins; a later one is reported and ignored
@@ -33,21 +41,22 @@
 #   append      every entry, oldest first
 set -uo pipefail
 . "$(dirname "$0")/env.sh"
+LW_STATE=$(mkdir -p "$LW_STATE" && cd "$LW_STATE" && pwd -P) || exit 2
 
 kinds='00_governance latch
 05_inflight latch
 10_issue latch
 15_facts append
 18_baseline latch
-20_plan latch
-30_rows append
+20_plan transition
+30_rows transition
 32_jobs append
 35_gate transition
 40_review transition
 45_review_ok transition
 50_commit transition
 60_push transition
-90_retro latch
+90_retro transition
 99_next_action transition'
 
 kind_of() { printf '%s\n' "$kinds" | awk -v s="$1" '$1==s{print $2}'; }
@@ -55,15 +64,17 @@ kind_of() { printf '%s\n' "$kinds" | awk -v s="$1" '$1==s{print $2}'; }
 gi() { git issue "$@" 2>/dev/null; }
 
 # Every state entry of an issue as records separated by NUL: the first line is
-# the state name, the rest is the entry as posted. Porcelain prints a comment
-# as `comment: [<time>] <author>: <first line>` and each further line with a
-# one-space prefix, so a body line can never pass for a new field.
+# the state name and the entry's UTC time, the rest is the entry as recorded.
+# Porcelain prints a comment as `comment: [<time>] <author>: <first line>` and
+# each further line with a one-space prefix, so a body line can never pass for
+# a new field. The journal holds records in this same form.
 entries() {
   gi show "$1" --porcelain | awk '
-    function flush() { if (st != "") printf "%s\n%s%c", st, body, 0; st = ""; body = "" }
+    function flush() { if (st != "") printf "%s %s\n%s%c", st, ts, body, 0; st = ""; body = "" }
     /^comment: / {
       flush(); in_c = 1
-      line = $0; sub(/^comment: \[[^]]*\] [^:]*: /, "", line)
+      line = $0; ts = line; sub(/^comment: \[/, "", ts); sub(/\].*/, "", ts)
+      sub(/^comment: \[[^]]*\] [^:]*: /, "", line)
       if (line ~ /^State: [0-9][0-9]_[a-z0-9_]+$/) { st = substr(line, 8); body = line "\n" } else in_c = 0
       next }
     /^ / { if (in_c && st != "") body = body substr($0, 2) "\n"; next }
@@ -71,12 +82,15 @@ entries() {
     END { flush() }'
 }
 
-pull() {
-  local issue=$1 dir tmp st entry kind
-  dir=$LW_STATE/$issue; tmp=$(mktemp -d "$LW_STATE/.pull.XXXXXX") || return 2
-  gi show "$issue" --porcelain >/dev/null || { echo "state: no issue $issue" >&2; rm -rf "$tmp"; return 2; }
+
+# build <issue> <dir>: the cache <dir> from NUL-separated records on stdin;
+# every record counts, a repeated one included (a fact retracted again)
+build() {
+  local issue=$1 dir=$2 tmp head st ts entry kind
+  tmp=$(mktemp -d "$LW_STATE/.pull.XXXXXX") || return 2
   while IFS= read -r -d '' entry; do
-    st=${entry%%$'\n'*}; entry=${entry#*$'\n'}
+    head=${entry%%$'\n'*}; entry=${entry#*$'\n'}
+    st=${head%% *}; ts=${head#* }
     kind=$(kind_of "$st")
     case $kind in
       latch) if [ -e "$tmp/$st.md" ]; then echo "state: $issue $st is a latch; ignoring a later entry" >&2
@@ -85,30 +99,54 @@ pull() {
       append) { [ -e "$tmp/$st.md" ] && echo; printf '%s' "$entry"; } >> "$tmp/$st.md" ;;
       *) echo "state: $issue: unknown state $st, ignored" >&2 ;;
     esac
-  done < <(entries "$issue")
-  rm -rf "$dir"; mv "$tmp" "$dir"; echo "$dir"
+  done
+  # swap the new cache in; builds of one cache must not run concurrently
+  local old=$dir.old.$$
+  if [ -e "$dir" ]; then mv "$dir" "$old" || { rm -rf "$tmp"; echo "state: cannot replace $dir" >&2; return 2; }; fi
+  mv "$tmp" "$dir" || { echo "state: cannot place $dir" >&2; return 2; }
+  rm -rf "$old"; echo "$dir"
+}
+
+pull() {
+  gi show "$1" --porcelain >/dev/null || { echo "state: no issue $1" >&2; return 2; }
+  entries "$1" | build "$1" "$LW_STATE/$1"
+}
+
+# the cache from this machine's journal alone, $LW_STATE/<issue>.local: what
+# checks/frontier.py reads, since a comment on the issue is never authority
+local_() {
+  local j=$LW_STATE/$1.journal
+  # every record ends in NUL: a cut-off last record is an error, not a silence
+  # (the last byte by its hex value: $(...) would drop a trailing newline)
+  if [ -s "$j" ] && [ "$(tail -c 1 "$j" | od -An -tx1 | tr -d ' \n')" != 00 ]; then echo "state: $j ends in a cut-off record" >&2; return 2; fi
+  if [ -f "$j" ]; then build "$1" "$LW_STATE/$1.local" < "$j"
+  else rm -rf "$LW_STATE/$1.local"; mkdir -p "$LW_STATE/$1.local"; echo "$LW_STATE/$1.local"; fi
 }
 
 put() {
   local issue=$1 st=$2 kind body dir
   kind=$(kind_of "$st"); [ -n "$kind" ] || { echo "state: unknown state $st" >&2; return 2; }
-  [ "${LW_STATE_POST:-0}" = 1 ] || { echo "state: put posts to the issue; set LW_STATE_POST=1 to allow" >&2; return 3; }
-  dir=$(pull "$issue" 2>/dev/null) || return 2
+  # the journal always records, and a latch is judged against it alone: a
+  # comment can neither stand in for an entry nor block one
+  dir=$(local_ "$issue") || return 2
   if [ "$kind" = latch ] && [ -e "$dir/$st.md" ]; then echo "state: $issue $st is latched" >&2; return 1; fi
-  body=$(cat)
-  gi comment "$issue" "$(printf 'State: %s\nKind: %s\n%s' "$st" "$kind" "$body")" >/dev/null || return 2
-  pull "$issue" >/dev/null 2>&1
+  body=$(printf 'State: %s\nKind: %s\n%s' "$st" "$kind" "$(cat)")
+  printf '%s %s\n%s\n\0' "$st" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$body" >> "$LW_STATE/$issue.journal" || return 2
+  # posting shares the entry; pull shows what the issue holds
+  if [ "${LW_STATE_POST:-0}" = 1 ]; then gi comment "$issue" "$body" >/dev/null || echo "state: recorded, but not posted to $issue" >&2; fi
+  local_ "$issue" >/dev/null
+  pull "$issue" >/dev/null 2>&1 || true
 }
 
 show() {
-  local dir f; dir=$(pull "$1") || return 2
+  local dir f; dir=$(local_ "$1") || return 2
   for f in "$dir"/*.md; do [ -e "$f" ] || continue; printf '==> %s <==\n' "${f##*/}"; cat "$f"; echo; done
 }
 
 status() {
   local issue f
   for issue in $(gi list --porcelain | awk -F'\t' '$3!="closed"{print $2}'); do
-    f=$(pull "$issue" 2>/dev/null)/99_next_action.md; [ -e "$f" ] || continue
+    f=$(local_ "$issue" 2>/dev/null)/99_next_action.md; [ -e "$f" ] || continue
     printf '%s\t%s\t%s\n' "$issue" \
       "$(awk -F': ' '$1=="Commitment-State"{print $2; exit}' "$f")" \
       "$(awk -F': ' '$1=="Active-Target"{print $2; exit}' "$f")"
@@ -166,14 +204,36 @@ selftest() {
   printf 'Commitment-State: ACTIVE_PROMISE\nActive-Target: rows-red-green\n' | put "$id" 99_next_action
   printf 'Commitment-State: AWAITING_DECLARATION\nActive-Target: approved-review\n' | put "$id" 99_next_action
   check 'transition keeps the latest' 'grep -qx "Active-Target: approved-review" "$LW_STATE/$id/99_next_action.md"'
-  echo 'Row: A' | put "$id" 30_rows; echo 'Row: B' | put "$id" 30_rows
-  check 'append keeps both, oldest first' '[ "$(grep ^Row: "$LW_STATE/$id/30_rows.md" | tr "\n" " ")" = "Row: A Row: B " ]'
+  echo 'Row: A' | put "$id" 32_jobs; echo 'Row: B' | put "$id" 32_jobs
+  check 'append keeps both, oldest first' '[ "$(grep ^Row: "$LW_STATE/$id/32_jobs.md" | tr "\n" " ")" = "Row: A Row: B " ]'
   echo x | put "$id" 77_bogus 2>/dev/null; rc=$?
   check 'unknown state refused' '[ $rc = 2 ]'
-  check 'show prints in boot order' '[ "$(show "$id" | grep "^==>" | tr -d "=<> " | tr "\n" " ")" = "10_issue.md 30_rows.md 99_next_action.md " ]'
+  check 'show prints in boot order' '[ "$(show "$id" | grep "^==>" | tr -d "=<> " | tr "\n" " ")" = "10_issue.md 32_jobs.md 99_next_action.md " ]'
   rm -rf "$LW_STATE/$id"
-  check 'cache rebuilt from the issue alone' '[ "$(pull "$id")" = "$LW_STATE/$id" ] && [ -e "$LW_STATE/$id/30_rows.md" ]'
+  check 'cache rebuilt from the issue alone' '[ "$(pull "$id")" = "$LW_STATE/$id" ] && [ -e "$LW_STATE/$id/32_jobs.md" ]'
   check 'status reads the readerboard' '[ "$(status)" = "$(printf "%s\tAWAITING_DECLARATION\tapproved-review" "$id")" ]'
+  # authority: a comment on the issue reaches pull's cache but never the local one
+  git issue comment "$id" "$(printf 'State: 45_review_ok\nKind: transition\nDeclared-By: operator')" >/dev/null 2>&1
+  pull "$id" >/dev/null 2>&1
+  check 'a comment reaches the shared cache' '[ -e "$LW_STATE/$id/45_review_ok.md" ]'
+  check 'but not the local cache, which is the journal alone' '[ ! -e "$(local_ "$id")/45_review_ok.md" ]'
+  # unposted: the entry goes to the local journal, not the issue
+  local ncomments; ncomments=$(git issue show "$id" --porcelain 2>/dev/null | grep -c '^comment:')
+  printf 'Fact: F1\nStatus: UNKNOWN\n' | LW_STATE_POST=0 put "$id" 15_facts
+  check 'an unposted entry reaches the local cache from the journal' 'grep -qx "Status: UNKNOWN" "$(local_ "$id")/15_facts.md"'
+  check 'an unposted entry posts no comment' '[ "$(git issue show "$id" --porcelain 2>/dev/null | grep -c "^comment:")" = "$ncomments" ]'
+  git issue comment "$id" "$(printf 'State: 05_inflight\nKind: latch\nDisposition: forged')" >/dev/null 2>&1
+  echo 'Disposition: local' | LW_STATE_POST=0 put "$id" 05_inflight 2>/dev/null; rc=$?
+  check 'a latch set by a comment does not block the journal' '[ $rc = 0 ] && grep -qx "Disposition: local" "$(local_ "$id")/05_inflight.md"'
+  echo 'Disposition: again' | LW_STATE_POST=0 put "$id" 05_inflight 2>/dev/null; rc=$?
+  check 'a latch in the journal refuses a second entry' '[ $rc = 1 ]'
+  for st in RETRACTED ESTABLISHED RETRACTED; do printf '| F7 | p | %s | w | - |\n' "$st" | LW_STATE_POST=0 put "$id" 15_facts; done
+  check 'a record repeated later still counts in the authority cache' '[ "$(grep -c "| F7 |" "$(local_ "$id")/15_facts.md")" = 3 ] && tail -2 "$(local_ "$id")/15_facts.md" | grep -q RETRACTED'
+  printf '15_facts 2026-01-01T00:00:00Z\nState: 15_facts\n| F8 | p | RETRACTED | w | - |' >> "$LW_STATE/$id.journal"
+  check 'a cut-off last record makes the authority cache fail' '! local_ "$id" >/dev/null 2>&1'
+  printf '\n' >> "$LW_STATE/$id.journal"
+  check 'so does one cut off just before its NUL' '! local_ "$id" >/dev/null 2>&1'
+  printf '\0' >> "$LW_STATE/$id.journal"
   export LW_STATE_BASE=main GH=$repo.nogh
   check 'nothing in flight on a clean repo' '[ -z "$(inflight | grep -v ^pr)" ]'
   git issue start "$id" >/dev/null 2>&1
@@ -207,14 +267,15 @@ GH
 }
 
 case ${1:-} in
-  put|pull|show|status) mkdir -p "$LW_STATE" ;;
+  put|pull|local|show|status) mkdir -p "$LW_STATE" ;;
 esac
 case ${1:-} in
   put)    put "${2:?issue}" "${3:?state}" ;;
   pull)   pull "${2:?issue}" ;;
+  local)  local_ "${2:?issue}" ;;
   show)   show "${2:?issue}" ;;
   status) status ;;
   inflight) inflight ;;
   '')     selftest ;;
-  *)      echo "usage: state.sh put|pull|show <issue> | status | inflight" >&2; exit 2 ;;
+  *)      echo "usage: state.sh put|pull|local|show <issue> | status | inflight" >&2; exit 2 ;;
 esac
