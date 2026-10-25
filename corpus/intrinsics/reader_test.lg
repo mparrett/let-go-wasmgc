@@ -113,6 +113,20 @@
 (def ^:private cases
   (mapv #(read-string (str "\"" % "\"")) (string/split-lines (slurp "corpus/edn/cases.txt"))))
 
+;; D230: BigInt and Ratio literals are values. The signs and normalizations
+;; native applies, and what it refuses, on the inputs that were the D15 named
+;; limits (the corpus below covers them too; this names each fact).
+(deftest bigint-and-ratio-literals
+  (c/install!)
+  (doseq [in ["1N" "-1N" "+1N" "1n" "0N" "-0N" "00N" "99999999999999999999" "-99999999999999999999" "0xFFFFFFFFFFFFFFFFF"
+              "0x8000000000000000" "-0x8000000000000000" "1/2" "-1/2" "4/2" "-4/2" "4/-2" "+4/2" "0/5" "10/5" "1/1"
+              "-9223372036854775808/-1" "2147483648/4294967296" "[1N 1/2 {:a 2N} #{3/4}]"]]
+    (is (= [:match] (classify in)) in))
+  (testing "a syntax error natively is an error here too (the position text is native's)"
+    (doseq [in ["1/0" "1/2/3" "1.5N" "0x10N" "1N/2" "1/00" "99999999999999999999/7"]]
+      (is (= :err (first (native-read in))) in)
+      (is (= :err (first (mine-read in))) in))))
+
 (deftest edn-corpus
   (c/install!)
   (let [rs (mapv (fn [in] [in (classify in)]) cases)
@@ -253,7 +267,7 @@
               sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
               :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
                     vname (str v)]
-              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["reader" "core" "seq" "pvec" "str" "phm" "phs"])
+              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["reader" "core" "seq" "pvec" "str" "phm" "phs" "numtower"])
                              (and (string/starts-with? vname "#'wasm.intrinsics/")
                                   (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]

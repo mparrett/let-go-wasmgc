@@ -1,0 +1,32 @@
+lit [1N -1N 1N 1N 0N 99999999999999999999N 1/2 -1/2 2 -2 -2 0 9223372036854775808N]
+lit-hex [295147905179352825855N 9223372036854775808N -9223372036854775808 99999999999999999999N]
+read [1N -1N 1N 1N 1/2 -1/2 2 -2 -2 2 0 2 9223372036854775808N 99999999999999999999N 9223372036854775808N]
+read-err ["error: Syntax error reading source at (<read-string>:1:4).\ninvalid number: 1/0" "error: Syntax error reading source at (<read-string>:1:6).\ninvalid number: 1/2/3" "error: Syntax error reading source at (<read-string>:1:5).\ninvalid number: 1.5N" "error: Syntax error reading source at (<read-string>:1:6).\ninvalid number: 0x10N" "error: Syntax error reading source at (<read-string>:1:5).\ninvalid number: 1N/2" "error: Syntax error reading source at (<read-string>:1:5).\ninvalid number: 1/00"]
+div [1/2 2 -3/2 -3/2 0 1/2 1/3 -1 1/2]
+div-boxed [1/2 2 9223372036854775808N -9223372036854775807]
+div-min [9223372036854775808N -9223372036854775808 -4611686018427387904]
+div-zero "divide by zero"
+div-float [0.5 0.25 0.3333333333333333]
+print 1N 1/2 [1N 1/2] {:a 1N} (1N)
+str ["1" "1/2" "[1N]" "{:a 1N}" "12" "1/2"]
+pr-str ["1N" "1/2" "[1N 1/2]" "1N" "1N\n"]
+big-print [9223372036854775808N 123456789012345678901234567890N -1000000000000000000000000000N]
+eq [true true true false false true true false false true true true]
+eq-big [true false true]
+hash [885181228 885181228 1266835233 0 4036390784 2163426869 2131540426 3365740091 2312112358 1170395591 4036390784]
+hash-eq [true true]
+keys [:a :a :h :none 1 2]
+set [true true true #{1N 1/2}]
+sorted [:h (1/2 1N 3)]
+compare [-1 1 0 0 -1 -1 1 -1 -1 1 0 0 0]
+compare-big [1 -1 0]
+sort (-1/3 1/2 0.5 1N 1 2N 9223372036854775808N)
+compare-err "cannot compare let-go.lang.BigInt and let-go.lang.String"
+preds [true false false true false false true true false true true true false true true false false]
+type [let-go.lang.BigInt let-go.lang.Ratio let-go.lang.Ratio let-go.lang.Int let-go.lang.BigInt]
+bigint [5N -5N 1N 12N -123456789012345678901234567890N 1N -2N]
+bigint-err ["cannot parse bigint: \"x\"" "cannot coerce let-go.lang.Ratio to bigint"]
+num-den [1 2 -1 2 1 9223372036854775807]
+num-err "numerator expects a Ratio"
+coll [1N 1N [1N 1/2] 2 1N 1/2]
+atom 1/2
