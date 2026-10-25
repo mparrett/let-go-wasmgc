@@ -8,6 +8,7 @@ updated: 2026-10-25T07:19:25Z
 author: Matt Parrett
 assignee: Matt Parrett
 hash_source: content
+role: checks
 description: P7.4 (checks/size-boot.sh) and P10.3 read LW_BROWSER_TOOLS differently. size-boot.sh appends `browser-smoke-playwright` to the variable, so it wants the parent directory; P10.3 (and P4.4's turn-time.sh, which prints the same install path) take the variable as the Playwright install directory itself. With LW_BROWSER_TOOLS set to the install directory, P10.3 ran and P7.4 skipped with "no Playwright install at <dir>/browser-smoke-playwright"; set to the parent, P7.4 would run and P10.3 skip. Seen on a gate 7 run of PR #72's head on 2026-10-25.
  
  Facts that close it:
