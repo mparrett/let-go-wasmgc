@@ -106,10 +106,13 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 - **brotli**, for the size lines the build scripts print.
 - **node** with WasmGC, wasm exception handling and JSPI. We develop on
   node 25. `src/run.mjs` and `host/node-host.mjs` set their own stack sizes.
-- **wasmtime** for the wasmtime row of `checks/browser-boot.sh` (run with
-  GC, exceptions, function references and tail calls enabled). Without it
-  that row is SKIP, and node-host alone decides P4.0 when Chromium is
-  missing too (D227).
+- **wasmtime** (47 or later, from `PATH` or `~/.wasmtime/bin`; `WASMTIME`
+  names another) for the wasmtime host lane: row P4.5 runs `corpus/wasm` and
+  `corpus/scalar` through `checks/wasmtime-run.sh`, and `checks/browser-boot.sh`
+  has a wasmtime row (D232; GC, exceptions, function references and tail
+  calls enabled). Without it P4.5 is SKIP, that row is SKIP, and node-host
+  alone decides P4.0 when Chromium is missing too (D227).
+  `LW_REQUIRE_WASMTIME=1` turns the SKIP into a FAIL.
 - **Chromium through Playwright** for the browser lanes
   (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/eval-hosts.sh`,
   `checks/size-boot.sh`, the `*-page-check.mjs` scripts). Playwright is
