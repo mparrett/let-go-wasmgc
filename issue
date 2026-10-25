@@ -22,3 +22,6 @@ description: Gate 7 on main 7469958 fails P7.1 and P7.7 with the default environ
  F3 `checks/run.sh P7.1` with no LW_TEST_TIMEOUT in the environment reaches the deftest counter on both files (no "no backend summary" line). Witness: the row log.
  
  M1 (how): the eviction prefix in load-rtlib! includes the no-eval bit, so the two variants coexist; or rtlib_warm always runs the warm compile instead of trusting the newest file. P7.1's row command (checks/items.tsv) or run-tests.sh's default carries the 1200 s cap that every passing gate used.
+
+## Comments
+[2026-10-25T05:30:31Z] Matt Parrett: Fix is PR #73 (D231): the no-eval library gets its own cache prefix so the two variants coexist, rtlib_warm globs the variant it is about to build, and the P7.1 row carries LW_TEST_TIMEOUT 1200 by default. Measured at the head, default environment, serial: P7.6 exit 0 with both libraries left in the cache (F2), P7.7 22/22 in 47 s for the whole row (F2), P7.1 28/30 at bar 28 in 147 s with no "no backend summary" line (F3). F1 (the whole gate 7) is for the merged revision.
