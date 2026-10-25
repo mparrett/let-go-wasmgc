@@ -1,0 +1,22 @@
+id: 4d19ae0
+v: 2
+title: Numeric tower, wasm side: BigInt and Ratio as GC runtime values through let-go.lang.bignum
+status: open
+priority: medium
+created: 2026-10-25T01:59:55Z
+updated: 2026-10-25T01:59:55Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: The GC runtime adopts let-go.lang.bignum (rt/let-go/lang, #62) as its BigInt and Ratio values, which lifts D15's named limits on the wasm side. This is the wasm half of the tower split agreed in the #25 thread on 2026-10-18 (wasm side here, llvm side on llvm-poly; the library changes only by PR to main). Pieces: box kinds for the two deftypes in wasm.core's dispatch (library deftypes already lower, P7.11); `/` of two Ints with a non-integral quotient answers a Ratio and `(/ MinInt64 -1)` a BigInt (D15); promotion as pkg/vm/numbers.go has it (Int op BigInt is BigInt, BigInt op Float is Float, Int op Float is Float; Int overflow stays the "integer overflow" error, nothing promotes on overflow); `bigint`, `bigint?`, `ratio?`, `integer?`, `rational?`, `numerator`, `denominator`; the printer's `N` suffix and `n/d`; `=`, `hash` and `compare` as native; the reader's `1N` and `1/2` literals (corpus/edn/cases.txt lines 63-73, P3.0's named limits); Phase-2 constant lowering of BigInt literals in a program. Type contagion through untyped slots (git-issue:4afe4a4) is the piece after this one.
+ 
+ Open question before the first PR: does the promotion table live once in rt/let-go/lang as target-neutral Clojure over the arch surface (checked int add, float conversion, the two kind tests), so the llvm lane compiles the same file, or does each runtime keep its own dispatch? Default here is the shared file, since that is git-issue:646deae's shape; the llvm side names any surface it needs shaped differently and this side re-points.
+ 
+ Facts that close it:
+ 
+ - F1 corpus/opmatrix/div-1.lg, div-2.lg and recip.lg leave corpus/opmatrix/SKIP and MATCH under P1.1 (command and exit).
+ - F2 corpus/edn/cases.txt's BigInt and Ratio inputs MATCH native under P3.0, and the named limit leaves rt/wasm/README.md (command and exit; the README lines).
+ - F3 a new oracle program under corpus/wasm/ covers literals, promotion, overflow, printing, `=`/`hash` as map keys and `compare` for BigInt and Ratio, and MATCHes native lg (command and exit).
+ - F4 gate 2 and the GC oracle rows exit 0; P8.0's byte change is stated with its reason (the new runtime units).
+ - M1 the jank ratchet (corpus/jank/baseline-wasm.tsv): files whose cause is d15 before and after, from checks/jank-suite.sh at the merged revision.
+ - M2 module size of corpus/scalar/fib.clj and of legmacs before and after, so the cost of the library units the shake keeps is known (bytes, revision, D195 shake on).
