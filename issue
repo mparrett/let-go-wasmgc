@@ -16,3 +16,14 @@ description: Proposed: code and comments do not cite issue, row or decision ids;
  Against: an id is a stable link to the reasoning. The checks are where a reader asks why.
  
  If we adopt it, a lint row can hold it for new lines only, as `local-paths.sh` does for paths.
+
+## Comments
+[2026-10-25T15:03:49Z] Norman Nunley, Jr: Matt: is this decision yours, or did an agent working the board post it? That matters before we settle it.
+ 
+ I want this reopened. An id in a code comment rots even when the record it names does not: the code around it moves, splits and gets rewritten, and the comment keeps pointing at a decision about code that is no longer there. An append-only log keeps the decision current; it cannot keep the comment's claim about this line true.
+ 
+ The reasoning belongs where it stays attached to the change: commit messages and git notes, which `git log`, `git blame` and `git notes` bring back for any line. The code comment says what the code does and why, in words.
+ 
+ One exception: a comment marking work still to do links the issue that tracks it, a git-issue id or a GitHub issue, so the TODO can be found from the board and closed with it.
+ 
+ The cleanup need not be churn: a lint on new lines only, as you suggest for the fallback, with the TODO exception, and existing ids leave as their code is touched.
