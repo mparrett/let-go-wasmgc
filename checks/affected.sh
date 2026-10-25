@@ -60,10 +60,11 @@ P2.12	oracle corpus/wasm/pending/variadic/ corpus/refused/ checks/refuse.sh
 P3.0	rt/ corpus/intrinsics/ corpus/edn/ checks/run-intrinsics-native.sh
 P3.1	rt/ corpus/natives/ checks/native-twins.sh tools/
 P3.2	oracle corpus/dump-world.lg checks/world-parity.sh xsofy
-P4.0	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs
+P4.0	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs checks/wasmtime-run.sh
 P4.1	oracle host/ corpus/host/ checks/browser-boot.sh checks/browser-boot.mjs xsofy
 P4.2	oracle host/ checks/lane5.sh xsofy
 P4.3	oracle host/ checks/size-boot.sh xsofy
+P4.5	oracle host/wasmtime-adapter.wat checks/wasmtime-run.sh checks/run-corpus.sh corpus/wasm/ corpus/scalar/
 P2.14	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
 P5.0	corpus/quality/
 P5.1	oracle corpus/core-tests.txt checks/run-tests.sh checks/run-tests.skip src/testshim.lg
