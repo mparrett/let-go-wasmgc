@@ -635,10 +635,10 @@
 ;; program (checks/ir-pipeline.sh). -copy-form-source! carries the reader's
 ;; position of one form to another natively; the module keeps no position
 ;; table (wasm.ir/form-source-info), so it is the second form. The two
-;; kinds the module lacks (decimals, UUIDs) answer false; a Ratio is kind 43 (D230).
+;; kind the module lacks (UUIDs) answers false; a Ratio is kind 43 (D230), a BigDecimal 44 (D233).
 (defn ^{:twin "core/-copy-form-source!"} copy-form-source! [from to] to)
 (defn ^{:twin "core/boolean?"} boolean? [x] (or (= true x) (= false x)))
-(defn ^{:twin "core/decimal?"} decimal? [x] false)
+(defn ^{:twin "core/decimal?"} decimal? [x] (= 44 (c/ckind x)))
 (defn ^{:twin "core/ratio?"} ratio? [x] (= 43 (c/ckind x)))
 (defn ^{:twin "core/uuid?"} uuid? [x] false)
 (defn ^{:twin "core/ns-aliases"} ns-aliases                ; CoreNsAliases (lang.go:7797): {alias-sym ns}

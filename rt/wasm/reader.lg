@@ -729,7 +729,7 @@
     (if (if (> n 1) (if (if (= last 78) true (= last 110)) (all-digits? tk 0 (dec n)) false) false)
       (nt/parse-int-token tk 0 (dec n))                    ; 1N, 1n: a BigInt, never demoted (D230)
       (if (if (> n 1) (if (if (= last 77) true (= last 109)) (big-decimal-ok? tk 0 (dec n)) false) false)
-        (limit (s/str (s/lit "BigDecimal literal ") (s/mk-str tk) (s/lit " (named limit)")))
+        (nt/parse-decimal-token tk 0 (dec n))              ; 1.5M, 1e3m: a BigDecimal (D233)
         (let [h (num-hex st tk neg a n)]
           (if (wasm/null? h)
             (let [o (num-oct st tk neg a n)]

@@ -61,14 +61,14 @@
 ;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
 ;; stand-in's "#'ns/name" text to the root, which var-value reads first.
 (wasm/defstruct Globals [[:mut :i64] :ref [:mut :ref]])
-(def globals (wasm/new Globals 0 (wasm/array-new pv/Node 44 (wasm/null)) (wasm/null)))
+(def globals (wasm/new Globals 0 (wasm/array-new pv/Node 45 (wasm/null)) (wasm/null)))   ; one slot per ckind, 0..44
 
 ;; Kinds as this namespace sees them: wasm.seq/kind, with its foreign kind 18
 ;; refined into the collections seq.lg cannot name.
 ;;  30 map  31 set  32 TransientMap  33 TransientSet  34 TransientVector  35 Type
 ;;  36 keyword/symbol with meta  37 a typed array (wasm.arrays)
 ;;  38 SortedMap  39 SortedSet (wasm.sorted)  40 Promise  41 Delay
-;;  42 BigInt  43 Ratio (wasm.numtower, D230)
+;;  42 BigInt  43 Ratio (wasm.numtower, D230)  44 BigDecimal (D233)
 (defn ckind [x]
   (let [k (sq/kind x)]
     (if (= k 18)
@@ -86,6 +86,7 @@
             (wasm/is? Delay x) 41
             (wasm/is? nt/BigInt x) 42
             (wasm/is? nt/Ratio x) 43
+            (wasm/is? nt/BigDecimal x) 44
             :else 18)
       k)))
 
@@ -169,6 +170,7 @@
           (= k 41) (wasm/bytes-of-string "let-go.lang.Delay")
           (= k 42) (wasm/bytes-of-string "let-go.lang.BigInt")
           (= k 43) (wasm/bytes-of-string "let-go.lang.Ratio")
+          (= k 44) (wasm/bytes-of-string "let-go.lang.BigDecimal")
           :else (wasm/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -179,12 +181,16 @@
 (defn- raise-two [prefix a b]                            ; "<prefix> <type a> and <type b>"
   (raise-str (s/str (s/str prefix (tn a)) (lit (wasm/bytes-of-string " and ")) (tn b))))
 ;; An arithmetic op's "cannot <op> A and B": with a BigInt or Ratio operand it is
-;; the numeric tower's next piece (promotion, numbers.go), a named limit here.
+;; the numeric tower's next piece (promotion, numbers.go), a named limit here;
+;; a BigDecimal is literal-only (D233), its own named limit.
 (defn- tower-k? [k] (if (= k 42) true (= k 43)))
+(defn raise-bigdec [] (raise (wasm/bytes-of-string "lower-wasm: arithmetic on a BigDecimal (numeric tower, named limit)")))
+(declare number?)
 (defn raise-num [prefix a b]
-  (if (if (tower-k? (ckind a)) true (tower-k? (ckind b)))
-    (raise (wasm/bytes-of-string "lower-wasm: arithmetic on a BigInt or Ratio operand (numeric tower, piece 2b)"))
-    (raise-two prefix a b)))
+  (cond (if (if (= 44 (ckind a)) true (= 44 (ckind b))) (if (sq/truthy? (number? a)) (sq/truthy? (number? b)) false) false) (raise-bigdec)
+        (if (tower-k? (ckind a)) true (tower-k? (ckind b)))
+        (raise (wasm/bytes-of-string "lower-wasm: arithmetic on a BigInt or Ratio operand (numeric tower, piece 2b)"))
+        :else (raise-two prefix a b)))
 
 (defn- raise-arity [n]                                    ; "wrong number of arguments N"
   (raise-str (s/str (lit (wasm/bytes-of-string "wrong number of arguments ")) (sq/box-int n))))
@@ -393,7 +399,11 @@
     (let [n (sq/unbox-int x)] (if (= n -9223372036854775808) (op-overflow) (sq/box-int (- n 1))))
     (sub2 x (sq/box-int 1))))
 
-;; Comparison: NumLt & co. on Int/Float; op 0 <, 1 <=, 2 >, 3 >=.
+;; Comparison: NumLt & co. on Int/Float; op 0 <, 1 <=, 2 >, 3 >=. A BigDecimal
+;; against any number goes through numCmpFallback (wasm.numtower/compare,
+;; D233); a BigInt or Ratio operand is the promotion piece's named limit.
+(defn- num-k44? [x k] (if (= k 18) (= 44 (ckind x)) false))
+(declare numeric?)
 (defn- cmp2 [op a b]
   (let [ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka 1) (= kb 1) false)
@@ -402,6 +412,9 @@
           (if (num-k? ka) (num-k? kb) false)
           (let [x (f64-of a ka) y (f64-of b kb)]
             (cond (= op 0) (< x y) (= op 1) (<= x y) (= op 2) (> x y) :else (>= x y)))
+          (if (if (num-k44? a ka) (numeric? b kb) false) true (if (num-k44? b kb) (numeric? a ka) false))
+          (let [c (nt/compare a b)]
+            (cond (= op 0) (< c 0) (= op 1) (<= c 0) (= op 2) (> c 0) :else (>= c 0)))
           :else (raise-num (lit (wasm/bytes-of-string "cannot compare ")) a b))))
 
 (defn- chain [op xs]                                      ; lt/gt/... over a seq: stop at the first false
@@ -435,6 +448,8 @@
   (let [ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka 1) (= kb 1) false) (= (sq/unbox-int a) (sq/unbox-int b))
           (if (num-k? ka) (num-k? kb) false) (let [x (f64-of a ka) y (f64-of b kb)] (if (< x y) false (if (> x y) false (>= x y))))
+          ;; a BigDecimal against any number: numCmpFallback (D233)
+          (if (if (num-k44? a ka) (numeric? b kb) false) true (if (num-k44? b kb) (numeric? a ka) false)) (= 0 (nt/compare a b))
           :else false)))
 
 (defn ^{:twin "core/=="} num-eq
@@ -500,9 +515,9 @@
             (sq/box-int (if (if (= r 0) false (if (> r 0) (< y 0) (> y 0))) (wasm/i64-add r y) r)))
           :else (wasm/trap "lower-wasm: mod on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
 
-(defn- tower? [x] (nt/tower? x))
+(defn- tower? [x] (nt/tower? x))                          ; BigInt, Ratio or BigDecimal
 (defn ^{:twin "core/number?"} number? [x] (let [k (sq/kind x)] (sq/bool (if (num-k? k) true (if (= k 18) (tower? x) false)))))
-;; integer? (CoreIsInteger): Int or BigInt; rational? (CoreIsRational): those and a Ratio (D230)
+;; integer? (CoreIsInteger): Int or BigInt; rational? (CoreIsRational): those, a Ratio (D230) and a BigDecimal (D233: native answers true)
 (defn ^{:twin "core/integer?"} integer? [x] (let [k (sq/kind x)] (sq/bool (if (= k 1) true (if (= k 18) (nt/bigint? x) false)))))
 (defn ^{:twin "core/rational?"} rational? [x] (let [k (sq/kind x)] (sq/bool (if (= k 1) true (if (= k 18) (tower? x) false)))))
 (defn ^{:twin "core/any?"} any?* ([] (raise-arity 0)) ([x] (sq/bool true)) ([x y] (raise-arity 2))
@@ -526,7 +541,7 @@
 (defn compare* [a b]
   (let [ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka 0) true (= kb 0)) (s/compare* a b)
-          ;; a BigInt or Ratio against any number (D230)
+          ;; a BigInt, Ratio or BigDecimal against any number (D230, D233)
           (if (= ka 18) (tower? a) false) (if (numeric? b kb) (nt/compare a b) (raise-two (lit (wasm/bytes-of-string "cannot compare ")) a b))
           (if (= kb 18) (tower? b) false) (if (num-k? ka) (nt/compare a b) (raise-two (lit (wasm/bytes-of-string "cannot compare ")) a b))
           (num-k? ka) (if (num-k? kb) (s/compare* a b) (raise-two (lit (wasm/bytes-of-string "cannot compare ")) a b))
@@ -1405,8 +1420,9 @@
 
 (defn- print-foreign [self x mb]
   (let [k (ckind x) mode3 (sq/unbox-int mb)
-        mode (if (= mode3 3) 0 mode3)]                    ; mode 3 (str of the value itself) matters to a BigInt alone
+        mode (if (= mode3 3) 0 mode3)]                    ; mode 3 (str of the value itself) matters to a BigInt and a BigDecimal alone
     (cond (= k 42) (nt/bigint-print x mode3)
+          (= k 44) (nt/bigdec-print x mode3)
           (= k 30) (print-map x mode)
           (= k 31) (print-set x mode)
           (= k 36) (elem-str (wasm/get MetaNamed 0 x) mode)
@@ -1458,7 +1474,7 @@
 (defn- foreign-seqable [self x]                          ; maps, sets and transient maps are vm.Sequable
   (let [k (ckind x)] (sq/bool (if (= k 18) true (if (>= k 37) (<= k 39) (if (>= k 30) (<= k 32) false))))))
 (defn- foreign-equiv [self a b]                          ; identity: the transients and types; sorted colls as maps/sets
-  (sq/bool (cond (if (tower? a) true (tower? b)) (nt/equiv? a b)   ; a BigInt = an Int of its value (D230)
+  (sq/bool (cond (if (tower? a) true (tower? b)) (nt/equiv? a b)   ; a BigInt = an Int of its value (D230); a BigDecimal = a BigDecimal only (D233)
                  (= 38 (ckind a)) (so/smap-equiv? a b) (= 38 (ckind b)) (so/smap-equiv? b a)
                  (= 39 (ckind a)) (so/sset-equiv? a b) (= 39 (ckind b)) (so/sset-equiv? b a)
                  ;; P10.6: two stand-ins of one var are that var (natively one
@@ -1474,6 +1490,7 @@
   (let [k (ckind x)]
     (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x))
           (= k 42) (sq/box-int (nt/bigint-hash x)) (= k 43) (sq/box-int (nt/ratio-hash x))
+          (= k 44) (sq/box-int (nt/bigdec-hash x))
           :else (sq/hash (s/value-string x)))))
 (defn- tn-hook [self x] (tn x))                          ; wasm.arrays names argument types through this
 
