@@ -13,3 +13,6 @@ description: A row that skips one of its lanes still reports a plain `ok`, so th
  `checks/wasmbin-roundtrip.sh` (P10.0) prints `SKIP legmacs (no LEGMACS checkout)`, checks xsofy, and exits 0. `checks/eval-hosts.sh` and `checks/browser-boot.sh` (D227) pass when the browser lane is absent and the other lanes decide. Under D228 a skip shows only when the row exits 2 with `SKIP` on its last line, so none of these show as skipped.
  
  Decide one rule: either a row with a skipped lane exits 2 (the lanes that ran are then not reported as passing), or such a row is split so each lane is its own row and can skip alone.
+
+## Comments
+[2026-10-25T05:57:04Z] Matt Parrett: Decided: split. One row per lane, each able to exit 2 and SKIP on its own, as P4.4 and P10.3 already do; a row with a skipped lane never reports a plain ok. TAP has no partial skip, and the exit-2 rule would hide passing lanes behind the skip.
