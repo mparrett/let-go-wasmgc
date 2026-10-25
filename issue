@@ -4,10 +4,11 @@ title: Numeric tower, wasm side: BigInt and Ratio as GC runtime values through l
 status: open
 priority: high
 created: 2026-10-25T01:59:55Z
-updated: 2026-10-25T02:00:09Z
+updated: 2026-10-25T02:00:10Z
 author: Matt Parrett
 assignee: Matt Parrett
 hash_source: content
+role: wasm
 description: The GC runtime adopts let-go.lang.bignum (rt/let-go/lang, #62) as its BigInt and Ratio values, which lifts D15's named limits on the wasm side. This is the wasm half of the tower split agreed in the #25 thread on 2026-10-18 (wasm side here, llvm side on llvm-poly; the library changes only by PR to main). Pieces: box kinds for the two deftypes in wasm.core's dispatch (library deftypes already lower, P7.11); `/` of two Ints with a non-integral quotient answers a Ratio and `(/ MinInt64 -1)` a BigInt (D15); promotion as pkg/vm/numbers.go has it (Int op BigInt is BigInt, BigInt op Float is Float, Int op Float is Float; Int overflow stays the "integer overflow" error, nothing promotes on overflow); `bigint`, `bigint?`, `ratio?`, `integer?`, `rational?`, `numerator`, `denominator`; the printer's `N` suffix and `n/d`; `=`, `hash` and `compare` as native; the reader's `1N` and `1/2` literals (corpus/edn/cases.txt lines 63-73, P3.0's named limits); Phase-2 constant lowering of BigInt literals in a program. Type contagion through untyped slots (git-issue:4afe4a4) is the piece after this one.
  
  Open question before the first PR: does the promotion table live once in rt/let-go/lang as target-neutral Clojure over the arch surface (checked int add, float conversion, the two kind tests), so the llvm lane compiles the same file, or does each runtime keep its own dispatch? Default here is the shared file, since that is git-issue:646deae's shape; the llvm side names any surface it needs shaped differently and this side re-points.
