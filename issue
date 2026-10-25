@@ -19,3 +19,6 @@ description: wasmtime is a host of this backend beside the browser and node, and
  F3 host/ABI.md lists every import with the node, browser and wasmtime provider in one table. Witness: the table.
  
  M1 (how): checks/wasmtime-run.sh reuses wasm-run.sh's compile block (limit.sh, sem.sh, LW_MODULE_CACHE), then wasm-merge with the adapter and the flags above; wt_run in browser-boot.sh calls it instead of carrying its own copy. A DECISIONS entry records wasmtime as the third host lane and the adapter as the blocking driver (no stack switching, no polling).
+
+## Comments
+[2026-10-25T15:58:26Z] Matt Parrett: The lane is PR #74 (D232): checks/wasmtime-run.sh as the oracle WASM_RUN, the adapter gains getenv, argc, arg, read_file, no-op emit and url_param and a _start that reports uncaught values like the node runner, row P4.5 runs corpus/wasm and corpus/scalar under wasmtime. Measured at the head: F1 P4.5 19/19 MATCH exit 0, SKIP exit 2 with the binary hidden, FAIL exit 1 under LW_REQUIRE_WASMTIME; F2 the xsofy world dump for seed 1 at 60 turns under wasmtime is byte-identical to native; F3 host/ABI.md carries the provider table. P0.7, P1.1 and P4.0 pass.
