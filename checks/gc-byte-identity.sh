@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-16 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-24 at
+# 3f18ff9, the llvm-poly branch squashed onto main: corpus/eval/program/multi/aliases.lg's module
+# moves, bonsai-reduced to `(ns eval.multi) (*ns*)`, a representation change; the program MATCHes
+# native (P7.11 4/4). P8.0 is advisory since D228; before that 2026-10-16 at
 # d55d645, the hierarchy twins: no function changes; one constant's init call moves two lines in
 # the modules carrying natives.lg (the ns form's exclude list changes a load order), the 29 programs
 # MATCH native and legmacs parity holds; before that 2026-10-16 at
@@ -82,7 +85,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=d55d645c4055ba11f797502a011df07a1454186b
+base=3f18ff9d75385d36f3d317ebee178d201eb8c516
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
