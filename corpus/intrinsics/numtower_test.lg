@@ -1,8 +1,8 @@
 ;; wasm.numtower (rt/wasm/numtower.lg) against native lg on the same inputs:
-;; BigInt and Ratio as runtime values (D230). `/` of two Ints, the reader's
-;; literals, printing in every mode, hash, `=`, compare, the predicates, type,
-;; bigint / numerator / denominator, map keys, the piece-2b named limit, and
-;; the dialect claim. Every expectation is native lg's own answer; values
+;; BigInt and Ratio as runtime values (D230), BigDecimal as a literal-only
+;; value (D233). `/` of two Ints, the reader's literals, printing in every
+;; mode, hash, `=`, compare, the predicates, type, bigint / numerator /
+;; denominator, map keys, the named limits, and the dialect claim. Every expectation is native lg's own answer; values
 ;; cross the boundary as text (pr-str both sides) or as ints.
 (ns numtower-test
   (:require [test :refer [deftest is testing]]
@@ -115,6 +115,30 @@
     (is (= (pr-str (denominator (read-string t))) (S (wm/denominator (R t)))) (str "denominator " t)))
   (is (= (ex-message (try (numerator 1) (catch Exception e e))) (second (mine-outcome #(wm/numerator (W 1)))))))
 
+;; ---------------------------------------------------------------------------
+;; BigDecimal (D233): the reader's values against native and the named limit
+;; every arithmetic op raises; the rest is corpus/wasm/bigdec-values.lg (P2.1).
+
+(deftest decimal-literals-read-as-native
+  (c/install!)
+  (doseq [t ["1M" "1.0M" "0M" "-0.0M" "0.10M" "1E+10M" "1E-10M" "-1.5e2M" "1.M" "1p3M" "1.5m" "123456789012345678901234567890.5M"
+             "1E+400M" "1E-400M" "[1M 2.50M {:a 1e3M}]" "-.5M" ".5M"]]
+    (is (= (pr-str (read-string t)) (S (R t))) t)
+    (is (= (hash (read-string t)) (sq/unbox-int (sq/hash (R t)))) (str "hash " t)))
+  (doseq [t ["1M/2" "0x1M" "1.5MM" "1_0M" "1EM" "1E+M"]]
+    (is (= :err (first (outcome #(read-string t)))) t)
+    (is (= :err (first (mine-outcome #(R t)))) t))
+  (doseq [[a b] [["0.1M" "0.1"] ["9007199254740993M" "9007199254740993"] ["1E-400M" "0"] ["0.1M" "1/10"] ["1M" "##Inf"] ["0M" "-0.0"]]]
+    (is (= (compare (read-string a) (read-string b)) (c/compare* (R a) (R b))) (str "compare " a " " b)))
+  (is (= "Float.SetFloat64(NaN)" (second (mine-outcome #(c/compare* (R "1M") (R "##NaN")))))))
+
+(deftest decimal-arithmetic-is-a-named-limit
+  (c/install!)
+  (doseq [f [#(c/add (W 1) (R "1M")) #(c/sub (R "1.5M") (W 1)) #(c/mul (R "2M") (R "2M")) #(wm/div (R "1M") (W 2)) #(wm/rem (R "5M") (W 2))
+             #(wm/abs* (R "-1M")) #(wm/bigdec (W 1)) #(c/add (R "1M") (R "1N")) #(c/quot* (R "5M") (W 2)) #(c/mod (W 5) (R "2M"))
+             #(wm/round-bigdec (W 2) (W :half-up) (R "1.25M"))]]
+    (is (= "lower-wasm: arithmetic on a BigDecimal (numeric tower, named limit)" (second (mine-outcome f))))))
+
 (deftest arithmetic-is-the-next-piece
   (c/install!)
   (doseq [f [#(c/add (W 1) (R "1N")) #(c/sub (R "1/2") (W 1)) #(c/mul (R "2N") (R "2N")) #(wm/div (R "1/2") (W 2)) #(wm/rem (R "5N") (W 2))
@@ -169,9 +193,10 @@
                     vname (str v)]
               :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["numtower" "seq" "str"])
                              (string/starts-with? vname "#'let-go.lang.bignum/")
+                             (string/starts-with? vname "#'let-go.lang.decimal/")
                              (and (string/starts-with? vname "#'wasm.intrinsics/")
                                   (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
           [(second d) sym vname])]
     (is (empty? offending) (pr-str (take 10 offending)))
-    (is (= 2 (count (filter #(and (seq? %) (= 'wasm/deftype-struct (first %))) forms))) "the two library deftypes are declared")))
+    (is (= 3 (count (filter #(and (seq? %) (= 'wasm/deftype-struct (first %))) forms))) "the three library deftypes are declared")))
