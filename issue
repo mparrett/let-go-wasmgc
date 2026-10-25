@@ -9,6 +9,7 @@ author: Matt Parrett
 assignee: Matt Parrett
 hash_source: content
 role: wasm
+relates_to: f1a846c
 description: wasmtime is a host of this backend beside the browser and node, and it already runs the emitted modules: host/wasmtime-adapter.wat with the wt_run step in checks/browser-boot.sh is a WASI preview1 host (fd_write, fd_read one byte per key, poll_oneoff for sleep, clock_time_get for nanotime), and under wasmtime 47.0.3 with `-W gc=y,exceptions=y,function-references=y,tail-call=y` fib.clj, hello.lg and control/uncaught.lg MATCH native through checks/oracle.sh, and term-demo.lg echoes piped keys. Nothing in checks/items.tsv runs it, so a regression there is invisible, and the adapter lacks getenv, argc/arg, read_file, emit and url_param, so the xsofy and legmacs modules fail at instantiation with `unknown import`.
  
  Facts that close it:
