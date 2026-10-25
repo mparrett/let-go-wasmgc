@@ -4786,7 +4786,11 @@
    saving it first if the runtime or the backend changed, or if no library
    was built for the rooted natives the program shares with it (D201)."
   []
-  (let [prefix (str "rtlib-" (name *target*) "-")
+  ;; D231: the no-eval library (P7.6) has its own prefix, so the two
+  ;; variants coexist; the key alone hashed the bit, and the eviction below
+  ;; then removed the eval library after every LW_NO_EVAL=1 build
+  (let [noeval-prefix (str "rtlib-" (name *target*) "-noeval-")
+        prefix (if lw-rt/no-eval? noeval-prefix (str "rtlib-" (name *target*) "-"))
         base (str prefix (rtlib-key))
         asked-f (str rtlib-dir "/" base ".natives")
         ;; every build saves its asked set, so none saved means no library
@@ -4809,10 +4813,12 @@
         (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
         (os/rename (str f tmp) f)
         ;; a library for older sources is dead weight (~3.5 MB each); the
-        ;; rooted variants of the current one stay (D201). Another lg's
-        ;; library goes too, so alternating two lg builds rebuilds on each switch
+        ;; rooted variants of the current one stay (D201), and so does the
+        ;; other eval variant (D231). Another lg's library goes too, so
+        ;; alternating two lg builds rebuilds on each switch
         (doseq [old (os/ls rtlib-dir)
                 :when (and (or (and (str/starts-with? old prefix) (not (str/starts-with? old base))
+                                    (or lw-rt/no-eval? (not (str/starts-with? old noeval-prefix)))
                                     (or (str/ends-with? old ".edn") (str/ends-with? old ".natives")))
                                ;; named before the target joined the key, so no prefix matches it
                                (re-matches #"rtlib-[0-9a-f]{8}\.edn" old)))]
