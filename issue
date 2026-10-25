@@ -8,6 +8,7 @@ updated: 2026-10-25T04:59:03Z
 author: Matt Parrett
 assignee: Matt Parrett
 hash_source: content
+role: checks
 description: Gate 7 on main 7469958 fails P7.1 and P7.7 with the default environment, serial (LW_GATE_J=1), on a machine at load 5-14. Neither is a regression: the same two rows fail on the parent trees, and both pass when run the way earlier gates were run. Two causes.
  
  P7.1: checks/run-tests.sh caps each test file at LW_TEST_TIMEOUT=300 by default, and a legmacs eval test file compiles in about 400 s (the script's own comment says 365 s alone on 2026-10-08, 700+ s under load). Both files hit `timeout -k 5 300` and the counter prints "no backend summary; timeout or crash (no result)", 0/30 against bar 28. With LW_TEST_TIMEOUT=1500 and load 6: repl_mode_test 7/7, letgo_mode_test 21/23, 28/30, exit 0, 406 s wall. Every passing gate 7 on record ran with LW_TEST_TIMEOUT=1200; the row's default does not.
