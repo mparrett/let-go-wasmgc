@@ -30,7 +30,7 @@ differential check (see "Checks"), and the design record is
   `checks/jank-suite.sh` against native lg) passes 128 files on the WasmGC
   lane; `corpus/jank/baseline-wasm.tsv` ratchets the count, so a pull request
   may not drop a file. Most of the rest wait on the numeric tower (arithmetic
-  over BigInt and Ratio, BigDecimal literals).
+  over BigInt, Ratio and BigDecimal).
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
 - **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the

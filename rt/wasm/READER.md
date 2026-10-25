@@ -135,7 +135,6 @@ read errors. Each names what native would return:
 
 | input | native | why not here |
 |---|---|---|
-| `1.5M` | BigDecimal | no BigDecimal box |
 | `0x1p-2` | Float | hex floats: rare, need a hex mantissa path (the decimal type only takes decimal digits) |
 | `::k`, `::alias/k` (after the validity checks) | `:<current-ns>/k` | needs `*ns*` / the alias table |
 | `` `x `` | syntax-quoted form | resolves symbols against `*ns*` |
@@ -146,9 +145,10 @@ read errors. Each names what native would return:
 | `^m ;c`, `';c`, … | `(with-meta <VOID> m)`, `(quote <VOID>)` | Go's VOID sentinel is not a value here |
 
 The test admits a limit only when native's answer shows the named thing
-(a BigDecimal in the result, `#?` in the input, …). As of 2026-10-25 the
-corpus hits 15 limits in 951 inputs; BigInt and Ratio literals read as values
-since D230 (wasm.numtower), the signs and normalizations as native's.
+(a Regex in the result, `#?` in the input, …). As of 2026-10-25 the
+corpus hits 11 limits in 951 inputs (940 match); BigInt, Ratio and BigDecimal literals
+read as values since D230 and D233 (wasm.numtower), the signs and
+normalizations as native's.
 
 ## Divergences (known, not tested as matches)
 
