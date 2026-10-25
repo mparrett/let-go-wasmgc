@@ -60,6 +60,8 @@ const char *lg_host_getenv_c(const char *name) { (void)name; return 0; }
 int lg_host_open_c(const char *path, int mode) { (void)path; (void)mode; return -1; }
 int lg_host_read_key(unsigned char *buf, int cap) { (void)buf; (void)cap; return 0; }
 int lg_host_key_ready(void) { return 0; }
+int lg_host_raw_mode(void) { return 0; }      /* no terminal on a bare board */
+int lg_host_restore_mode(void) { return 0; }
 void lg_host_term_dims(int *cols, int *rows) { (void)cols; (void)rows; }
 
 static char capture_arena[1 << 16];

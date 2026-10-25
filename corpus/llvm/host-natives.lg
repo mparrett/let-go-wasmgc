@@ -1,0 +1,11 @@
+;; host natives on the llvm lane as native lg has them: core/. interop on a
+;; time and a string, the program's arguments, and the terminal's size off
+;; a terminal (the oracle captures stdout, so size is nil)
+(def epoch (now))
+(println (int? (.Sub (now) epoch)) (>= (.Sub (now) epoch) 0))
+(println (vec (.getBytes "hi")) (vec (.getBytes "")))
+(println (try (.Frob 1) (catch Exception e (ex-message e))))
+(println (try (.Sub "x" 1) (catch Exception e (ex-message e))))
+(println (try (.getBytes 7) (catch Exception e (ex-message e))))
+(prn *command-line-args*)
+(prn (term/size))

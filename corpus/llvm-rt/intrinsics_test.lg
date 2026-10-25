@@ -239,7 +239,10 @@
     (binding [arch/*host-args* ["lg" "p.lg" "x"]]
       (is (= 3 (arch/host-argc)))
       (is (= "x" (arch/string-of-bytes (arch/host-arg 2)))))
-    (is (thrown? Exception (arch/host-arg "0")))))
+    (is (thrown? Exception (arch/host-arg "0"))))
+  (testing "exit ends the process; the reference cannot, so it traps"
+    (is (trap? #(arch/host-exit 3)))
+    (is (thrown? Exception (arch/host-exit "3")))))
 
 (deftest traps
   (is (thrown-with-msg? Exception #"wasm trap: boom" (arch/trap "boom")))
