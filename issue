@@ -1,0 +1,19 @@
+id: 606de6f
+v: 2
+title: wasmtime as a checked host lane: an oracle row and the missing adapter imports
+status: open
+priority: medium
+created: 2026-10-25T15:20:18Z
+updated: 2026-10-25T15:20:18Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: wasmtime is a host of this backend beside the browser and node, and it already runs the emitted modules: host/wasmtime-adapter.wat with the wt_run step in checks/browser-boot.sh is a WASI preview1 host (fd_write, fd_read one byte per key, poll_oneoff for sleep, clock_time_get for nanotime), and under wasmtime 47.0.3 with `-W gc=y,exceptions=y,function-references=y,tail-call=y` fib.clj, hello.lg and control/uncaught.lg MATCH native through checks/oracle.sh, and term-demo.lg echoes piped keys. Nothing in checks/items.tsv runs it, so a regression there is invisible, and the adapter lacks getenv, argc/arg, read_file, emit and url_param, so the xsofy and legmacs modules fail at instantiation with `unknown import`.
+ 
+ Facts that close it:
+ 
+ F1 A row (phase 4) runs corpus/wasm and corpus/scalar through the oracle with `WASM_RUN=checks/wasmtime-run.sh`, exit 0, and SKIPs with exit 2 naming the binary when wasmtime is absent (f1a846c's discovery shape). Witness: the TAP line and the row log.
+ F2 The adapter provides getenv (environ_get), argc and arg (args_get), read_file (path_open and fd_read under --dir) and no-op emit and url_param, and the xsofy world dump for seed 1 at 60 turns under wasmtime is byte-identical to native lg. Witness: the diff, empty.
+ F3 host/ABI.md lists every import with the node, browser and wasmtime provider in one table. Witness: the table.
+ 
+ M1 (how): checks/wasmtime-run.sh reuses wasm-run.sh's compile block (limit.sh, sem.sh, LW_MODULE_CACHE), then wasm-merge with the adapter and the flags above; wt_run in browser-boot.sh calls it instead of carrying its own copy. A DECISIONS entry records wasmtime as the third host lane and the adapter as the blocking driver (no stack switching, no polling).
