@@ -510,6 +510,13 @@
 
 (def ^:dynamic *host-args* ["lg"])
 
+(defn ^{:intrinsic true :wasm "none: a wasm module has no exit import" :type "[:int] -> :nil"} host-exit
+  "End the process with status n (os/exit). The reference cannot end its own
+   process, so it traps."
+  [n]
+  (check-int! "arch/host-exit" n)
+  (trap! "arch/host-exit: the reference runtime does not exit" {:status n}))
+
 (defn ^{:intrinsic true :wasm "call $env.argc" :type "[] -> :int"} host-argc
   "The number of host arguments (os/args: the lg path, the program, its args)."
   [] (count *host-args*))

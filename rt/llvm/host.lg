@@ -383,3 +383,14 @@
   (let [n (arch/host-argc)]
     (loop [i 0 v (pv/empty-vec)]
       (if (< i n) (recur (inc i) (pv/vconj v (s/mk-str (arch/host-arg i)))) (pv/varray v)))))
+;; *command-line-args* (ll-var-alias): native's arguments after the program
+;; path, as a List of Strings (native builds a PersistentList), or nil when
+;; there are none. Built from the last argument back, as List.Cons does.
+(def command-line-args
+  (let [n (arch/host-argc)]
+    (if (<= n 2)
+      (arch/null)
+      (loop [i (dec n) l (sq/empty-list)]
+        (if (< i 2)
+          l
+          (recur (dec i) (arch/new sq/List (s/mk-str (arch/host-arg i)) l (inc (arch/get sq/List 2 l)) (arch/null))))))))
