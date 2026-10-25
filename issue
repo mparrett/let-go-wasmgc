@@ -15,3 +15,12 @@ description: --target linear ships with a leaking allocator (M1, docs/LINEAR-TAR
 
 ## Comments
 [2026-10-19T05:48:39Z] Matt Parrett: Status 2026-10-18: still deferred behind #646deae. The position after the 10-17 sync is in the PR #25 thread: harness first, rt/let-go/lang/ as the first shared layer, allocator decisions after that.
+[2026-10-25T23:33:30Z] Matt Parrett: Proposal, after reading docs/LLVM-TARGET-SPEC.md Milestone 2 beside this issue's D197 design: build the collector once.
+ 
+ Both milestones describe the same collector: non-moving mark-sweep in let-go over raw-memory intrinsics (word and byte loads and stores, address arithmetic, page allocation), precise tracing by kind from a layout table the emitter generates, size-segregated pages, a growth-based trigger. They differ in one place, how roots are found: the llvm spec takes them at function entry (decision 7, CPS), this one keeps a shadow stack. Everything else is one implementation with two consumers, and linear memory is raw memory.
+ 
+ What this issue would become: the linear target is the second harness of `rt/native/gc.lg` (or wherever the llvm lane puts it), not a collector of its own. Its contribution is the shadow-stack root variant and a place to run the collector under node and wazero, where a heap can be dumped and diffed from JavaScript and a failing program re-run in seconds; the native binary gets the same code with its own root discovery. The two consumers keep each other honest the way the two targets already do on the oracle rows.
+ 
+ What it asks of the llvm lane: that M2's collector be written against the arch layer 646deae names, with root discovery behind one function, and that the layout table come from the emitter in a form both targets can emit. Nothing about its order of work changes; this issue stays deferred until that collector exists, then takes the shadow-stack variant and the wazero rows.
+ 
+ Facts that would close this issue, under the proposal: F1 the linear module runs `corpus/wasm` under the wazero runner with the shared collector and the shadow stack, matching native on the rows the GC lane matches; F2 one collector source, two root-discovery implementations, no second mark or sweep. If the llvm lane would rather keep M2 native-only, say so here and this issue keeps D197 as written.
