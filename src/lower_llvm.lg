@@ -151,6 +151,7 @@
 ;; core vars the llvm runtime implements as one of its top-level defs
 (defn ll-var-alias [v]
   (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
+        (and *rt* (= v #'*command-line-args*)) (lw-rt/rt-var 'host 'command-line-args)
         (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
         (and *rt* (= v #'*out*)) (lw-rt/rt-var 'host 'stdout-handle)
         (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
