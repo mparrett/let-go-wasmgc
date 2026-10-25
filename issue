@@ -1,0 +1,23 @@
+id: 186e1e3
+v: 2
+title: gate 7 fails P7.1 and P7.7 by default: 300 s test cap, and P7.6 evicts the eval rtlib cache
+status: open
+priority: medium
+created: 2026-10-25T04:58:54Z
+updated: 2026-10-25T04:58:54Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Gate 7 on main 7469958 fails P7.1 and P7.7 with the default environment, serial (LW_GATE_J=1), on a machine at load 5-14. Neither is a regression: the same two rows fail on the parent trees, and both pass when run the way earlier gates were run. Two causes.
+ 
+ P7.1: checks/run-tests.sh caps each test file at LW_TEST_TIMEOUT=300 by default, and a legmacs eval test file compiles in about 400 s (the script's own comment says 365 s alone on 2026-10-08, 700+ s under load). Both files hit `timeout -k 5 300` and the counter prints "no backend summary; timeout or crash (no result)", 0/30 against bar 28. With LW_TEST_TIMEOUT=1500 and load 6: repl_mode_test 7/7, letgo_mode_test 21/23, 28/30, exit 0, 406 s wall. Every passing gate 7 on record ran with LW_TEST_TIMEOUT=1200; the row's default does not.
+ 
+ P7.7: P7.6 (checks/eval-optout.sh) ends with an LW_NO_EVAL=1 build. load-rtlib! (src/lower_wasm.lg, the rtlib-gc-* eviction, D201) removes every cached library whose name does not start with the current base, and the key includes `|no-eval`, so after P7.6 the cache holds only the no-eval library. run-corpus.sh's rtlib_warm skips because the newest rtlib-gc-*.edn is newer than the sources, so no serial warm build happens, and every fix-eval program rebuilds the eval library inside its LW_COMPILE_LIMIT=300: 117 s alone at load 5, over 300 s with three concurrent builds at load 14. A killed build never writes the cache (tmp + rename), so each batch starts cold; the last program, alone, finished and matched (1/22). A warm fix-eval compile is 2.7 s.
+ 
+ Facts that close it:
+ 
+ F1 `LW_ATTEST=0 LW_GATE_J=1 checks/gate.sh 7` on a tree at or after the fix, default environment, load under 8: `ok - P7.1` and `ok - P7.7` in the TAP, exit 0. Witness: the TAP file and its duration blocks.
+ F2 After `checks/run.sh P7.6`, the eval-library cache file (rtlib-gc-*.edn for the eval variant) still exists, and `checks/run.sh P7.7` compiles its first program in under 30 s. Witness: the cache directory listing before and after, and P7.7's per-program times.
+ F3 `checks/run.sh P7.1` with no LW_TEST_TIMEOUT in the environment reaches the deftest counter on both files (no "no backend summary" line). Witness: the row log.
+ 
+ M1 (how): the eviction prefix in load-rtlib! includes the no-eval bit, so the two variants coexist; or rtlib_warm always runs the warm compile instead of trusting the newest file. P7.1's row command (checks/items.tsv) or run-tests.sh's default carries the 1200 s cap that every passing gate used.
