@@ -1,7 +1,8 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Seventeen namespaces that load together under native lg as one runtime (P2.9, P3.1),
-with the reference `wasm.intrinsics` standing in for the wasm instructions.
+The runtime's namespaces load together under native lg as one runtime (P2.9, P3.1),
+with the reference `wasm.intrinsics` standing in for the wasm instructions, after
+the shared layer's rows (`rt/let-go/lang/README.md`, its own load-order table).
 Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
 
@@ -17,29 +18,30 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 6 | `phs.lg` | `wasm.phs` | 1 2 3 5 | the persistent/transient set, set hooks (slot 1) |
 | 7 | `arrays.lg` | `wasm.arrays` | 1-4 | let-go's typed arrays (`int-array` `long-array` `byte-array` `into-array` `let-go.types/array?` `aget` `aset` `alength` `aclone` `bytes`), the `Arr` struct, and the count/seq/print/get view wasm.core routes to it (kind 37) |
 | 8 | `sorted.lg` | `wasm.sorted` | 1-6 | `sorted-map` / `sorted-set` (default comparator) as key-ordered arrays: `SMap`, `SSet`, which wasm.core routes here (kinds 38, 39); the comparator is wasm.core's, through a hook `install!` sets |
-| 9 | `core.lg` | `wasm.core` | 1-8 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, `ifn?` `reversible?` `pop!`, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
-| 10 | `reader.lg` | `wasm.reader` | 1-9 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
-| 11 | `math.lg` | `wasm.math` | 1 3 4 9 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `abs`, `rand-int` `rand-nth` `shuffle` (one generator), math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
-| 12 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
-| 13 | `host.lg` | `wasm.host` | 1 3 4 7 9 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
-| 14 | `lang.lg` | `wasm.lang` | 1-4 9 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
-| 15 | `term.lg` | `wasm.term` | 1-4 9 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
-| 16 | `natives.lg` | `wasm.natives` | 1 3 4 7 9 10 11 | P6.0/P5.8, in PLAIN lg like `src/lw_ext.lg` (not seq.lg's dialect): `format`, the ns/var table (`all-ns` `in-ns` `alias` `intern` `ns-publics` `resolve` `find-var` `var?` `var-get` `alter-var-root` `alter-meta!` `push-binding!`/`pop-binding!`), `json/read-json` `write-json`, `spit` and `os/cwd` `ls` `stat` (no file system), `let-go.core/lines`,, `fn?`, `identical?`, `rseq`, `make-array`, ten `clojure.math` fns |
-| 17 | `eval.lg` | `wasm.eval` | | P7.0, in PLAIN lg like natives.lg, host-free (D187): `eval` (`core/eval`), a closure-compiling evaluator over the reader's data (compiler.go's special forms, core.lg's macros as expanders, CompileError chains as native prints them); it declares the host seam fns and defines none |
-| 18 | `eval_wasm.lg` | `wasm.eval` | 3 4 9 10 16 | the evaluator's host in the module, re-entering `wasm.eval` after row 17 (D187): the core table (name -> fn value) evaluated code resolves against, cells for evaluated `def`s in wasm.natives' registry, the reader's code hook, and `install-program-table!` (the backend's program table). `eval_native.lg`, the same seam over real let-go vars for stock lg, is not loaded here |
-| 19 | `wasmbin.lg` | `wasm.wasmbin` | | only under `LW_RUNTIME_COMPILE=1` (D193): the binary encoder (P10.0), plain lg over clojure.core, that the emitter writes modules with |
-| 20 | `emit.lg` | `wasm.eval` | 17 18 19 | only under `LW_RUNTIME_COMPILE=1` (D193): the evaluator's second output (stage 3 of docs/SELF-HOST-SPEC.md). Its first ns form is `wasm.emit` (what `(require 'wasm.emit)` loads under stock lg); the second re-enters `wasm.eval`, and `src/lw_rt.lg` takes a file's LAST ns form, so its defns are found there |
-| 21 | `ir.lg` | `wasm.ir` | | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
-| 22 | `host_fs.lg` | `wasm.host-fs` | 1 4 9 | only under `LW_HOST_FS=1` (D208): `slurp` through the host's file system (`env.read_file`, host/ABI.md), plain lg like natives.lg; it claims `core/slurp` after natives.lg's no-file-system twin, so it replaces it. `spit`, `os/*` and directory reads stay natives.lg's |
-| 23 | `host_asm.lg` | `wasm.host-asm` | 1 4 9 | only under `LW_HOST_ASM=1` (D211): `assemble`, a module's own WAT text to the host's assembler (`env.assemble`, host/ABI.md), which keeps the binary and answers its length; plain lg like natives.lg, no twin (a program calls `wasm.host-asm/assemble`) |
+| 9 | `numtower.lg` | `wasm.numtower` | 1 3 4, `let-go.lang.bignum` | BigInt and Ratio as runtime values (D230): the two library deftypes as structs (`wasm/deftype-struct`), `/` of two Ints, the literal parsers, printing, hash, `=` and `compare` of those values; the one dialect file that calls the shared library (rt/let-go/lang) |
+| 10 | `core.lg` | `wasm.core` | 1-9 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, `ifn?` `reversible?` `pop!`, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
+| 11 | `reader.lg` | `wasm.reader` | 1-10 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
+| 12 | `math.lg` | `wasm.math` | 1 3 4 10 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `abs`, `rand-int` `rand-nth` `shuffle` (one generator), math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
+| 13 | `xxhash.lg` | `wasm.xxhash` | 1 3 4 7 | `xxh3/HashSeed` and `xxh3/Hash`: XXH3-64 as github.com/zeebo/xxh3 v1.1.0 computes it |
+| 14 | `host.lg` | `wasm.host` | 1 3 4 7 10 | `println` `print` `pr` `prn`, IO handles (`write!` `flush!` `close!`, `out-handle`/`err-handle` for `*out*`/`*err*`), the clocks, timeout channels (`async/timeout`, `async/<!!` = sleep), `js/emit` `js/url-param` |
+| 15 | `lang.lg` | `wasm.lang` | 1-4 10 | `iterate`, `transformer-seq*` (`sequence` with a transducer), `->AssertionError` (`assert`) |
+| 16 | `term.lg` | `wasm.term` | 1-4 10 | the `term/*` natives as term_wasm.go defines them: ANSI escapes on fd 1, `read-key` / `key-pending?` / `size` over three term intrinsics (`term-read-key` `term-key-pending` `term-size`, D88 imports) defined there, not in `intrinsics.lg` |
+| 17 | `natives.lg` | `wasm.natives` | 1 3 4 7 10 11 12 | P6.0/P5.8, in PLAIN lg like `src/lw_ext.lg` (not seq.lg's dialect): `format`, the ns/var table (`all-ns` `in-ns` `alias` `intern` `ns-publics` `resolve` `find-var` `var?` `var-get` `alter-var-root` `alter-meta!` `push-binding!`/`pop-binding!`), `json/read-json` `write-json`, `spit` and `os/cwd` `ls` `stat` (no file system), `let-go.core/lines`,, `fn?`, `identical?`, `rseq`, `make-array`, ten `clojure.math` fns |
+| 18 | `eval.lg` | `wasm.eval` |  | P7.0, in PLAIN lg like natives.lg, host-free (D187): `eval` (`core/eval`), a closure-compiling evaluator over the reader's data (compiler.go's special forms, core.lg's macros as expanders, CompileError chains as native prints them); it declares the host seam fns and defines none |
+| 19 | `eval_wasm.lg` | `wasm.eval` | 3 4 10 11 17 | the evaluator's host in the module, re-entering `wasm.eval` after row 18 (D187): the core table (name -> fn value) evaluated code resolves against, cells for evaluated `def`s in wasm.natives' registry, the reader's code hook, and `install-program-table!` (the backend's program table). `eval_native.lg`, the same seam over real let-go vars for stock lg, is not loaded here |
+| 20 | `wasmbin.lg` | `wasm.wasmbin` |  | only under `LW_RUNTIME_COMPILE=1` (D193): the binary encoder (P10.0), plain lg over clojure.core, that the emitter writes modules with |
+| 21 | `emit.lg` | `wasm.eval` | 18 19 20 | only under `LW_RUNTIME_COMPILE=1` (D193): the evaluator's second output (stage 3 of docs/SELF-HOST-SPEC.md). Its first ns form is `wasm.emit` (what `(require 'wasm.emit)` loads under stock lg); the second re-enters `wasm.eval`, and `src/lw_rt.lg` takes a file's LAST ns form, so its defns are found there |
+| 22 | `ir.lg` | `wasm.ir` |  | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
+| 23 | `host_fs.lg` | `wasm.host-fs` | 1 4 10 | only under `LW_HOST_FS=1` (D208): `slurp` through the host's file system (`env.read_file`, host/ABI.md), plain lg like natives.lg; it claims `core/slurp` after natives.lg's no-file-system twin, so it replaces it. `spit`, `os/*` and directory reads stay natives.lg's |
+| 24 | `host_asm.lg` | `wasm.host-asm` | 1 4 10 | only under `LW_HOST_ASM=1` (D211): `assemble`, a module's own WAT text to the host's assembler (`env.assemble`, host/ABI.md), which keeps the binary and answers its length; plain lg like natives.lg, no twin (a program calls `wasm.host-asm/assemble`) |
 
-Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
+Rows 20 and 21 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
-default build loads the other nineteen namespaces and its bytes do not
+default build loads the other twenty namespaces and its bytes do not
 change (`checks/gc-byte-identity.sh`).
-Row 22 is the same mechanism for `LW_HOST_FS` (D208): only a build with
+Row 23 is the same mechanism for `LW_HOST_FS` (D208): only a build with
 that flag loads it, and the backend's `env.read_file` import and helper are
-in its text only then. Row 23 is the same for `LW_HOST_ASM` (D211), with
+in its text only then. Row 24 is the same for `LW_HOST_ASM` (D211), with
 `env.assemble`.
 
 `seq.lg` requires neither `str.lg` nor the collections, so the value model
@@ -52,7 +54,8 @@ seqable (`wasm.seq/set-seqable-hook!`: maps, sets, transient maps; for the
 others first/rest/seq/reduce/map raise their own message), the printer
 wasm.str uses for
 foreign values (`set-print-hook!`, called with a mode: 0 `Value.String()`,
-1 `pr-str`, 2 `print-str`; a map's String() has no commas, its pr-str does),
+1 `pr-str`, 2 `print-str`, 3 `str` of the value itself, which a BigInt prints
+without its N; a map's String() has no commas, its pr-str does),
 and the printer seq.lg hashes Range/Repeat/PVecSeq elements with
 (`wasm.seq/set-print-hook!`, given `wasm.str/value-string`), and the type
 namer wasm.arrays and wasm.seq use in their messages for foreign values
@@ -93,7 +96,7 @@ stderr handles).
 | 15 | Bool | `Bool` |
 | 16 | Fn | `Fn` (D52: code 0-2, env, code 3-4, `FnInfo`) |
 | 17 | Str | `Str` (UTF-8 bytes, cached hash) |
-| 18 | foreign | anything else: `wasm.phm/HMap`, `wasm.phs/HSet`, ... via hooks |
+| 18 | foreign | anything else: `wasm.phm/HMap`, `wasm.phs/HSet`, `wasm.numtower/BigInt`, ... via hooks |
 | 19 | Char | `Char` |
 | 20 | Kw | `Kw` (interned by wasm.str) |
 | 21 | Sym | `Sym` (interned by wasm.str) |
@@ -107,7 +110,9 @@ stderr handles).
 wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 (phm's `HTransient`), 33 TransientSet (`TSet`), 34 TransientVector (`TVec`),
 35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`),
-37 a typed array (`wasm.arrays/Arr`; also its `type` id). Values of the
+37 a typed array (`wasm.arrays/Arr`; also its `type` id), 38 SortedMap, 39
+SortedSet, 40 Promise, 41 Delay, 42 BigInt and 43 Ratio (`wasm.numtower`, the
+library deftypes as structs, D230). Values of the
 namespaces loaded after wasm.core stay plain kind 18 (wasm.host's `Handle`
 and `Chan`): they have no `type` name or printed form yet.
 
@@ -184,8 +189,12 @@ checks everything else live.
 - `float` is a Float holding float64(float32(x)): native's Float32 shares
   its type name, printed form, hash and `=`, but `(compare (float 1) 1.0)`
   throws natively.
-- `/` of two Ints with a non-integral quotient (a Ratio) and
-  `(/ MinInt64 -1)` (a BigInt) are named limits (D15).
+- BigInt and Ratio are values (D230): `/` of two Ints, the reader's `1N`
+  and `1/2`, printing, `=`, `hash`, `compare` and the predicates follow
+  native. Arithmetic with a BigInt or Ratio operand (`+ - * / inc dec` and
+  the comparisons; promotion, numbers.go) is a named limit until the next
+  piece (git-issue:4d19ae0); `bigint` of a Float truncates toward zero and
+  does not reach past int64.
 - math/exp and math/pow follow Go's portable algorithms, which is what lg
   computes on wasm; native arm64 lg differs by 1 ulp on some inputs (fused
   multiply-add in exp_arm64.s and in compiled log/pow). Integral-exponent

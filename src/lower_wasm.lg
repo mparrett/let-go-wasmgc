@@ -729,6 +729,9 @@
                  :lw/groups (:groups p) :lw/src src}
           (literal-regex v) (assoc :lw/lit (literal-regex v)))))))
 
+(defn tower-value? "A native BigInt or Ratio: wasm.numtower's constant (D230)." [v]
+  (let [t (str (type v))] (or (= t "let-go.lang.BigInt") (= t "let-go.lang.Ratio"))))
+
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
   [v]
@@ -745,7 +748,7 @@
         ;; (review3 bug-01): a metacharacter-free one is a stand-in too, not
         ;; the String P3.2 lowered it to, which lost replace's $-expansion
         (and *rt* (regex-standin v)) (str "(global.get " (const-global! (regex-standin v)) ")")
-        (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v)))
+        (and *rt* (or (vector? v) (map? v) (set? v) (seq? v) (symbol? v) (tower-value? v)))
         (str "(global.get " (const-global! v) ")")
         :else nil))
 
@@ -1616,11 +1619,12 @@
       :else nil)))
 
 (defn div-wat
-  "`/` on two ints when the quotient is exact (native returns an Int then);
-   a ratio, the MinInt64/-1 bigint and float operands are Phase 2 (D15) and
-   throw a named error at run time. Divide by zero is native's message."
+  "`/` on two ints without the runtime (--no-rt): an Int when the quotient is
+   exact; a ratio or the MinInt64/-1 bigint are wasm.numtower's values (D230),
+   absent here, so they throw a named error at run time. With the runtime the
+   call goes to wasm.math/div (emit-wat). Divide by zero is native's message."
   [nid refs]
-  (let [m "lower-wasm: / with a ratio or bigint result (Phase 2)"
+  (let [m "lower-wasm: / with a ratio or bigint result needs the runtime (--no-rt)"
         stage (fn [r l] (str "(local.set " l " " (op-int-arg :div r) ")"))]
     (str (stage (first refs) "$ta") " " (stage (second refs) "$tb") " "
          "(if (i64.eqz (local.get $tb)) (then (throw $lgex " (rt-error-wat "divide by zero" "divide by zero") "))) "
@@ -2012,8 +2016,9 @@
       ;; D177: a general integer division may need absent Ratio/BigInt values.
       (if (= *target* :linear) (if (= op :div) (not-any? #{:float} (map ty refs)) false) false)
       (fail "unsupported op :div under linear (Ratio/BigInt result)" {:nid nid :fn *fname*})
-      ;; P2.11: a boxed operand may be a Float: the runtime's `/` (wasm.math/div)
-      (and (= op :div) (= 2 (count refs)) *rt* (some #(= :box (ty %)) refs) (not (some #(= :float (ty %)) refs)))
+      ;; P2.11: a boxed operand may be a Float, and (D230) two Ints may answer a
+      ;; Ratio or a BigInt: the runtime's `/` (wasm.math/div) decides
+      (and (= op :div) (= 2 (count refs)) *rt* (not (some #(= :float (ty %)) refs)))
       (direct-call-wat nid (callee-sig (lw-rt/rt-var 'math 'div)) refs)
       (and (= op :div) (= 2 (count refs)) (not (some #(= :float (ty %)) refs))) (div-wat nid refs)
       (prim-wat nid op refs) (prim-wat nid op refs)
@@ -3631,7 +3636,9 @@
 (declare const-form const-form*)
 
 (defn- plain-data? [x]
-  (or (nil? x) (string? x) (number? x) (keyword? x) (symbol? x) (boolean? x)
+  ;; a BigInt or Ratio is a number natively but not plain data here: it lowers
+  ;; through const-form* as a runtime call (D230)
+  (or (nil? x) (string? x) (int? x) (float? x) (keyword? x) (symbol? x) (boolean? x)
       (and (or (vector? x) (seq? x) (set? x)) (every? plain-data? x))
       (and (map? x) (every? plain-data? (keys x)) (every? plain-data? (vals x)))))
 
@@ -3821,6 +3828,12 @@
                                         (- (count xs) i) (list (lw-rt/rt-sym 'intrinsics 'null)))))))
     (symbol? v) (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (named-text v)))
     (keyword? v) (list (lw-rt/rt-sym 'str 'kw-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (named-text v)))
+    ;; D230: a BigInt or Ratio literal is built at init from its decimal text by
+    ;; the runtime's token parser (what read-string uses), the smallest form:
+    ;; the library's `parse` would bring its base-10^9 chunker in, and a limb
+    ;; array constructor would be code the module has no other use for
+    (= "let-go.lang.BigInt" (str (type v))) (list (lw-rt/rt-sym 'numtower 'bigint-of-text) (str v))
+    (= "let-go.lang.Ratio" (str (type v))) (list (lw-rt/rt-sym 'numtower 'ratio-of-text) (str (numerator v)) (str (denominator v)))
     :else v))
 
 ;; P1b (D199): a constant of plain data -- nil, booleans, strings, keywords,

@@ -16,18 +16,19 @@
 ;; multiply-add (exp_arm64.s) and the compiler fuses x*y+z in log/pow.
 ;; Integer-exponent pow and sqrt agree everywhere (measured; see the test).
 ;;
-;; Ratios and bigints are not runtime values (D15): `/` of two Ints whose
-;; quotient is not an integer, and (/ MinInt64 -1), are named limits,
-;; raised catchably (review5: a trap escaped the program's try).
+;; `/` of two Ints whose quotient is not an integer answers a Ratio, and
+;; (/ MinInt64 -1) a BigInt, through wasm.numtower (D230); arithmetic on
+;; those values is the promotion piece, a named limit raised catchably.
 ;; `float` returns a Float holding float64(float32(x)): native's Float32 has
 ;; the same type name, printed form, hash and =, but (compare (float 1) 1.0)
 ;; throws natively and is 0 here.
 (ns wasm.math
-  (:refer-clojure :exclude [float float? int? rem rand-int abs rand])
+  (:refer-clojure :exclude [float float? int? rem rand-int abs rand bigint numerator denominator])
   (:require [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
             [wasm.seq :as sq]
             [wasm.str :as s]
-            [wasm.core :as c]))
+            [wasm.core :as c]
+            [wasm.numtower :as nt]))
 
 ;; The one runtime global (D39): rand-int's generator state.
 (wasm/defstruct MGlobals [[:mut :i64]])
@@ -311,8 +312,31 @@
                :else (raise-str (s/str (lit (wasm/bytes-of-string "NaN? requires a number, got ")) (tn x))))))
   ([x y] (sq/bool false))
   ([x y & more] (sq/bool false)))
-;; No BigInt in the runtime; any arity other than 1 is false natively too.
-(defn ^{:twin "let-go.types/bigint?"} bigint? ([] (sq/bool false)) ([x] (sq/bool false)) ([x y] (sq/bool false)))
+;; bigint? (D230): any arity other than 1 is false natively too.
+(defn ^{:twin "let-go.types/bigint?"} bigint? ([] (sq/bool false)) ([x] (sq/bool (nt/bigint? x))) ([x y] (sq/bool false)))
+
+;; bigint (CoreBigInt): an Int or BigInt as a BigInt, a Float truncated, a
+;; String parsed (big.Int.SetString base 10); a Ratio is not coerced natively.
+(defn- bigint-text? [bs n]                               ; [+-]?[0-9]+
+  (let [a (if (> n 0) (let [c (wasm/bget bs 0)] (if (if (= c 45) true (= c 43)) 1 0)) 0)]
+    (if (< a n)
+      (loop [i a] (cond (>= i n) true (if (>= (wasm/bget bs i) 48) (<= (wasm/bget bs i) 57) false) (recur (inc i)) :else false))
+      false)))
+(defn ^{:twin "core/bigint"} bigint [x]
+  (let [k (sq/kind x)]
+    (cond (= k 1) (nt/from-int (sq/unbox-int x))
+          (= k 22) (nt/from-int (wasm/f64-to-i64 (s/unbox-float x)))
+          (= k 17) (let [bs (s/str-bytes x) n (wasm/alen bs)]
+                     (if (bigint-text? bs n)
+                       (nt/parse-int-token bs 0 n)
+                       (raise-str (s/str (lit (wasm/bytes-of-string "cannot parse bigint: ")) (s/pr-str x)))))
+          (nt/bigint? x) x
+          :else (raise-str (s/str (lit (wasm/bytes-of-string "cannot coerce ")) (tn x) (lit (wasm/bytes-of-string " to bigint")))))))
+;; numerator / denominator (CoreNumerator, CoreDenominator): of a Ratio only
+(defn ^{:twin "core/numerator"} numerator [x]
+  (if (nt/ratio? x) (nt/numerator x) (c/raise (wasm/bytes-of-string "numerator expects a Ratio"))))
+(defn ^{:twin "core/denominator"} denominator [x]
+  (if (nt/ratio? x) (nt/denominator x) (c/raise (wasm/bytes-of-string "denominator expects a Ratio"))))
 
 ;; rem (NumRem): Go's truncated % on Ints (MinInt64 % -1 = 0), math.Mod
 ;; when a Float is involved; a zero divisor is "divide by zero" either way.
@@ -328,22 +352,24 @@
                   (cond (if (= y 0.0) true (if (inf? x) true (if (nan? x) true (nan? y)))) (c/raise (wasm/bytes-of-string "divide by zero"))
                         (inf? y) (s/box-float (nan))
                         :else (s/box-float (fmod x y)))))
-          :else (raise-two (wasm/bytes-of-string "cannot rem ") a b))))
+          :else (c/raise-num (lit (wasm/bytes-of-string "cannot rem ")) a b))))
 
 (defn ^{:twin "core/rem"} rem ([] (raise-arity 0)) ([a] (raise-arity 1)) ([a b] (rem2 a b)) ([a b x] (raise-arity 3)))
 
-;; / (CoreDiv, NumDiv): Int/Int is exact or a named limit; a Float on
-;; either side divides in IEEE (Int/Int zero throws, a Float zero does not).
+;; / (CoreDiv, NumDiv): Int/Int is an Int when exact, else a Ratio, and
+;; MinInt64/-1 a BigInt (wasm.numtower, D230); a Float on either side divides
+;; in IEEE (Int/Int zero throws, a Float zero does not). A BigInt or Ratio
+;; operand is the promotion piece (raise-num's named limit).
 (defn- div2 [a b]
   (let [ka (sq/kind a) kb (sq/kind b)]
     (cond (if (= ka 1) (= kb 1) false)
           (let [x (sq/unbox-int a) y (sq/unbox-int b)]
             (cond (= y 0) (c/raise (wasm/bytes-of-string "divide by zero"))
-                  (if (= x -9223372036854775808) (= y -1) false) (c/raise (wasm/bytes-of-string "lower-wasm: (/ MinInt64 -1) is a BigInt (numeric tower, D15)"))
+                  (if (= x -9223372036854775808) (= y -1) false) (nt/div-ints x y)
                   (= 0 (wasm/i64-sub x (wasm/i64-mul y (quot x y)))) (sq/box-int (quot x y))
-                  :else (c/raise (wasm/bytes-of-string "lower-wasm: / of two Ints yielding a Ratio (numeric tower, D15)"))))
+                  :else (nt/div-ints x y)))
           (if (num-k? ka) (num-k? kb) false) (s/box-float (/ (f64-of a) (f64-of b)))
-          :else (raise-two (wasm/bytes-of-string "cannot divide ") a b))))
+          :else (c/raise-num (lit (wasm/bytes-of-string "cannot divide ")) a b))))
 
 (defn ^{:twin "core//"} div
   ([] (raise-arity 0)) ([a] (div2 (sq/box-int 1) a)) ([a b] (div2 a b)) ([a b x] (div2 (div2 a b) x))
@@ -515,8 +541,8 @@
   ([a b & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
 
 ;; abs (CoreAbs -> vm.NumAbs): same type back, negated only when < 0, so -0.0
-;; and NaN come back as they are and MinInt64 wraps to itself. No BigInt,
-;; Ratio or BigDecimal here (D15).
+;; and NaN come back as they are and MinInt64 wraps to itself. No BigDecimal
+;; here; a BigInt or Ratio operand is raise-num's named limit (D230).
 (defn ^{:twin "core/abs"} abs*
   ([] (raise-arity 0))
   ([x] (let [k (sq/kind x)]

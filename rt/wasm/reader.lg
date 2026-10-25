@@ -44,7 +44,8 @@
             [wasm.str :as s]
             [wasm.phm :as m]
             [wasm.phs :as hs]
-            [wasm.core :as c]))
+            [wasm.core :as c]
+            [wasm.numtower :as nt]))
 
 ;; ---------------------------------------------------------------------------
 ;; State (`new` takes at most 7 fields). RS: input bytes, length, byte
@@ -667,19 +668,17 @@
 
 (defn- invalid-number [st tk] (fail! st (s/str (s/lit "invalid number: ") (s/mk-str tk))))
 
-(defn- big-limit [tk why]
-  (limit (s/str (s/lit "BigInt literal ") (s/mk-str tk) why)))
-
 (defn- num-hex [st tk neg a n]                           ; 0x…: big.Int.SetString(hex, 16), its own sign
   (if (if (> (- n a) 2) (if (= 48 (wasm/bget tk a)) (let [c (wasm/bget tk (inc a))] (if (= c 120) true (= c 88))) false) false)
     (let [h (+ a 2) sg (sign-at tk h n)
-          r (scan-neg-mag st tk (if (= sg 0) h (inc h)) n 16)]
+          r (scan-neg-mag st tk (if (= sg 0) h (inc h)) n 16)
+          fneg (if neg (if (= sg -1) false true) (= sg -1))] ; -0x-5 is 5
       (cond (wasm/null? r) r
-            (failed? st r) (big-limit tk (s/lit " (hex past int64; named limit)"))
-            :else (let [fneg (if neg (if (= sg -1) false true) (= sg -1)) ; -0x-5 is 5
-                        v (sq/unbox-int r)]
+            ;; past int64: a BigInt, or the Int -2^63 (D230)
+            (failed? st r) (let [m (nt/parse-mag tk (if (= sg 0) h (inc h)) n 16)] (nt/int-or-big (if fneg (nt/negate m) m)))
+            :else (let [v (sq/unbox-int r)]
                     (cond fneg r
-                          (= v -9223372036854775808) (big-limit tk (s/lit " (hex past int64; named limit)"))
+                          (= v -9223372036854775808) (nt/negate (nt/from-int v))   ; 2^63 is a BigInt
                           :else (sq/box-int (- 0 v))))))
     (wasm/null)))
 
@@ -701,23 +700,21 @@
           (wasm/null)))
       (wasm/null))))
 
-(defn- num-ratio [st tk n]                               ; N/D: big.Rat, an Int when it divides
+(defn- num-ratio [st tk n]                               ; N/D: ParseInt both (past int64 is a syntax error), big.Rat
   (let [si (index-byte tk 0 n 47)]
     (if (> si 0)
       (let [num (parse-int st tk 0 si 10) den (parse-int st tk (inc si) n 10)]
         (if (if (ok-int? st num) (if (ok-int? st den) (if (= 0 (sq/unbox-int den)) false true) false) false)
           (let [x (sq/unbox-int num) y (sq/unbox-int den)]
-            (cond (= y -1) (if (= x -9223372036854775808)
-                             (big-limit tk (s/lit " (a ratio past int64; named limit)"))
-                             (sq/box-int (- 0 x)))
+            (cond (= y -1) (if (= x -9223372036854775808) (nt/div-ints x y) (sq/box-int (- 0 x)))   ; MinInt64/-1: a BigInt (D230)
                   (= x (* (quot x y) y)) (sq/box-int (quot x y))
-                  :else (limit (s/str (s/lit "Ratio literal ") (s/mk-str tk) (s/lit " (no Ratio in the runtime; named limit)")))))
+                  :else (nt/div-ints x y)))                ; a Ratio (D230)
           (wasm/null)))
       (wasm/null))))
 
 (defn- num-dec [st tk n]                                 ; ParseInt(sn, 10), then ParseFloat(sn)
   (let [ir (parse-int st tk 0 n 10)]
-    (cond (failed? st ir) (big-limit tk (s/lit " (past int64; named limit)"))
+    (cond (failed? st ir) (nt/int-or-big (nt/parse-int-token tk 0 n))   ; past int64: a BigInt (D230)
           (wasm/null? ir)
           (let [fs (float-syntax tk 0 n)]
             (cond (= fs 0) (invalid-number st tk)
@@ -730,7 +727,7 @@
         neg (= 45 (wasm/bget tk 0))
         a (if neg 1 0)]
     (if (if (> n 1) (if (if (= last 78) true (= last 110)) (all-digits? tk 0 (dec n)) false) false)
-      (big-limit tk (s/lit " (no BigInt in the runtime; named limit)"))
+      (nt/parse-int-token tk 0 (dec n))                    ; 1N, 1n: a BigInt, never demoted (D230)
       (if (if (> n 1) (if (if (= last 77) true (= last 109)) (big-decimal-ok? tk 0 (dec n)) false) false)
         (limit (s/str (s/lit "BigDecimal literal ") (s/mk-str tk) (s/lit " (named limit)")))
         (let [h (num-hex st tk neg a n)]

@@ -580,9 +580,17 @@
                      (cond (> f 1.7976931348623157e308) (buf-bytes! b (wasm/bytes-of-string "Infinity"))
                            (< f -1.7976931348623157e308) (buf-bytes! b (wasm/bytes-of-string "-Infinity"))
                            :else (write-float-bits! b (sq/float-bits f))))
+          ;; a foreign value prints through the hook in mode 3, str of the value
+          ;; itself: a BigInt is its digits without the N (strValue), everything
+          ;; else as in mode 0 (D230)
+          (= k 18) (let [h (wasm/get Globals 2 globals)]
+                     (if (wasm/null? h)
+                       (wasm/trap "wasm.str: printing a foreign value and no print hook installed")
+                       (buf-bytes! b (str-bytes (sq/invoke2 h x (sq/box-int 3))))))
           :else (write-val b x 0))))
 
-;; mode 0 = str, 1 = pr-str, 2 = print-str (prThroughToString: space-separated)
+;; mode 0 = str, 1 = pr-str, 2 = print-str (prThroughToString: space-separated);
+;; the print hook also sees 3, str of a foreign value itself (write-str-val)
 (defn- write-arg [b x mode first?]
   (cond (= mode 0) (write-str-val b x)
         :else (do (when-not first? (buf-byte! b 32)) (write-val b x mode))))
