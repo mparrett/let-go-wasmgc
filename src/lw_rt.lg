@@ -17,6 +17,9 @@
 ;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
 ;; patch without editing rt/; the rtlib cache key covers the sources read)
 (def rt-dir (let [d (os/getenv "LW_RT_DIR")] (if (seq d) d (str src-dir "/../rt/wasm"))))
+;; rt/let-go/lang: the shared layer (plain Clojure, every target), with a
+;; load-order table of its own that this file reads too (git-issue:4d19ae0)
+(def lang-dir (str src-dir "/../rt/let-go/lang"))
 
 (def ^:private row-file #"^\| [0-9]+ \| `([A-Za-z0-9_.-]+\.lg)` \|")
 ;; LW_RUNTIME_COMPILE=1 (self-host stage 3b, D193): also load the rows whose
@@ -273,21 +276,26 @@
   [s] (if *in-wasm* (find-var s) (resolve s)))
 
 (defn readme-order
-  "Files from README.md's load-order table (`| n | `file.lg` | ...`). Every
-   numbered row naming a file must parse (P2.11, D87: a name with a digit
-   used to be skipped silently, so its namespace was never loaded)."
-  []
+  "Files from a directory's README.md load-order table (`| n | `file.lg` |
+   ...`). Every numbered row naming a file must parse (P2.11, D87: a name
+   with a digit used to be skipped silently, so its namespace was never
+   loaded)."
+  [dir]
   (let [rows (filter #(re-find #"^\| [0-9]+ \| `[^`]+\.lg` \|" %)
-                     (str/split-lines (slurp (str rt-dir "/README.md"))))
+                     (str/split-lines (slurp (str dir "/README.md"))))
         rows (if runtime-compile? rows (remove flag-row? rows))
         rows (if host-fs? rows (remove host-fs-row? rows))
         rows (if host-asm? rows (remove host-asm-row? rows))
         bad (remove #(re-find row-file %) rows)]
     (when (seq bad)
-      (throw (ex-info (str "lw-rt: unreadable load-order rows in rt/wasm/README.md: " (vec bad)) {})))
+      (throw (ex-info (str "lw-rt: unreadable load-order rows in " dir "/README.md: " (vec bad)) {})))
     (vec (for [l rows] (second (re-find row-file l))))))
 
-(def files (if snapshot (:files snapshot) (readme-order)))
+(def files (if snapshot (:files snapshot) (readme-order rt-dir)))
+;; rt/let-go/lang's rows load before rt/wasm's: plain lg that requires nothing
+;; of the wasm namespaces, which the dialect (wasm.numtower) calls into.
+(def lang-files (if snapshot (vec (:lang-files snapshot)) (readme-order lang-dir)))
+(def ^:private file-paths (vec (concat (map #(str lang-dir "/" %) lang-files) (map #(str rt-dir "/" %) files))))
 
 (defn read-forms [path] (read-string (str "[" (slurp path) "\n]")))
 
@@ -298,9 +306,8 @@
   ;; second, which is where its defns and defs must be looked up (D193)
   (if snapshot
     (:file-forms snapshot)
-    (vec (for [f files]
-           (let [path (str rt-dir "/" f)
-                 text (slurp path)
+    (vec (for [path file-paths]
+           (let [text (slurp path)
                  ;; the ns the file ends in: read its forms there, as native
                  ;; does. load-string restores *ns* since let-go#982, so
                  ;; ::kw and syntax-quote would otherwise resolve in lw-rt
@@ -361,7 +368,8 @@
 
 (def rt-nss (set (keep second file-forms)))
 
-(def decl-heads #{(rt-var 'intrinsics 'defstruct) (rt-var 'intrinsics 'defarray) (rt-var 'intrinsics 'deffunc)})
+(def decl-heads #{(rt-var 'intrinsics 'defstruct) (rt-var 'intrinsics 'defarray) (rt-var 'intrinsics 'deffunc)
+                  (rt-var 'intrinsics 'deftype-struct)})
 
 (def decls
   ;; [{:var v :decl map :ns sym}] in source order
@@ -391,6 +399,84 @@
 
 (def decl-by-name (into {} (for [d decls] [(type-name (:var d)) (:decl d)])))
 
+;; Registered library deftypes (wasm/deftype-struct, git-issue:4d19ae0): the
+;; type var and constructor var of each, and every field name, mapped to the
+;; declaration's qualified symbol. A field name shared by two registered types
+;; would make `.-field` ambiguous, so it is refused at load.
+(def deftype-registry
+  (let [dk (keyword (str intrinsics-ns) "deftype")]
+    (reduce (fn [reg d]
+              (let [dt (get (:decl d) dk)]
+                (if (nil? dt)
+                  reg
+                  (let [ds (symbol (str (:ns d)) (str (:name (:decl d))))
+                        tv (find-var (:type dt))
+                        cv (find-var (:ctor dt))
+                        reg (assoc-in (assoc-in reg [:types tv] ds) [:ctors cv] ds)]
+                    (loop [i 0 reg reg]
+                      (if (< i (count (:fields dt)))
+                        (let [f (nth (:fields dt) i)]
+                          (when (contains? (:fields reg) f)
+                            (throw (ex-info (str "lw-rt: deftype-struct " ds ": field " f " is also a field of "
+                                                 (first (get-in reg [:fields f]))) {})))
+                          (recur (inc i) (assoc-in reg [:fields f] [ds i])))
+                        reg))))))
+            {:types {} :ctors {} :fields {}} decls)))
+
+(defn rewrite-deftype-forms
+  "form with, for every registered type, (Name. a ..) and (->Name a ..) as
+   (wasm.intrinsics/new <decl> a ..), (.-field x) as (wasm.intrinsics/get
+   <decl> i x) and (instance? Name x) as (wasm.intrinsics/is? <decl> x);
+   symbols resolve in ns-sym. Quoted forms are left alone. Written without
+   for/doseq/destructuring: this file loads before any program (P9.1)."
+  [ns-sym form]
+  (let [reg deftype-registry
+        resolve-in (fn [sym] (call-in-ns ns-sym (fn [] (try (resolve sym) (catch e nil)))))
+        new-sym (symbol (str intrinsics-ns) "new")
+        get-sym (symbol (str intrinsics-ns) "get")
+        is-sym (symbol (str intrinsics-ns) "is?")
+        keep-meta (fn [x y] (if (meta x) (with-meta y (meta x)) y))]
+    (if (and (empty? (:types reg)) (empty? (:fields reg)))
+      form
+      ((fn walk [x]
+         (cond
+           (seq? x)
+           (let [h (first x) hs (when (symbol? h) (str h))
+                 rest-walked (fn [] (apply list (map walk x)))]
+             (cond
+               (nil? hs) (if (empty? x) x (keep-meta x (rest-walked)))
+               (= hs "quote") x
+               ;; (.-field x)
+               (and (> (count hs) 2) (str/starts-with? hs ".-"))
+               (let [e (get (:fields reg) (symbol (subs hs 2)))]
+                 (if (and e (= 2 (count x)))
+                   (keep-meta x (list get-sym (nth e 0) (nth e 1) (walk (second x))))
+                   (keep-meta x (rest-walked))))
+               ;; (Name. a ..)
+               (and (> (count hs) 1) (str/ends-with? hs ".") (not (str/ends-with? hs "..")))
+               (let [v (resolve-in (symbol (subs hs 0 (dec (count hs))))) ds (when (var? v) (get (:types reg) v))]
+                 (if ds
+                   (keep-meta x (apply list new-sym ds (map walk (rest x))))
+                   (keep-meta x (rest-walked))))
+               ;; (->Name a ..)
+               (str/starts-with? hs "->")
+               (let [v (resolve-in h) ds (when (var? v) (get (:ctors reg) v))]
+                 (if ds
+                   (keep-meta x (apply list new-sym ds (map walk (rest x))))
+                   (keep-meta x (rest-walked))))
+               ;; (instance? Name x)
+               (and (= hs "instance?") (= 3 (count x)) (symbol? (second x)))
+               (let [v (resolve-in (second x)) ds (when (var? v) (get (:types reg) v))]
+                 (if ds
+                   (keep-meta x (list is-sym ds (walk (nth x 2))))
+                   (keep-meta x (rest-walked))))
+               :else (keep-meta x (rest-walked))))
+           (vector? x) (keep-meta x (vec (map walk x)))
+           (map? x) (keep-meta x (reduce (fn [m kv] (assoc m (walk (key kv)) (walk (val kv)))) {} x))
+           (set? x) (keep-meta x (set (map walk x)))
+           :else x))
+       form))))
+
 (defn arities
   "The arity bodies of a defn tail (after the name): [[params body...] ...]."
   [more]
@@ -410,7 +496,7 @@
              :let [[nm _] (strip-meta-name (second form))]
              :when (not (intrinsic-meta? (ns-var ns-sym nm)))]
          {:var (ns-var ns-sym nm) :ns ns-sym :name nm
-          :arities (arities (drop 2 form))})))
+          :arities (arities (drop 2 (rewrite-deftype-forms ns-sym form)))})))
 
 (def defn-by-var (into {} (for [d defns] [(:var d) d])))
 
@@ -423,7 +509,7 @@
              :let [[nm _] (strip-meta-name (second form))
                    v (ns-var ns-sym nm)]
              :when (not (decl? @v))]
-         {:var v :ns ns-sym :init (nth form 2)})))
+         {:var v :ns ns-sym :init (rewrite-deftype-forms ns-sym (nth form 2))})))
 
 (def global-by-var (into {} (for [g globals] [(:var g) g])))
 
@@ -853,6 +939,7 @@
                 :flags (snapshot-flags)
                 :gensyms gensyms-loaded
                 :files files
+                :lang-files lang-files
                 :file-forms file-forms
                 :core-forms core-forms
                 :string-forms (embedded-forms "string.lg" 'string)

@@ -65,7 +65,7 @@ done
 files=() fdirs=()
 for d in "${dirs[@]}"; do
   [ -d "$d" ] || { echo "no such dir: $d" >&2; exit 2; }
-  # A SKIP file in the dir lists basenames to leave out (D15: div-* until Phase 2).
+  # A SKIP file in the dir lists basenames to leave out (empty since D230; `#` starts a comment).
   skip=""; [ -f "$d/SKIP" ] && skip=$(sed -e 's/#.*//' "$d/SKIP" | tr '\n' ' ')
   while IFS= read -r f; do
     case " $skip " in *" $(basename "$f") "*) echo "SKIP            $f"; continue;; esac
@@ -113,7 +113,7 @@ rtlib_warm() {
     return 0  # a failed warm-up shows again, with its message, in the first program
   fi
   newest=$(ls -t "$d"/rtlib-${LW_TARGET:-gc}-*.edn 2>/dev/null | head -1)
-  if [ -n "$newest" ] && [ -z "$(find "$root/src" "$root/rt/wasm" -name '*.lg' -newer "$newest" 2>/dev/null | head -1)" ]; then return 0; fi
+  if [ -n "$newest" ] && [ -z "$(find "$root/src" "$root/rt/wasm" "$root/rt/let-go/lang" -name '*.lg' -newer "$newest" 2>/dev/null | head -1)" ]; then return 0; fi
   w=$(mktemp -d)
   # background + wait, so a TERM during the (long) build reaches the trap now, not after it
   "$root/checks/sem.sh" timeout -k 5 "${LW_WARM_LIMIT:-600}" "$LG" -source-paths "$root/src" "$root/src/driver.lg" "$root/corpus/scalar/fib.clj" "$w/m.wat" >/dev/null 2>&1 &

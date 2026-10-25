@@ -12,7 +12,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 edn=$1; kind=${2:-}
 tsv=corpus/hash/vectors.tsv
-key=$( (cat "$tsv"; cat src/*.lg rt/wasm/*.lg) | md5 -q)
+key=$( (cat "$tsv"; cat src/*.lg rt/wasm/*.lg rt/let-go/lang/*.lg) | md5 -q)
 cache=${TMPDIR:-/tmp}/lw-wasm-hash-$key.tsv
 if [ ! -s "$cache" ]; then
   prog=$(mktemp -d)/hashes.lg

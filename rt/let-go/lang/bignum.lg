@@ -1,9 +1,11 @@
 ;; let-go.lang.bignum — arbitrary-precision integers (BigInt) and rationals (Ratio)
-;; in plain Clojure, one library for every target (rt/let-go/lang). Nothing calls
-;; it yet: the arithmetic, printer, hashing, equality and reader of either
-;; runtime do not know these values. The algorithms were wasm.bignum's, the
-;; deftypes and the integral demotion numeric.bigint's and numeric.ratio's;
-;; all three are gone.
+;; in plain Clojure, one library for every target (rt/let-go/lang). The wasm
+;; runtime holds these as its BigInt and Ratio values (rt/wasm/numtower.lg,
+;; D230): `/` of two Ints, the reader's 1N and 1/2, printing, hashing,
+;; equality and compare go through this file; its arithmetic on those values
+;; (promotion) does not yet. The algorithms were wasm.bignum's, the deftypes
+;; and the integral demotion numeric.bigint's and numeric.ratio's; all three
+;; are gone.
 ;;
 ;; Ground truth is let-go e9789b7d: pkg/vm/bigint.go wraps Go's *big.Int,
 ;; pkg/vm/ratio.go wraps *big.Rat, and pkg/vm/numbers.go's BigInt branches
@@ -76,6 +78,11 @@
 (defn signum "-1, 0 or 1." [a] (sg a))
 (defn zero? [a] (= 0 (sg a)))
 (defn neg? [a] (< (sg a) 0))
+;; The magnitude as a runtime reads it (never written through these): the
+;; limb array itself, its length, and limb i (little-endian, in [0, 2^32)).
+(defn magnitude "The limb array; read-only." [a] (mg a))
+(defn limb-count [a] (len (mg a)))
+(defn limb [a i] (aget (mg a) i))
 
 ;; ---------------------------------------------------------------------------
 ;; Int interop

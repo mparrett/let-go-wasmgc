@@ -42,11 +42,14 @@
         (tagged? x) (str (name (::kind (core/aget x 0))) " " (:name (core/aget x 0)))
         :else (str "non-wasm value " (pr-str x) " (" (type x) ")")))
 
+(declare deftype-instance?)
 (defn- eqref? [x]
   ;; A native exception is the reference's stand-in for the payload a wasm
   ;; `catch $lgex` binds, which is always a (ref null eq): runtime code may
-  ;; keep what it caught (a LazySeq caches its thunk's error, D74).
-  (or (nil? x) (and (tagged? x) (not= :func (::kind (core/aget x 0)))) (instance? Throwable x)))
+  ;; keep what it caught (a LazySeq caches its thunk's error, D74). A library
+  ;; deftype instance is a struct (deftype-struct, below).
+  (or (nil? x) (and (tagged? x) (not= :func (::kind (core/aget x 0)))) (instance? Throwable x)
+      (deftype-instance? x)))
 
 (defn- funcref? [x]
   (or (nil? x) (and (tagged? x) (= :func (::kind (core/aget x 0))))))
@@ -135,6 +138,37 @@
   [nm params result]
   `(def ~nm (func-decl '~nm ~params ~result)))
 
+;; A library deftype as a struct (git-issue:4d19ae0). The wasm side gives a
+;; plain-Clojure library's deftype (rt/let-go/lang) a struct of its own, so the
+;; dialect dispatches on it by kind while the library keeps its `(Name. ...)`
+;; constructor calls and `.-field` reads: src/lw_rt.lg rewrites those to
+;; `new` and `get` on this declaration for every registered type, and the
+;; backend emits the declaration like any defstruct (its :fields). Under
+;; native lg an instance IS the library's deftype instance: `new` calls the
+;; type's constructor, `get` its field accessor, `is?`/`as` test with
+;; instance?, and check-ref! admits it as a ref. The declaration is data
+;; (symbols, resolved at each call), so the D209 snapshot carries it.
+(def ^:private deftype-decls (atom []))
+
+(defn deftype-decl
+  "fields: [[field-sym slot-type accessor-sym] ...], accessor-sym a public
+   fn of the library answering that field."
+  [nm type-sym ctor-sym fields]
+  (let [d (assoc (struct-decl nm (mapv second fields))
+                 ::deftype {:type type-sym :ctor ctor-sym
+                            :fields (mapv first fields) :getters (mapv #(nth % 2) fields)})]
+    (swap! deftype-decls (fn [ds] (conj (vec (remove #(= nm (:name %)) ds)) d)))
+    d))
+
+(defmacro deftype-struct
+  "(deftype-struct Name lib/Type lib/->Type [[field slot-type lib/accessor] ...])"
+  [nm type-sym ctor-sym fields]
+  `(def ~nm (deftype-decl '~nm '~type-sym '~ctor-sym '~fields)))
+
+(defn- deftype-type [dt] @(find-var (:type dt)))
+(defn- deftype-instance? [x]
+  (some (fn [d] (instance? (deftype-type (::deftype d)) x)) @deftype-decls))
+
 ;; The built-in byte array: strings are (array (mut i8)) per D5.
 (def Bytes {::kind :array :name 'Bytes :elem :i8})
 
@@ -143,7 +177,9 @@
     (throw (ex-info (str who ": expected a " (name k) " declaration, got " (pr-str decl)) {:who who}))))
 
 (defn- instance-of? [decl x]
-  (and (tagged? x) (identical? decl (core/aget x 0))))
+  (if (::deftype decl)
+    (instance? (deftype-type (::deftype decl)) x)
+    (and (tagged? x) (identical? decl (core/aget x 0)))))
 
 (defn- cast! [who decl x]
   (when-not (instance-of? decl x)
@@ -160,12 +196,16 @@
   (let [fs (:fields decl)]
     (when-not (= (count fs) (count vals))
       (throw (ex-info (str "wasm/new " (:name decl) ": " (count fs) " fields, got " (count vals)) {})))
+    (if (::deftype decl)
+      ;; the library's constructor, on the values as the library holds them
+      ;; (native ints and arrays; the slot checks are the backend's concern)
+      (apply @(find-var (:ctor (::deftype decl))) vals)
     (let [a (object-array (inc (count fs)))]
       (core/aset a 0 decl)
       (dotimes [i (count fs)]
         (core/aset a (inc i) (check-val! (str "wasm/new " (:name decl) " field " i)
                                          (:type (nth fs i)) (nth vals i))))
-      a)))
+      a))))
 
 (defn ^{:intrinsic true :wasm "struct.new $Name" :type "[decl fields...] -> :any"} new
   "(new Name f1 ... fn) => struct.new $Name. Arity is the field count; the
@@ -193,7 +233,9 @@
   (check-decl! "wasm/get" decl :struct)
   (check-field! "wasm/get" decl idx)
   (cast! "wasm/get" decl x)
-  (core/aget x (inc idx)))
+  (if (::deftype decl)
+    (@(find-var (nth (:getters (::deftype decl)) idx)) x)
+    (core/aget x (inc idx))))
 
 (defn ^{:intrinsic true :wasm "ref.cast (ref $Name); struct.set $Name idx"
         :type "[decl const-int :any T] -> :nil"} set!
@@ -289,7 +331,8 @@
   (check-ref! "wasm/ref-eq" b)
   (cond (and (nil? a) (nil? b)) true
         (or (nil? a) (nil? b)) false
-        (and (identical? i31-tag (core/aget a 0)) (identical? i31-tag (core/aget b 0)))
+        (and (= (type a) array-type) (= (type b) array-type)   ; a deftype instance is never an i31
+             (identical? i31-tag (core/aget a 0)) (identical? i31-tag (core/aget b 0)))
         (= (core/aget a 1) (core/aget b 1))
         :else (identical? a b)))
 
@@ -326,7 +369,7 @@
 (defn ^{:intrinsic true :wasm "ref.test (ref i31)" :type "[:any] -> :bool"} fix?
   [x]
   (check-ref! "wasm/fix?" x)
-  (and (some? x) (identical? i31-tag (core/aget x 0))))
+  (and (some? x) (= (type x) array-type) (identical? i31-tag (core/aget x 0))))   ; a deftype instance is a ref too
 
 (defn ^{:intrinsic true :wasm "ref.cast (ref i31); i31.get_s; i64.extend_i32_s" :type "[:any] -> :int"} fix-get
   [x]
