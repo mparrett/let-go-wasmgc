@@ -13,6 +13,10 @@
   (import "env" "print_str" (func $print_str (param i32 i32)))
   (import "env" "print_nl" (func $print_nl))
   (memory (export "lw mem") 1)
+  ;; the exception exports every emitted module has (ABI.md): the wasmtime
+  ;; adapter's _start imports both (D232); this probe never throws
+  (tag (export "lw lgex") (param (ref null eq)))
+  (func (export "lw report") (param (ref null eq)))
   (data (i32.const 128) "size ")      ;; 128..132
   (data (i32.const 136) "ready")      ;; 136..140
   (data (i32.const 144) "key")        ;; 144..146
