@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -69,9 +70,37 @@ int lg_host_key_ready(void) {
   return poll(&p, 1, 0) > 0;
 }
 
+/* stdout's size; -1, -1 when stdout is not a terminal (term.go's size
+   is nil then), and the caller's defaults for a zero dimension */
 void lg_host_term_dims(int *cols, int *rows) {
   struct winsize w;
-  if (ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col && w.ws_row) { *cols = w.ws_col; *rows = w.ws_row; }
+  if (ioctl(1, TIOCGWINSZ, &w) != 0) { *cols = -1; *rows = -1; return; }
+  if (w.ws_col && w.ws_row) { *cols = w.ws_col; *rows = w.ws_row; }
+}
+
+/* raw mode on stdin with the flags golang.org/x/term's MakeRaw sets */
+static struct termios lg_saved_mode;
+static int lg_mode_saved;
+int lg_host_raw_mode(void) {
+  if (lg_mode_saved) return 2;
+  struct termios t;
+  if (tcgetattr(0, &t) != 0) return 0;
+  lg_saved_mode = t;
+  t.c_iflag &= ~(tcflag_t)(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+  t.c_oflag &= ~(tcflag_t)OPOST;
+  t.c_lflag &= ~(tcflag_t)(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+  t.c_cflag &= ~(tcflag_t)(CSIZE | PARENB);
+  t.c_cflag |= CS8;
+  t.c_cc[VMIN] = 1;
+  t.c_cc[VTIME] = 0;
+  if (tcsetattr(0, TCSANOW, &t) != 0) return 0;
+  lg_mode_saved = 1;
+  return 1;
+}
+int lg_host_restore_mode(void) {
+  if (!lg_mode_saved) return 0;
+  lg_mode_saved = 0;
+  return tcsetattr(0, TCSANOW, &lg_saved_mode) == 0 ? 1 : 0;
 }
 
 void *lg_host_grow(void *p, size_t old, size_t n) {

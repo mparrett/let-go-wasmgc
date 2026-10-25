@@ -105,7 +105,7 @@
   "let-go.core/now: natively a Go time.Time, which only interop (.Sub) can
    read. The runtime's twin traps; xsofy evaluates (now) at load
    (ui/clock-epoch) without using it on the world path, so this stands in
-   the host's monotonic ns as an Int (interop on it stays unsupported)."
+   the host's monotonic ns as an Int, which dot-v's .Sub takes."
   [] (llvm.arch/host-nanotime))
 
 (defn term-size-v
@@ -948,6 +948,14 @@
                   (llvm.seq/reduce (nth args 2) x)
                   (and (= nm "reduce") (= 4 (count args)))
                   (llvm.seq/reduce (nth args 2) (nth args 3) x)
+                  ;; the two host methods core/. takes on both lanes (dot-v):
+                  ;; xsofy's (.Sub (now) epoch) and String.getBytes
+                  (and (= nm "Sub") (= 3 (count args)) (int? x) (int? (nth args 2)))
+                  (dot-v x (second args) (nth args 2))
+                  (and (= nm "getBytes") (<= (count args) 4) (string? x))
+                  (apply dot-v x (second args) (drop 2 args))
+                  ;; a Go string is a receiver whose other methods are missing
+                  (string? x) (raise-lit (str "method " nm " not found on string"))
                   :else (raise-lit "method-invoke expected Receiver"))))))
 
 (defn sorted-map-v
