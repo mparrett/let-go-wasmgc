@@ -71,10 +71,17 @@ guard (P8.0) is advisory and decides nothing (D228).
 
 ## Gates
 
-`checks/gate.sh <n>` runs phase n's rows and reports them as TAP; the row
-exit codes, the SKIP and TODO directives and the owning-issue column are
-D228 (#69). A general `LW_REQUIRE_<runtime>` opt-in is f1a846c's proposal;
-only `LW_REQUIRE_BROWSER` exists.
+`checks/gate.sh <n>` runs phase n's rows and prints TAP 13: the version
+line, the plan `1..N`, `ok`/`not ok n - <id>` per row with `# SKIP <reason>`
+and `# TODO git-issue:<id>` directives, and under each row a YAML block with
+`duration_ms` (the row's work) and `wait_ms` (time blocked on the slot pool).
+Each row also appends one line to the per-machine timings ledger
+`$LW_STATE/gate-times.tsv` (or `$LW_GATE_TIMES`), untracked. The row exit
+codes, the directives and the owning-issue column are D228 (#69); the
+version line, the duration blocks and the ledger are D229 (#71); P0.7
+checks both. The GC byte guard (P8.0) is advisory. A general
+`LW_REQUIRE_<runtime>` opt-in is f1a846c's proposal; only
+`LW_REQUIRE_BROWSER` exists.
 
 ## Records
 
