@@ -1,0 +1,18 @@
+id: cd4be99
+v: 2
+title: P7.4 and P10.3 read LW_BROWSER_TOOLS differently (parent dir vs install dir)
+status: open
+priority: medium
+created: 2026-10-25T07:19:04Z
+updated: 2026-10-25T07:19:04Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: P7.4 (checks/size-boot.sh) and P10.3 read LW_BROWSER_TOOLS differently. size-boot.sh appends `browser-smoke-playwright` to the variable, so it wants the parent directory; P10.3 (and P4.4's turn-time.sh, which prints the same install path) take the variable as the Playwright install directory itself. With LW_BROWSER_TOOLS set to the install directory, P10.3 ran and P7.4 skipped with "no Playwright install at <dir>/browser-smoke-playwright"; set to the parent, P7.4 would run and P10.3 skip. Seen on a gate 7 run of PR #72's head on 2026-10-25.
+ 
+ Facts that close it:
+ 
+ F1 One meaning, documented where the variable is introduced (the row list header or docs/WORKFLOW.md): the install directory. Witness: the sentence, and `rg LW_BROWSER_TOOLS checks/` showing every consumer joins the same path.
+ F2 With LW_BROWSER_TOOLS set to one directory, `checks/run.sh P7.4` and `checks/run.sh P10.3` both run (no SKIP line) on a machine with the install. Witness: the two row logs.
+ 
+ M1 (how): size-boot.sh stops appending the subdirectory; the SKIP text names the directory it looked in.
