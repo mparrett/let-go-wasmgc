@@ -18,6 +18,7 @@ description: Proposed: code and comments do not cite issue, row or decision ids;
  If we adopt it, a lint row can hold it for new lines only, as `local-paths.sh` does for paths.
 
 ## Comments
+[2026-10-25T05:58:33Z] Matt Parrett: Decided: not adopted; ids stay in code and comments. The case for removing them is that an id goes stale when the decision moves, but D-numbers here are append-only and amended in place (D15 and D177 carry their D230 amendment; D201 its D231), so an id keeps pointing at the reasoning, and the checks are where a reader asks why a row exists. A cleanup across gate.sh and the rows would be churn with no behavior change. If stale ids show up in practice, a lint on new lines only, as local-paths.sh does, is the fallback.
 [2026-10-25T15:03:49Z] Norman Nunley, Jr: Matt: is this decision yours, or did an agent working the board post it? That matters before we settle it.
  
  I want this reopened. An id in a code comment rots even when the record it names does not: the code around it moves, splits and gets rewritten, and the comment keeps pointing at a decision about code that is no longer there. An append-only log keeps the decision current; it cannot keep the comment's claim about this line true.
