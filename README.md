@@ -29,8 +29,8 @@ differential check (see "Checks"), and the design record is
 - **The jank clojure-test-suite** (241 files of core tests, run through
   `checks/jank-suite.sh` against native lg) passes 128 files on the WasmGC
   lane; `corpus/jank/baseline-wasm.tsv` ratchets the count, so a pull request
-  may not drop a file. Most of the rest wait on the numeric tower (BigInt,
-  BigDecimal and Ratio literals).
+  may not drop a file. Most of the rest wait on the numeric tower (arithmetic
+  over BigInt and Ratio, BigDecimal literals).
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
 - **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the
@@ -59,9 +59,11 @@ plans it for 153, so the gap closes on its own. Binaryen's Asyncify cannot
 stand in, because it spills locals to linear memory and these modules hold
 GC references in locals (`wasm-opt --asyncify` asserts on them).
 
-Named limits, as of 2026-10-20: Ratio and BigInt results are named errors
-(D15; `rt/let-go/lang/bignum.lg` holds a BigInt and Ratio library checked
-against native lg, which nothing calls yet); `go` blocks and channels are not
+Named limits, as of 2026-10-25: arithmetic with a BigInt or Ratio operand is
+a named error (D230 made the values themselves, `/` of two Ints, the reader's
+`1N` and `1/2`, printing, `=`, `hash` and `compare` native-faithful through
+`rt/let-go/lang/bignum.lg`; promotion is the next piece of
+git-issue:4d19ae0); `go` blocks and channels are not
 supported, and `future` runs its body at the call (D162); the evaluator has
 no interop, `deftype`, `defprotocol` or `defmulti` (D160). A library
 namespace (one under `-source-paths`, since 2026-10-07) and a program's own
@@ -320,8 +322,8 @@ As of 2026-10-20:
   D190). [docs/SELF-HOST-SPEC.md](docs/SELF-HOST-SPEC.md) is the spec.
 - A native target through LLVM IR is in review as pull request #25 (phase 13
   rows); the runtime seam it needs (D213) is on main.
-- Still candidates, none started: the numeric tower's boxed BigInt and Ratio
-  in the runtime; `go` blocks and channels, with a scheduler on JSPI; calls
+- Still candidates, none started: the numeric tower's arithmetic over BigInt
+  and Ratio (the values landed with D230); `go` blocks and channels, with a scheduler on JSPI; calls
   through var-table slots, so an evaluated redefinition reaches compiled
   callers; IR cached per namespace keyed by source hash.
 
