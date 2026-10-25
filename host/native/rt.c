@@ -219,10 +219,16 @@ intptr_t lg_term_read_key(void) {
 
 int32_t lg_term_key_pending(void) { return lg_host_key_ready(); }
 
+/* term/raw-mode! and term/restore-mode! on stdin (term.go:315-370). */
+int lg_host_raw_mode(void);
+int lg_host_restore_mode(void);
+int64_t lg_term_raw_mode(void) { return lg_host_raw_mode(); }
+int64_t lg_term_restore_mode(void) { return lg_host_restore_mode(); }
+
 int64_t lg_term_size(void) {
   int c = 80, r = 24;
   lg_host_term_dims(&c, &r);
-  return ((int64_t)c << 32) | (uint32_t)r;
+  return (int64_t)(((uint64_t)(uint32_t)c << 32) | (uint32_t)r);
 }
 
 /* js/emit and js/url-param off a browser: native emits nothing and finds

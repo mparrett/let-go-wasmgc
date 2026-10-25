@@ -30,7 +30,7 @@
             [llvm.str :as s]
             [llvm.core :as c]))
 
-(declare term-read-key term-key-pending term-size)
+(declare term-read-key term-key-pending term-size term-raw-mode term-restore-mode)
 
 (defn- lit [bs] (s/mk-str bs))
 (defn- out! [st] (arch/host-write 1 (s/str-bytes st)) (arch/null))
@@ -38,10 +38,17 @@
 (defn- string-of [x] (if (= 17 (sq/kind x)) x (s/value-string x))) ; Go: a String verbatim, else Value.String()
 
 ;; ---------------------------------------------------------------------------
-;; Modes: no-ops returning true (term_wasm.go:50-60).
+;; Modes (term.go:315-370): stdin into raw mode and back. raw-mode! is true
+;; (also when already raw) and nil when stdin is not a terminal;
+;; restore-mode! is true, or nil when nothing was saved. The handle forms
+;; keep the browser's no-op (term_wasm.go:50-60).
 
-(defn ^{:twin "term/raw-mode!"} raw-mode! ([] (sq/bool true)) ([h] (sq/bool true)))
-(defn ^{:twin "term/restore-mode!"} restore-mode! ([] (sq/bool true)) ([h st] (sq/bool true)))
+(defn ^{:twin "term/raw-mode!"} raw-mode!
+  ([] (if (= 0 (term-raw-mode)) (arch/null) (sq/bool true)))
+  ([h] (sq/bool true)))
+(defn ^{:twin "term/restore-mode!"} restore-mode!
+  ([] (if (= 0 (term-restore-mode)) (arch/null) (sq/bool true)))
+  ([h st] (sq/bool true)))
 
 ;; ---------------------------------------------------------------------------
 ;; Input (term_wasm.go:65-85). The host blocks until a key arrives and hands
@@ -188,6 +195,15 @@
         (reset! q (vec more))
         (if (and (<= 1 n) (<= n 16)) b nil)))))
 
+(defn ^{:intrinsic true :wasm "none: the wasm hosts' terminal is always raw" :type "[] -> :int"}
+  term-raw-mode
+  "Put stdin into raw mode, saving its mode: 1 done, 2 already raw, 0 not a
+   terminal. Under native lg (the runtime's own tests) there is no terminal."
+  [] 0)
+(defn ^{:intrinsic true :wasm "none: the wasm hosts' terminal is always raw" :type "[] -> :int"}
+  term-restore-mode
+  "Restore stdin's saved mode: 1 restored, 0 nothing saved."
+  [] 0)
 (defn ^{:intrinsic true :wasm "call $term.key_pending (i32 -> :bool)" :type "[] -> :bool"}
   term-key-pending
   "True when a key is queued (non-consuming)."
