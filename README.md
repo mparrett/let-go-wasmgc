@@ -68,9 +68,11 @@ supported, and `future` runs its body at the call (D162); the evaluator has
 no interop, `deftype`, `defprotocol` or `defmulti` (D160). A library
 namespace (one under `-source-paths`, since 2026-10-07) and a program's own
 namespace (since 2026-10-15) may define `deftype`, `defrecord` and
-`defprotocol`: a type is a keyword tag or a map carrying one, a protocol
-method one dispatching defn (D204); `extend-type`, `reify` and `defmulti`
-are not seen. [FINDINGS.md](FINDINGS.md) lists native
+`defprotocol`: a field-less type is a keyword tag, a type with fields a
+record struct carrying one (D234; `pr-str`, `dissoc`, `=`, `hash`, `keys`
+and `type` of a defrecord instance follow native), a protocol method one
+dispatching defn (D204); `extend-type`, `reify` and `defmulti` are not
+seen. [FINDINGS.md](FINDINGS.md) lists native
 let-go behaviours we met along the way.
 
 As of 2026-10-03, `--target linear` (or `LW_TARGET=linear`) selects an

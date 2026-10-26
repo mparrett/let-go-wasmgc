@@ -467,7 +467,7 @@
         (do (sset! out j (sget e (+ (* 2 j) off))) (recur (inc j)))
         out))))
 
-(defn- entries->map-seq [e n]                               ; the first n slot pairs of e as a MapSeq
+(defn entries->map-seq "The first n slot pairs of e as a MapSeq (wasm.core's records seq through it too)." [e n]
   (let [a (wasm/array-new pv/Node n (wasm/null))]
     (loop [j 0]
       (when (< j n)

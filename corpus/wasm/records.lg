@@ -1,0 +1,38 @@
+;; P2.1 oracle: records (D234, git-issue:e9c84fc). A defrecord instance against
+;; native's vm.Record: printing, the plain map dissoc of a declared field
+;; answers, keys/count/contains? without the type tag, hash agreement with
+;; the same-keyed map, type, map->R, equality, instance?/record?, field
+;; access, nil fields (absent from the constructor, present after assoc),
+;; extras, meta, conj and seq.
+
+(defn show [label x] (println label (pr-str x)))
+
+(defrecord R [a b])
+(defrecord Q [x])
+(def r (->R 1 2))
+
+(show "ctor" r)
+(show "str" (str r))
+(show "str-field" (->R "x" \c))
+(show "nested" [r {:r (->R [1 "s"] {:k "v"})} (->R r nil)])
+(show "field" [(:a r) (get r :b) (r :a) (get r :zz :nf) (r :zz :d) (:zz r :d)])
+(show "map-over" (map r [:a :b :zz]))
+(show "dissoc-declared" [(dissoc r :a) (record? (dissoc r :a)) (map? (dissoc r :a)) (instance? R (dissoc r :a))])
+(show "dissoc-extra" [(dissoc r :zz) (record? (dissoc r :zz)) (dissoc (assoc r :c 3 :d 4) :c)])
+(show "dissoc-order" [(dissoc (assoc (->R nil 2) :c 3) :b) (dissoc (->R nil 2) :b) (dissoc r :a :b)])
+(show "keys-count" [(keys r) (vals r) (count r) (contains? r :a) (contains? r :lw/type) (count (assoc r :c 3))])
+(show "hash" [(= (hash r) (hash {:a 1 :b 2})) (= (hash (->R nil 2)) (hash {:b 2})) (= (hash (assoc r :c 3)) (hash (assoc (->R 1 2) :c 3))) (= (hash r) (hash (with-meta r {:m 1})))])
+(show "type" [(type r) (str (type r)) (= (type r) (type (->R 3 4))) (= (type r) (type (->Q 1))) (= (type r) (type {})) (type (type r))])
+(show "map->R" [(map->R {:a 1 :c 9}) (map->R {}) (map->R {:b 1 :a 2 :z 3 :y 4}) (assoc (map->R {}) :a 1) (count (map->R {:a nil :b 2})) (= (map->R {:a nil :b 2}) (->R nil 2))])
+(show "equality" [(= r (->R 1 2)) (= r (->R 1 3)) (= r {:a 1 :b 2}) (= {:a 1 :b 2} r) (= r (->Q 1)) (= (->R 1 2) (->R 1 2.0)) (not= r (assoc r :a 2)) (= [r] [(->R 1 2)]) (= #{r} #{(->R 1 2)}) (get {r 1} (->R 1 2))])
+(show "extras" [(assoc r :z 0) (assoc r :z 0 :y 1) (= (assoc r :c 3) (assoc (->R 1 2) :c 3)) (= (assoc r :c 3) r) (:c (assoc r :c 3)) (contains? (assoc r :c 3) :c)])
+(show "instance" [(instance? R r) (instance? R {:a 1 :b 2}) (instance? Q r) (instance? R (assoc r :c 1)) (record? r) (record? {:a 1}) (record? (->Q 1))])
+(show "nil-field" [(->R nil 2) (count (->R nil 2)) (keys (->R nil 2)) (contains? (->R nil 2) :a) (seq (->R nil nil)) (empty? (->R nil nil)) (= (->R nil 2) (map->R {:b 2}))])
+(show "assoc-nil" (let [rn (assoc r :a nil)] [rn (count rn) (keys rn) (contains? rn :a) (= rn (->R nil 2)) (dissoc rn :b) (= (assoc (->R nil 2) :a nil) rn)]))
+(show "seq" [(seq r) (first r) (rest r) (next r) (seq (assoc r :c 3)) (keys (assoc (->R nil 2) :c 3)) (vals (assoc r :c 3)) (type (first r)) (type (seq r))])
+(show "meta" [(meta (with-meta r {:m 1})) (= r (with-meta r {:m 1})) (with-meta r {:m 1}) (meta (assoc (with-meta r {:m 1}) :c 1)) (meta (dissoc (with-meta r {:m 1}) :zz))])
+(show "conj" [(conj r [:c 3]) (conj r (first {:c 3})) (into r {:q 1}) (conj r [:a 9])])
+(show "ifn" [(ifn? r) (fn? r) (coll? r) (map? r) (sequential? r)])
+(show "update" [(update r :a inc) (merge r {:a 5}) (get-in {:r r} [:r :a]) (apply ->R [7 8]) (reduce (fn [acc [k v]] (conj acc k)) [] r)])
+(show "find" [(find r :a) (find r :zz) (find (->R nil 2) :a) (find (assoc r :c 3) :c)])
+(show "field-less" [(->Q 5) (:x (->Q 5)) (= (->Q 5) (->Q 5)) (= (->Q 5) (->R 5 nil))])

@@ -771,10 +771,11 @@
 
 (declare expand-top)
 
-;; P10.6: deftype, defrecord and defprotocol in a library namespace. The
-;; backend has no type kind (D122), so a field-less type is its tag, the
-;; Keyword :<ns>/<Name>; a type with fields is a map {:lw/type tag :field
-;; value ..}; the type's var holds the tag, so (instance? T x) is
+;; P10.6: deftype, defrecord and defprotocol in a library namespace. A
+;; field-less type is its tag, the Keyword :<ns>/<Name>; a type with fields
+;; is wasm.core's record struct carrying the tag and the declared fields
+;; (D234; D122's tagged map before it), built by the runtime's make-record
+;; and record-of-map; the type's var holds the tag, so (instance? T x) is
 ;; wasm.natives' instance? over tags. A protocol method is one library defn
 ;; dispatching on the tag of its first argument over every deftype and
 ;; defrecord that implements it, registered once the require that reached
@@ -806,17 +807,16 @@
         nm (nth form 1)
         fields (vec (nth form 2))
         tag (type-tag ns-sym nm)
+        fkws (vec (map (fn [f] (keyword (str f))) fields))
         ctor (list 'defn (symbol (str "->" nm)) fields
                    (if (seq fields)
-                     (into {:lw/type tag} (map (fn [f] [(keyword (str f)) f]) fields))
+                     (list (lw-rt/rt-sym 'core 'make-record) tag fkws fields)
                      tag))
-        ;; defrecord's map->Name: the record's fields from the map (nil
-        ;; when absent), other keys kept, as native's
+        ;; defrecord's map->Name: the record's fields from the map (absent
+        ;; when missing), other keys kept as extras, as native's
         mctor (when (= 'defrecord head)
                 (list 'defn (symbol (str "map->" nm)) '[__lw_m]
-                      (list 'clojure.core/assoc
-                            (list 'clojure.core/merge (into {} (map (fn [f] [(keyword (str f)) nil]) fields)) '__lw_m)
-                            :lw/type tag)))]
+                      (list (lw-rt/rt-sym 'core 'record-of-map) tag fkws '__lw_m)))]
     ;; a method body names its method bare, as native does; it resolves in
     ;; the namespace of the protocol symbol before it (a program's type
     ;; implementing a library's protocol), else in the type's own
@@ -859,7 +859,7 @@
                              binds (vec (concat (interleave (:params impl) (cons '__this args))
                                                 (mapcat (fn [f] [f (list (keyword (str f)) '__this)]) (:fields impl))))]
                          [(if (seq (:fields impl))
-                            (list 'identical? tag (list :lw/type '__this))
+                            (list 'identical? tag (list (lw-rt/rt-sym 'core 'record-tag) '__this))
                             (list 'identical? tag '__this))
                           (if (:call impl)
                             (apply list (:call impl) '__this args)
