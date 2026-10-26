@@ -17,3 +17,6 @@ description: P7.4 (checks/size-boot.sh) and P10.3 read LW_BROWSER_TOOLS differen
  F2 With LW_BROWSER_TOOLS set to one directory, `checks/run.sh P7.4` and `checks/run.sh P10.3` both run (no SKIP line) on a machine with the install. Witness: the two row logs.
  
  M1 (how): size-boot.sh stops appending the subdirectory; the SKIP text names the directory it looked in.
+
+## Comments
+[2026-10-26T22:54:12Z] Matt Parrett: PR #77 resolves this: checks/playwright.mjs finds Playwright in the environment, and every reader of LW_BROWSER_TOOLS, size-boot.sh included, takes it as the directory holding browser-smoke-playwright/. P4.0 and P10.3 pass at its head with the variable set to that parent. Closes when #77 merges.
