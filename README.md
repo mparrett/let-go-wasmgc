@@ -111,10 +111,14 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 - **Chromium through Playwright** for the browser lanes
   (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/eval-hosts.sh`,
   `checks/size-boot.sh`, the `*-page-check.mjs` scripts). Playwright is
-  resolved from `LW_BROWSER_TOOLS/browser-smoke-playwright/` (a directory
-  with a `package.json` depending on `playwright`, browsers installed with
-  `npx playwright install chromium`); the default is `../../../local-scripts`
-  relative to `checks/`. Without it the rows do not fail: their browser lanes
+  the first of these whose Chromium launches (`checks/playwright.mjs`):
+  `LW_BROWSER_TOOLS/browser-smoke-playwright/` when that is set; the version
+  `package.json` pins, after `npm ci` (or on `NODE_PATH`); a global
+  `npm i -g playwright`; then `playwright` on PATH, a Node install or a
+  Python one (its bundled Node driver). Each Playwright version runs only its
+  own browser build (`npx playwright install chromium`), and a candidate
+  whose build is missing is passed over, so the checks reuse the browser
+  already on the machine. Without it the rows do not fail: their browser lanes
   report SKIP with the reason (`checks/browser-probe.mjs`), node-host and
   wasmtime decide P4.0, node-host and legmacs decide P7.5, and the
   browser-only rows exit 2 with a SKIP line (D227), which the gate reports as
@@ -131,7 +135,7 @@ Environment variables that matter:
 
 | variable | effect |
 |---|---|
-| `LW_BROWSER_TOOLS` | directory holding `browser-smoke-playwright/` (Playwright for the browser lanes; absent = those lanes SKIP, D227) |
+| `LW_BROWSER_TOOLS` | optional: a directory holding `browser-smoke-playwright/`, tried before the pinned, global and PATH Playwrights (`checks/playwright.mjs`); `checks/size-boot.sh` also reads its boot probe from there |
 | `LW_REQUIRE_BROWSER=1` | a browser lane that cannot run is a FAIL, not a SKIP (D227) |
 | `LW_ROOT` | the root holding `let-go/`, `xsofy/`, `legmacs/`, `lg-bin/` (`checks/env.sh`) |
 | `LG` | native lg used by the driver and as the oracle's reference |
