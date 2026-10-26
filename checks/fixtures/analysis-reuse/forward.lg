@@ -1,0 +1,8 @@
+;; A forward caller first sees an incomplete interface. Reuse must notice the
+;; later definition's signature, including boxing caused by a value call.
+(declare later)
+(defn caller [x] (later x))
+(defn stable [x] (+ x 7))
+(defn later [x] (+ x 1))
+(defn invoke [f x] (f x))
+(println (caller 40) (stable 3) (invoke later 41))

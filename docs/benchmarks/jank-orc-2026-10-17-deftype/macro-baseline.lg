@@ -1,0 +1,5 @@
+(deftype MacroProbe [x])
+(defmacro macro-probe []
+  (let [a (->MacroProbe 7)]
+    (and (= (type a) MacroProbe) (not (map? a)) (= 7 (.-x a)))))
+(println (macro-probe))

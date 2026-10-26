@@ -1,0 +1,5 @@
+;; a non-Int reaching a runtime fn's int-typed slot is a catchable error,
+;; not an exit (rt.c's lg_unbox_int used to print and exit)
+(println (try (update [1] nil inc) (catch Exception e "caught")))
+(println (try (update-in nil [nil] inc) (catch Exception e "caught")))
+(println "alive")

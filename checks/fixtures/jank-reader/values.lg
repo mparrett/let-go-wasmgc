@@ -1,0 +1,142 @@
+; native-constants
+(println (= Long/MAX_VALUE 9223372036854775807))
+(println (= Long/MIN_VALUE -9223372036854775808))
+(println (= Double/MAX_VALUE 1.7976931348623157e308))
+(println (= Double/MIN_VALUE 4.9e-324))
+(println (= Double/POSITIVE_INFINITY ##Inf))
+(println (= Double/NEGATIVE_INFINITY ##-Inf))
+(println (not (= Double/NaN Double/NaN)))
+
+; boolean-equality
+(defn same-nilness [a b] (= (nil? a) (nil? b)))
+(println (same-nilness nil nil))
+(println (same-nilness nil 1))
+(println (same-nilness 1 nil))
+(println (same-nilness 1 2))
+
+; variadic-equality
+(doseq [xs [[1] [1 1] [1 1 1] [1 2 1] [nil nil nil] [false false false] [##NaN] [##NaN ##NaN] ["x" "x" "x"] [[1] '(1) [1]]]]
+  (println (apply = xs)))
+(println (apply = (repeat 100 7)))
+(println (try (apply = []) (catch e (ex-message e))))
+(println (= 1 1 1) (= 1 2 3))
+(doseq [xs [[] [1] [##NaN ##NaN] [##NaN ##NaN ##NaN]
+            [1 1 1 1 1] [1 1 2 1 1 1 1] ['() [] [] '() {}]
+            (repeat 100 7) (concat (repeat 99 7) [8])]]
+  (println (apply not= xs)))
+(println (not= 1 1 1 1 1) (not= 1 1 2 1 1 1 1))
+
+; Literal allocation and alias identity, including equality-sensitive NaNs.
+(defn literal-set [] #{1.0 2.0 ##NaN})
+(defn literal-map [] {:a 1})
+(defn literal-regex [] #"same pattern")
+(defn empty-literals [] [#{} {} []])
+(println (= #{1.0 2.0 ##NaN} #{1.0 2.0 ##NaN}))
+(println (identical? (literal-set) (literal-set)) (= (literal-set) (literal-set)))
+(println (identical? (literal-map) (literal-map)) (= (literal-map) (literal-map)))
+(println (map identical? (empty-literals) (empty-literals)))
+(println (= #"same pattern" #"same pattern") (identical? (literal-regex) (literal-regex)))
+(let [s (literal-set) r #"alias" r2 (if true r #"other")]
+  (println (= s s) (identical? s s) (= r r2) (identical? r r2)))
+(let [versions (loop [i 0 out []]
+                 (if (< i 3)
+                   (recur (inc i) (conj out [#{1 ##NaN} {:a 1} [1] (list 1)]))
+                   out))]
+  (println (map identical? (first versions) (second versions)))
+  (println (map = (first versions) (second versions)))
+  (println (map identical? (second versions) (nth versions 2))))
+(doseq [pair [[{} (dissoc {:a 1} :a)] [#{} (disj #{1} 1)]]]
+  (let [shared (first pair) drained (second pair)]
+    (println (= shared drained) (identical? shared drained) (identical? drained drained))
+    (println (identical? shared (empty drained)))
+    (println (identical? shared (persistent! (transient shared))))
+    (println (identical? shared (with-meta shared {})))))
+(println (identical? {} (hash-map)) (identical? {} (array-map))
+         (identical? #{} (hash-set)))
+(println (identical? #{} (apply hash-set [])) (identical? #{} (into #{} []))
+         (identical? #{} (set [])))
+
+; native-types
+(def atom-type clojure.lang.Atom)
+(println (instance? atom-type (atom 1)) (instance? atom-type 1) (instance? atom-type nil))
+(println (= atom-type (type (atom 2))) (identical? atom-type (type (atom 3))))
+(println (map str [clojure.lang.Atom java.lang.Object clojure.lang.ExceptionInfo]))
+(println (instance? clojure.lang.ExceptionInfo (ex-info "x" {})))
+
+; core-abs
+(defn absolute [x] (abs x))
+(println (absolute -42) (absolute 42) (absolute -1.5) (absolute -0.0))
+(println (absolute Long/MIN_VALUE) (absolute ##-Inf) (absolute ##Inf))
+(println (NaN? (absolute ##NaN)) (NaN? 1) (NaN? 1.0) (NaN?) (NaN? 1 2))
+(println (try (absolute nil) (catch e (ex-message e))))
+(println (try (NaN? nil) (catch e (ex-message e))))
+(println (NaN? 1 2 3 4 5) (apply NaN? [1 2 3 4 5]))
+(println (try (abs 1 2 3 4 5) (catch e (ex-message e))))
+
+; bit-not
+(println (try (bit-not nil) (catch e :caught)))
+(println (= -8 (bit-not 7)) (= 7 (bit-not -8)))
+(defn complement [x] (bit-not x))
+(println (try (complement nil) (catch e :caught)))
+(println (complement 7) (complement -8))
+
+; bit-index
+(doseq [f [bit-test bit-set bit-clear bit-flip]]
+  (doseq [n [-1 0 1 63 64 65]]
+    (println (f 0 n) (f -1 n)))
+  (doseq [args [[] [1] [nil 1] [1 nil] [1.0 1] [1 1.0] [1 2 3] [1 2 3 4 5]]]
+    (println (try (apply f args) (catch e (ex-message e))))))
+
+; Unicode simple case mapping: scripts, alternating ranges, and caseless text.
+(doseq [x ["abcXYZ1" "" "֎" "αβγΣς" "Հայերեն" "ქართული" "𐐀𐐨" "İıſKÅµÿ" "中😀"]]
+  (println (upper-case x) (lower-case x)))
+
+; Custom sorted collection comparators: one operation group.
+(doseq [order [< > compare (fn [a b] (compare b a))]]
+  (let [m (sorted-map-by order 3 :c 1 :a 2 :b)
+        s (sorted-set-by order 3 1 2)
+        mm (with-meta m {:tag :map})
+        ss (with-meta s {:tag :set})]
+    (println (vec m) (vec s) (get m 2) (get m 9 :absent))
+    (println (= m {1 :a 2 :b 3 :c}) (= s #{1 2 3})
+             (= (hash m) (hash {1 :a 2 :b 3 :c})) (= (hash s) (hash #{1 2 3})))
+    (println (vec (assoc m 4 :d 2 :replacement)) (vec (dissoc m 1)))
+    (println (vec (conj s 4 2)) (vec (disj s 1)))
+
+    (println (meta mm) (meta (assoc mm 4 :d)) (meta (dissoc mm 1))
+             (meta (conj ss 4)) (meta (disj ss 1)))
+    (println (vec (into (empty mm) [[2 :b] [1 :a] [3 :c]]))
+             (vec (into (empty ss) [2 1 3])) (meta (empty mm)) (meta (empty ss)))))
+(let [up (sorted-map-by < 1 :a 2 :b) down (sorted-map-by > 1 :a 2 :b)]
+  (println (vec (assoc up 3 :c)) (vec (assoc down 3 :c)) (vec up) (vec down)))
+(let [order (fn [a b] (compare (mod a 10) (mod b 10)))
+      m (sorted-map-by order 11 :old 21 :new 2 :two)
+      s (sorted-set-by order 11 21 2)]
+  (println (vec m) (get m 31) (contains? m 41) (vec (dissoc m 31)))
+  (println (vec s) (get s 31) (contains? s 41) (vec (disj s 31))))
+(doseq [order [(fn [a b] :invalid) (fn [a b] (throw (ex-info "order" {})))]]
+  (let [m (sorted-map-by order 3 :c 1 :a 2 :b) s (sorted-set-by order 3 1 2)]
+    (println (vec m) (vec s) (get m 2) (contains? s 2))
+    (println (vec (dissoc m 1)) (vec (disj s 1)))))
+(doseq [[f args] [[sorted-map-by []] [sorted-set-by []]
+                 [sorted-map-by [nil]] [sorted-set-by [nil]]
+                 [sorted-map-by [< 1]]]]
+  (println (try (apply f args) (catch e (ex-message e)))))
+
+; Float comparator normalization (fresh collections for each result).
+; A callable map returns false forward and a number in reverse: equality.
+(println (vec (sorted-map-by {1 1 2 false} 1 :a 2 :b))
+         (vec (sorted-set-by {1 1 2 false} 1 2)))
+(doseq [r [0.5 -0.5 ##NaN ##Inf ##-Inf 1.0e30 -1.0e30]]
+  (let [f (fn [a b] r)]
+    (println (vec (sorted-map-by f 1 :a 2 :b)) (vec (sorted-set-by f 1 2)))))
+
+;; Array construction retains typed storage through mutation and cloning.
+(doseq [kind [:byte :int :long :double :float :object nil]]
+  (let [a (into-array kind [1 2 3]) b (aclone a)]
+    (aset a 1 7)
+    (println (vec a) (vec b) (alength a))))
+(println (vec (into-array [1 :two nil])))
+(println (vec (into-array :double 3)) (vec (double-array 2 1.5)))
+(doseq [args [[] [:bad []] [:double [:bad]] [:int [1.5]]]]
+  (println (try (apply into-array args) (catch e (ex-message e)))))

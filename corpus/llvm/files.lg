@@ -1,0 +1,11 @@
+;; open, write! and close! on the llvm target (D224; flush! fsyncs natively,
+;; which fails on a pipe, so it is not compared here): a native binary
+;; takes the native paths, so *in-wasm* is false and open reaches files.
+(println "in-wasm" *in-wasm*)
+(let [h (open "/dev/stdout" :append)]
+  (write! h "appended line\n")
+  (close! h))
+(let [h (open "/dev/stdout" :write)]
+  (write! h "written line\n")
+  (close! h))
+(println (try (open "/nonexistent-dir/x" :write) :opened (catch Exception e "caught")))

@@ -8,3 +8,7 @@ corpus/scalar/tak.clj  12  # benchmark: native lg 5.2 s CPU
 corpus/scalar/fib.clj  12  # benchmark: native lg 4.5 s CPU
 corpus/seqs/persistent-map.clj 30  # benchmark; the linear runner (P8.10) took 5.1 s CPU at load 8, 12.2 s at load 5 with other rows running
 corpus/eval-buffer/comment-mode.lg 5 900  # compiles legmacs' buffer mode with the evaluator: 338 s with other rows running (legmacs eval compiles reach 700 s, run-tests.sh)
+corpus/llvm/deep.lg 40  # benchmark: a recursion ten million deep and ten million mutual tail calls; native lg 9.9 s CPU alone, 13-20 s with P13.3's other runs (Go's parallel collector), 2026-10-24
+corpus/llvm-scalar/ref.lg 12  # benchmark: native lg 5.5 s CPU (2026-10-24, load 4)
+corpus/llvm-scalar/tak.clj 12  # benchmark: the same program as corpus/scalar/tak.clj (native lg 5.2 s CPU)
+corpus/llvm-scalar/fib.clj 12  # benchmark: the same program as corpus/scalar/fib.clj (native lg 4.5 s CPU)

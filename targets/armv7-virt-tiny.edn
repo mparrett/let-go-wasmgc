@@ -1,0 +1,16 @@
+;; armv7-virt with a 64 KB heap: exhausts memory on purpose, for
+;; checks/llvm-oom-check.sh (plan review focus 5).
+{:name        "armv7-virt-tiny"
+ :triple      "armv7-none-eabihf"
+ :cpu         "cortex-a7"
+ :features    "+strict-align"
+ :cflags      ["-mcpu=cortex-a7" "-mfloat-abi=hard" "-mno-unaligned-access"]
+ :word-bits   32
+ :tail-calls  :tailcc
+ :float       :hard
+ :host        :bare
+ :board       "armv7-virt"
+ :heap        {:bytes 65536}
+ :run         ["qemu-system-arm" "-M" "virt" "-cpu" "cortex-a7" "-m" "1024M"
+               "-nographic" "-monitor" "none"
+               "-semihosting-config" "enable=on,target=native" "-kernel"]}

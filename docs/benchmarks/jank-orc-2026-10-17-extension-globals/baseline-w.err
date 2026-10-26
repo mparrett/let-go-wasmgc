@@ -1,0 +1,36 @@
+[1;31merror:[0m lower-wasm: call to a fn with no known signature (llvm) {:fn "lw-ext/regex-parse__fn116_0", :var "#'lw-ext/posix-ranges", :argc "1"}
+  [1;34m-->[0m src/lower_wasm.lg:194:47
+     [1;34m|[0m
+ [1;34m194[0m [1;34m|[0m   (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
+     [1;34m|[0m                                               [1;31m^^^[0m
+
+[1mstack trace:[0m
+  at throw (src/lower_wasm.lg:194:47)
+  at ll-call-plan (src/lower_llvm.lg:619:33)
+  at ll-cps-call? (src/lower_llvm.lg:654:13)
+  at ll-cuts (src/lower_llvm.lg:1520:72)
+  at reduce (<embedded:core>:1515:33)
+  at into (src/lower_llvm.lg:1520:54)
+  at anonymous fn (src/lower_llvm_ir.lg:59:43)
+  at with-refs (src/lower_llvm.lg:1356:32)
+  at reduce (<embedded:core>:1515:33)
+  at into (src/lower_llvm.lg:1347:24)
+  at ll-closure! (src/lower_llvm.lg:841:44)
+  at ll-inst! (src/lower_llvm.lg:1081:7)
+  at ll-piece! (src/lower_llvm.lg:1176:5)
+  at seq (<embedded:core>:419:13)
+  at next (<embedded:core>:2756:15)
+  at dorun (<embedded:core>:2763:4)
+  at doall (src/lower_llvm.lg:1527:70)
+  at anonymous fn (src/lower_llvm_ir.lg:59:43)
+  at with-refs (src/lower_llvm.lg:1527:49)
+  at llvm-fn (src/lower_llvm.lg:1683:28)
+  at ll-rt-fns! (src/lower_llvm.lg:1766:26)
+  at fn (src/lower_wasm.lg:4678:31)
+  at anonymous fn (src/lower_wasm.lg:4231:5)
+  at session-module (src/driver.lg:1632:12)
+  at anonymous fn (src/lower_wasm.lg:4231:5)
+  at compile-text (src/driver.lg:1707:48)
+  at apply* (<embedded:core>:1215:12)
+  at apply (src/driver.lg:1715:3)
+kept $TMPDIR/tmp.xZy4ctT1dQ

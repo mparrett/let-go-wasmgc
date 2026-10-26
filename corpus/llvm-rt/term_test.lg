@@ -1,0 +1,265 @@
+;; P4.1 (runtime half): rt/llvm/term.lg, the term/* natives as let-go's
+;; js/wasm build defines them (pkg/rt/term_wasm.go at ff1e6dac).
+;;
+;; Where native lg's term natives work headless, expectations are computed
+;; live from native lg: every output fn (native term.go:495-686 writes the
+;; same bytes as term_wasm.go:111-286 through *out*, so with-out-str sees
+;; them), their error messages, char-width, flush, and read-key /
+;; key-pending? at end of input ((binding [*keys* nil] …) selects
+;; nopKeySource, keysource.go:47). The escape bytes are also pinned to the
+;; Go literals by file:line, so a change to the Go strings shows up here.
+;; What needs a TTY or the browser is pinned to the Go source instead:
+;; raw-mode!/restore-mode! (TRUE on wasm, nil on a headless native),
+;; term/size (a [cols rows] PersistentVector on wasm, nil headless), and the
+;; key queue (HostKeySource, keysource_js_wasm.go:54-137), fed through the
+;; reference intrinsics' *term-input* / *term-size*.
+(ns term-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as s]
+            [llvm.core :as c]
+            [llvm.term :as t]
+            [core-test :as ct]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; core-test's res/err-msg are private: the same two, here (as
+;; xsofy_natives_test does).
+(def ^:private obj-array-type (type (object-array 0)))
+(defn- err-msg [e]
+  (cond (and (= (type e) obj-array-type) (arch/is? sq/Err e)) (arch/string-of-bytes (arch/get sq/Err 2 e))
+        (= (type e) obj-array-type) (str "thrown ref " (pr-str (ct/<-w e)))
+        :else (string/replace (ex-message e) "wasm trap: " "")))
+(defn- res [f] (try [:ok (f)] (catch Throwable e [(if (:arch/trap (ex-data e)) :trap :err) (err-msg e)])))
+
+(defn- W [v] (ct/->w v))
+(defn- out+val
+  "What f wrote to *out* and what it returned (converted by conv), or its
+   error message."
+  [f conv]
+  (res (fn [] (let [r (atom nil) o (with-out-str (reset! r (f)))] [o (conv @r)]))))
+
+(defmacro same-io
+  "Native and runtime expressions write the same bytes and return the same
+   value, or fail with the same message."
+  [native mine]
+  `(is (= (out+val (fn [] ~native) identity) (out+val (fn [] ~mine) ct/<-w)) (pr-str '~native)))
+
+(defn- rt-str [r] (when-not (arch/null? r) (arch/string-of-bytes (s/str-bytes r))))
+
+;; ---------------------------------------------------------------------------
+;; Output
+
+(def ^:private go-literals
+  ;; [runtime fn, native fn, the literal, its term_wasm.go line]
+  [[t/clear term/clear "\u001b[2J" 125]
+   [t/clear-line term/clear-line "\u001b[2K" 130]
+   [t/hide-cursor term/hide-cursor "\u001b[?25l" 135]
+   [t/show-cursor term/show-cursor "\u001b[?25h" 140]
+   [t/reset-style term/reset-style "\u001b[0m" 193]
+   [t/bold term/bold "\u001b[1m" 198]
+   [t/underline term/underline "\u001b[4m" 203]
+   [t/inverse term/inverse "\u001b[7m" 208]
+   [t/alternate-screen term/alternate-screen "\u001b[?1049h" 262]
+   [t/main-screen term/main-screen "\u001b[?1049l" 267]
+   [t/enable-mouse term/enable-mouse "\u001b[?1000;1006h" 279]
+   [t/disable-mouse term/disable-mouse "\u001b[?1000;1006l" 284]])
+
+(deftest output-fixed-escapes
+  (c/install!)
+  (doseq [[mine native lit line] go-literals]
+    (is (= lit (with-out-str (native))) (str "native vs term_wasm.go:" line))
+    (same-io (native) (mine))))
+
+(deftest output-cursor-and-colour
+  (c/install!)
+  (testing "Go literals: \\033[%d;%dH (:120), 38;5 (:152), 38;2 (:160), 48;5 (:176), 48;2 (:184), write-at (:241)"
+    (is (= "\u001b[7;3H" (with-out-str (t/move-cursor (W 3) (W 7)))))
+    (is (= "\u001b[38;5;196m" (with-out-str (t/set-fg (W 196)))))
+    (is (= "\u001b[38;2;1;2;3m" (with-out-str (t/set-fg (W 1) (W 2) (W 3)))))
+    (is (= "\u001b[48;5;17m" (with-out-str (t/set-bg (W 17)))))
+    (is (= "\u001b[48;2;250;0;9m" (with-out-str (t/set-bg (W 250) (W 0) (W 9)))))
+    (is (= "\u001b[2;1Hab" (with-out-str (t/write-at (W 1) (W 2) (W "ab"))))))
+  (doseq [[col row] [[1 1] [0 0] [80 24] [-3 7] [1073741824 5] [5 -9223372036854775808]]]
+    (same-io (term/move-cursor col row) (t/move-cursor (W col) (W row))))
+  (doseq [code [0 15 16 231 255 -1 300 4000000000]]
+    (same-io (term/set-fg code) (t/set-fg (W code)))
+    (same-io (term/set-bg code) (t/set-bg (W code))))
+  (doseq [[r g b] [[0 0 0] [255 255 255] [12 200 7] [-1 256 1073741824]]]
+    (same-io (term/set-fg r g b) (t/set-fg (W r) (W g) (W b)))
+    (same-io (term/set-bg r g b) (t/set-bg (W r) (W g) (W b))))
+  (testing "errors"
+    (same-io (term/move-cursor 1) (t/move-cursor (W 1)))
+    (same-io (term/move-cursor) (t/move-cursor))
+    (same-io (term/move-cursor 1 2 3) (t/move-cursor (W 1) (W 2) (W 3)))
+    (same-io (term/move-cursor 1 :a) (t/move-cursor (W 1) (W :a)))
+    (same-io (term/move-cursor 1.0 2) (t/move-cursor (W 1.0) (W 2)))
+    (same-io (term/set-fg) (t/set-fg))
+    (same-io (term/set-fg 1 2) (t/set-fg (W 1) (W 2)))
+    (same-io (term/set-fg 1 2 3 4) (t/set-fg (W 1) (W 2) (W 3) (W 4)))
+    (same-io (term/set-fg :a) (t/set-fg (W :a)))
+    (same-io (term/set-fg 1.0) (t/set-fg (W 1.0)))
+    (same-io (term/set-fg 1 2 nil) (t/set-fg (W 1) (W 2) (W nil)))
+    (same-io (term/set-bg "x") (t/set-bg (W "x")))
+    (same-io (term/set-bg 1 :b 2) (t/set-bg (W 1) (W :b) (W 2)))
+    (same-io (term/set-bg 1 2) (t/set-bg (W 1) (W 2)))))
+
+(deftest output-write
+  (c/install!)
+  (doseq [v ["" "plain" "héllo 日本\n" "\u001b[A" 5 -7 nil :k 'sym \c [1 "a"] {:a 1} 1.5 true]]
+    (same-io (term/write v) (t/write (W v)))
+    (same-io (term/write-at 4 2 v) (t/write-at (W 4) (W 2) (W v))))
+  (same-io (term/write) (t/write))
+  (same-io (term/write "a" "b") (t/write (W "a") (W "b")))
+  (same-io (term/write-at 1 2) (t/write-at (W 1) (W 2)))
+  (same-io (term/write-at :a 1 "x") (t/write-at (W :a) (W 1) (W "x")))
+  (same-io (term/write-at 1 2 "x" 4) (t/write-at (W 1) (W 2) (W "x") (W 4))))
+
+(deftest char-width-and-flush
+  (c/install!)
+  ;; "�" is utf8.RuneError itself, so it reads as width 0, like ""
+  (doseq [v ["" "a" "日本" "é" "�" "�x" "\u001b" "🙂"]]
+    (same-io (term/char-width v) (t/char-width (W v))))
+  (same-io (term/char-width 5) (t/char-width (W 5)))
+  (same-io (term/char-width) (t/char-width))
+  (same-io (term/char-width "a" "b") (t/char-width (W "a") (W "b")))
+  ;; native flush Syncs *out* (nil on with-out-str's buffer); the runtime's
+  ;; host write is unbuffered, so its flush has nothing to do
+  (same-io (term/flush) (t/flush)))
+
+;; ---------------------------------------------------------------------------
+;; Modes and geometry (pinned to term_wasm.go)
+
+(deftest modes
+  (c/install!)
+  ;; term_wasm.go:51-59: both return vm.TRUE whatever the arguments
+  (is (= true (ct/<-w (t/raw-mode!))))
+  (is (= true (ct/<-w (t/restore-mode!))))
+  (is (= "" (with-out-str (t/raw-mode!) (t/restore-mode!)))))
+
+(deftest size
+  (c/install!)
+  (testing "term_wasm.go:92-102: [cols rows], a zero dimension reads as 80/24, never nil"
+    (is (= [80 24] (ct/<-w (t/size))))
+    (doseq [[in want] [[[100 36] [100 36]] [[0 0] [80 24]] [[0 50] [80 50]] [[132 0] [132 24]] [[1 1] [1 1]] [[65535 65535] [65535 65535]]]]
+      (binding [t/*term-size* in]
+        (is (= want (ct/<-w (t/size))) (pr-str in)))))
+  (testing "NewPersistentVector builds a PersistentVector at any length (persistent_vector.go:690): pkind 1 (D73)"
+    (is (= 1 (pv/vpkind (t/size))))
+    (is (arch/null? (pv/vmeta (t/size))))))
+
+;; ---------------------------------------------------------------------------
+;; Input. A key is the raw string the host sent: term_wasm.go:65-75 returns
+;; vm.String(s) with no escape decoding (and, unlike native term.go:397, no
+;; SGR mouse map); xsofy.input/parse-key looks those strings up in its
+;; binding table, so "\u001b[A" must arrive as those three bytes.
+
+(defn- read-all
+  "Read keys from the queue ks until end of input (at most 100)."
+  [ks]
+  (binding [t/*term-input* (atom ks)]
+    (loop [out [] i 0]
+      (let [r (t/read-key)]
+        (if (or (arch/null? r) (= i 100)) out (recur (conj out (rt-str r)) (inc i)))))))
+
+(deftest read-key-queue
+  (c/install!)
+  (testing "end of input = nil: native nopKeySource (keysource.go:47) and the runtime with no queue"
+    (same-io (binding [*keys* nil] (term/read-key)) (t/read-key))
+    (same-io (binding [*keys* nil] (term/key-pending?)) (t/key-pending?))
+    (binding [t/*term-input* (atom [])]
+      (is (arch/null? (t/read-key)))
+      (is (= false (ct/<-w (t/key-pending?))))))
+  (testing "keys arrive verbatim: plain, control, escape sequences, multi-byte UTF-8"
+    (let [ks ["a" "Q" " " "\r" "\u007f" "\u0003" "\u001b" "\u001b[A" "\u001b[B" "\u001b[1;5C"
+              "\u001bOP" "\u001b[<0;12;7M" "é" "日" "🙂" ">"]]
+      (is (= ks (remove #{"."} (read-all (vec (interpose "." ks))))) "with separators")
+      (is (= "\u001b[1;5C" (first (read-all ["\u001b[1;5C"]))))
+      (is (= [27 91 65] (map int (first (read-all ["\u001b[A"])))))
+      (binding [t/*term-input* (atom ["\u001b[A"])]
+        (let [r (t/read-key)]
+          (is (= 17 (sq/kind r)) "a String, not a keyword or a map")
+          (is (= 3 (arch/alen (s/str-bytes r))))))))
+  (testing "keysource_js_wasm.go:96-122: consecutive identical keys drain in one read"
+    (is (= ["a" "b" "a"] (read-all ["a" "a" "a" "b" "a"])))
+    (is (= ["\u001b[A" "\u001b[B" "\u001b[A"] (read-all ["\u001b[A" "\u001b[A" "\u001b[B" "\u001b[A" "\u001b[A"]))))
+  (testing "keysource_js_wasm.go:86-90: a key outside 1..16 bytes is drained and reads as nil"
+    (binding [t/*term-input* (atom ["12345678901234567" "x"])]
+      (is (arch/null? (t/read-key)))
+      (is (= "x" (rt-str (t/read-key)))))
+    (is (= ["1234567890123456"] (read-all ["1234567890123456"])) "16 bytes is the limit, inclusive"))
+  (testing "key-pending? peeks without consuming"
+    (binding [t/*term-input* (atom ["z"])]
+      (is (= true (ct/<-w (t/key-pending?))))
+      (is (= true (ct/<-w (t/key-pending?))))
+      (is (= "z" (rt-str (t/read-key))))
+      (is (= false (ct/<-w (t/key-pending?)))))))
+
+;; ---------------------------------------------------------------------------
+;; The dialect claim (as xsofy_natives_test's): every var a twin's body
+;; references after IR macroexpansion is a runtime var, an intrinsic, a core
+;; fn the IR lowers to an op, or core/throw. The three term intrinsics'
+;; bodies are the reference implementation and are skipped, as
+;; intrinsics.lg's are.
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot throw})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote catch})
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'catch head) (let [[_ e & body] more] (mapcat #(var-refs % (conj bound e)) body))
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(defn- intrinsic-defn? [[_ nm]]
+  (and (seq? nm) (= 'with-meta (first nm)) (:intrinsic (nth nm 2))))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/llvm/term.lg") "\n]"))
+        all (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        defns (remove intrinsic-defn? all)
+        in-ns* #(binding [*ns* (find-ns 'llvm.term)] (%))
+        bad (distinct
+             (for [d defns
+                   [params & body] (arities d)
+                   sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
+                   :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                         vname (str v)]
+                   :when (not (or (some #(string/starts-with? vname (str "#'llvm." % "/"))
+                                        ["term" "core" "seq" "pvec" "str"])
+                                  (and (string/starts-with? vname "#'llvm.arch/")
+                                       (or (:intrinsic (meta v)) (:llvm.arch/kind @v)))
+                                  (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+               [(second d) sym]))]
+    (is (= 3 (count (filter intrinsic-defn? all))) "term-read-key term-key-pending term-size")
+    (is (<= 25 (count defns)) "rt/llvm/term.lg defns")
+    (is (empty? bad) (str "rt/llvm/term.lg non-dialect references: " (pr-str bad)))
+    (testing "the intrinsics carry D24's metadata"
+      (doseq [v [#'t/term-read-key #'t/term-key-pending #'t/term-size]]
+        (is (and (:intrinsic (meta v)) (string? (:wasm (meta v))) (string? (:type (meta v)))) (str v))))))

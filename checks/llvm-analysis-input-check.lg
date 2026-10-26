@@ -1,0 +1,46 @@
+(ns llvm-analysis-input-check
+  (:require [test :refer [deftest is]]
+            [analysis-check-driver :as driver]
+            [lower-wasm :as lw]
+            [lower-llvm-analysis-cache :as ac]))
+
+(defn callee ([x] x) ([x y] y))
+
+(deftest referenced-definition-includes-every-arity
+  (lw/with-session* (lw/new-session {} {} {:target :llvm})
+    (fn []
+      (let [src '(defn caller [x] (callee x))
+            sig {:arities {1 {:name "callee#1" :params [:int] :ret :int}
+                           2 {:name "callee#2" :params [:int :int] :ret :int}}}]
+        (swap! lw/*sigs* assoc #'callee sig)
+        (let [before (driver/analysis-interfaces src)]
+          (is (= sig (get-in before [#'callee :signature])))
+          (swap! lw/*sigs* assoc-in [#'callee :arities 2 :ret] :box)
+          (is (not= before (driver/analysis-interfaces src)))
+          (is (= :box (get-in (driver/analysis-interfaces src) [#'callee :signature :arities 2 :ret]))))))))
+
+(deftest mapped-runtime-interface-invalidates
+  (lw/with-session* (lw/new-session {} {} {:target :llvm :rt true})
+    (fn []
+      (let [src '(defn caller [x] (count x)) target (lw/rt-target #'count)]
+        (is (some? target))
+        (is (not= #'count target))
+        (swap! lw/*sigs* assoc target {:arities {1 {:name "count" :params [:box] :ret :int}}})
+        (let [before (driver/analysis-interfaces src)]
+          (is (= target (get-in before [#'count :runtime-target])))
+          (is (= :int (get-in before [#'count :runtime-signature :arities 1 :ret])))
+          (swap! lw/*sigs* assoc-in [target :arities 1 :ret] :box)
+          (is (not= before (driver/analysis-interfaces src))))))))
+
+(deftest actual-template-ir-is-not-reusable
+  (lw/with-session* (lw/new-session {} {} {:target :llvm})
+    (fn []
+      (doseq [form ['(defn scalar [x] (+ x 1))
+                    '(defn single [] (fn [x] (+ x 1)))
+                    '(defn multiple [] (fn ([x] (+ x 1)) ([x y] (+ x y))))]]
+        (let [src (first (driver/expand-defn form))
+              info (lw/analyze-fn src (str (second src)) false)]
+          (is (= (= 'scalar (second form)) (boolean (driver/reusable-analysis? info)))))))))
+
+(let [result (test/run-tests 'llvm-analysis-input-check)]
+  (os/exit (if (and (= 3 (:test result)) (test/successful? result)) 0 1)))

@@ -1,0 +1,398 @@
+;; llvm.phm (rt/llvm/phm.lg) checked against lg's own maps: for every
+;; construction path, the SAME op sequence is applied to a native map and to a
+;; llvm.phm map, and the seq orders must agree entry by entry (key type, key,
+;; value). get/contains?/count/hash/= are probed against native too.
+;; Values use the runtime's own model (D38): nil = null, Int/i31, Bool,
+;; EmptyList, pvec for vectors, and llvm.seq's Str/Char/Kw/Sym/Float boxes
+;; (keywords and symbols interned by llvm.str), so key hash and = are the
+;; runtime's: every order-parity assertion over keyword/string/char/float/
+;; symbol keys is also a check that those hashes match the Go side. Bigint
+;; keys stay out until the numeric tower (P2.7): the runtime has no bigint box.
+(ns phm-test
+  (:require [test :refer [deftest is testing]]
+            [llvm.arch :as arch]
+            [llvm.phm :as m]
+            [llvm.phs :as s]
+            [llvm.pvec :as pv]
+            [llvm.seq :as sq]
+            [llvm.str :as st]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+;; ---------------------------------------------------------------------------
+;; Boundary glue (test only): lg values to runtime refs and back, deep.
+
+(defn- arr->vec* [a] (mapv #(arch/aget m/HSlots a %) (range (arch/alen a))))
+
+(defn ->w "lg value -> wasm ref." [x]
+  (cond (nil? x) (arch/null)
+        (int? x) (sq/box-int x)
+        (boolean? x) (sq/bool x)
+        (identical? x ()) (sq/empty-list)
+        (string? x) (st/mk-str (arch/bytes-of-string x))
+        (keyword? x) (st/kw-of-bytes (arch/bytes-of-string (subs (str x) 1)))
+        (symbol? x) (st/sym-of-bytes (arch/bytes-of-string (str x)))
+        (char? x) (st/mk-char (int x))
+        (float? x) (st/box-float x)
+        (vector? x) (pv/vretag (reduce (fn [w e] (pv/vconj w (->w e))) (pv/empty-vec) x)
+                               (if (= (type x) (type (with-meta [] {}))) 1 0) (arch/null)) ; the Go type native holds (D73)
+        :else (throw (ex-info (str "->w: no runtime form for " (pr-str x)) {}))))
+
+(defn- bytes->str [b] (when-not (arch/null? b) (arch/string-of-bytes b)))
+
+(defn <-w "wasm ref -> lg value." [r]
+  (case (sq/kind r)
+    0 nil
+    1 (sq/unbox-int r)
+    2 ()
+    11 (mapv #(<-w (pv/vnth r %)) (range (pv/vcount r)))
+    15 (= 1 (arch/get sq/Bool 0 r))
+    17 (arch/string-of-bytes (arch/get sq/Str 0 r))
+    19 (char (arch/get sq/Char 0 r))
+    20 (keyword (bytes->str (arch/get sq/Kw 0 r)) (bytes->str (arch/get sq/Kw 1 r)))
+    21 (symbol (bytes->str (arch/get sq/Sym 0 r)) (bytes->str (arch/get sq/Sym 1 r)))
+    22 (arch/get sq/Float 0 r)
+    23 [(<-w (arch/get sq/MapEntry 0 r)) (<-w (arch/get sq/MapEntry 1 r))]   ; a map's seq yields MapEntry (P2.7)
+    18 (cond (arch/is? m/HMap r) (into {} (map (fn [[k v]] [(<-w k) (<-w v)]) (partition 2 (arr->vec* (m/entries r)))))
+             (arch/is? s/HSet r) (set (map <-w (arr->vec* (s/sseq r))))
+             :else (throw (ex-info "<-w: unknown foreign ref" {})))
+    (throw (ex-info (str "<-w: kind " (sq/kind r)) {}))))
+
+;; ---------------------------------------------------------------------------
+;; Shared with phs-test.
+
+;; The slow tier (D51): SLOW=1 adds the 10k-key builds here and in phs-test,
+;; and runs every construction path at 1000 keys. The default tier runs every
+;; path at sizes 0-100 and `mid-paths` at 1000 (a 3-level HAMT), so it stays
+;; under 90 s; measured 2026-10-01, the full 1000 tier alone is ~57 s.
+(defn slow? [] (= "1" (os/getenv "SLOW")))
+
+;; Deterministic 31-bit LCG (the corpus/maporder generator's constants).
+(defn lcg [s] (bit-and (+ (* s 1103515245) 12345) 0x7fffffff))
+(defn lcg-ints [seed n] (vec (take n (rest (iterate lcg seed)))))
+
+(def sizes (concat (range 10) [16 33 100 1000 10000]))
+(def kinds [:int :kw :str :mixed])
+
+(defn gen-key
+  "Key i of a kind from LCG draw r. Ranges are chosen so larger builds repeat
+   keys (re-assoc of an existing key) and cross the i31/Int box boundary."
+  [kind i r]
+  (case kind
+    :int (case (mod i 3)
+           0 (- (mod r 4000) 2000)
+           1 (- r 0x40000000)
+           (* (bit-and r 0xffffff) 4294967311))
+    :kw (if (zero? (mod i 5)) (keyword "ns.x" (str "k" (mod r 50000))) (keyword (str "k" (mod r 50000))))
+    :str (case (mod i 4) 0 (str "s" (mod r 50000)) 1 (str "é" r) 2 (str "日本" (mod r 9999)) (str "x" r "🜁"))
+    :mixed (case (mod i 10)
+             0 (- (mod r 2000) 1000)
+             1 (keyword (str "m" (mod r 3000)))
+             2 (str "m" (mod r 3000))
+             3 (char (+ 33 (mod r 5000)))
+             4 [(mod r 40) (mod (quot r 40) 40)]
+             5 (/ (double (mod r 1000)) 8.0)
+             6 (- 0.0 (/ (double (mod r 1000)) 8.0))         ; -0.0 = 0.0 under =, hashes differ (D19)
+             7 (if (zero? (mod r 2)) true false)
+             8 (if (zero? (mod r 3)) nil (symbol (str "y" (mod r 500))))
+             (* (bit-and r 0xffff) 4294967311))))
+
+(defn gen-keys [kind n seed] (vec (map-indexed #(gen-key kind %1 %2) (lcg-ints seed n))))
+
+(defn arr->vec [a] (mapv #(arch/aget m/HSlots a %) (range (arch/alen a))))
+(defn tagged [x] [(type x) x])
+
+(defn first-mismatch
+  "nil when the two seqs agree element by element, else [index native mine]."
+  [nat mine]
+  (let [nat (vec nat) mine (vec mine)]
+    (if (not= (count nat) (count mine))
+      [:count (count nat) (count mine)]
+      (some (fn [i] (when (not= (nth nat i) (nth mine i)) [i (nth nat i) (nth mine i)]))
+            (range (count nat))))))
+
+;; The dialect claim, as in pvec-test: expand every defn body as the IR
+;; pipeline does; each var referenced must be in `allowed?`.
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote throw}) ; throw: D68 raises (P2.13)
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+;; Other runtime-dialect namespaces (each has its own dialect test).
+(defn runtime-ns? [vname]
+  (or (string/starts-with? vname "#'llvm.seq/") (string/starts-with? vname "#'llvm.pvec/")
+      (string/starts-with? vname "#'llvm.phm/")))
+
+(defn dialect-offenders
+  "[defn-count offending-[name sym]-pairs] for the file. `seam` is the set of
+   var names (strings like \"#'llvm.seq/kind\") allowed beyond the dialect."
+  [path ns-sym seam]
+  (let [forms (read-string (str "[" (slurp path) "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        own (str "#'" ns-sym "/")
+        offending
+        (for [[_ nm & more] defns
+              :let [more (if (string? (first more)) (rest more) more)
+                    [params & body] more]
+              sym (mapcat #(var-refs (binding [*ns* (find-ns ns-sym)] (pipeline/expand-all %)) (set params)) body)
+              ;; resolve under a *ns* binding and classify by printed name
+              ;; (ns-resolve is nil on lg 4e769212; core vars carry no :ns meta)
+              :let [vr (when (symbol? sym) (binding [*ns* (find-ns ns-sym)] (resolve sym)))
+                    vname (str vr)]
+              :when (not (or (string/starts-with? vname own)
+                             (seam vname)
+                             (and (string/starts-with? vname "#'llvm.arch/") (:intrinsic (meta vr)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [nm sym])]
+    [(count defns) (distinct offending)]))
+
+;; ---------------------------------------------------------------------------
+;; Map construction paths. Each returns [native-map wasm-map]; the wasm side
+;; takes the code path let-go takes for the native call (SPEC.md, maporder).
+
+(defn- val-of [i] (* 7 i))
+(defn- bx [x] (->w x))
+
+(defn- p-assoc [m mm ks off]               ; assoc / zipmap / hash-map (NewPersistentMap)
+  (reduce (fn [[n w] [i k]] [(assoc n k (val-of (+ i off))) (m/massoc w (bx k) (bx (val-of (+ i off))))])
+          [m mm] (map-indexed vector ks)))
+
+(defn- t-assoc [t ks off]
+  (reduce (fn [t [i k]] (m/tassoc! t (bx k) (bx (val-of (+ i off))))) t (map-indexed vector ks)))
+
+(defn shuffle-lcg
+  "Fisher-Yates driven by the LCG, seeded by the length."
+  [xs]
+  (loop [v (vec xs) i (dec (count v)) s (+ 7 (count v))]
+    (if (pos? i)
+      (let [s (lcg s) j (mod s (inc i))]
+        (recur (assoc v i (nth v j) j (nth v i)) (dec i) s))
+      v)))
+
+(defn every-other [ks] (vec (take-nth 2 (shuffle-lcg ks))))
+
+(defn build-paths
+  "{path (delay [native wasm])} for key vector ks; lazy so a big size can run
+   only some paths."
+  [ks]
+  (let [kvs (mapcat (fn [i k] [k (val-of i)]) (range) ks)
+        a (delay (p-assoc {} (m/empty-map) ks 0))
+        t (delay (m/tpersistent! (t-assoc (m/transient-map (m/empty-map)) ks 0)))
+        half (every-other ks)
+        d (delay (let [[na wa] @a] [(reduce dissoc na half) (reduce m/mdissoc wa (map bx half))]))]
+    {:assoc a
+     :hash-map (delay [(apply hash-map kvs) (second @a)])
+     :zipmap (delay [(zipmap ks (map val-of (range))) (second @a)])
+     :array-map (delay [(apply array-map kvs) @t])
+     :into (delay [(into {} (map vector ks (map val-of (range)))) @t])
+     :transient (delay [(persistent! (reduce (fn [t [i k]] (assoc! t k (val-of i))) (transient {}) (map-indexed vector ks)))
+                        @t])
+     :update (delay (let [[na wa] @a] (p-assoc na wa ks 500000)))
+     :dissoc-half d
+     :assoc-back (delay (let [[nd wd] @d] (p-assoc nd wd half 1000000)))
+     :transient-dissoc
+     (delay (let [[na wa] @a]
+              [(persistent! (reduce (fn [t [i k]] (assoc! t k (val-of (+ i 1000000))))
+                                    (reduce dissoc! (transient na) half) (map-indexed vector (take 3 half))))
+               (m/tpersistent! (t-assoc (reduce (fn [t k] (m/tdissoc! t (bx k))) (m/transient-map wa) half)
+                                        (take 3 half) 1000000))]))
+     :drain-regrow
+     (delay (let [[na wa] @a] (p-assoc (reduce dissoc na ks) (reduce m/mdissoc wa (map bx ks)) (take 6 ks) 0)))
+     :transient-drain-regrow
+     (delay (let [[na wa] @a]
+              [(persistent! (reduce (fn [t [i k]] (assoc! t k (val-of i)))
+                                    (reduce dissoc! (transient na) ks) (map-indexed vector (take 6 ks))))
+               (m/tpersistent! (t-assoc (reduce (fn [t k] (m/tdissoc! t (bx k))) (m/transient-map wa) ks)
+                                        (take 6 ks) 0))]))}))
+
+(defn- nat-entries [nm] (mapv (fn [[k val]] [(tagged k) val]) (seq nm)))
+(defn- wasm-entries [wm]
+  (mapv (fn [[k val]] [(tagged (<-w k)) (<-w val)]) (partition 2 (arr->vec (m/entries wm)))))
+
+(defn- probe-keys
+  "Every key of ks up to 200, else an LCG sample of 200, plus 40 fresh keys
+   and three that are absent or equiv-special."
+  [ks kind seed]
+  (concat (if (<= (count ks) 200) ks (map #(nth ks (mod % (count ks))) (lcg-ints seed 200)))
+          (gen-keys kind 40 (+ seed 99991)) [nil () ::absent]))
+
+(defn- probe-mismatches [nm wm ks kind seed]
+  (let [nf (bx ::nf)]
+    (for [k (probe-keys ks kind seed)
+          :let [n [(get nm k ::nf) (contains? nm k)]
+                w [(<-w (m/mget wm (bx k) nf)) (m/mcontains? wm (bx k))]]
+          :when (not= n w)]
+      [k n w])))
+
+(defn- check-map [label nm wm ks kind seed]
+  (let [ne (nat-entries nm) we (wasm-entries wm)]
+    (is (nil? (first-mismatch ne we)) (str label " seq order"))
+    (is (= ne (mapv (fn [k val] [(tagged k) val]) (keys nm) (vals nm))) (str label " native keys/vals = seq"))
+    (when (<= (count ks) 1000)                ; derived from entries; once is enough at 10k
+      (is (= (mapv (comp tagged <-w) (arr->vec (m/mkeys wm))) (mapv first we)) (str label " keys = entries"))
+      (is (= (mapv <-w (arr->vec (m/mvals wm))) (mapv second we)) (str label " vals = entries")))
+    (is (= (count nm) (m/mcount wm)) (str label " count"))
+    (is (= (hash nm) (m/mhash wm)) (str label " hash"))
+    (is (empty? (take 3 (probe-mismatches nm wm ks kind seed))) (str label " get/contains?"))))
+
+(defn- run-kind [kind size-pred path-pred]
+  (doseq [n sizes :when (size-pred n)
+          :let [ks (gen-keys kind n (+ n 7)) paths (build-paths ks) [na wa] @(:assoc paths)]]
+    (doseq [[path dl] paths :when (path-pred path) :let [[nm wm] @dl]]
+      (check-map (str kind " n=" n " " path) nm wm ks kind n)
+      ;; = across paths: equal contents built differently compare equal, and
+      ;; the answer agrees with native for the unequal ones too.
+      (when (<= n 1000)
+        (let [ab (m/mequiv wa wm)]              ; both directions only while cheap
+          (is (= (= na nm) ab (if (<= n 100) (m/mequiv wm wa) ab)) (str kind " n=" n " = vs " path)))))))
+
+(def big-paths #{:assoc :transient})
+(def mid-paths #{:assoc :transient :dissoc-half})
+
+(defn- run-tiers [kind]
+  (run-kind kind #(< % 1000) any?)
+  (run-kind kind #{1000} (if (slow?) any? mid-paths))
+  (when (slow?) (run-kind kind #{10000} big-paths)))
+
+(deftest int-keys
+  (s/install-hooks!)
+  (run-tiers :int))
+(deftest kw-keys
+  (s/install-hooks!)
+  (run-tiers :kw))
+(deftest str-keys
+  (s/install-hooks!)
+  (run-tiers :str))
+(deftest mixed-keys
+  (s/install-hooks!)
+  (run-tiers :mixed))
+
+;; Distinct, unequal keys with equal hashes (corpus/hash/SPEC.md surprise 4,
+;; corpus/maporder/SPEC.md "Collision buckets"), plus pairs that are ONE key.
+(def collide-groups
+  [[97 \a 4.8E-322 "xe2tiazy"] ["snpfo" "s6rja"] [:kby0z :kcxik] ['kby0z 'kcxik]
+   [[97] [\a]] [4611686018427387904 2.0]])
+;; [1 1N] is a same-key pair natively too; out until the runtime has a bigint box (P2.7).
+(def same-key-pairs [[nil ()] [0.0 -0.0]])
+(def fillers (mapv #(keyword (str "f" %)) (range 12)))
+
+(deftest collision-hashes-really-collide
+  (s/install-hooks!)
+  (doseq [g collide-groups]
+    (is (apply = (map hash g)) (pr-str g))
+    (is (= (count g) (count (set g))) (str "distinct: " (pr-str g)))))
+
+(deftest collisions
+  (s/install-hooks!)
+  (let [all (vec (apply concat collide-groups))
+        orders [all (vec (reverse all)) (shuffle-lcg all)]]
+    (doseq [[oi order] (map-indexed vector orders)
+            nfill [0 3 12]
+            :let [ks (into (vec (take nfill fillers)) order)
+                  paths (build-paths ks)]
+            [path dl] paths :let [[nm wm] @dl]]
+      (check-map (str "collide order" oi " fill" nfill " " path) nm wm ks :mixed oi)))
+  (testing "bucket 2 -> 1 bug (SPEC: shift-0 rebuild): get misses, re-assoc duplicates"
+    (doseq [[a b] [[97 \a] [:kby0z :kcxik] ["snpfo" "s6rja"] [[97] [\a]]]
+            [gone keep] [[a b] [b a]]
+            :let [ks (conj fillers a b)
+                  [n0 w0] (p-assoc {} (m/empty-map) ks 0)
+                  n1 (dissoc n0 gone) w1 (m/mdissoc w0 (bx gone))
+                  [n2 w2] (p-assoc n1 w1 [gone keep] 77)
+                  [n3 w3] (p-assoc n2 w2 [keep] 99)]
+            [label nm wm] [["dissoc" n1 w1] ["reassoc" n2 w2] ["again" n3 w3]]]
+      (check-map (str "bucket " (pr-str gone) " " label) nm wm ks :mixed 3))))
+
+(deftest same-key-pairs-and-ordered-mode-equiv
+  (s/install-hooks!)
+  (doseq [[a b] same-key-pairs
+          nfill [0 3 12]
+          :let [ks (-> (vec (take nfill fillers)) (conj a) (into (take 2 fillers)) (conj b))]
+          [path dl] (build-paths ks) :let [[nm wm] @dl]]
+    (check-map (str (pr-str a) "/" (pr-str b) " fill" nfill " " path) nm wm ks :mixed 5)))
+
+(deftest threshold-boundary
+  (s/install-hooks!)
+  (testing "ordered through 8, HAMT at 9, no demotion below 9, drain -> ordered"
+    (let [ks (mapv #(keyword (str "z" (- 20 %))) (range 12))
+          ordered? (fn [wm] (arch/null? (arch/get m/HMap 1 wm)))
+          maps (reductions (fn [w k] (m/massoc w (bx k) (bx 1))) (m/empty-map) ks)]
+      (is (= [true true true true true true true true true false false false false]
+             (mapv ordered? maps)))
+      (let [w9 (nth maps 9) w1 (reduce m/mdissoc w9 (map bx (take 8 ks)))]
+        (is (= 1 (m/mcount w1)))
+        (is (false? (ordered? w1)) "no demotion")
+        (is (ordered? (m/mdissoc w1 (bx (nth ks 8)))) "drained map is ordered")))))
+
+(deftest persistence-and-transient-ownership
+  (s/install-hooks!)
+  (let [ks (gen-keys :int 300 11)
+        [_ w] (p-assoc {} (m/empty-map) ks 0)
+        before (wasm-entries w)
+        t (m/transient-map w)]
+    (t-assoc t (gen-keys :int 300 12) 5)
+    (reduce (fn [t k] (m/tdissoc! t (bx k))) t (take 100 ks))
+    (is (= before (wasm-entries w)) "a transient never mutates the map it came from")
+    (let [p (m/tpersistent! t)]
+      (is (= (m/tcount t) (m/mcount p)))
+      (is (= (try (let [nt (transient {})] (persistent! nt) (assoc! nt 1 1)) (catch Exception e (ex-message e)))
+             (try (m/tassoc! t (bx 1) (bx 1)) nil
+                  (catch Throwable e (when (arch/is? sq/Err e) (arch/string-of-bytes (arch/get sq/Err 2 e))))))
+          "assoc! after persistent! traps"))))
+
+(deftest seq-hooks-and-collection-keys
+  ;; Keys are maps and sets of ints, so key hash and = go through seq.lg's
+  ;; foreign-kind dispatch (slot 0 maps, slot 1 sets) into phm/phs themselves.
+  (s/install-hooks!)
+  (let [wmap (fn [kvs] (reduce (fn [w [k v]] (m/massoc w (sq/box-int k) (sq/box-int v))) (m/empty-map) kvs))
+        wset (fn [xs] (reduce (fn [w x] (s/sconj w (sq/box-int x))) (s/empty-set) xs))
+        specs (for [i (range 60)]
+                (if (even? i)
+                  [:map (mapv (fn [j] [j (* i j)]) (range (mod i 11)))]
+                  [:set (vec (range (mod i 7) (+ (mod i 7) (mod i 5))))]))
+        nat-key (fn [[t xs]] (if (= t :map) (reduce (fn [m [k v]] (assoc m k v)) {} xs) (reduce conj #{} xs)))
+        w-key (fn [[t xs]] (if (= t :map) (wmap xs) (wset xs)))
+        [nm wm] (reduce (fn [[n w] [i spec]] [(assoc n (nat-key spec) i) (m/massoc w (w-key spec) (sq/box-int i))])
+                        [{} (m/empty-map)] (map-indexed vector specs))]
+    (is (= (mapv first (seq nm)) (mapv <-w (arr->vec* (m/mkeys wm)))) "seq order with map/set keys")
+    (is (= (mapv second (seq nm)) (mapv <-w (arr->vec* (m/mvals wm)))))
+    (is (= (count nm) (<-w (sq/count wm))) "seq.lg count via hook")
+    (is (= (hash nm) (<-w (sq/hash wm))) "seq.lg hash via hook")
+    (is (= (vec (first nm)) (<-w (sq/first (sq/seq wm)))) "seq.lg seq via hook: first entry is a [k v] vector")
+    (is (= (mapv vec (seq nm)) (loop [s (sq/seq wm) out []] (if (arch/null? s) out (recur (sq/next s) (conj out (<-w (sq/first s))))))))
+    (is (true? (<-w (sq/equals wm (reduce (fn [w [k v]] (m/massoc w k v)) (m/empty-map)
+                                            (reverse (partition 2 (arr->vec* (m/entries wm))))))))
+        "= via hook, map built in another order")
+    (is (false? (<-w (sq/equals wm (m/mdissoc wm (first (arr->vec* (m/mkeys wm))))))))
+    (is (false? (<-w (sq/equals wm (s/empty-set)))) "a map never equals a set")
+    (doseq [spec (take 12 specs)]
+      (is (= (get nm (nat-key spec) ::nf) (<-w (m/mget wm (w-key spec) (->w ::nf)))) (str "get " (pr-str spec))))))
+
+(deftest dialect
+  (s/install-hooks!)
+  (let [[n offending] (dialect-offenders "rt/llvm/phm.lg" 'llvm.phm runtime-ns?)]
+    (is (< 40 n))
+    (is (empty? offending) (str "non-dialect references: " (pr-str offending)))))

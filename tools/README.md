@@ -1,5 +1,13 @@
 # tools/ — the native-twin instrument (P2.8)
 
+`$LG tools/unicode-case-tables.lg --check` verifies the generated simple-case
+tables in `rt/llvm/str.lg`. Pass an output filename instead to regenerate the
+delimited block. The generator checks the let-go source pin and the executable's
+Go build version (`go1.27.1`, inspected with `go version -m`), then queries every
+Unicode scalar above Latin-1 and validates the compressed mappings. Changing
+the oracle requires reviewing the mappings and updating this toolchain pin;
+the ambient Go executable only reads build metadata.
+
 The question these answer: which Go natives does a program reach that the
 wasm runtime does not provide yet? Four pieces, run from `dev/lower-wasm/`
 with the pinned lg (`$LG`, resolved by `checks/env.sh`):

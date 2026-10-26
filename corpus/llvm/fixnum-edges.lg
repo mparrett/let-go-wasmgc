@@ -1,0 +1,14 @@
+;; Review focus 1 (spec decision 6 and 8): integers at the fixnum edges of
+;; both widths in use (31 and 62 bits) and at the i64 limits, through typed
+;; params, a boxed param (pick is also called with nil, so its params stay
+;; boxed) and overflow-checked arithmetic. Task 7 adds collections and `=`.
+(defn id [x] x)
+(defn add [a b] (+ a b))
+(defn pick [b x y] (if b x y))
+(defn show [v] (println v (id v) (zero? (- v (id v))) (add v 0) (pick true v nil)))
+(println (pick nil 1 2))
+(show 1073741823) (show 1073741824) (show -1073741824) (show -1073741825)
+(show 2147483647) (show 2147483648)
+(show 4611686018427387903) (show 4611686018427387904)
+(show -4611686018427387904) (show -4611686018427387905)
+(show 9223372036854775807) (show -9223372036854775808)

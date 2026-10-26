@@ -1,0 +1,45 @@
+;; Exercise the real key and disk-cache lifecycle without lowering the runtime.
+;; Run with a fresh LW_RTLIB_DIR (llvm-rtlib-reuse-check.sh).
+(require '[lower-wasm :as lw] '[lower-llvm] '[lw-rt] '[clojure.string :as str])
+
+(def failures (atom []))
+(defn check [label ok]
+  (println (if ok "PASS" "FAIL") label)
+  (when-not ok (swap! failures conj label)))
+
+;; A renderer/ref-tracker edit must invalidate already-rendered runtime units.
+(binding [lw/*target* :llvm]
+  (let [before (lw/rtlib-key) read-file slurp]
+    (doseq [file ["lower_llvm_ir.lg" "lower_llvm_cache.lg"]]
+      (with-redefs [slurp (fn [path]
+                           (str (read-file path)
+                                (when (str/ends-with? path (str "/" file)) "\n;; changed compiler source\n")))]
+        (check (str "key includes " file) (not= before (lw/rtlib-key)))))))
+
+(binding [lw/*target* :llvm]
+  (let [before (lw/rtlib-key) read-file slurp]
+    (with-redefs [slurp (fn [path]
+                         (str (read-file path)
+                              (when (= path lw-rt/ext-path) "\n(defn changed-extension [] 42)\n")))]
+      (check "key includes the loaded extension source" (not= before (lw/rtlib-key))))))
+
+;; Keep actual publication, filenames, lookup, and pruning. Only the expensive
+;; runtime build and its payload are replaced with a distinguishable marker.
+(doseq [target [:llvm :gc :linear]]
+  (let [generation (atom "aaaaaaaa") built (atom []) restored (atom [])]
+    (with-redefs [lw/rtlib-key (fn [] @generation)
+                  lw/build-rtlib! (fn [] (swap! built conj @generation) [])
+                  lw/rtlib-snapshot (fn [_] {:generation @generation})
+                  lw/rtlib-restore! (fn [snap] (swap! restored conj (:generation snap)))]
+      (binding [lw/*target* target lw/*rooted-natives* #{}]
+        (lw/load-rtlib!)
+        (reset! generation "bbbbbbbb")
+        (lw/load-rtlib!)
+        (reset! generation "aaaaaaaa")
+        (lw/load-rtlib!)))
+    (check (str (name target) " A/B/A build count")
+           (= (if (= target :llvm) 2 3) (count @built)))
+    (check (str (name target) " A/B/A restores original payload")
+           (= (if (= target :llvm) ["aaaaaaaa"] []) @restored))))
+
+(when (seq @failures) (throw (ex-info "runtime cache reuse regression" {:failed @failures})))

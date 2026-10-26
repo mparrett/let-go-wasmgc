@@ -9,7 +9,10 @@
 ;; calls (P1.0). Top-level `def`/`declare` vars form the var table (P1.3):
 ;; they are only interned here, never eval'd, and the def runs in `_main`.
 (ns driver
-  (:require [lower-wasm :as lw] [lw-rt] [ir.passes.pipeline :as p] [clojure.string]))
+  (:require [lower-wasm :as lw] [lw-rt] [ir.passes.pipeline :as p] [clojure.string]
+            ;; no alias: a module carries driver's alias table, and one more
+            ;; alias moved every GC module's bytes (P8.0)
+            [lower-llvm-analysis-cache]))
 
 (defn- read-all [text] (read-string (str "[" text "\n]")))
 
@@ -81,6 +84,11 @@
 (def defining-heads '#{def defn defn- defonce declare defmacro})
 (def top-level-heads (into defining-heads '#{ns require use deftest defmulti deftype defprotocol defrecord do}))
 
+(defn deftest-form? [form]
+  (and (seq? form) (symbol? (first form))
+       (or (= 'deftest (first form))
+           (= #'test/deftest (try (resolve (first form)) (catch e nil))))))
+
 (defn macro-do-expansion
   "P6.1: a top-level macro call that expands to a (do ..) defining a var at
    its top (legmacs' defcommand: (do (defn f ..) (defcommand! :f ..))),
@@ -96,7 +104,8 @@
     (when (and (seq? f) (symbol? (first f)) (< n 32))
       (cond (= 'do (first f))
             (when (and (not (identical? f form))
-                       (some #(and (seq? %) (contains? top-level-heads (first %))) (rest f)))
+                       (some #(or (and (seq? %) (contains? top-level-heads (first %)))
+                                  (deftest-form? %)) (rest f)))
               f)
             (contains? top-level-heads (first f)) nil
             :else (let [v (try (resolve (first f)) (catch e nil))]
@@ -172,18 +181,22 @@
 ;; registry? `eval` anywhere (program or library, unquoted) makes the backend
 ;; emit the program table; `eval` or a read of `*ns*` makes _main start with
 ;; an in-ns of the program's namespace, as native's ns form leaves *ns*.
+;; Intern additionally needs the compiled namespace names registered, without
+;; the evaluator's full program table.
 ;; Syntactic, on the forms as read: an eval that only a macro expansion
 ;; produces is missed (named limit).
 (def eval-reached (atom false))
 (def ns-read (atom false))
+(def registry-reached (atom false))
 (def table-asked? (= "1" (os/getenv "LW_PROGRAM_TABLE")))
 
 (defn note-registry-refs! [form]
   (cond (symbol? form)
-        (when (#{"eval" "*ns*"} (name form))
+        (when (#{"eval" "*ns*" "intern"} (name form))
           (let [v (try (resolve form) (catch e nil))]
             (cond (= v #'eval) (reset! eval-reached true)
-                  (= v #'*ns*) (reset! ns-read true))))
+                  (= v #'*ns*) (reset! ns-read true)
+                  (= v #'intern) (reset! registry-reached true))))
         (map? form) (run! note-registry-refs! (mapcat identity form))
         (or (vector? form) (set? form)) (run! note-registry-refs! form)
         (and (seq? form) (= 'quote (first form))) nil
@@ -309,17 +322,34 @@
             (when (var? v) (swap! root-altered conj v))))
         (mapcat alter-root-refs forms)))
 
-(defn altered-own-syms
-  "P12.0j: the names the program's literal alter-var-root sites give for
-   vars of its own namespace (unqualified, or qualified with it), before
-   any of them is defined; process! makes such a defn a def."
+(defn definition-key [ns-sym s]
+  (if (namespace s) s (symbol (str ns-sym) (str s))))
+
+(defn program-ns-forms
+  "Pair top-level forms with their lexical namespace for definition scans."
   [forms]
-  (let [nsf (first (filter (fn [f] (and (seq? f) (= 'ns (first f)))) forms))
-        own (if nsf (str (second nsf)) "user")]
-    (set (keep (fn [r]
-                 (let [s (second r)]
-                   (when (or (nil? (namespace s)) (= own (namespace s))) (symbol (name s)))))
-               (mapcat alter-root-refs forms)))))
+  (loop [fs (seq forms) n 'user out []]
+    (if-not fs out
+      (let [f (first fs)
+            n (cond
+                (and (seq? f) (= 'ns (first f))) (second f)
+                (and (seq? f) (= 'in-ns (first f))
+                     (seq? (second f)) (= 'quote (first (second f)))) (second (second f))
+                :else n)]
+        (recur (next fs) n (conj out [n f]))))))
+
+(defn altered-own-syms
+  "Qualified names of program Vars named by literal root-alter sites."
+  [forms]
+  (let [entries (program-ns-forms forms)
+        own (set (map (comp str first) entries))]
+    (set (mapcat (fn [entry]
+                   (keep (fn [r]
+                           (let [s (second r)]
+                             (when (or (nil? (namespace s)) (contains? own (namespace s)))
+                               (definition-key (first entry) s))))
+                         (alter-root-refs (second entry))))
+                 entries))))
 
 (declare ns-file)
 
@@ -447,7 +477,10 @@
   "The wasm function id of a program defn form (P1.7 bug-09: mangled into
    its own namespace) and the export string that keeps its lg name."
   [src]
-  (let [nm (str (second src)) argc (arity-key (nth src 2))]
+  (let [nm (if (::qualified-name (meta src))
+             (str (::ns (meta src)) "/" (second src))
+             (str (second src)))
+        argc (arity-key (nth src 2))]
     (if (::multi (meta src))
       [(lw/prog-id nm argc) (str nm "#" argc)]
       [(lw/prog-id nm) nm])))
@@ -455,7 +488,7 @@
 (defn stub-info [src e]
   (let [nm (first (wasm-name src)) n (param-count (nth src 2))]
     {:stub (lw/stub-fn {:name nm :params (vec (repeat n :box)) :ret :box}
-                       (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))
+                       (str (ex-message e)))
      :name nm :params (vec (repeat n :box)) :ret :box}))
 
 ;; P7.9 (review5 bug-22): a defn made before the main file's (ns ..) form
@@ -465,10 +498,35 @@
 (defn src-ns [src] (the-ns (or (::ns (meta src)) (ns-name *ns*))))
 (defn defn-var [src] (lw-rt/call-in-ns (src-ns src) (fn [] (resolve (second src)))))
 
+(defn analysis-interfaces
+  "Whole interfaces of referenced definitions after dependency discovery.
+   Scanning the body conservatively includes shadowed local names, but avoids
+   the defn binder making every definition depend on its own publication."
+  [src]
+  (into {} (map (fn [v]
+                  (let [target (lw/rt-target v)]
+                    [v {:signature (lw/q-sig v)
+                        :runtime-target target
+                        :runtime-signature (when target (lw/q-sig target))
+                        :declaration (lw/q-prog-decl v)
+                        :metadata (meta v)}]))
+                (lw/form-vars (drop 3 src)))))
+
+(defn reusable-analysis?
+  "LLVM lowering reads ordinary IR, but optimizes nested function templates
+   in place. Keep definitions containing such templates out of this cache."
+  [info]
+  (let [f (:f info)]
+    (and f
+         (not-any? (fn [i]
+                     (or (contains? #{:try :make-closure :push-closed} (ir/op i f))
+                         (contains? #{:fn-template :multi-fn-template} (:kind (ir/aux i f)))))
+                   (lw/all-insts f)))))
+
 (defn analyze-program!
   "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint).
    stub?: --test, a failing defn becomes a stub (above)."
-  [defns main-src boxed stub?]
+  [defns main-src boxed stub? cache]
   (doall
    (for [src (conj defns main-src)]
      (lw-rt/call-in-ns (src-ns src)
@@ -483,8 +541,18 @@
                argc (arity-key (nth src 2))
                v (when-not main? (defn-var src))
                [wname ename] (if main? ["_main" "lw main"] (wasm-name src))
-               info (try (binding [lw/*box-params* (contains? boxed [v argc])]
-                           (assoc (lw/analyze-fn src wname (boolean multi?)) :export-name ename))
+               analyze (fn [] (binding [lw/*box-params* (contains? boxed [v argc])]
+                                (lw/analyze-fn src wname (boolean multi?))))
+               info (try (assoc
+                           (if cache
+                             (lower-llvm-analysis-cache/analyze!
+                              cache [(ns-name *ns*) wname]
+                              (when (lower-llvm-analysis-cache/enabled? cache)
+                                (lower-llvm-analysis-cache/input src (ns-name *ns*) wname (boolean multi?)
+                                                      (contains? boxed [v argc]) (analysis-interfaces src)))
+                              reusable-analysis? analyze)
+                             (analyze))
+                           :export-name ename)
                          ;; P1.4's refusals compare the error's first line: rethrow as is
                          (catch e (if (and stub? (not main?))
                                     (stub-info src e)
@@ -676,7 +744,7 @@
    counts (named limit). Any other form is returned as is."
   [form defined]
   (if (and (seq? form) (= 'defonce (first form)))
-    (if (contains? defined (def-sym form)) ::defonce-noop (apply list 'def (rest form)))
+    (if (contains? defined (definition-key (ns-name *ns*) (def-sym form))) ::defonce-noop (apply list 'def (rest form)))
     form))
 
 (defn defn->def
@@ -757,6 +825,8 @@
                       ;; read for the ns form only: the namespace is not
                       ;; loaded yet, and a syntax-quoted symbol resolves
                       ;; against the current namespace as it is read
+                      ;; Do not create the library's namespace while scanning:
+                      ;; require must still load it when the program reaches it.
                       (let [nsf (first (filter #(and (seq? %) (= 'ns (first %))) (read-all (slurp path))))]
                         (doseq [r (ns-form-requires nsf)] (visit r (conj stack n)))
                         (swap! seen conj n)
@@ -784,19 +854,112 @@
 ;; namespace, so its body resolves there, and the arm calls it. Named
 ;; limits: extend-type, extend-protocol, reify and Object methods are not
 ;; seen. Written without destructuring, for or doseq (P9.1).
-(def protocol-methods (atom {}))   ; method var -> {:var :ns :name :params :impls {tag {:params :body :fields}}}
+(def protocol-methods (atom {}))   ; method var -> signatures and implementations keyed by [type tag, arity]
 
 (defn type-tag [ns-sym nm] (keyword (str ns-sym) (str nm)))
+
+(defn type-local-symbol [base forms]
+  ;; Avoid binding and free-symbol capture without allocating compiler gensyms.
+  (let [used (set (filter symbol? (tree-seq coll? seq forms)))]
+    (loop [s base]
+      (if (contains? used s) (recur (symbol (str s "_"))) s))))
+
+(defn type-field-bindings [fields receiver llvm-type?]
+  (vec (mapcat (fn [i]
+                 (let [f (nth fields i)]
+                   [f (if llvm-type?
+                        (list (lw-rt/rt-sym 'core 'user-field-at) receiver i)
+                        (list (keyword (str f)) receiver))]))
+               (range (count fields)))))
+
+(defn type-method-body [ns-sym fields mutable-fields params body]
+  ;; Use the pinned macro's lexical walk, but emit constant LLVM field slots.
+  ;; A saved receiver keeps field reads valid when a nested local shadows this.
+  (let [slots (zipmap fields (range (count fields)))
+        rewrite (lw-rt/ns-var 'core '-dt-rewrite)
+        collect (lw-rt/ns-var 'core '-dt-collect-syms)
+        bound (set (collect params))
+        fieldset (set fields)
+        ;; Expand ordinary macros with their original source arguments before
+        ;; choosing a receiver; macros can introduce bindings absent in source.
+        expanded (lw-rt/call-in-ns ns-sym
+                   (fn [] (mapv (fn [form]
+                                  (rewrite (fn [recv field] field) nil fieldset #{} bound form))
+                                body)))
+        receiver (type-local-symbol '__lw_field_receiver [fields params body expanded])
+        emit (fn [recv field] (list (lw-rt/rt-sym 'core 'user-field-at) recv (get slots field)))]
+    (list (apply list 'let [receiver (first params)]
+                 (lw-rt/call-in-ns ns-sym
+                   (fn [] (mapv #(rewrite emit receiver fieldset mutable-fields bound %) expanded)))))))
 
 (defn note-protocol! [ns-sym form]
   (reduce (fn [_ sig]
             (when (seq? sig)
               (let [m (first sig)
-                    params (first (filter vector? (rest sig)))
+                    signatures (mapv #(vec (rest %)) (filter vector? (rest sig)))
                     v (lw-rt/ns-var ns-sym m)]
                 (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" m " did not load") {})))
-                (swap! protocol-methods assoc v {:var v :ns ns-sym :name m :params (vec (rest params)) :impls {}}))))
+                (swap! protocol-methods assoc v {:var v :ns ns-sym :name m :signatures signatures :impls {}}))))
           nil (drop 2 form)))
+
+(defn protocol-method-key [e] (str (:ns e) "/" (:name e)))
+
+(def native-type-aliases (atom {}))
+
+(defn native-type-expression [expr]
+  ;; Resolve only type aliases and core/type of scalar literals. Do not run
+  ;; arbitrary runtime initializers while preparing macro-side type objects.
+  ;; A one-element vector distinguishes a known nil target from unknown.
+  (let [candidate (cond
+                (nil? expr) [nil]
+                (symbol? expr)
+                (let [v (try (resolve expr) (catch e nil))]
+                  (when (var? v)
+                    (let [value (try (deref v) (catch e nil))]
+                      (when (or (some? value) (contains? @native-type-aliases v)) [value]))))
+                (and (seq? expr) (= 2 (count expr)) (symbol? (first expr))
+                     (= #'core/type (try (resolve (first expr)) (catch e nil))))
+                (let [x (second expr)]
+                  (when (or (nil? x) (boolean? x) (number? x) (string? x) (char? x) (keyword? x))
+                    [(type x)]))
+                :else nil)
+        value (first candidate)]
+    (when (and candidate (or (nil? value) (= (type value) (type (type 0))))) candidate)))
+
+(defn native-type-alias! [form]
+  ;; Only bindings seeded here are ours to clear. In particular, deftype
+  ;; installs a native descriptor before emitting its runtime initializer.
+  (let [s (def-sym form)
+        v (try (resolve s) (catch e nil))
+        t (native-type-expression (last form))]
+    (if t
+      (let [value (first t) v (intern *ns* s value)] (swap! native-type-aliases assoc v value))
+      (when (contains? @native-type-aliases v)
+        (when (= (get @native-type-aliases v) (deref v))
+          (intern *ns* s nil))
+        (swap! native-type-aliases dissoc v)))))
+
+(defn native-extension! [form]
+  (when-let [t (native-type-expression (second form))]
+    ;; Quoting the known object avoids evaluating the target expression twice.
+    (native! (apply list 'extend-type (list 'quote (first t)) (drop 2 form)))))
+
+(defn extension-forms [ns-sym form]
+  ;; Extensions receive the runtime type expression, including a saved old type.
+  (let [type-expr (second form) out (atom [])]
+    (reduce (fn [pns x]
+              (if (symbol? x)
+                (let [pv (lw-rt/call-in-ns ns-sym (fn [] (resolve x)))]
+                  (ns-name (:ns (meta pv))))
+                (let [mv (lw-rt/call-in-ns pns (fn [] (resolve (first x))))
+                      e (get @protocol-methods mv)]
+                  (when-not e (throw (ex-info (str "Unknown protocol method " (first x)) {})))
+                  (swap! protocol-methods assoc-in [mv :impls [::extension 0]] {:type true})
+                  (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!)
+                                        type-expr (protocol-method-key e) (cons 'fn (rest x))))
+                  pns)))
+            ns-sym (drop 2 form))
+    @out))
 
 (defn deftype-forms
   "The def and defn forms a deftype or defrecord form stands for (above);
@@ -804,69 +967,121 @@
   [ns-sym form]
   (let [head (nth form 0)
         nm (nth form 1)
-        fields (vec (nth form 2))
+        raw-fields (vec (nth form 2))
+        fields (mapv #(first (lw-rt/strip-meta-name %)) raw-fields)
+        mutable-fields (set (keep (fn [field]
+                                   (let [parts (lw-rt/strip-meta-name field) mt (second parts)]
+                                     (when (or (:mutable mt) (:unsynchronized-mutable mt) (:volatile-mutable mt)) (first parts))))
+                                 raw-fields))
         tag (type-tag ns-sym nm)
+        llvm-type? (and lw-rt/llvm-target? (= 'deftype head))
+        type-init (if llvm-type?
+                    (list (lw-rt/rt-sym 'core 'make-user-type) (str nm) (mapv str fields))
+                    tag)
         ctor (list 'defn (symbol (str "->" nm)) fields
-                   (if (seq fields)
+                   (if llvm-type?
+                     (list (lw-rt/rt-sym 'core 'make-user-instance) (symbol (str ns-sym) (str nm)) fields)
+                     (if (seq fields)
                      (into {:lw/type tag} (map (fn [f] [(keyword (str f)) f]) fields))
-                     tag))
+                     tag)))
+        ctor (if lw-rt/llvm-target? (vary-meta ctor assoc ::emitted-only true) ctor)
         ;; defrecord's map->Name: the record's fields from the map (nil
         ;; when absent), other keys kept, as native's
         mctor (when (= 'defrecord head)
                 (list 'defn (symbol (str "map->" nm)) '[__lw_m]
                       (list 'clojure.core/assoc
                             (list 'clojure.core/merge (into {} (map (fn [f] [(keyword (str f)) nil]) fields)) '__lw_m)
-                            :lw/type tag)))]
+                            :lw/type tag)))
+        mctor (if (and mctor lw-rt/llvm-target?) (vary-meta mctor assoc ::emitted-only true) mctor)]
     ;; a method body names its method bare, as native does; it resolves in
     ;; the namespace of the protocol symbol before it (a program's type
     ;; implementing a library's protocol), else in the type's own
-    (let [hidden (atom [])
+    (let [hidden (atom []) installs (atom [])
           _ (reduce (fn [pns x]
                       (cond (symbol? x)
                             (let [pv (lw-rt/call-in-ns ns-sym (fn [] (try (resolve x) (catch e nil))))]
                               (if (and (var? pv) (:ns (meta pv))) (ns-name (:ns (meta pv))) ns-sym))
                             (seq? x)
                             (let [m (first x)
-                                  mv (lw-rt/call-in-ns pns (fn [] (try (resolve m) (catch e nil))))
-                                  params (vec (nth x 1))]
+                                  mv (lw-rt/call-in-ns pns (fn [] (try (resolve m) (catch e nil))))]
                               (when-not (contains? @protocol-methods mv)
                                 (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
-                              (if (= pns ns-sym)
-                                (swap! protocol-methods assoc-in [mv :impls tag]
-                                       {:params params :body (drop 2 x) :fields fields})
+                              (if llvm-type?
+                                (let [e (get @protocol-methods mv)
+                                      clauses (mapv (fn [arity]
+                                                      (apply list (first arity)
+                                                        (type-method-body ns-sym fields mutable-fields (first arity) (rest arity))))
+                                                    (lw-rt/arities (rest x)))]
+                                  (swap! installs conj
+                                    (list (lw-rt/rt-sym 'core 'install-type-method!)
+                                          (symbol (str ns-sym) (str nm)) (protocol-method-key e)
+                                          (apply list 'fn clauses)))
+                                  (swap! protocol-methods assoc-in [mv :impls [tag 0]] {:type true}))
+                              (reduce (fn [_ arity]
+                                (let [params (first arity)
+                                      body (if llvm-type?
+                                             (type-method-body ns-sym fields mutable-fields params (rest arity))
+                                             (rest arity))
+                                      impl-key [tag (count params)]]
+                                (if (= pns ns-sym)
+                                (swap! protocol-methods assoc-in [mv :impls impl-key]
+                                       {:params params :body body :fields fields
+                                        :type (when llvm-type? (symbol (str ns-sym) (str nm)))})
                                 ;; the body stays in the type's namespace: a hidden defn
                                 ;; taking the method's params, its fields bound from the
                                 ;; first; defined natively here so a library's index finds
                                 ;; the var as it does any defn's
-                                (let [hn (symbol (str "__lw_" nm "_" m))
-                                      binds (vec (mapcat (fn [f] [f (list (keyword (str f)) (first params))]) fields))
-                                      hf (list 'defn hn params (apply list 'let binds (drop 2 x)))]
+                                (let [hn (symbol (str "__lw_" nm "_" m "_" (count params)))
+                                      receiver (type-local-symbol '__lw_receiver [fields x])
+                                      binds (into [receiver (first params)] (when-not llvm-type? (type-field-bindings fields receiver false)))
+                                      hf (list 'defn hn params (apply list 'let binds body))]
                                   (lw-rt/call-in-ns ns-sym (fn [] (eval hf)))
                                   (swap! hidden conj hf)
-                                  (swap! protocol-methods assoc-in [mv :impls tag]
-                                         {:params params :fields fields :call (symbol (str ns-sym) (str hn))})))
+                                  (swap! protocol-methods assoc-in [mv :impls impl-key]
+                                         {:params params :fields fields :call (symbol (str ns-sym) (str hn))
+                                          :type (when llvm-type? (symbol (str ns-sym) (str nm)))})))))
+                                nil (lw-rt/arities (rest x))))
                               pns)
                             :else pns))
                     ns-sym (drop 3 form))]
-      (into (if mctor [(list 'def nm tag) ctor mctor] [(list 'def nm tag) ctor]) @hidden))))
+      (into (into (if mctor [(list 'def nm type-init) ctor mctor] [(list 'def nm type-init) ctor]) @hidden) @installs))))
+
+(defn protocol-dispatch-arity
+  "One dispatch clause for a declared protocol method arity."
+  [e params]
+  (let [this (type-local-symbol '__this e)
+        args (vec (map (fn [i] (type-local-symbol (symbol (str "__a" i)) e)) (range (count params))))
+        method (type-local-symbol '__lw_method [e this args])
+        arms (mapcat (fn [kv]
+                       (let [tag (first (key kv)) impl (val kv)
+                             receiver (type-local-symbol '__lw_receiver [impl args this])
+                             binds (vec (concat [receiver this]
+                                                (interleave (:params impl) (cons receiver args))
+                                                (when-not (:type impl) (type-field-bindings (:fields impl) receiver false))))]
+                         [(if (:type impl)
+                            (list 'identical? (:type impl) (list 'type this))
+                            (if (seq (:fields impl))
+                            (list 'identical? tag (list :lw/type this))
+                            (list 'identical? tag this)))
+                          (if (:call impl)
+                            (apply list (:call impl) this args)
+                            (apply list 'let binds (:body impl)))]))
+                     (filter #(and (not (:type (val %))) (= (second (key %)) (inc (count params)))) (:impls e)))
+        fallback (apply list 'cond (concat arms [:else (list 'throw (list 'ex-info (str "No implementation of method: " (:name e)) {}))]))]
+    (list (into [this] args)
+          (if lw-rt/llvm-target?
+            (list 'let [method (list (lw-rt/rt-sym 'core 'type-method) this (protocol-method-key e))]
+                  (list 'if method (apply list method this args) fallback))
+            fallback))))
 
 (defn protocol-dispatch-form
-  "The defn for protocol method e over its noted implementations."
+  "The defn for all declared arities of protocol method e."
   [e]
-  (let [args (vec (map (fn [i] (symbol (str "__a" i))) (range (count (:params e)))))
-        arms (mapcat (fn [kv]
-                       (let [tag (key kv) impl (val kv)
-                             binds (vec (concat (interleave (:params impl) (cons '__this args))
-                                                (mapcat (fn [f] [f (list (keyword (str f)) '__this)]) (:fields impl))))]
-                         [(if (seq (:fields impl))
-                            (list 'identical? tag (list :lw/type '__this))
-                            (list 'identical? tag '__this))
-                          (if (:call impl)
-                            (apply list (:call impl) '__this args)
-                            (apply list 'let binds (:body impl)))]))
-                     (:impls e))]
-    (apply list 'defn (:name e) (into ['__this] args)
-           [(apply list 'cond (concat arms [:else (list 'throw (list 'ex-info (str "No implementation of method: " (:name e)) {}))]))])))
+  (let [form (apply list 'defn (:name e)
+                    (map #(protocol-dispatch-arity e %) (:signatures e)))]
+      (if lw-rt/llvm-target?
+        (vary-meta form assoc ::emitted-only true)
+        form)))
 
 (defn register-protocol-dispatch!
   "Register (again) the dispatch defn of every protocol method with an
@@ -933,9 +1148,9 @@
                       (swap! thunk-vars conj (lw-rt/ns-var ns-sym (first (lw-rt/strip-meta-name nm)))))
                     (swap! init-forms conj e)))
                 (= 'defprotocol head) (note-protocol! ns-sym form)
+                (and lw-rt/llvm-target? (= 'extend-type head))
+                (reduce (fn [_ f] (index! f)) nil (extension-forms ns-sym form))
                 (#{'deftype 'defrecord} head) (reduce (fn [_ f] (index! f)) nil (deftype-forms ns-sym form))
-                (= 'defmulti head)
-                (throw (ex-info (str "lower-wasm: unsupported top-level form " head " in " ns-sym) {:head head}))
                 ;; P6.1: defcommand-style macros, subform by subform
                 (macro-do-expansion form) (doseq [f (rest (macro-do-expansion form))] (index! f))
                 :else (let [e (expand-top form)]
@@ -1194,7 +1409,10 @@
    install-program-table!."
   [main-ns nss var-globals main-defn-vars]
   (concat
-   (when (or @eval-reached @ns-read table-asked?)
+   ;; Intern needs namespace existence, not the evaluator's Var table.
+   (when @registry-reached
+     (map (fn [n] (list (lw-rt/rt-sym 'natives 'add-ns*) (str n))) nss))
+   (when (or @eval-reached @ns-read @registry-reached table-asked?)
      [(list 'clojure.core/in-ns (list 'quote main-ns))])
    ;; LW_NO_PROGRAM_TABLE=1: diagnostic, leaves the table out (P7.4 sizes
    ;; the evaluator and the table separately)
@@ -1212,27 +1430,35 @@
 
 (defn target-args
   "Validate the target before reading the program. The flag (`--target v` or
-   `--target=v`) wins over LW_TARGET."
+   `--target=v`) wins over LW_TARGET, and `--profile` over LW_PROFILE."
   [argv]
-  (loop [xs argv out [] target (or (not-empty (os/getenv "LW_TARGET")) "gc")]
+  (loop [xs argv out [] target (or (not-empty (os/getenv "LW_TARGET")) "gc")
+         profile (not-empty (os/getenv "LW_PROFILE"))]
     (if (empty? xs)
-      (if (contains? #{"gc" "linear"} target)
-        [out (keyword target)]
+      (if (contains? #{"gc" "linear" "llvm"} target)
+        [out (keyword target) profile]
         (throw (ex-info (str "lower-wasm: unsupported target " target) {})))
       (let [x (first xs)]
-        (if (= "--target" x)
+        (cond
+          (= "--target" x)
           (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
-            (recur (drop 2 xs) out (second xs))
-            (throw (ex-info "lower-wasm: --target needs gc or linear" {})))
-          (if (clojure.string/starts-with? x "--target=")
-            (recur (rest xs) out (subs x 9))
-            (recur (rest xs) (conj out x) target)))))))
+            (recur (drop 2 xs) out (second xs) profile)
+            (throw (ex-info "lower-wasm: --target needs gc, linear or llvm" {})))
+          (clojure.string/starts-with? x "--target=") (recur (rest xs) out (subs x 9) profile)
+          ;; --profile names a hardware profile for --target llvm (D207)
+          (= "--profile" x)
+          (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
+            (recur (drop 2 xs) out target (second xs))
+            (throw (ex-info "lower-wasm: --profile needs a profile name or path" {})))
+          (clojure.string/starts-with? x "--profile=") (recur (rest xs) out target (subs x 10))
+          :else (recur (rest xs) (conj out x) target profile))))))
 
-(defn compile-text
+(defn compile-text*
   "The module text for the program at path in, the WAT -main writes to its
    output file. A library entry (P12.4): the backend carried as a program
    requires this namespace and hands the text to its host to assemble, since
-   a module has no spit. opts: :target (:gc or :linear), :rt, :shake,
+   a module has no spit. opts: :target (:gc, :linear or :llvm), :profile
+   (llvm's hardware profile, D207), :rt, :shake,
    :rtlib (start from the cached runtime library), :test (compile deftests,
    the shim installed) and :skip (deftest symbols left out under :test).
    The library search path is source-paths, which -main sets from its args.
@@ -1243,8 +1469,9 @@
   ;; which renumbers IR values in every program compiled after it (D174)
   (let [rtlib? (:rtlib opts)
         test? (:test opts)
+        _ (reset! registry-reached false)
         skip (:skip opts)
-        opts (assoc {:target (:target opts) :rt (:rt opts) :shake (:shake opts)} :trap-throws (boolean test?))
+        opts (assoc {:target (:target opts) :profile (:profile opts) :rt (:rt opts) :shake (:shake opts)} :trap-throws (boolean test?))
         ;; read in user, as native loads a program (::k is :user/k)
         forms (mapcat splice-do (in-ns-call 'user #(read-program in)))
         tests (atom [])
@@ -1261,11 +1488,31 @@
                 forms)
         _ (eval '(ns user))
         defns (atom []) body (atom []) table (atom []) decls (atom [])
+        declared-nss (atom #{})
+        ;; Freeze macro expansion in source order. A later extension or macro
+        ;; redefinition must not change an earlier top-level expression.
+        append-body! (fn [form] (swap! body conj {:ns (ns-name *ns*) :form (expand-top form)}))
         lib-globals (atom {})
+        nested-globals (atom {})
+        ;; Expanded bodies include defs inside closures. Intern their storage
+        ;; now, but leave initializers at their original execution sites.
+        ;; Use reduce for these walks: doseq consumes load-time gensyms.
+        register-nested! (fn [form]
+                           (when (= :llvm (:target opts))
+                             (reduce (fn [_ s]
+                                       (refuse-core-op-redef! s)
+                                       (eval (list 'declare s))
+                                       (let [v (resolve s)]
+                                         (swap! nested-globals assoc v
+                                                (str "$var_" (lw/munge-id (str (ns-name *ns*) "/" s))))))
+                                     nil (form-refs #(when (= 'def (first %)) [(second %)]) form))))
         ;; P6.8: names an earlier top-level form defined (defonce)
         defined (atom #{})
         ;; names defined by more than one defn/defn-/def form (bug-09)
-        redef (set (for [[s n] (frequencies (mapcat defined-syms forms)) :when (> n 1)] s))
+        redef (set (for [[s n] (frequencies (mapcat (fn [entry]
+                                                       (map (fn [s] (definition-key (first entry) s))
+                                                            (defined-syms (second entry))))
+                                                     (program-ns-forms forms))) :when (> n 1)] s))
         ;; P12.0j (D210): and a defn a literal alter-var-root site names
         redef (into redef (altered-own-syms forms))
         _ (reset! program-forms forms)
@@ -1274,14 +1521,14 @@
           (when (and (seq? form) (#{'defn 'defn- 'def 'declare} (first form)))
             (doseq [s (if (= 'declare (first form)) (rest form) [(def-sym form)])]
               (refuse-core-op-redef! s)))
-          (let [form (if (and (seq? form) (#{'defn 'defn-} (first form)) (contains? redef (def-sym form)))
+          (let [form (if (and (seq? form) (#{'defn 'defn-} (first form)) (contains? redef (definition-key (ns-name *ns*) (def-sym form))))
                        (defn->def form)
                        form)]
             ;; redef is read off the top-level forms; a second defn of a name
             ;; reached below a spliced do (a macro's) would become a second
             ;; static function and fail to assemble, so it is refused by name
             (when (and (seq? form) (#{'defn 'defn-} (first form))
-                       (contains? @defined (def-sym form)) (not (contains? redef (def-sym form))))
+                       (contains? @defined (definition-key (ns-name *ns*) (def-sym form))) (not (contains? redef (definition-key (ns-name *ns*) (def-sym form)))))
               (throw (ex-info (str "lower-wasm: " (def-sym form) " is defined twice, the second below a spliced do; define it once") {:var (def-sym form)})))
             (cond
               (= form ::defonce-noop) nil
@@ -1290,55 +1537,61 @@
                 (doseq [s '[deftest is testing set-test run-test-var are use-fixtures]] (ns-unmap *ns* s))
                 (doseq [m test-macros] (eval m))
                 (when (and quiet? (some? (resolve 'quiet))) (ns-unmap *ns* 'quiet) (eval quiet-macro)))
-              (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defined conj (def-sym form)) (swap! defns into (tag-ns (expand-defn form))))
+              (and (seq? form) (= 'defn- (first form))) (do (native! form) (swap! defined conj (definition-key (ns-name *ns*) (def-sym form))) (swap! defns into (tag-ns (expand-defn form))))
               (decl-form? form) (do (native! form) (swap! decls conj (resolve (second form))))
               (and (seq? form) (= 'ns (first form)))
               (let [nss (ns-form-requires form)
                     init (load-libs! form nss lib-globals)]
-                (when init (swap! body conj init)))
+                (swap! declared-nss conj (ns-name *ns*))
+                (swap! body conj {:ns (ns-name *ns*) :registry-only true
+                                  :form (list 'clojure.core/in-ns (list 'quote (ns-name *ns*)))})
+                (when init (append-body! init)))
               ;; P3.2: a require of library namespaces runs their inits here
               (require-form-nss form)
               (let [init (try (load-libs! form (require-form-nss form) lib-globals)
                               (catch e (if (::native (ex-data e)) (throw e)
                                            (throw (ex-info "native compile error" {::native (native-msg e false)})))))]
-                (when init (swap! body conj init)))
+                (when init (append-body! init)))
               ;; declare only interns forward vars: a later defn binds by name
               ;; (direct calls), anything else lands in the var table.
-              (and (seq? form) (= 'declare (first form))) (do (native! form) (swap! table into (rest form)))
-              (defn-form? form) (do (native! form) (swap! defined conj (def-sym form)) (swap! defns into (tag-ns (expand-defn form))))
+              (and (seq? form) (= 'declare (first form))) (do (native! form) (swap! table into (map resolve (rest form))))
+              (defn-form? form) (do (when-not (::emitted-only (meta form)) (native! form)) (swap! defined conj (definition-key (ns-name *ns*) (def-sym form))) (swap! defns into (tag-ns (expand-defn form))))
               ;; intern only: the value is computed by _main at run time
               (def-form? form) (do (compile-check! form)
+                                   (when (and lw-rt/llvm-target? (> (count form) 2))
+                                     (native-type-alias! form))
                                    (eval (list 'declare (def-sym form)))
-                                   (swap! table conj (def-sym form))
-                                   (swap! defined conj (def-sym form))
+                                   (swap! table conj (resolve (def-sym form)))
+                                   (swap! defined conj (definition-key (ns-name *ns*) (def-sym form)))
                                    ;; P6.8: defs nested in the init
                                    (when (> (count form) 2)
                                      (let [e (expand (nth form (dec (count form))))]
+                                       (register-nested! e)
                                        (doseq [s (nested-def-syms e)]
                                          (eval (list 'declare s))
-                                         (swap! table conj s)
-                                         (swap! defined conj s))
+                                         (swap! table conj (resolve s))
+                                         (swap! defined conj (definition-key (ns-name *ns*) s)))
                                        (doseq [s (thunk-def-syms e)] (swap! thunk-vars conj (resolve s)))))
-                                   (swap! body conj form))
+                                   (append-body! form))
               ;; a macro only matters at expansion time, in this process
               (and (seq? form) (= 'defmacro (first form))) (do (native! form) (note-macro! (ns-name *ns*) form))
-              ;; a program's defprotocol (P10.6 for a library's): its methods
-              ;; become dispatch defns once every form has been read (below);
-              ;; deftype and defrecord are taken apart in step
+              ;; Program protocol methods are emitted after every implementation is known.
               (and (seq? form) (= 'defprotocol (first form)))
               (do (native! form) (note-protocol! (ns-name *ns*) form))
-              (and (seq? form) (= 'defmulti (first form)))
+              ;; the wasm target still refuses a program's defmulti (6134a6e); llvm takes it (D217)
+              (and (seq? form) (= 'defmulti (first form)) (not lw-rt/llvm-target?))
               (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               ;; P6.1: a def below the top of the form (in a let/when/if)
               ;; is a var-table var, set where the def runs
               :else (do (compile-check! form)
                         (let [e (expand form)]
+                          (register-nested! e)
                           (doseq [s (nested-def-syms e)]
                             (eval (list 'declare s))
-                            (swap! table conj s)
-                            (swap! defined conj s))
+                            (swap! table conj (resolve s))
+                            (swap! defined conj (definition-key (ns-name *ns*) s)))
                           (doseq [s (thunk-def-syms e)] (swap! thunk-vars conj (resolve s))))
-                        (swap! body conj form)))))
+                        (append-body! form)))))
         ;; P2.14: a var's :file/:line/:column meta, as native's load gives
         ;; it (a def is only interned here, a defn's file is <read-string>);
         ;; lower-wasm's var constants carry it
@@ -1348,68 +1601,76 @@
                      (when (and (var? v) (= *ns* (:ns (meta v))))
                        (alter-meta! v merge (select-keys (meta form) [:line :column]) {:file in})))))
         step (fn step [_ form]
+               (try
+               ;; Portability wrappers expose deftests only after their macro
+               ;; expands. Qualified t/deftest must also use the test shim,
+               ;; rather than expanding the native test framework into _main.
+               (if (and test? (deftest-form? form))
+                 (when-not (contains? skip (second form))
+                   (swap! tests conj (second form))
+                   (step nil (deftest->defn form)))
                ;; P6.1: defcommand-style macros, subform by subform (expanded
                ;; here, after the forms before it ran: it may use their requires)
                (if-let [d (if (and (seq? form) (#{'deftype 'defrecord} (first form)))
-                            ;; a program's deftype or defrecord stands for the def
-                            ;; and defn forms a library's does (P10.6): the type's
-                            ;; var holds its tag, the constructors are program
-                            ;; defns; native sees the same stand-ins
-                            (cons 'do (deftype-forms (ns-name *ns*) form))
-                            (try (macro-do-expansion form) (catch e nil)))]
+                            (do
+                              ;; Macros must see native DType/DTypeInstance values.
+                              ;; The generated constructor below supplies emitted IR
+                              ;; without replacing that compiler-side native root.
+                              (when lw-rt/llvm-target?
+                                (native! form))
+                              (cons 'do (deftype-forms (ns-name *ns*) form)))
+                            (if (and lw-rt/llvm-target? (seq? form) (= 'extend-type (first form)))
+                              (do (compile-check! form) (native-extension! form)
+                                  (cons 'do (extension-forms (ns-name *ns*) form)))
+                              (try (macro-do-expansion form) (catch e nil))))]
                  (when-let [m (reduce step nil (mapcat splice-do (rest d)))] (reduced m))
-                 ;; a deftest below a spliced do (when-var-exists) is a test as a
-                 ;; top-level one is; a --skip'd one is left out the same way
-                 (let [nested-test? (and test? (seq? form) (= 'deftest (first form)))
-                       skipped? (and nested-test? (contains? skip (second form)))
-                       form (if nested-test? (deftest->defn form) form)]
-                 (when (and nested-test? (not skipped?)) (swap! tests conj (second form)))
-                 (when-not skipped?
-                 (try (note-var-refs! form)
-                      (let [form (alter-sites->var (defonce-form form @defined))] (process! form) (stamp! form)) nil
-                      (catch e (if-let [m (::native (ex-data e))]
+                 (do (note-var-refs! form)
+                     (let [form (alter-sites->var (defonce-form form @defined))] (process! form) (stamp! form)) nil)))
+               (catch e (if-let [m (::native (ex-data e))]
                                  (if (and test? (defn-form? form) (contains? (set @tests) (def-sym form)))
                                    (do (process! (stub-deftest (def-sym form))) nil)
                                    (reduced m))
-                                 (throw e))))))))
+                                 (throw e)))))
         compile-error (reduce step nil forms)
-        ;; the program's protocol methods, each a dispatch defn over the
-        ;; implementations every form has now declared (through step: a
-        ;; body that does not compile is the program's compile error); a
-        ;; library method a program type implements is registered again
-        ;; with its new arm
+        ;; Own methods are program definitions; library methods acquire the new arms.
         compile-error (let [own (ns-name *ns*)
                             es (filter (fn [e] (= own (:ns e))) (vals @protocol-methods))
-                            ;; emitted whatever came before: the forms before a
-                            ;; failing one run natively, and may call a method
                             m (reduce step nil (map protocol-dispatch-form es))]
                         (reduce (fn [_ e] (swap! protocol-methods dissoc (:var e))) nil es)
                         (register-protocol-dispatch!)
                         (if compile-error compile-error m))]
     ;; native stops at the failing form: the forms before it run, then the error
-    (when compile-error (swap! body conj (list 'throw (list 'ex-info compile-error {}))))
-    (let [defn-names (set (map second @defns))
-          deffed (set (keep #(when (def-form? %) (def-sym %)) @body))
-          _ (doseq [s deffed :when (defn-names s)]
-              ;; defn calls are direct, so a later def could not rebind them
-              (throw (ex-info (str "lower-wasm: unsupported def of defn var " s) {:var s})))
-          var-globals (into @lib-globals
-                            (for [s (distinct @table) :when (not (defn-names s))]
-                              [(resolve s) (str "$var_" (lw/munge-id s))]))
-          body (if test?
-                 (concat @body [(list 'println (str "\nTesting " (ns-name *ns*)))]
-                         ;; P5.10: a redefined deftest runs once (its last
-                         ;; def wins, as native's var does); __t-run-all
-                         ;; applies the fixtures and turns a deftest that did
-                         ;; not lower (its stub throws) into one ERROR
-                         (let [ts (distinct @tests)]
-                           [(list '__t-run-all (vec (map str ts)) (vec ts))])
-                         ['(__t-summary)])
-                 @body)
-          ;; P7: the registry boot (in-ns, program table) runs first; the
-          ;; table's stand-ins read their vars only when eval derefs them
-          boot (registry-boot-forms (ns-name *ns*) (conj (vec (sort @lib-loaded)) (ns-name *ns*))
-                                    var-globals (keep defn-var @defns))
+    (when compile-error (append-body! (list 'throw (list 'ex-info compile-error {}))))
+    (let [owners (reduce (fn [m src]
+                           (update m (second src) (fnil conj #{}) (::ns (meta src))))
+                         {} @defns)
+          ;; Keep established ids for unambiguous names. Cross-namespace
+          ;; collisions need distinct internal ids and export strings.
+          _ (swap! defns (fn [srcs]
+                           (mapv (fn [src]
+                                   (if (> (count (get owners (second src))) 1)
+                                     (vary-meta src assoc ::qualified-name true)
+                                     src)) srcs)))
+          _ (reduce (fn [_ src]
+                     (lw-rt/call-in-ns (src-ns src) #(register-nested! src))) nil @defns)
+          defn-vars (set (keep defn-var @defns))
+          _ (reduce (fn [_ v]
+                      (when (contains? defn-vars v)
+                        (throw (ex-info (str "lower-wasm: unsupported def of defn var " v) {:var v}))))
+                    nil (keys @nested-globals))
+          deffed (set (keep (fn [entry]
+                              (when (def-form? (:form entry))
+                                (lw-rt/call-in-ns (:ns entry)
+                                  #(resolve (def-sym (:form entry)))))) @body))
+          _ (doseq [v deffed :when (contains? defn-vars v)]
+              ;; Direct-call functions cannot also have runtime root stores.
+              (throw (ex-info (str "lower-wasm: unsupported def of defn var " v) {:var v})))
+          var-globals (into (merge @lib-globals @nested-globals)
+                            (for [v (distinct @table) :when (not (contains? defn-vars v))]
+                              [v (str "$var_" (lw/munge-id
+                                    (if (= (ns-name *ns*) (ns-name (:ns (meta v))))
+                                      (:name (meta v))
+                                      (symbol (str (ns-name (:ns (meta v)))) (str (:name (meta v)))))))]))
           ;; P7.9: top-level calls of eval and of program fns, when eval is reached.
           ;; Not under LW_TRACE=1: the layer is an ex-info, and the runtime's
           ;; ex-info keeps only an ex-info cause (native keeps any), so the
@@ -1420,6 +1681,44 @@
                              wrap? #(or (= % #'eval) (contains? fns %))]
                          #(calling-wrap % wrap?))
                        identity)
+          ;; Keep foreign top-level blocks in their lexical namespace through
+          ;; IR construction, not only macro expansion. Group adjacent forms
+          ;; so namespace ownership does not create a function per expression.
+          runtime-body (if (or @eval-reached @ns-read @registry-reached table-asked?)
+                         @body (remove :registry-only @body))
+          owned-body (vec (mapcat
+                       (fn [indexed]
+                         (let [i (first indexed) entries (second indexed)
+                               owner (:ns (first entries))
+                               forms (map :form entries)]
+                           (if (= owner (ns-name *ns*)) forms
+                             (lw-rt/call-in-ns owner
+                               (fn []
+                                 (let [nm (type-local-symbol (symbol (str "__lw_top_level_" i))
+                                                            [(keys (ns-interns *ns*)) forms])
+                                       call (hidden-defn! owner nm
+                                              [(into [[]] (map (comp wrap-calls expand-top) forms))])]
+                                   [(list call)]))))))
+                       (map-indexed vector (partition-by :ns runtime-body))))
+          body-owners (map :ns @body)
+          body (if test?
+                 (concat owned-body [(list 'println (str "\nTesting " (ns-name *ns*)))]
+                         ;; P5.10: a redefined deftest runs once (its last
+                         ;; def wins, as native's var does); __t-run-all
+                         ;; applies the fixtures and turns a deftest that did
+                         ;; not lower (its stub throws) into one ERROR
+                         (let [ts (distinct @tests)]
+                           [(list '__t-run-all (vec (map str ts)) (vec ts))])
+                         ['(__t-summary)])
+                 owned-body)
+          ;; P7: the registry boot (in-ns, program table) runs first; the
+          ;; table's stand-ins read their vars only when eval derefs them
+          boot (registry-boot-forms 'user
+                                    (vec (sort (set (concat @lib-loaded @declared-nss [(ns-name *ns*)]
+                                                           body-owners
+                                                           (map #(ns-name (src-ns %)) @defns)
+                                                           (map #(ns-name (:ns (meta %))) (keys var-globals))))))
+                                    var-globals (keep defn-var @defns))
           ;; tagged like every other defn: a library loaded on demand while the
           ;; tests were analysed can leave *ns* elsewhere (data_test.lg's `data`),
           ;; and _main must resolve in the program's namespace (P7.9 follow-up)
@@ -1457,23 +1756,85 @@
                lower-one #(cond (:stub %) (:stub %)
                                 test? (try (lw/lower-fn %)
                                                      (catch e (lw/stub-fn (select-keys % [:name :params :ret])
-                                                                          (let [m (str (ex-message e))] (subs m 0 (min 100 (count m)))))))
+                                                                          (str (ex-message e)))))
                                 :else (lw/lower-fn %))
+               cache (when (= :llvm lw/*target*)
+                       (lower-llvm-analysis-cache/new-cache (not= "0" (os/getenv "LW_LL_ANALYSIS_REUSE"))))
                fns (loop [boxed #{}]
-                     (let [infos (analyze-program! @defns main-src boxed (boolean test?))
+                     (when cache (lower-llvm-analysis-cache/next-round! cache))
+                     (let [infos (analyze-program! @defns main-src boxed (boolean test?) cache)
                            notes (atom {})
                            fns (binding [lw/*abi-notes* notes] (vec (doall (map lower-one infos))))
                            more (remove boxed (boxing-needed @notes prog-vars))]
                        (if (empty? more) fns (recur (into boxed more)))))]
+           (when (and cache (= "1" (os/getenv "LW_LL_ANALYSIS_STATS")))
+             (let [s (lower-llvm-analysis-cache/stats cache)]
+               (binding [*out* *err*]
+                 (println (str "llvm-analysis-cache executed=" (:executed s)
+                               " reused=" (:reused s) " bypassed=" (:bypassed s)
+                               " rounds=" (:rounds s))))))
            ;; --no-shake: the whole runtime, for the size comparison
            (when (and (:rt opts) (not rtlib?) (not (:shake opts)))
              (doseq [d lw-rt/defns] (lw/rt-analyze! (:var d))))
            (lw/session-module ss fns))))))))
 
+(defn qualify-test-template
+  "Qualify shim references in a macro template, before user forms enter it."
+  [owner form]
+  (cond
+    (symbol? form)
+    (cond (clojure.string/starts-with? (name form) "__t-")
+          (symbol (str owner) (name form))
+          (= form 'is) 'test/is
+          :else form)
+    (seq? form) (with-meta (apply list (map #(qualify-test-template owner %) form)) (meta form))
+    (vector? form) (with-meta (mapv #(qualify-test-template owner %) form) (meta form))
+    (map? form) (into {} (map (fn [e] [(qualify-test-template owner (key e))
+                                     (qualify-test-template owner (val e))]) form))
+    :else form))
+
+(defn with-test-assertions
+  "Imported assertions share the main test file's counters. Temporarily
+   replace native test macros too, including qualified calls and library
+   deftests, and restore their roots even when compilation throws."
+  [in f]
+  ;; Mark the embedded test namespace loaded before replacing its roots:
+  ;; a library's first require would otherwise reload the native macros.
+  (require 'clojure.test)
+  (let [forms (mapcat splice-do (in-ns-call 'user #(read-program in)))
+        nsf (first (filter #(and (seq? %) (= 'ns (first %))) forms))
+        owner (if nsf (second nsf) 'user)
+        macro-ns '__lw_test_macros
+        shim (read-program (str lw-rt/src-dir "/testshim.lg"))
+        macros (conj (vec (filter #(contains? '#{is are testing} (second %)) test-macros))
+                     '(defmacro deftest [nm & body]
+                        (list 'defn nm [] (list '__t-begin (str nm))
+                              (list 'try (apply list 'do body)
+                                    (list 'catch 'Throwable 'e (list '__t-uncaught 'e)))
+                              '(__t-end))))
+        vars (mapv #(find-var (symbol "test" (str (second %)))) macros)]
+    ;; Declare the destination before require compiles imported helper bodies.
+    (in-ns-call owner #(eval (apply list 'declare (keep defining-sym shim))))
+    (let [values (in-ns-call macro-ns
+                   (fn []
+                     (mapv (fn [form]
+                             (eval (apply list (first form) (second form)
+                                          (map #(qualify-test-template owner %) (drop 2 form))))
+                             (deref (resolve (second form)))) macros)))]
+      (with-redefs-fn vars values f))))
+
+(defn compile-text
+  "Compile a program; --test also routes imported assertions through the shim."
+  [in opts]
+  (if (:test opts)
+    (with-test-assertions in (fn [] (compile-text* in opts)))
+    (compile-text* in opts)))
+
 (defn -main [& argv]
   (let [targeted (target-args argv)
         argv (first targeted)
         target (second targeted)
+        profile (nth targeted 2)
         sp-arg (second (drop-while #(not= "-source-paths" %) argv))
         _ (reset! source-paths (if sp-arg (vec (remove empty? (clojure.string/split sp-arg #":"))) []))
         argv (if sp-arg (remove #{"-source-paths" sp-arg} argv) argv)
@@ -1486,7 +1847,7 @@
         _ (when (flags "--read-clj") (set-read-clj! true))
         [in out] (remove flags argv)
         rt? (not (flags "--no-rt"))]
-    (spit out (compile-text in {:target target :rt rt? :shake (not (flags "--no-shake"))
+    (spit out (compile-text in {:target target :profile profile :rt rt? :shake (not (flags "--no-shake"))
                                 :rtlib (and rt? (not (flags "--no-rtlib")))
                                 :test (boolean (flags "--test")) :skip skip}))))
 

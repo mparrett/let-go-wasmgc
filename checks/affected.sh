@@ -117,14 +117,28 @@ P8.5	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/oracle.sh corpus/sca
 P8.12	src/ rt/ host/wazero/ checks/wasm-run-linear.sh checks/linear-runner-abi-check.sh checks/fixtures/linear-argv.lg checks/fixtures/linear-large-host.lg checks/oracle.sh
 P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-division.lg corpus/refused/linear/integer-division.lg corpus/refused/linear/first-class-division.lg
 P8.13	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric/
-P13.1	oracle src/ host/native/ targets/ checks/native-run.sh corpus/llvm-scalar/
-P13.2	src/ targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh
-P13.3	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/
-P13.4	oracle src/ host/native/ targets/ checks/native-run.sh checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg corpus/jank/
-P13.5	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-armv7-check.sh checks/build-builtins.sh corpus/llvm/ corpus/llvm-scalar/
-P13.6	src/ host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj
-P13.7	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg
+P13.1	oracle src/ host/native/ targets/ checks/native-run.sh corpus/llvm-scalar/ checks/llvm-probe.sh
+P13.2	src/ targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh checks/llvm-probe.sh
+P13.3	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/ checks/llvm-probe.sh
+P13.4	oracle src/ host/native/ targets/ checks/native-run.sh checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg corpus/jank/ checks/llvm-probe.sh
+P13.5	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-armv7-check.sh checks/build-builtins.sh corpus/llvm/ corpus/llvm-scalar/ checks/llvm-probe.sh
+P13.6	src/ host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj checks/llvm-probe.sh
+P13.7	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics-native-runner.lg src/lower_llvm_poly.lg src/lower_llvm_ir.lg
+P13.8	oracle corpus/reader-ns/ checks/run-corpus.sh checks/native-run.sh checks/llvm-probe.sh host/native/ targets/
 P11.0	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
+P12.30	rt/wasm/poly.lg src/driver.lg corpus/poly-wasm/ checks/run-expected.sh
+P12.31	oracle src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ host/native/ checks/native-run.sh corpus/poly/ checks/llvm-probe.sh
+P12.32	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ host/native/ checks/native-run.sh checks/run-expected.sh corpus/poly-clj/ checks/llvm-probe.sh
+P12.37	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-rtlib-check.sh checks/quiet.sh checks/sem.sh corpus/scalar/fib.clj corpus/poly/ corpus/llvm/ checks/llvm-probe.sh
+P12.38	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-xsofy-check.sh corpus/dump-world.lg xsofy checks/llvm-probe.sh
+P12.39	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_ir.lg src/lower_llvm_refcheck.lg checks/llvm-refs-check.sh corpus/llvm/ corpus/poly/ corpus/control/ checks/llvm-probe.sh
+LLVM.RTLIB.REUSE	src/ rt/llvm/ checks/llvm-rtlib-reuse-check.sh checks/llvm-rtlib-reuse-check.lg checks/native-run.sh checks/llvm-probe.sh
+LLVM.JANK.ADAPTER	oracle src/ checks/jank-llvm-check.sh checks/jank-reader-check.sh checks/jank-reader-check.lg checks/fixtures/jank-reader/ checks/run-tests.sh checks/jank-suite.sh checks/llvm-probe.sh
+LLVM.ORC	host/native/ src/ checks/native-run.sh checks/build-orc-runner.sh checks/llvm-orc-check.sh checks/fixtures/orc/ checks/llvm-probe.sh
+LLVM.RUNTIME.LOOKUP	src/lw_rt.lg checks/runtime-var-lookup-check.sh checks/runtime-var-lookup-check.lg
+LLVM.CACHE.PACKAGING	src/ checks/self-compile-module.sh checks/self-compile.sh checks/self-compile-deps-check.sh
+LLVM.ANALYSIS.REUSE	src/ rt/llvm/ host/native/ checks/llvm-analysis-reuse-check.sh checks/llvm-analysis-input-check.sh checks/llvm-analysis-input-check.lg checks/fixtures/analysis-reuse/ checks/llvm-probe.sh
+P12.40	src/ checks/llvm-funnel-lint.lg checks/llvm-funnel-check.sh
 P11.1	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P11.2	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh corpus/linear-gc/
 P11.3	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
