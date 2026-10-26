@@ -801,3 +801,39 @@
     (is (< 100 (count defns)))
     (is (= '[globals] (mapv second globals)) "one runtime global: gensym counter + type table")
     (is (empty? offending) (str "non-dialect references: " (pr-str (distinct offending))))))
+
+;; ---------------------------------------------------------------------------
+;; Records (D234): wasm.core's Rec against a native defrecord. The oracle
+;; program corpus/wasm/records.lg carries the coverage; this checks the
+;; runtime's entry points the driver's ->R and map->R call.
+
+(defrecord R [a b])
+
+(deftest records
+  (let [tag (W :core-test/R) fs (W [:a :b])
+        r (c/make-record tag fs (W [1 2]))
+        rn (c/make-record tag fs (W [nil 2]))]
+    (same-pr (->R 1 2) r)
+    (same-pr (->R nil 2) rn)
+    (same-pr (dissoc (->R 1 2) :a) (c/dissoc r (W :a)))
+    (same-pr (dissoc (->R 1 2) :zz) (c/dissoc r (W :zz)))
+    (same-pr (map->R {:a 1 :c 9}) (c/record-of-map tag fs (W {:a 1 :c 9})))
+    (same-pr (assoc (->R 1 2) :a nil :z 0) (c/assoc r (W :a) (wasm/null) (W :z) (W 0)))
+    (same (count (->R 1 2)) (sq/count r))
+    (same (count (->R nil 2)) (sq/count rn))
+    (same (count (assoc (->R 1 2) :a nil)) (sq/count (c/assoc r (W :a) (wasm/null))))
+    (same (:a (->R 1 2)) (c/get r (W :a)))
+    (same (get (->R 1 2) :zz :nf) (c/get r (W :zz) (W :nf)))
+    (same (contains? (->R 1 2) :lw/type) (c/contains? r (W :lw/type)))
+    (same (contains? (->R nil 2) :a) (c/contains? rn (W :a)))
+    (same (= (hash (->R 1 2)) (hash {:a 1 :b 2})) (sq/bool (= (sq/unbox-int (sq/hash r)) (sq/unbox-int (sq/hash (W {:a 1 :b 2}))))))
+    (same (= (->R 1 2) (->R 1 2)) (sq/equals r (c/make-record tag fs (W [1 2]))))
+    (same (= (->R 1 2) {:a 1 :b 2}) (sq/equals r (W {:a 1 :b 2})))
+    (same (= {:a 1 :b 2} (->R 1 2)) (sq/equals (W {:a 1 :b 2}) r))
+    (same (= (->R nil 2) (assoc (->R 1 2) :a nil)) (sq/equals rn (c/assoc r (W :a) (wasm/null))))
+    (same (str (type (->R 1 2))) (s/str (c/type-of r)))
+    (same (= (type (->R 1 2)) (type (->R 3 4))) (sq/equals (c/type-of r) (c/type-of rn)))
+    (same (record? (->R 1 2)) (sq/bool (= 44 (c/ckind r))))
+    (same (map? (->R 1 2)) (c/map? r))
+    (same (vec (keys (->R 1 2))) (W (vec (map first (<-w (sq/seq r))))))
+    (same (vec (vals (assoc (->R 1 2) :c 3))) (W (vec (map second (<-w (sq/seq (c/assoc r (W :c) (W 3))))))))))

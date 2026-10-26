@@ -617,19 +617,20 @@
         :else (raise-lit (str "slurp failed: " (enoent "open" (first args))))))
 
 ;; P10.6: instance? over the driver's type tags (src/driver.lg: a library
-;; deftype or defrecord is the Keyword tag :<ns>/<Name>, or a map carrying it
-;; as :lw/type when it has fields, and the type's var holds the tag). A
-;; native class (String, java.util.regex.Pattern) is no value here, so t is
-;; nil for one and the answer is false, as it is for (instance? nil x).
+;; deftype or defrecord is the Keyword tag :<ns>/<Name>, or a record struct
+;; carrying it when it has fields (wasm.core's Rec, D234), and the type's var
+;; holds the tag). A native class (String, java.util.regex.Pattern) is no
+;; value here, so t is nil for one and the answer is false, as it is for
+;; (instance? nil x).
 (defn ^{:twin "core/instance?"} instance? [t x]
   (if (nil? t)
     false
-    (or (identical? t x) (and (map? x) (identical? t (get x :lw/type))))))
+    (or (identical? t x) (identical? t (c/record-tag x)))))
 
-;; record? is true of a map carrying a type tag (a defrecord's instance; a
-;; deftype with fields is encoded the same way, so it answers true for one
-;; too: named limit).
-(defn ^{:twin "core/record?"} record? [x] (and (map? x) (contains? x :lw/type)))
+;; record? is true of a record struct (a defrecord's instance; a deftype with
+;; fields is encoded the same way, so it answers true for one too: named
+;; limit).
+(defn ^{:twin "core/record?"} record? [x] (= 44 (c/ckind x)))
 
 ;; P10.6: natives let-go's IR builder and passes reach when carried as a
 ;; program (checks/ir-pipeline.sh). -copy-form-source! carries the reader's
@@ -1552,9 +1553,9 @@
 (defn- global-h [] (or @hierarchy-cell (reset! hierarchy-cell (h-empty))))
 
 ;; native's *vm.PersistentMap / *vm.PersistentSet: sorted ones are other types
-;; native's asHierarchy wants a plain persistent map: a record is a tagged map
-;; here (P10.6) and must not pass as one
-(defn- h-map? [x] (and (map? x) (not (sorted? x)) (not (contains? x :lw/type))))
+;; native's asHierarchy wants a plain persistent map (a record is its own
+;; kind, D234, so map? already refuses it)
+(defn- h-map? [x] (and (map? x) (not (sorted? x))))
 (defn- h-set? [x] (and (set? x) (not (sorted? x))))
 
 (defn- h-valid? [h]                                       ; asHierarchy

@@ -1,0 +1,25 @@
+ctor #R{:a 1, :b 2}
+str "#R{:a 1, :b 2}"
+str-field #R{:a "x", :b \c}
+nested [#R{:a 1, :b 2} {:r #R{:a [1 "s"], :b {:k "v"}}} #R{:a #R{:a 1, :b 2}, :b nil}]
+field [1 2 1 :nf :d :d]
+map-over (1 2 nil)
+dissoc-declared [{:b 2} false true false]
+dissoc-extra [#R{:a 1, :b 2} true #R{:a 1, :b 2, :d 4}]
+dissoc-order [{:c 3, :a nil} {:a nil} {}]
+keys-count [(:a :b) (1 2) 2 true false 3]
+hash [true true true true]
+type [R "R" true false false let-go.lang.Type]
+map->R [#R{:a 1, :b nil, :c 9} #R{:a nil, :b nil} #R{:a 2, :b 1, :z 3, :y 4} #R{:a 1, :b nil} 1 true]
+equality [true false false false false false true true true 1]
+extras [#R{:a 1, :b 2, :z 0} #R{:a 1, :b 2, :z 0, :y 1} true false 3 true]
+instance [true false false true true false true]
+nil-field [#R{:a nil, :b 2} 1 (:b) false nil true true]
+assoc-nil [#R{:a nil, :b 2} 2 (:a :b) true false {:a nil} true]
+seq [([:a 1] [:b 2]) [:a 1] ([:b 2]) ([:b 2]) ([:a 1] [:b 2] [:c 3]) (:b :c) (1 2 3) let-go.lang.ArrayVector let-go.lang.PersistentList]
+meta [{:m 1} true #R{:a 1, :b 2} nil nil]
+conj [#R{:a 1, :b 2, :c 3} #R{:a 1, :b 2} #R{:a 1, :b 2} #R{:a 9, :b 2}]
+ifn [true false false false false]
+update [#R{:a 2, :b 2} #R{:a 1, :b 2} 1 #R{:a 7, :b 8} [:a :b]]
+find [[:a 1] nil nil [:c 3]]
+field-less [#Q{:x 5} 5 true false]
