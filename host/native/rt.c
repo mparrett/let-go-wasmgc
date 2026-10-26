@@ -212,7 +212,7 @@ intptr_t lg_host_getenv(intptr_t w) {
 }
 
 intptr_t lg_term_read_key(void) {
-  unsigned char buf[16];
+  unsigned char buf[256];
   int n = lg_host_read_key(buf, sizeof buf);
   return n <= 0 ? 0 : lg_bytes_of(buf, (size_t)n);
 }
