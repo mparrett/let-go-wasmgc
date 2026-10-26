@@ -1702,7 +1702,15 @@
              (str "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
                   "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n")))
       (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
-      [(fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
+      ;; a trap: under --test a catchable error, "wasm trap: <msg>", as the
+      ;; GC lane's $rt_trap with *trap-throws*; else the host's lg_trap
+      [(fnc "lg_trapk" ["ptr %k" "ptr %msg"]
+            (if (and *rt* *trap-throws*)
+              (str "  %b = call " w " @lg_trap_bytes(ptr %msg)\n"
+                   "  musttail call tailcc void " (ll-q (:name (get-in (callee-sig (lw-rt/rt-var 'core 'trap-raise)) [:arities 1])))
+                   "(ptr %k, " w " %b)\n  ret void\n")
+              "  call void @lg_trap(ptr %msg)\n  unreachable\n"))
+       (fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
        {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
        {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :attrs ll-fn-attrs
                   :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
