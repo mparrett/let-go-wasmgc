@@ -1,0 +1,22 @@
+id: bee17be
+v: 2
+title: Proposed: a PR merges on its lane owner's proof; the other lane reviews after the merge unless it touches shared files
+status: open
+priority: medium
+created: 2026-10-26T05:33:02Z
+updated: 2026-10-26T05:33:02Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: The practice until #57 was that each of us merged our own lane's PRs on the gate evidence in the PR body, and the other read them on main. Since then every PR has waited for the other's review before merging, and the queue now holds four wasm-side PRs (#72, #73, #74, #75) with more behind them. A pre-merge review from the other lane is the lane's slowest step, since each of us reads the other's area at the pace of our own work, and most of these PRs change files only one lane runs.
+ 
+ The rule, as a governance line (checks/state-template/00_governance.md, next to the `commit` row):
+ 
+ 1. A PR whose changed files are all in one lane merges when its author's proof holds: the rows the PR body names ran at the head and the gate for the phase they belong to exits 0, with the TAP in the body or linked. The lanes by path: wasm is `rt/wasm/`, `src/lower_wasm.lg`, `src/lw_rt.lg`, `host/`, `corpus/wasm/`, the P1 to P8 and P10 to P12 rows; llvm is `rt/llvm/`, `src/lower_llvm*`, the P13 rows and the llvm-poly branch. The other lane may review after the merge, and a finding there is a follow-up PR or a revert, the author's choice within a day.
+ 2. A PR that touches a shared file waits for the other lane's review before it merges, as now. Shared: `rt/let-go/lang/`, `src/driver.lg`, `checks/` (gate.sh, run.sh, items.tsv, workflow.mk, the lints), `docs/`, `DECISIONS.md` when the entry amends a decision the other lane made, and `corpus/` shared trees. A PR that adds a D-number for its own lane is not shared on that account.
+ 3. Either lane can ask for a pre-merge review on any PR by saying so in the body or a comment, and the author then waits.
+ 4. CI stays required on every merge: publish-check green, the subject lint.
+ 
+ What this costs: a defect in a lane-only PR reaches main before the other lane sees it. Both lanes already run the oracle rows and gate 2 at the head, so the rows check the behavior the other lane depends on, not the reading. The rows caught the P7.1 and P7.7 regressions on main that reading missed (#73).
+ 
+ Facts that close this: F1 the governance file carries rules 1 to 4 (one PR, shared by rule 2, so it waits for both of us). F2 the four open wasm PRs are classified under it in a comment here, and the ones that are lane-only merge on their proof. M1: if you want pre-merge review kept for a class of change (the runtime registry, the twin manifest, anything else), name it and it joins rule 2's list.
