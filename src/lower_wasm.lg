@@ -4873,6 +4873,8 @@
      :llvm (when (= *target* :llvm) ((resolve 'lower-wasm/ll-rtlib-snapshot)))}))
 
 (defn rtlib-restore! [snap]
+  ;; the llvm lane's no-twin stand-ins exist before any name is resolved
+  (when (:llvm snap) ((resolve 'lower-wasm/ll-notwin-restore!) (:llvm snap)))
   (swap! *sigs* merge (into {} (for [[s e] (:sigs snap)] [(sym-var s) (assoc e :var (sym-var s))])))
   (swap! *rt* merge {:state (into {} (for [[s st] (:state snap)] [(sym-var s) st]))
                      :lowered (:lowered snap)
