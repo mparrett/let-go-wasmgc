@@ -88,6 +88,20 @@ void lg_div_zero(void) { lg_error("divide by zero"); }
 /* A failed cast or an index out of range (wasm traps there). */
 void lg_trap(const char *msg) { lg_error(msg); }
 
+/* lg_trapk's message under --test: "wasm trap: <msg>" as a Bytes, the text
+   the GC lane's $rt_trap raises with *trap-throws* */
+static intptr_t lg_bytes_of(const void *p, size_t n);
+intptr_t lg_trap_bytes(const char *msg) {
+  static const char pre[] = "wasm trap: ";
+  size_t p = sizeof pre - 1, n = 0;
+  while (msg[n]) n++;
+  unsigned char buf[512];
+  if (p + n > sizeof buf) n = sizeof buf - p;
+  for (size_t i = 0; i < p; i++) buf[i] = (unsigned char)pre[i];
+  for (size_t i = 0; i < n; i++) buf[p + i] = (unsigned char)msg[i];
+  return lg_bytes_of(buf, p + n);
+}
+
 static void lg_copy(unsigned char *d, const unsigned char *s, size_t n) {
   if (d < s) for (size_t i = 0; i < n; i++) d[i] = s[i];
   else for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
