@@ -507,8 +507,13 @@
       "funcref" (let [[tn d] (decl-arg (a 0) nm) fv (var-of (a 1))]
                   (when-not fv (ll-fail "wasm/funcref of a fn value, not a defn var" {}))
                   [(ll-q (ll-funcref! tn d fv)) :func])
+      ;; through the module's lg_trapk, which raises under --test (the GC
+      ;; lane's $rt_trap with *trap-throws*): the runtime's text is cached,
+      ;; the module's prelude is not. The ret ends the block, so what the
+      ;; block still emits goes to a fresh unreachable one.
       "trap" (if (string-const? (a 0))
-               (do (ll-emit! "  call void @lg_trap(ptr " (ll-cstring! (const-val (a 0))) ")")
+               (do (ll-emit! "  musttail call tailcc void @lg_trapk(ptr %k, ptr " (ll-cstring! (const-val (a 0))) ")\n  ret void")
+                   (ll-label! (ll-fresh "trapped"))
                    [nil :bottom])
                (ll-fail "wasm/trap needs a string literal" {}))
       (ll-fail (str "unsupported intrinsic " nm) {}))))
@@ -522,7 +527,7 @@
   "Declarations of the host helpers the intrinsics call (host/native/rt.c)."
   []
   (let [w (ll-word)]
-    [(ll-declare "void" "lg_trap" ["ptr"] "noreturn" "cold")
+    [(ll-declare "void" "lg_trap" ["ptr"] "noreturn" "cold") (ll-declare (ll-word) "lg_trap_bytes" ["ptr"])
      (ll-declare "void" "lg_fill_i8" ["ptr" w "i8"]) (ll-declare "void" "lg_fill_i32" ["ptr" w "i32"])
      (ll-declare "void" "lg_fill_i64" ["ptr" w "i64"]) (ll-declare "void" "lg_fill_double" ["ptr" w "double"])
      (ll-declare "void" "lg_fill_ptr" ["ptr" w "ptr"]) (ll-declare "void" "lg_fill_word" ["ptr" w w])
