@@ -88,6 +88,20 @@ void lg_div_zero(void) { lg_error("divide by zero"); }
 /* A failed cast or an index out of range (wasm traps there). */
 void lg_trap(const char *msg) { lg_error(msg); }
 
+/* lg_trapk's message under --test: "wasm trap: <msg>" as a Bytes, the text
+   the GC lane's $rt_trap raises with *trap-throws* */
+static intptr_t lg_bytes_of(const void *p, size_t n);
+intptr_t lg_trap_bytes(const char *msg) {
+  static const char pre[] = "wasm trap: ";
+  size_t p = sizeof pre - 1, n = 0;
+  while (msg[n]) n++;
+  unsigned char buf[512];
+  if (p + n > sizeof buf) n = sizeof buf - p;
+  for (size_t i = 0; i < p; i++) buf[i] = (unsigned char)pre[i];
+  for (size_t i = 0; i < n; i++) buf[p + i] = (unsigned char)msg[i];
+  return lg_bytes_of(buf, p + n);
+}
+
 static void lg_copy(unsigned char *d, const unsigned char *s, size_t n) {
   if (d < s) for (size_t i = 0; i < n; i++) d[i] = s[i];
   else for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
@@ -212,17 +226,23 @@ intptr_t lg_host_getenv(intptr_t w) {
 }
 
 intptr_t lg_term_read_key(void) {
-  unsigned char buf[16];
+  unsigned char buf[256];
   int n = lg_host_read_key(buf, sizeof buf);
   return n <= 0 ? 0 : lg_bytes_of(buf, (size_t)n);
 }
 
 int32_t lg_term_key_pending(void) { return lg_host_key_ready(); }
 
+/* term/raw-mode! and term/restore-mode! on stdin (term.go:315-370). */
+int lg_host_raw_mode(void);
+int lg_host_restore_mode(void);
+int64_t lg_term_raw_mode(void) { return lg_host_raw_mode(); }
+int64_t lg_term_restore_mode(void) { return lg_host_restore_mode(); }
+
 int64_t lg_term_size(void) {
   int c = 80, r = 24;
   lg_host_term_dims(&c, &r);
-  return ((int64_t)c << 32) | (uint32_t)r;
+  return (int64_t)(((uint64_t)(uint32_t)c << 32) | (uint32_t)r);
 }
 
 /* js/emit and js/url-param off a browser: native emits nothing and finds

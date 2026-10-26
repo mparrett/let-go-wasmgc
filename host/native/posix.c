@@ -5,7 +5,9 @@
 #include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -59,19 +61,109 @@ int lg_host_open_c(const char *path, int mode) {
   return open(path, fl, 0644);
 }
 
-int lg_host_read_key(unsigned char *buf, int cap) {
-  ssize_t n = read(0, buf, (size_t)cap);
-  return n < 0 ? 0 : (int)n;
-}
+/* One key per call, as let-go's native key source: a read is buffered and
+   split by key_tokenizer.go's scanKey into ESC, a CSI or SS3 sequence, or one
+   UTF-8 rune (an invalid byte alone), refilled only when stdin has more, so
+   ESC x arrives as two keys. The SIGWINCH wake is not ported. */
+static unsigned char lg_keys[256];
+static int lg_keys_len;
 
-int lg_host_key_ready(void) {
+static int lg_stdin_ready(void) {
   struct pollfd p = {0, POLLIN, 0};
   return poll(&p, 1, 0) > 0;
 }
 
+/* utf8.FullRune then utf8.DecodeRune: the length of a valid rune at b, 1
+   for an invalid sequence, *more when a valid prefix runs off the buffer */
+static int lg_scan_rune(const unsigned char *b, int n, int *more) {
+  unsigned c = b[0];
+  int len = c >= 0xc2 && c <= 0xdf ? 2 : c >= 0xe0 && c <= 0xef ? 3 : c >= 0xf0 && c <= 0xf4 ? 4 : 1;
+  if (len == 1) return 1;
+  /* the second byte's range rules out overlongs, surrogates and > U+10FFFF */
+  unsigned lo = c == 0xe0 ? 0xa0 : c == 0xf0 ? 0x90 : 0x80;
+  unsigned hi = c == 0xed ? 0x9f : c == 0xf4 ? 0x8f : 0xbf;
+  for (int i = 1; i < len; i++) {
+    if (i >= n) { *more = 1; return n; }
+    unsigned x = b[i];
+    if (i == 1 ? (x < lo || x > hi) : (x < 0x80 || x > 0xbf)) return 1;
+  }
+  return len;
+}
+
+/* the front token's length; *more when it may continue past the buffer */
+static int lg_scan_key(const unsigned char *b, int n, int *more) {
+  *more = 0;
+  if (b[0] == 0x1b) {
+    if (n == 1) { *more = 1; return 1; }
+    if (b[1] == '[') {
+      int i = 2;
+      while (i < n && (b[i] < 0x40 || b[i] > 0x7e)) i++;
+      if (i < n) return i + 1;
+      *more = 1; return n;
+    }
+    if (b[1] == 'O') {
+      if (n < 3) { *more = 1; return n; }
+      return 3;
+    }
+    return 1;
+  }
+  if (b[0] < 0x80) return 1;
+  return lg_scan_rune(b, n, more);
+}
+
+int lg_host_read_key(unsigned char *buf, int cap) {
+  for (;;) {
+    if (lg_keys_len == 0) {
+      ssize_t r = read(0, lg_keys, sizeof lg_keys);
+      if (r <= 0) return 0;
+      lg_keys_len = (int)r;
+    }
+    int more, n = lg_scan_key(lg_keys, lg_keys_len, &more);
+    if (more && lg_keys_len < (int)sizeof lg_keys && lg_stdin_ready()) {
+      ssize_t r = read(0, lg_keys + lg_keys_len, sizeof lg_keys - (size_t)lg_keys_len);
+      if (r > 0) { lg_keys_len += (int)r; continue; }
+    }
+    if (n > cap) n = cap;
+    memcpy(buf, lg_keys, (size_t)n);
+    lg_keys_len -= n;
+    memmove(lg_keys, lg_keys + n, (size_t)lg_keys_len);
+    return n;
+  }
+}
+
+int lg_host_key_ready(void) { return lg_keys_len > 0 || lg_stdin_ready(); }
+
+/* stdout's size; -1, -1 when stdout is not a terminal (term.go's size
+   is nil then), and the caller's defaults for a zero dimension */
 void lg_host_term_dims(int *cols, int *rows) {
   struct winsize w;
-  if (ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col && w.ws_row) { *cols = w.ws_col; *rows = w.ws_row; }
+  if (ioctl(1, TIOCGWINSZ, &w) != 0) { *cols = -1; *rows = -1; return; }
+  if (w.ws_col && w.ws_row) { *cols = w.ws_col; *rows = w.ws_row; }
+}
+
+/* raw mode on stdin with the flags golang.org/x/term's MakeRaw sets */
+static struct termios lg_saved_mode;
+static int lg_mode_saved;
+int lg_host_raw_mode(void) {
+  if (lg_mode_saved) return 2;
+  struct termios t;
+  if (tcgetattr(0, &t) != 0) return 0;
+  lg_saved_mode = t;
+  t.c_iflag &= ~(tcflag_t)(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+  t.c_oflag &= ~(tcflag_t)OPOST;
+  t.c_lflag &= ~(tcflag_t)(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+  t.c_cflag &= ~(tcflag_t)(CSIZE | PARENB);
+  t.c_cflag |= CS8;
+  t.c_cc[VMIN] = 1;
+  t.c_cc[VTIME] = 0;
+  if (tcsetattr(0, TCSANOW, &t) != 0) return 0;
+  lg_mode_saved = 1;
+  return 1;
+}
+int lg_host_restore_mode(void) {
+  if (!lg_mode_saved) return 0;
+  lg_mode_saved = 0;
+  return tcsetattr(0, TCSANOW, &lg_saved_mode) == 0 ? 1 : 0;
 }
 
 void *lg_host_grow(void *p, size_t old, size_t n) {

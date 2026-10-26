@@ -96,6 +96,10 @@ simply block the thread.
   the first key straight to the waiter, as P4.0 did, would make a burst into
   two reads.
 
+The 16-byte cap is the browser ring's. The native host (`host/native/posix.c`)
+reads stdin itself and splits it into keys as let-go's native key source does,
+one key per `read_key` of up to 256 bytes, with no coalescing.
+
 `node-host` turns coalescing **off** unless given `--coalesce`, so scripted
 and piped input still reaches the program key for key. The wasmtime adapter
 reads stdin and does not coalesce (it has no queue to look ahead in).

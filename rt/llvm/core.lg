@@ -157,6 +157,8 @@
 ;; Raising (see the header). raise-str takes a Str, raise a Bytes literal.
 
 (defn raise [msg] (throw (arch/new sq/Err 1 msg msg (arch/null) (arch/null))))
+;; a trap under --test: the Err the GC lane's $rt_trap throws with *trap-throws*
+(defn trap-raise [msg] (throw (arch/new sq/Err 0 msg msg {:wasm/trap true} (arch/null))))
 (defn- raise-str [st] (raise (s/str-bytes st)))
 
 ;; Value.Type().Name() (nil prints "nil"). A vector reports the Go type

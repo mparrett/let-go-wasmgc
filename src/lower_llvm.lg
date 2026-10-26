@@ -151,6 +151,7 @@
 ;; core vars the llvm runtime implements as one of its top-level defs
 (defn ll-var-alias [v]
   (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
+        (and *rt* (= v #'*command-line-args*)) (lw-rt/rt-var 'host 'command-line-args)
         (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
         (and *rt* (= v #'*out*)) (lw-rt/rt-var 'host 'stdout-handle)
         (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
@@ -393,6 +394,30 @@
                 [:box (str (inc (* 2 (parse-long n))))]
                 (ll-fail "unsupported leading arg of a seq form" {:expr e}))))
 
+;; On llvm a native with no twin, called or used as a value, stands as
+;; a variadic library defn that raises its named error, as the GC lane's
+;; no-twin fn does. The runtime library can reach one (a variant built for the
+;; natives a program roots), so the snapshot lists the natives that have one
+;; and a restore registers them again before it reads the names.
+(def ll-notwin-vars (atom {}))
+(defn ll-notwin-register!
+  "The stand-in var for native v, registered once: a library defn compiled
+   on demand like any other."
+  [v m]
+  (or (get @ll-notwin-vars v)
+        (let [ns-sym 'lw-notwin
+              nm (symbol (str "notwin_" (safe-id (subs (str v) 2)) "_" (format "%016x" (hash/xxh3-64-str (str v)))))
+              _ (create-ns ns-sym)
+              nv (intern ns-sym nm (fn [& _] nil))
+              raise (list (lw-rt/rt-sym 'core 'raise) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) m))]
+          (swap! lw-rt/lib-defns assoc nv {:var nv :ns ns-sym :name nm :lib true :arities [[['& '_] raise]]})
+          (swap! ll-notwin-vars assoc v nv)
+          nv)))
+(defn ll-notwin!
+  "The stand-in var for native v when v has no twin, else nil."
+  [v]
+  (when-let [m (and *rt* (no-twin-message v))] (ll-notwin-register! v m)))
+
 (defn ll-variadic-plan
   "A call of v past its fixed arities: through its variadic arity (the
    fixed args, then the rest as a List, nil when none is left), or through
@@ -605,6 +630,7 @@
       (contains? value-substs v) (or (ll-variadic-plan (value-substs v) args)
                                      (ll-fail "no runtime signature for a collection constructor" {:var v}))
       :else (or (ll-variadic-plan v args)
+                (when-let [nv (ll-notwin! v)] (ll-variadic-plan nv args))
                 (ll-fail "call to a fn with no known signature" {:var v :argc (count args)})))))
 
 (defn ll-call-plan
@@ -1455,7 +1481,11 @@
   "The word operand of var v used as a value: a defn's, a runtime twin's or
    (without the runtime) a core op's fn object, made once per session."
   [v0]
-  (let [v (get value-substs v0 v0)]
+  (let [v (get value-substs v0 v0)
+        ;; nothing below can give a native with no twin a value: its stand-in
+        v (if (or (q-sig v) (and *rt* (rt-target v) (callee-sig v)) (and (not *rt*) (core-var-ops v)))
+            v
+            (or (ll-notwin! v) v))]
   ;; a defn used as a value: its wrapper unboxes per the signature, so the
   ;; driver boxes its typed params (defn-fn-global's note)
   (when *abi-notes* (swap! *abi-notes* update :value (fnil conj #{}) v))
@@ -1672,7 +1702,15 @@
              (str "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
                   "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n")))
       (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
-      [(fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
+      ;; a trap: under --test a catchable error, "wasm trap: <msg>", as the
+      ;; GC lane's $rt_trap with *trap-throws*; else the host's lg_trap
+      [(fnc "lg_trapk" ["ptr %k" "ptr %msg"]
+            (if (and *rt* *trap-throws*)
+              (str "  %b = call " w " @lg_trap_bytes(ptr %msg)\n"
+                   "  musttail call tailcc void " (ll-q (:name (get-in (callee-sig (lw-rt/rt-var 'core 'trap-raise)) [:arities 1])))
+                   "(ptr %k, " w " %b)\n  ret void\n")
+              "  call void @lg_trap(ptr %msg)\n  unreachable\n"))
+       (fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
        {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
        {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :attrs ll-fn-attrs
                   :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
@@ -1885,7 +1923,17 @@
   "The llvm session state the cached runtime text names: environment and
    program type ids, constant names, the fn-value wrappers and helpers."
   []
-  {:ll-fn-values (ll-encode (into {} (filter (comp ll-snap-key? key) @*fn-values*)))})
+  {:ll-fn-values (ll-encode (into {} (filter (comp ll-snap-key? key) @*fn-values*)))
+   :ll-notwin (vec (sort (map #(str (var-sym %)) (keys @ll-notwin-vars))))})
+
+(defn ll-notwin-restore!
+  "Register the snapshot's stand-ins again, before anything of the snapshot
+   that names them (its signatures, state and fn values) is read."
+  [snap]
+  (doseq [n (:ll-notwin snap)]
+    (let [v (sym-var (symbol n)) m (no-twin-message v)]
+      (when-not m (ll-fail "cached stand-in for a native that has a twin or is gone" {:var n}))
+      (ll-notwin-register! v m))))
 
 (defn ll-rtlib-restore! [snap]
   (swap! *fn-values* merge (ll-decode (:ll-fn-values snap))))

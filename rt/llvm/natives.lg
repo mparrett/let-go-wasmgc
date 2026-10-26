@@ -582,13 +582,14 @@
         (not (string? (first args))) (raise-lit "os/stat expected String path")
         :else nil))
 
-;; os/exit (os.go:246): the host ABI has no exit import, so a module cannot
-;; end with a chosen status; it stops with a named trap (uncatchable, as an
-;; exit is). legmacs calls it only when stdout is not a terminal.
+;; os/exit (os.go:246): the process ends with status n through the host's
+;; exit, as os.Exit does: no finally runs. Native runs its exit hooks first;
+;; the llvm runtime registers none yet. Output is written unbuffered, so
+;; nothing is left to flush.
 (defn ^{:twin "os/exit"} exit [& args]
   (let [n (if (seq args) (first args) 0)]
     (if (int? n)
-      (arch/trap "lower-wasm: os/exit: the host ABI has no exit import (named limit)")
+      (arch/host-exit n)
       (raise-lit "os/exit expected Int"))))
 
 ;; ---------------------------------------------------------------------------
