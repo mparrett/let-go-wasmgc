@@ -13,3 +13,4 @@ description: P10.6/#43 represent a defrecord instance as a map carrying :lw/type
 
 ## Comments
 [2026-10-19T05:48:40Z] Matt Parrett: Status 2026-10-18: open. At 128/241 the suite still shows it in dissoc.cljc and the record files (dissoc keeps the tag, equality and pr-str differ). D218 decides the llvm side (a type is a Type object); the wasm side waits for the shared-core answer on #646deae so the two lanes pick one representation.
+[2026-10-26T06:21:13Z] Matt Parrett: PR #76 (D234) makes a defrecord instance its own runtime kind, laid out as vm.Record: dissoc of a declared field answers a plain map, keys/count/hash/pr-str/type match native, extras kept. Oracle corpus/wasm/records.lg, 25 probes; jank 128 to 129 (dissoc.cljc). Named limit kept: a deftype with fields is encoded as a record. Under the bee17be proposal this PR is lane-only.
