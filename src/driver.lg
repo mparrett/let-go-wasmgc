@@ -1773,6 +1773,9 @@
                  (println (str "llvm-analysis-cache executed=" (:executed s)
                                " reused=" (:reused s) " bypassed=" (:bypassed s)
                                " rounds=" (:rounds s))))))
+           ;; a --test build's traps raise through trap-raise on llvm
+           (when (and (:rt opts) test? (= :llvm lw/*target*))
+             (lw/rt-analyze! (lw-rt/rt-var 'core 'trap-raise)))
            ;; --no-shake: the whole runtime, for the size comparison
            (when (and (:rt opts) (not rtlib?) (not (:shake opts)))
              (doseq [d lw-rt/defns] (lw/rt-analyze! (:var d))))
