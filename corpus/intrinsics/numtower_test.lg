@@ -1,0 +1,177 @@
+;; wasm.numtower (rt/wasm/numtower.lg) against native lg on the same inputs:
+;; BigInt and Ratio as runtime values (D230). `/` of two Ints, the reader's
+;; literals, printing in every mode, hash, `=`, compare, the predicates, type,
+;; bigint / numerator / denominator, map keys, the piece-2b named limit, and
+;; the dialect claim. Every expectation is native lg's own answer; values
+;; cross the boundary as text (pr-str both sides) or as ints.
+(ns numtower-test
+  (:require [test :refer [deftest is testing]]
+            [wasm.intrinsics :as wasm]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [wasm.pvec :as pv]
+            [wasm.phm :as m]
+            [wasm.core :as c]
+            [wasm.math :as wm]
+            [wasm.reader :as rd]
+            [wasm.natives :as n]
+            [wasm.numtower :as nt]
+            [core-test :as ct]
+            [ir.passes.pipeline :as pipeline]
+            [string]))
+
+(defn- S "pr-str of a runtime value, as a native string." [w] (wasm/string-of-bytes (s/str-bytes (s/pr-str w))))
+(defn- W [x] (ct/->w x))
+(defn- R "The runtime value a literal reads as." [text] (rd/read-string (W text)))
+(defn- msg [e] (if (:wasm/trap (ex-data e)) [:trap (ex-message e)] (wasm/string-of-bytes (wasm/get sq/Err 2 e))))
+(defn- outcome [f] (try [:ok (f)] (catch Throwable e [:err (if (instance? Throwable e) (if (:wasm/trap (ex-data e)) [:trap (ex-message e)] (ex-message e)) e)])))
+(defn- mine-outcome [f] (try [:ok (f)] (catch Throwable e [:err (msg e)])))
+
+(def ^:private literals
+  ["1N" "-1N" "+1N" "1n" "0N" "-0N" "99999999999999999999" "-99999999999999999999" "99999999999999999999N"
+   "1/2" "-1/2" "4/2" "-4/2" "4/-2" "+4/2" "0/5" "10/5" "1/1" "-9223372036854775808/-1" "2147483648/4294967296"
+   "0xFFFFFFFFFFFFFFFFF" "0x8000000000000000" "-0x8000000000000000" "9223372036854775807" "-9223372036854775808"])
+
+(deftest literals-read-as-native
+  (c/install!)
+  (doseq [t literals]
+    (is (= (pr-str (read-string t)) (S (R t))) t))
+  (testing "what native refuses, this reader refuses"
+    (doseq [t ["1/0" "1/2/3" "1.5N" "0x10N" "1N/2" "1/00" "99999999999999999999/7" "1/99999999999999999999"]]
+      (is (= :err (first (outcome #(read-string t)))) t)
+      (is (= :err (first (mine-outcome #(R t)))) t))))
+
+(deftest div-of-ints
+  (c/install!)
+  (doseq [[a b] [[1 2] [6 3] [-6 4] [6 -4] [0 5] [1 1] [-1 1] [-9223372036854775808 -1] [9223372036854775807 -1]
+                 [2147483648 4294967296] [2147483648 -9223372036854775808] [-2147483648 7] [3037000500 2147483648]
+                 [7 -7] [-9223372036854775808 2] [1 9223372036854775807]]]
+    (is (= (pr-str (/ a b)) (S (wm/div (W a) (W b)))) (str a "/" b)))
+  (testing "one argument is the reciprocal; zero divides nothing"
+    (doseq [a [2 -2 1 7 -9223372036854775808]]
+      (is (= (pr-str (/ a)) (S (wm/div (W a))))))
+    (is (= (ex-message (try (/ 1 0) (catch Exception e e))) (second (mine-outcome #(wm/div (W 1) (W 0))))))))
+
+(deftest printing
+  (c/install!)
+  (doseq [t ["1N" "-1N" "1/2" "-9223372036854775808/-1" "99999999999999999999N" "-99999999999999999999" "0N" "2147483648/4294967296"]]
+    (let [v (read-string t) w (R t)]
+      (is (= (str v) (wasm/string-of-bytes (s/str-bytes (s/str w)))) (str "str " t))
+      (is (= (pr-str v) (S w)) (str "pr-str " t))
+      (is (= (print-str v) (wasm/string-of-bytes (s/str-bytes (s/print-str w)))) (str "print-str " t))
+      (is (= (str [v]) (wasm/string-of-bytes (s/str-bytes (s/str (pv/vconj (pv/empty-vec) w))))) (str "str of [" t "]"))
+      (is (= (str v 2) (wasm/string-of-bytes (s/str-bytes (s/str w (W 2))))) (str "str " t " 2")))))
+
+(deftest hash-and-equality
+  (c/install!)
+  (doseq [t ["1N" "0N" "-1N" "9223372036854775808N" "99999999999999999999" "-99999999999999999999" "1/2" "-1/2" "2/3"
+             "2147483648/4294967296" "-9223372036854775808/-1" "0xFFFFFFFFFFFFFFFFF"]]
+    (is (= (hash (read-string t)) (sq/unbox-int (sq/hash (R t)))) (str "hash " t)))
+  (doseq [[a b] [["1N" "1"] ["1" "1N"] ["1N" "1N"] ["1N" "2N"] ["1N" "1.0"] ["1/2" "1/2"] ["1/2" "2/4"] ["1/2" "0.5"] ["1/2" "1"]
+                 ["4/2" "2"] ["[1N]" "[1]"] ["{:a 1N}" "{:a 1}"] ["#{1/2}" "#{2/4}"] ["9223372036854775808N" "-9223372036854775808/-1"]
+                 ["99999999999999999999" "99999999999999999999N"] ["99999999999999999999" "99999999999999999998"] ["1N" "\"1\""] ["1/2" "nil"]]]
+    (is (= (= (read-string a) (read-string b)) (sq/equiv? (R a) (R b))) (str a " = " b)))
+  (testing "map keys and set members find each other as native"
+    (is (= :a (ct/<-w (c/get (c/assoc (m/empty-map) (R "1N") (W :a)) (W 1) (wasm/null)))))
+    (is (= :a (ct/<-w (c/get (c/assoc (m/empty-map) (W 1) (W :a)) (R "1N") (wasm/null)))))
+    (is (= :h (ct/<-w (c/get (c/assoc (m/empty-map) (R "1/2") (W :h)) (R "2/4") (wasm/null)))))
+    (is (= 1 (sq/unbox-int (sq/count (c/assoc (c/assoc (m/empty-map) (W 1) (W :a)) (R "1N") (W :b))))))))
+
+(deftest compare-as-native
+  (c/install!)
+  (doseq [[a b] [["1N" "2N"] ["2N" "1N"] ["1N" "1"] ["1" "1N"] ["1/3" "1/2"] ["1/2" "1"] ["1" "1/2"] ["1/2" "1N"] ["1N" "1.5"]
+                 ["1.5" "1N"] ["1/2" "0.5"] ["0.5" "1/2"] ["1N" "1N"] ["9223372036854775808N" "9223372036854775807"]
+                 ["-99999999999999999999" "-9223372036854775808"] ["nil" "1N"] ["1/2" "nil"]]]
+    (is (= (compare (read-string a) (read-string b)) (c/compare* (R a) (R b))) (str "compare " a " " b)))
+  (testing "not a number on the other side: native's message"
+    (doseq [[a b] [["1N" "\"a\""] ["1/2" ":k"] ["[1]" "1N"]]]
+      (is (= (ex-message (try (compare (read-string a) (read-string b)) (catch Exception e e)))
+             (second (mine-outcome #(c/compare* (R a) (R b))))) (str a " " b))))
+  (testing "sort"
+    (is (= (pr-str (sort [1/2 1N 1 0.5 2N -1/3 9223372036854775808N]))
+           (S (c/sort (R "[1/2 1N 1 0.5 2N -1/3 9223372036854775808N]")))))))
+
+(deftest predicates-and-type
+  (c/install!)
+  (doseq [t ["1N" "1" "1/2" "1.0" "nil" "\"s\"" "9223372036854775808N"]]
+    (let [v (read-string t) w (R t)]
+      (is (= (bigint? v) (ct/<-w (wm/bigint? w))) (str "bigint? " t))
+      (is (= (ratio? v) (n/ratio? w)) (str "ratio? " t))
+      (is (= (integer? v) (ct/<-w (c/integer? w))) (str "integer? " t))
+      (is (= (rational? v) (ct/<-w (c/rational? w))) (str "rational? " t))
+      (is (= (number? v) (ct/<-w (c/number? w))) (str "number? " t))
+      (is (= (int? v) (ct/<-w (wm/int? w))) (str "int? " t))
+      (is (= (str (type v)) (if (nil? v) "" (S (c/type-of w)))) (str "type " t)))))
+
+(deftest bigint-numerator-denominator
+  (c/install!)
+  (doseq [t ["5" "-5" "1N" "\"12\"" "\"-123456789012345678901234567890\"" "\"+7\"" "1.5" "-2.5" "99999999999999999999"]]
+    (is (= (pr-str (bigint (read-string t))) (S (wm/bigint (R t)))) (str "bigint " t)))
+  (doseq [t ["\"x\"" "\"\"" "\"1.5\"" "1/2" ":k"]]
+    (is (= (ex-message (try (bigint (read-string t)) (catch Exception e e)))
+           (second (mine-outcome #(wm/bigint (R t))))) (str "bigint " t)))
+  (doseq [t ["1/2" "-2/4" "2147483648/4294967296" "1/9223372036854775807" "-9223372036854775808/3"]]
+    (is (= (pr-str (numerator (read-string t))) (S (wm/numerator (R t)))) (str "numerator " t))
+    (is (= (pr-str (denominator (read-string t))) (S (wm/denominator (R t)))) (str "denominator " t)))
+  (is (= (ex-message (try (numerator 1) (catch Exception e e))) (second (mine-outcome #(wm/numerator (W 1)))))))
+
+(deftest arithmetic-is-the-next-piece
+  (c/install!)
+  (doseq [f [#(c/add (W 1) (R "1N")) #(c/sub (R "1/2") (W 1)) #(c/mul (R "2N") (R "2N")) #(wm/div (R "1/2") (W 2)) #(wm/rem (R "5N") (W 2))
+             #(c/lt (R "1N") (W 2))]]
+    (is (= "lower-wasm: arithmetic on a BigInt or Ratio operand (numeric tower, piece 2b)" (second (mine-outcome f))))))
+
+;; ---------------------------------------------------------------------------
+;; Dialect: seq.lg's, plus let-go.lang.bignum (core_test's check, with that
+;; namespace allowed; the only runtime file that may name it)
+
+(def ^:private ir-op-fns
+  '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-and-not bit-not
+     bit-shift-left bit-shift-right unsigned-bit-shift-right
+     unchecked-add unchecked-subtract unchecked-multiply quot throw})
+(def ^:private special-forms '#{if do let* loop* recur try fn* var set! def quote})
+
+(defn- var-refs [form bound]
+  (cond
+    (symbol? form) (if (or (bound form) (special-forms form)) [] [form])
+    (seq? form)
+    (let [[head & more] form]
+      (cond
+        (= 'quote head) []
+        (= 'fn* head)
+        (let [more (if (symbol? (first more)) (rest more) more)
+              arities (if (vector? (first more)) [more] more)]
+          (mapcat (fn [[params & body]] (mapcat #(var-refs % (into bound params)) body)) arities))
+        ('#{let* loop*} head)
+        (let [[bvec & body] more]
+          (loop [pairs (partition 2 bvec) b bound out []]
+            (if (seq pairs)
+              (let [[sym init] (first pairs)]
+                (recur (rest pairs) (conj b sym) (into out (var-refs init b))))
+              (into out (mapcat #(var-refs % b) body)))))
+        :else (mapcat #(var-refs % bound) form)))
+    (or (vector? form) (map? form) (set? form)) [:collection-literal]
+    :else []))
+
+(defn- arities [[_ _ & more]]
+  (let [more (if (string? (first more)) (rest more) more)]
+    (if (vector? (first more)) [more] more)))
+
+(deftest dialect
+  (let [forms (read-string (str "[" (slurp "rt/wasm/numtower.lg") "\n]"))
+        defns (filter #(and (seq? %) ('#{defn defn-} (first %))) forms)
+        in-ns* #(binding [*ns* (find-ns 'wasm.numtower)] (%))
+        offending
+        (for [d defns
+              [params & body] (arities d)
+              sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
+              :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
+                    vname (str v)]
+              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["numtower" "seq" "str"])
+                             (string/starts-with? vname "#'let-go.lang.bignum/")
+                             (and (string/starts-with? vname "#'wasm.intrinsics/")
+                                  (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
+                             (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
+          [(second d) sym vname])]
+    (is (empty? offending) (pr-str (take 10 offending)))
+    (is (= 2 (count (filter #(and (seq? %) (= 'wasm/deftype-struct (first %))) forms))) "the two library deftypes are declared")))

@@ -33,7 +33,7 @@ read -r -a dargs <<<"${LW_DRIVER_ARGS:-}"; drv+=(${dargs[@]+"${dargs[@]}"})
 key=""
 if [ -n "${LW_MODULE_CACHE:-}" ]; then
   mkdir -p "$LW_MODULE_CACHE"
-  key=$( { cat "$prog"; echo "$sp"; echo "target=${LW_TARGET:-gc} ${LW_DRIVER_ARGS:-}"; cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg;
+  key=$( { cat "$prog"; echo "$sp"; echo "target=${LW_TARGET:-gc} ${LW_DRIVER_ARGS:-}"; cat "$here"/src/*.lg "$here"/src/*.mjs "${LW_RT_DIR:-$here/rt/wasm}"/*.lg "$here"/rt/let-go/lang/*.lg;
            [ -n "$sp" ] && IFS=: read -r -a roots <<<"$sp" && for r in "${roots[@]}"; do find "$r" -name '*.lg' -not -path '*/worktrees/*' -print0 | sort -z | xargs -0 cat; done; } | md5 -q)
 fi
 if [ -n "$key" ] && [ -f "$LW_MODULE_CACHE/$key.wasm" ]; then

@@ -475,7 +475,7 @@
             :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
                   vname (str v)]
             :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/"))
-                                 ["arrays" "math" "xxhash" "host" "lang" "core" "seq" "pvec" "str" "phm" "phs" "sorted"])
+                                 ["arrays" "math" "xxhash" "host" "lang" "core" "seq" "pvec" "str" "phm" "phs" "sorted" "numtower"])
                            (and (string/starts-with? vname "#'wasm.intrinsics/")
                                 (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
                            (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))

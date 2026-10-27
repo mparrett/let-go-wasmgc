@@ -17,6 +17,7 @@
             [wasm.phs :as hs]
             [wasm.core :as c]
             [wasm.reader :as rd]
+            [wasm.numtower :as nt]
             [ir.passes.pipeline :as pipeline]
             [string]))
 
@@ -60,6 +61,9 @@
         (set? x) (with-native-meta (reduce (fn [w e] (hs/sconj w (->w e))) (hs/empty-set) (seq x)) x)
         (fn? x) (clo x)
         (seq? x) (with-native-meta (reduce (fn [l e] (sq/conj l (->w e))) (sq/list) (reverse x)) x)
+        ;; D230: a BigInt or Ratio crosses as its decimal text
+        (= "let-go.lang.BigInt" (str (type x))) (nt/bigint-of-text (s/mk-str (wasm/bytes-of-string (str x))))
+        (= "let-go.lang.Ratio" (str (type x))) (nt/ratio-of-text (s/mk-str (wasm/bytes-of-string (str (numerator x)))) (s/mk-str (wasm/bytes-of-string (str (denominator x)))))
         :else (throw (ex-info (str "->w: no runtime form for " (pr-str x)) {}))))
 
 (defn- bytes->str [b] (when-not (wasm/null? b) (wasm/string-of-bytes b)))
@@ -71,6 +75,11 @@
         wm (fn [x] (if mt (with-meta x mt) x))]
     (cond (= k 0) nil
           (= k 1) (sq/unbox-int r)
+          ;; D230: back through its text; built with bigint and /, since native's
+          ;; reader refuses a ratio whose part is past int64
+          (= k 42) (let [t (wasm/string-of-bytes (s/str-bytes (s/pr-str r)))] (bigint (subs t 0 (dec (count t)))))
+          (= k 43) (let [t (wasm/string-of-bytes (s/str-bytes (s/pr-str r))) i (string/index-of t "/")]
+                     (/ (bigint (subs t 0 i)) (bigint (subs t (inc i)))))
           (= k 15) (= 1 (wasm/get sq/Bool 0 r))
           (= k 17) (wasm/string-of-bytes (s/str-bytes r))
           (= k 19) (char (s/char-val r))
@@ -784,7 +793,7 @@
               sym (mapcat #(var-refs (in-ns* (fn [] (pipeline/expand-all %))) (set params)) body)
               :let [v (when (symbol? sym) (in-ns* #(resolve sym)))
                     vname (str v)]
-              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["core" "seq" "pvec" "str" "phm" "phs" "arrays" "sorted"])
+              :when (not (or (some #(string/starts-with? vname (str "#'wasm." % "/")) ["core" "seq" "pvec" "str" "phm" "phs" "arrays" "sorted" "numtower"])
                              (and (string/starts-with? vname "#'wasm.intrinsics/")
                                   (or (:intrinsic (meta v)) (:wasm.intrinsics/kind @v)))
                              (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]

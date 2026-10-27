@@ -1,0 +1,161 @@
+;; wasm.numtower — BigInt and Ratio as runtime values (D230, git-issue:4d19ae0):
+;; let-go.lang.bignum's two deftypes declared as structs (wasm/deftype-struct),
+;; and what wasm.core, wasm.math and wasm.reader need of them: the kind tests,
+;; `/` of two Ints (NumDiv + MaybeSimplifyRatio), the literal parsers, printing,
+;; hash, equality and compare. Ground truth let-go e9789b7d: pkg/vm/bigint.go,
+;; ratio.go, numbers.go, hash.go, reader.go.
+;;
+;; DIALECT: seq.lg's, plus calls into let-go.lang.bignum, the one plain-lg
+;; library the dialect reaches (the dialect deftest of numtower_test.lg allows
+;; that namespace). The boundary carries only ints, booleans and the two
+;; instances: an Int crosses as a raw i64 here and a plain lg int there (the
+;; backend boxes and unboxes at the call; under native lg both are the same
+;; int), and an instance is the same ref on both sides (the struct in the
+;; module, the deftype instance natively). Strings do not cross: the decimal
+;; text of a value is built here from the library's quot/rem by 10^9, and a
+;; literal's digits are folded here with mul/add, so the library's `->string`
+;; and `parse` stay uncalled by the runtime (natively a library string is a
+;; Go string, not a Str; the module would carry their helpers for nothing).
+;;
+;; Arithmetic on a BigInt or Ratio operand (promotion as numbers.go has it)
+;; is not here: wasm.core and wasm.math raise the piece-2b named limit.
+(ns wasm.numtower
+  (:refer-clojure :exclude [compare bigint? ratio? numerator denominator])
+  (:require [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
+            [wasm.seq :as sq]
+            [wasm.str :as s]
+            [let-go.lang.bignum :as b]))
+
+;; sign: -1, 0 or 1 as an i64; mag: the little-endian limb array (an int-array:
+;; wasm.arrays' Arr in the module, read here only through the library)
+(wasm/deftype-struct BigInt let-go.lang.bignum/BigInt let-go.lang.bignum/->BigInt
+  [[sign :i64 let-go.lang.bignum/signum] [mag :ref let-go.lang.bignum/magnitude]])
+;; num, den: BigInts normalized as big.Rat (gcd 1, den > 0; never integral once
+;; simplify has run, so a Ratio is never = to an Int)
+(wasm/deftype-struct Ratio let-go.lang.bignum/Ratio let-go.lang.bignum/->Ratio
+  [[num :ref let-go.lang.bignum/rat-num] [den :ref let-go.lang.bignum/rat-den]])
+
+(defn bigint? [x] (wasm/is? BigInt x))
+(defn ratio? [x] (wasm/is? Ratio x))
+(defn tower? "A BigInt or a Ratio." [x] (if (wasm/is? BigInt x) true (wasm/is? Ratio x)))
+(defn sign "-1, 0 or 1 of a BigInt." [x] (wasm/get BigInt 0 x))
+
+(defn- lit [bs] (s/mk-str bs))
+(defn from-int [n] (b/from-i64 n))
+(defn negate [x] (b/negate x))
+(defn int-or-big "x as an Int when it fits an i64, else x." [x]
+  (if (b/fits-i64? x) (sq/box-int (b/to-i64 x)) x))
+(defn simplify "MaybeSimplifyRatio: an integral Ratio as an Int or BigInt, any other r." [r]
+  (if (b/rat-integer? r) (int-or-big (b/rat-num r)) r))
+(defn div-bigs "n/d (BigInts, d nonzero): an Int, a BigInt or a Ratio." [n d]
+  (simplify (b/rat-make n d)))
+(defn div-ints "(/ x y) for Ints, y nonzero: an Int when exact, a BigInt for MinInt64/-1, else a Ratio." [x y]
+  (div-bigs (b/from-i64 x) (b/from-i64 y)))
+(defn numerator "Ratio -> its numerator as an Int or BigInt." [r] (int-or-big (wasm/get Ratio 0 r)))
+(defn denominator "Ratio -> its denominator as an Int or BigInt." [r] (int-or-big (wasm/get Ratio 1 r)))
+
+;; ---------------------------------------------------------------------------
+;; Literals (reader.go readNumber: big.Int.SetString over the digits, big.Rat
+;; for N/D). The caller has checked the characters; a digit past the base is
+;; the caller's bug, not a reader error.
+
+(defn- digit-val [c]
+  (cond (if (>= c 48) (<= c 57) false) (- c 48)
+        (if (>= c 97) (<= c 122) false) (- c 87)
+        (if (>= c 65) (<= c 90) false) (- c 55)
+        :else 0))
+
+(defn parse-mag "The BigInt of the base-`base` digits tk[a, b) (no sign)." [tk a b base]
+  (let [bb (b/from-i64 base)]
+    (loop [i a acc (b/from-i64 0)]
+      (if (>= i b) acc (recur (inc i) (b/add (b/mul acc bb) (b/from-i64 (digit-val (wasm/bget tk i)))))))))
+
+(defn parse-int-token
+  "The BigInt of decimal tk[a, b) with an optional + or - at a (never demoted:
+   1N is a BigInt)."
+  [tk a b]
+  (let [c (wasm/bget tk a)
+        neg (= c 45)
+        a (if (if (= c 45) true (= c 43)) (inc a) a)
+        v (parse-mag tk a b 10)]
+    (if neg (b/negate v) v)))
+
+(defn bigint-of-text "A BigInt from its decimal text (a Str), as a program's literal lowers." [st]
+  (let [bs (s/str-bytes st)] (parse-int-token bs 0 (wasm/alen bs))))
+(defn ratio-of-text "A Ratio from the decimal texts of its numerator and denominator." [n d]
+  (let [nb (s/str-bytes n) db (s/str-bytes d)]
+    (div-bigs (parse-int-token nb 0 (wasm/alen nb)) (parse-int-token db 0 (wasm/alen db)))))
+
+;; ---------------------------------------------------------------------------
+;; Printing: big.Int.String() and big.Rat.RatString(), in base-10^9 chunks
+
+(defn- big-1e9 [] (b/from-i64 1000000000))
+(defn- pad9 [st]                                         ; a chunk's text to 9 digits
+  (loop [st st] (if (< (wasm/alen (s/str-bytes st)) 9) (recur (s/str (lit (wasm/bytes-of-string "0")) st)) st)))
+(defn- digits [a]                                        ; a >= 0
+  (if (b/fits-i64? a)
+    (s/str (sq/box-int (b/to-i64 a)))
+    (s/str (digits (b/quot a (big-1e9))) (pad9 (s/str (sq/box-int (b/to-i64 (b/rem a (big-1e9)))))))))
+
+(defn bigint-digits "big.Int.String(): decimal text, no N." [x]
+  (if (< (sign x) 0) (s/str (lit (wasm/bytes-of-string "-")) (digits (b/abs x))) (digits x)))
+(defn ratio-str "big.Rat.RatString(): n/d." [r]
+  (s/str (bigint-digits (wasm/get Ratio 0 r)) (lit (wasm/bytes-of-string "/")) (bigint-digits (wasm/get Ratio 1 r))))
+(defn bigint-print
+  "The print hook's modes: 3 (str of the value itself, strValue) is the digits;
+   0 (String()), 1 (pr-str) and 2 (print-str) add N."
+  [x mode]
+  (if (= mode 3) (bigint-digits x) (s/str (bigint-digits x) (lit (wasm/bytes-of-string "N")))))
+
+;; ---------------------------------------------------------------------------
+;; Hash (corpus/hash/SPEC.md: bigint.go:73-87, ratio.go:62-67)
+
+(defn- hash-int [n] (sq/unbox-int (sq/hash (sq/box-int n))))   ; hashUint64(n), the Int's path
+(defn bigint-hash [x]
+  (if (b/fits-i64? x)
+    (hash-int (b/to-i64 x))
+    ;; h = h*31 + byte over big.Int.Bytes() (big-endian magnitude, no leading
+    ;; zero byte), uint32; ^h when negative
+    (let [n (b/limb-count x)
+          h (loop [i (dec n) h 0 top true]
+              (if (< i 0)
+                h
+                (let [l (b/limb x i)
+                      h (loop [k 3 h h top top]
+                          (if (< k 0)
+                            h
+                            (let [by (bit-and (unsigned-bit-shift-right l (* 8 k)) 255)]
+                              (if (if top (= by 0) false)
+                                (recur (dec k) h top)
+                                (recur (dec k) (bit-and (+ (* h 31) by) 4294967295) false)))))]
+                  (recur (dec i) h false))))]
+      (if (< (sign x) 0) (bit-and (bit-not h) 4294967295) h))))
+(defn ratio-hash [r]
+  (bit-and (+ (* (hash-int (b/to-i64 (wasm/get Ratio 0 r))) 31) (hash-int (b/to-i64 (wasm/get Ratio 1 r)))) 4294967295))
+
+;; ---------------------------------------------------------------------------
+;; Equality and compare (bigint.go Equals, ratio.go Equals, compare.go)
+
+(defn- cmp [c] (cond (< c 0) -1 (> c 0) 1 :else 0))     ; a library compare result as -1 0 1
+(defn- as-big [x] (if (bigint? x) x (b/from-i64 (sq/unbox-int x))))   ; x a BigInt or an Int
+(defn- as-rat [x] (if (ratio? x) x (b/rat-make (as-big x) (b/from-i64 1))))
+(defn- tower-f64 [x] (if (ratio? x) (b/rat->f64 x) (b/to-f64 x)))
+
+(defn equiv?
+  "= for a pair with a BigInt or Ratio on at least one side: a BigInt equals a
+   BigInt or an Int of its value, a Ratio equals a Ratio; nothing else."
+  [a b]
+  (cond (bigint? a) (cond (bigint? b) (= 0 (cmp (b/compare a b)))
+                          (= 1 (sq/kind b)) (= 0 (cmp (b/compare a (as-big b))))
+                          :else false)
+        (ratio? a) (if (ratio? b) (= 0 (cmp (b/rat-compare a b))) false)
+        (tower? b) (equiv? b a)
+        :else false))
+
+(defn compare
+  "vm.DefaultCompare for two numbers with a BigInt or Ratio on at least one
+   side: -1, 0 or 1. A Float on either side compares as float64."
+  [a b]
+  (cond (= 22 (sq/kind a)) (let [x (s/unbox-float a) y (tower-f64 b)] (cond (< x y) -1 (> x y) 1 :else 0))
+        (= 22 (sq/kind b)) (let [x (tower-f64 a) y (s/unbox-float b)] (cond (< x y) -1 (> x y) 1 :else 0))
+        :else (cmp (b/rat-compare (as-rat a) (as-rat b)))))
