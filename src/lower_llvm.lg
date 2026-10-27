@@ -34,7 +34,7 @@
 ;; they were made), which the shake (llvm-module, D221) walks.
 (def ll-fn-attrs
   "Every generated fn's attributes: nounwind, since no lowered code unwinds
-   (raising is a CPS call to the handler, D206), so none needs an unwind
+   (raising is a CPS call to the handler, D235), so none needs an unwind
    table entry."
   ["nounwind"])
 (defn ll-fn
@@ -1499,7 +1499,7 @@
 (def llvm-profiles (atom {}))
 
 (defn llvm-profile
-  "The session's hardware profile (D207), loaded and validated once per
+  "The session's hardware profile (D236), loaded and validated once per
    profile argument; fields the emitter does not implement are refused."
   []
   (let [arg *llvm-profile-arg*]

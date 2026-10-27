@@ -1445,7 +1445,7 @@
             (recur (drop 2 xs) out (second xs) profile)
             (throw (ex-info "lower-wasm: --target needs gc, linear or llvm" {})))
           (clojure.string/starts-with? x "--target=") (recur (rest xs) out (subs x 9) profile)
-          ;; --profile names a hardware profile for --target llvm (D207)
+          ;; --profile names a hardware profile for --target llvm (D236)
           (= "--profile" x)
           (if (and (second xs) (not (clojure.string/starts-with? (second xs) "--")))
             (recur (drop 2 xs) out target (second xs))
@@ -1458,7 +1458,7 @@
    output file. A library entry (P12.4): the backend carried as a program
    requires this namespace and hands the text to its host to assemble, since
    a module has no spit. opts: :target (:gc, :linear or :llvm), :profile
-   (llvm's hardware profile, D207), :rt, :shake,
+   (llvm's hardware profile, D236), :rt, :shake,
    :rtlib (start from the cached runtime library), :test (compile deftests,
    the shim installed) and :skip (deftest symbols left out under :test).
    The library search path is source-paths, which -main sets from its args.
@@ -1578,7 +1578,7 @@
               ;; Program protocol methods are emitted after every implementation is known.
               (and (seq? form) (= 'defprotocol (first form)))
               (do (native! form) (note-protocol! (ns-name *ns*) form))
-              ;; the wasm target still refuses a program's defmulti (6134a6e); llvm takes it (D217)
+              ;; the wasm target still refuses a program's defmulti (6134a6e); llvm takes it (D242)
               (and (seq? form) (= 'defmulti (first form)) (not lw-rt/llvm-target?))
               (throw (ex-info (str "lower-wasm: unsupported top-level form " (first form)) {:head (first form)}))
               ;; P6.1: a def below the top of the form (in a let/when/if)
