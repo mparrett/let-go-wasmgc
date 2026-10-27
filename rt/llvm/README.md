@@ -5,11 +5,40 @@ with the reference `llvm.arch` standing in for the wasm instructions.
 Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
 
+## The runtime dialect
+
+The files that are not marked PLAIN in the table below are written in the
+runtime dialect: what a body may say once its macros are expanded, as the
+`dialect` deftests check (`corpus/llvm-rt/core_test.lg` and its siblings).
+
+- Allowed: the IR special forms (`if do let* loop* recur try fn* var set!
+  def quote`); any macro, since it is checked after expansion, so `let`,
+  `when`, `cond` and the threading macros (`system-properties` in core.lg
+  uses `->`); the runtime's own fns (`llvm.core`, `llvm.seq`, `llvm.pvec`, `llvm.str`, `llvm.phm`,
+  `llvm.phs`, `llvm.arrays`, `llvm.sorted`); `llvm.arch`'s intrinsics and
+  declarations; and the core fns the IR lowers to an op (`+ - * inc dec`,
+  the comparisons, the `bit-*` ops, `unchecked-add/subtract/multiply`,
+  `quot`, `throw`).
+- Not allowed: any other core fn, because the runtime is what implements
+  core, so a body cannot call the thing it defines (`not`, `not=`, `str`,
+  `assoc`, `get` and the rest are spelled through the runtime's own fns or
+  an `if`); and collection literals (`[..]`, `{..}`, `#{..}`), which would
+  need the collections the runtime builds (`pv/`, `m/`, `hs/` calls make
+  them).
+- `catch` takes only `Throwable`, the one catch class (D31).
+- Untested, though the check permits it: a closure (`fn`, `#(..)`). No
+  dialect file defines one, so whether the backend lowers a closure inside
+  runtime code the way it lowers one in a program is not shown.
+
+The PLAIN files (`natives.lg`, `eval.lg`, `poly.lg`, ...) are ordinary lg
+compiled by the backend after the dialect files load, so they use core
+freely.
+
 ## Load order and link step
 
 | order | file | ns | requires | owns |
 |---|---|---|---|---|
-| 1 | `arch.lg` | `llvm.arch` | | the 43 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
+| 1 | `arch.lg` | `llvm.arch` | | the 56 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
 | 2 | `pvec.lg` | `llvm.pvec` | 1 | the persistent vector, `Node` arrays |
 | 3 | `seq.lg` | `llvm.seq` | 1 2 | the value model: every box struct, `Fn` (D52), `kind`, `equiv?`, `hash`; seq kinds, chunking, laziness, the seq natives; strings as collections; `float-bits`; the foreign-kind hook slots (SEQ.md) |
 | 4 | `str.lg` | `llvm.str` | 1 2 3 | building the scalar boxes, keyword/symbol interning, `str`/`pr-str`/`print-str`, float formatting, the string natives, `compare` (STR.md) |
