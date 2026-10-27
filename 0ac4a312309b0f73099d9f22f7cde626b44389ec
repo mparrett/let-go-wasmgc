@@ -1,0 +1,32 @@
+evidence: llvm-poly 0ac4a31 (PR #78)
+range: 3507107..0ac4a31
+  0ac4a31 docs(llvm): the review's smaller asks on the llvm target PR
+issue: git-issue:d828fec
+machine: macOS 26.6.2 arm64; lg-e9789b7d53; Homebrew clang 23.1.4
+tree: 0ac4a31, clean (committed before the runs below)
+
+rows:
+  gate 12 (checks/gate.sh 12, LW_ATTEST=0, LW_GATE_J=1)   8/8 ok: P12.0-P12.6, P12.30
+    (P12.30 moved here from gate 13). An earlier gate 12 run is not counted: the tree
+    was edited while it ran.
+  checks/llvm-funnel-check.sh (the new P12.40 row's command)   0 violations
+  bash -n checks/llvm-behavior-gates.sh   ok
+not run on this commit: gate 13 as a whole (P12.40 ran by its command, not through
+  gate.sh); the full gate since 3507107; Linux (ndn.local unreachable)
+
+reviews:
+  round 1 (read-only critic): 4 blockers, all doc errors, fixed in this commit - the
+    spec's out-of-memory sentence, the roots wording, decision 7 contradicting Milestone 2,
+    and rt/wasm/README.md's counts (24 files, 22 namespaces, 20 by default). Also taken:
+    two more citations of an untracked design document, the Milestone summary, and a stale
+    "red until" note.
+  confirmed by the critic against checks/gate.sh: P13.1-P13.7 keep no issue column here,
+    since they pass on this branch and a TODO row that passes fails the gate.
+  not reviewed again after the round-1 fixes.
+
+accepted gaps:
+  - P12.40 has prefix 12 but sits in gate 13 with the llvm rows; it checks llvm lowering.
+
+approvals (the operator's words in this session, quoted):
+  2026-10-27 "yes, tell Matt, then start on the smaller asks"
+  2026-10-27 "push both, each with its own note"
