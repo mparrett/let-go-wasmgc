@@ -1,0 +1,40 @@
+evidence: llvm-apps d6954ee (PR #79, stacked on #78 at 3507107)
+range: 98da8e9..d6954ee
+  c183090 fix(llvm): the llvm target's errors say llvm, not lower-wasm
+  46ace1f feat(llvm): read-string reads reader conditionals as native does
+  81f8b2b feat(llvm): os-name, os/arch and System's properties from the host
+  d6954ee docs(llvm): what the runtime dialect allows
+issue: git-issue:7bc0bae
+machine: macOS 26.6.2 arm64; lg-e9789b7d53; Homebrew clang 23.1.4
+tree: the working tree committed as d6954ee; every run below was on it
+
+rows (checks/run.sh unless noted):
+  P13.7         ok    155 tests, 42067 assertions, 0 failures (llvm runtime under native lg; dialect deftests included)
+  P13.2         ok    profile check, with the renamed "llvm: profile" message
+  LLVM.JANK.ADAPTER ok  1/1 (run-tests.sh classifier change)
+  P2.12         ok    4/4 refused as documented (GC lane's lower-wasm text unchanged)
+  oracle corpus/llvm/host-natives.lg   MATCH vs native lg, --target llvm
+  oracle (one-off) compiled read-string of #?, #?@ and #?lg-version   MATCH vs native lg
+not run on this range: the full gate; P13.3/P13.4 (llvm corpora, jank suite); legmacs and
+  xsofy sessions; Linux (ndn.local unreachable)
+
+reviews (read-only critic rounds on this diff):
+  round 1: 1 blocker - #?@ of a non-seqable raised where native adds nothing. Fixed:
+    nil splices as one nil, a seqable as its elements, anything else as nothing (native
+    checked: [#?@(:lg nil) 2] is [nil 2]); 8 cases added. Also taken: shared llvm-reached
+    messages through target-prefix, run-tests.sh classifier, bare/rt.c key range, README
+    stale prefixes and the intrinsic count (56).
+  not taken: the critic's claim that xsofy_natives' dialect test only string-checks six
+    files (it runs the full var-reference check on them).
+
+accepted gaps:
+  - :clj and :bb reader-conditional switches are off; no runtime twin sets them.
+  - a raw tagged reader (#go) inside a skipped branch is skipped as tag + form.
+  - a closure in runtime-dialect code is permitted by the check but untested.
+  - intrinsics_test's host-sysinfo cases compare the reference impl with native, so the
+    C side is shown only by the host-natives oracle.
+
+approvals (the operator's words in this session, quoted):
+  2026-10-27 "all tree." (the three fixes: prefix, reader conditionals, os-name and properties)
+  2026-10-27 "post the 4d19ae0 reply, then commit and push when clean"
+  2026-10-27 "git note, hand-written for this push"
