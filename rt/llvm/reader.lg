@@ -23,7 +23,7 @@
 ;; llvm.core/raise (D68), msg = cmsg as for any native called as a value.
 ;; Named limits (values the runtime has no box for, reader features that
 ;; need *ns* or *data-readers*) are raised the same way, catchable, with a
-;; "lower-wasm: " message, because read-string's input is user data (xsofy's
+;; "llvm: " message, because read-string's input is user data (xsofy's
 ;; console wraps it in try).
 ;;
 ;; Code forms (P7.0, amending READER.md's limits table): `#(...)` reads as
@@ -141,7 +141,7 @@
   st)
 
 (defn- limit [what]                                     ; a named limit, catchable (see the header)
-  (c/raise (s/str-bytes (s/str (s/lit "lower-wasm: read-string: ") what))))
+  (c/raise (s/str-bytes (s/str (s/lit "llvm: read-string: ") what))))
 
 ;; ---------------------------------------------------------------------------
 ;; Bytes and a growable byte buffer (str.lg's are private; READER.md, Dedupe).

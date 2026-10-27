@@ -158,7 +158,7 @@ FNV-1a of their String(), here as there.
   `nan:0x8000000000001`.
 - `upper-case`/`lower-case` map ASCII and Latin-1 and pass caseless scripts
   through (CJK, kana, Hangul, Indic, Hebrew/Arabic, symbols, emoji); other
-  cased text is a `lower-wasm:` named limit (Unicode case tables not ported).
+  cased text is an `llvm:` named limit (Unicode case tables not ported).
   `(int ##NaN)` is a named limit (Go leaves it platform-defined).
 - The Repeat type's own type is the Repeat type natively
   (`(type (type (repeat 1 1)))`): mirrored, like H1/M1.
@@ -209,7 +209,7 @@ entries (`massoc`, `vnth`, `sconj`, ...) carry no marker; the dispatching
 entries do, and where llvm.core's dispatcher supersedes a seq.lg/str.lg one
 (`conj`, `nth`, `peek`, `pop`, `compare`) the marker moved to llvm.core.
 `open` and `read-string` are named-limit twins: they claim the native and
-trap with a `lower-wasm:` message. `slurp` (llvm.natives, D138) raises
+trap with an `llvm:` message. `slurp` (llvm.natives, D138) raises
 native's catchable open-failed text, as `spit` does.
 
 ## Errors
@@ -221,7 +221,7 @@ reports unprefixed messages (msg = cmsg); `inc`/`dec`, being IR-op fns
 natively, carry the "ExecutionError: " prefix once caught. Under native lg the
 Err is a wasm ref, so only `catch Throwable` sees it. `arch/trap` is kept for
 invariant violations (`llvm.seq:`, `pvec:`, `phm:` prefixes: a hook not linked,
-a count that disagrees with its walk) and `lower-wasm:` named limits (D74
+a count that disagrees with its walk) and `llvm:` named limits (D74
 sweep, P2.13). Messages that name a type use `llvm.seq/kind-type-name` for
 seq.lg's kinds and llvm.core's namer for foreign values (Hooks slot 6,
 installed by `install!`). Every test file's `res` tags a reference trap

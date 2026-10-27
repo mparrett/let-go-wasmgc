@@ -21,7 +21,7 @@
 ;; `throw` is the one core fn referenced: the backend lowers #'throw to the
 ;; wasm `throw $lgex` instruction (D25, D31). Internal invariants stay
 ;; arch/trap. Named limits (Phase 3+ work) are arch/trap with a
-;; "lower-wasm: " message.
+;; "llvm: " message.
 (ns llvm.core
   (:refer-clojure :exclude [assoc dissoc get contains? conj nth peek pop transient persistent! conj! assoc! dissoc!
                             key val subvec max min mod number? map? set? seq? sorted? vector?
@@ -142,7 +142,7 @@
     (m/mget (arch/get Globals 2 globals) (var-key v) (arch/null))
     (let [f (m/mget (arch/get MetaNamed 1 v) (lw-var-kw) (arch/null))]
       (if (arch/null? f)                                  ; a stand-in find-var made: no reader fn
-        (raise (sq/bytes-cat (sq/bytes-cat (arch/bytes-of-string "lower-wasm: the value of ") (s/str-bytes (var-key v)))
+        (raise (sq/bytes-cat (sq/bytes-cat (arch/bytes-of-string "llvm: the value of ") (s/str-bytes (var-key v)))
                              (arch/bytes-of-string " is not reachable from its stand-in (named limit)")))
         (sq/invoke0 f)))))
 
@@ -394,7 +394,7 @@
   [f n a b c d]
   (if (= 16 (sq/kind f))
     (if (> n 4)
-      (arch/trap "lower-wasm: a call with more than 4 arguments (D52: variadic ABI is Phase 3)")
+      (arch/trap "llvm: a call with more than 4 arguments (D52: variadic ABI is Phase 3)")
       (let [code (fn-code f n)]
         (cond (arch/null? code) (raise-fn-arity f n)
               (= n 0) (sq/invoke0 f)
@@ -642,7 +642,7 @@
           (if (= ka 1) (= kb 1) false)
           (let [x (sq/unbox-int a) y (sq/unbox-int b)]
             (sq/box-int (if (= y -1) (arch/i64-sub 0 x) (quot x y))))
-          :else (arch/trap "lower-wasm: quot on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
+          :else (arch/trap "llvm: quot on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
 
 (defn ^{:twin "core/mod"} mod [a b]
   (div-args (lit (arch/bytes-of-string "mod")) a b)
@@ -653,7 +653,7 @@
           (let [x (sq/unbox-int a) y (sq/unbox-int b)
                 r (if (= y -1) 0 (arch/i64-sub x (arch/i64-mul y (quot x y))))]
             (sq/box-int (if (if (= r 0) false (if (> r 0) (< y 0) (> y 0))) (arch/i64-add r y) r)))
-          :else (arch/trap "lower-wasm: mod on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
+          :else (arch/trap "llvm: mod on a Float operand needs f64 div/trunc intrinsics (P2.2)"))))
 
 (defn ^{:twin "core/number?"} number? [x] (sq/bool (num-k? (sq/kind x))))
 
@@ -1106,7 +1106,7 @@
 (defn- promise-value [p]
   (if (= 1 (arch/get Promise 1 p))
     (arch/get Promise 0 p)
-    (arch/trap "lower-wasm: deref of an undelivered promise would block forever (one thread; future is Phase 7)")))
+    (arch/trap "llvm: deref of an undelivered promise would block forever (one thread; future is Phase 7)")))
 
 (defn ^{:twin "core/delay*"} delay*
   ([] (raise (arch/bytes-of-string "delay* expects 1 arg (thunk fn)")))
@@ -1119,7 +1119,7 @@
   (let [st (arch/get Delay 1 d)]
     (cond (= st 1) (arch/get Delay 0 d)
           (= st 2) (throw (arch/get Delay 2 d))
-          (= st 3) (arch/trap "lower-wasm: a delay forced from its own thunk (native deadlocks on its mutex)")
+          (= st 3) (arch/trap "llvm: a delay forced from its own thunk (native deadlocks on its mutex)")
           :else (let [f (arch/get Delay 0 d)]
                   (arch/set! Delay 1 d 3)                 ; running: realized? is already true natively
                   (let [v (try (invoke-args f 0 (arch/null) (arch/null) (arch/null) (arch/null)) (catch Throwable e (delay-fail d e)))]
@@ -1435,7 +1435,7 @@
           (if (= k 20) true (= k 21)) (arch/new MetaNamed x mt)
           (= k 36) (arch/new MetaNamed (arch/get MetaNamed 0 x) mt)
           (= k 24) (arch/new sq/Atom (arch/get sq/Atom 0 x) 0 mt (arch/get sq/Atom 3 x) (arch/get sq/Atom 4 x) (arch/get sq/Atom 5 x))
-          (if (>= k 32) (<= k 34) false) (arch/trap "lower-wasm: with-meta on a transient (P2.7 named limit)")
+          (if (>= k 32) (<= k 34) false) (arch/trap "llvm: with-meta on a transient (P2.7 named limit)")
           :else x)))
 
 (defn ^{:twin "core/meta"} meta [x]
@@ -1640,7 +1640,7 @@
     (let [v (arch/host-getenv (s/str-bytes nm))] (if (arch/null? v) (lit (arch/bytes-of-string "")) (s/mk-str v)))
     (lit (arch/bytes-of-string ""))))
 
-(defn ^{:twin "core/read-string"} read-string [x] (arch/trap "lower-wasm: read-string is edn.lg through the backend (plan D8)"))
+(defn ^{:twin "core/read-string"} read-string [x] (arch/trap "llvm: read-string is edn.lg through the backend (plan D8)"))
 
 ;; ---------------------------------------------------------------------------
 ;; Printing the values seq.lg and llvm.str hand over (kind 18 and the P2.7

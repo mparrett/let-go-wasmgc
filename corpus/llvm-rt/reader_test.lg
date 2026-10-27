@@ -6,7 +6,7 @@
 ;; nesting, a 50 KB vector, the error cases). A case MATCHes when both sides
 ;; read and agree on pr-str (so on type, value, map/set order and float
 ;; digits) and on the metadata of every nested collection, or both throw the
-;; same message. A runtime answer of "lower-wasm: read-string: ..." is a
+;; same message. A runtime answer of "llvm: read-string: ..." is a
 ;; named limit (READER.md) and passes only when native's answer is what the
 ;; limit names (a BigInt, a Ratio, a tagged literal in the input, ...).
 (ns reader-test
@@ -101,7 +101,7 @@
   [in]
   (let [n (native-read in) w (mine-read in)]
     (cond (= (pop n) (pop w)) [:match]
-          (and (= :err (first w)) (string/starts-with? (second w) "lower-wasm: read-string: "))
+          (and (= :err (first w)) (string/starts-with? (second w) "llvm: read-string: "))
           (if-let [[nm ok?] (first (filter #(string/includes? (second w) (first %)) limits))]
             (if (ok? in n) [:limit nm] [:mismatch (pop n) (pop w)])
             [:mismatch (pop n) (pop w)])
