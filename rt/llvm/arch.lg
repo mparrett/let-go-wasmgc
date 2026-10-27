@@ -500,6 +500,28 @@
   (let [v (core/get *host-env* (string-of-bytes name-bytes))]
     (when v (bytes-of-string v))))
 
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int] -> :any"} host-sysinfo
+  "Bytes of what the host knows about itself, or null for an unknown k: 0
+   runtime.GOOS, 1 runtime.GOARCH, 2 the working directory, 3 os.TempDir,
+   4 the user's home directory, 5 the user's name. The reference answers
+   with native lg's own."
+  [k]
+  (check-int! "arch/host-sysinfo" k)
+  (let [v (case k
+            0 (os/os-name) 1 (os/arch)
+            2 (System/getProperty "user.dir") 3 (System/getProperty "java.io.tmpdir")
+            4 (System/getProperty "user.home") 5 (System/getProperty "user.name")
+            nil)]
+    (when v (bytes-of-string v))))
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:string] -> :any"} build-property
+  "Bytes of system property s as the compiling lg reports it, fixed when the
+   program is built (let-go.version, let-go.commit); s must be a string
+   literal. Null when the property is unset."
+  [s]
+  (when-not (string? s) (throw (ex-info (str "arch/build-property: not a string " (pr-str s)) {})))
+  (let [v (System/getProperty s)] (when v (bytes-of-string v))))
+
 (defn ^{:intrinsic true :wasm "llvm target only" :type "[:any :int] -> :int"} host-open
   "Open the file named by Bytes path for read (0), write (1, created or
    truncated) or append (2, created): an fd, or -1. Natively always -1, as

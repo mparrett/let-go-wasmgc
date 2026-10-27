@@ -209,10 +209,9 @@
   ([nm x] nil))
 
 (defn os-name-v
-  "os/os-name: runtime.GOOS of the build. This backend's target is the one
-   let-go's wasm bundle runs on (GOOS=js), and xsofy keys its web-only paths
-   (replay-dump via js/emit) on \"js\"."
-  [] "js")
+  "os/os-name: runtime.GOOS of the build, the host's operating system (not
+   \"js\": xsofy keys its web-only paths on that)."
+  [] (llvm.core/sysinfo 0))
 
 (declare get-bytes get-bytes-enc)
 

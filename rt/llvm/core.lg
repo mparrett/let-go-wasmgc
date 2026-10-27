@@ -1640,6 +1640,38 @@
     (let [v (arch/host-getenv (s/str-bytes nm))] (if (arch/null? v) (lit (arch/bytes-of-string "")) (s/mk-str v)))
     (lit (arch/bytes-of-string ""))))
 
+;; What the host knows about itself (os.go:443, system.go:23), "" where it
+;; has no answer.
+(defn sysinfo [k] (let [b (arch/host-sysinfo k)] (if (arch/null? b) (lit (arch/bytes-of-string "")) (s/mk-str b))))
+(defn- built [b] (if (arch/null? b) (lit (arch/bytes-of-string "")) (s/mk-str b)))
+(defn ^{:twin "os/arch"} os-arch [] (sysinfo 1))
+
+;; System/getProperties: native's map, its version and commit those of the
+;; lg that compiled the program
+(defn- prop [m k v] (m/massoc m (lit (arch/bytes-of-string k)) v))
+(defn- system-properties []
+  (-> (m/empty-map)
+      (prop "user.home" (sysinfo 4))
+      (prop "user.name" (sysinfo 5))
+      (prop "user.dir" (sysinfo 2))
+      (prop "java.io.tmpdir" (sysinfo 3))
+      (prop "os.name" (sysinfo 0))
+      (prop "os.arch" (sysinfo 1))
+      (prop "os.version" (lit (arch/bytes-of-string "")))
+      (prop "file.separator" (lit (arch/bytes-of-string "/")))
+      (prop "path.separator" (lit (arch/bytes-of-string ":")))
+      (prop "line.separator" (lit (arch/bytes-of-string "\n")))
+      (prop "file.encoding" (lit (arch/bytes-of-string "UTF-8")))
+      (prop "let-go.version" (built (arch/build-property "let-go.version")))
+      (prop "let-go.commit" (built (arch/build-property "let-go.commit")))))
+(defn ^{:twin "System/getProperties"} get-properties [] (system-properties))
+(defn ^{:twin "System/getProperty"} get-property
+  ([k] (get-property k (arch/null)))
+  ([k d]
+   (if (= 17 (sq/kind k))
+     (let [v (m/mget (system-properties) k (arch/null))] (if (arch/null? v) d v))
+     (raise (arch/bytes-of-string "System/getProperty expected String key")))))
+
 (defn ^{:twin "core/read-string"} read-string [x] (arch/trap "llvm: read-string is edn.lg through the backend (plan D8)"))
 
 ;; ---------------------------------------------------------------------------
