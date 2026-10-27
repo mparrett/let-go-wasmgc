@@ -16,7 +16,7 @@
 (def src-dir (let [f *file*] (if (str/includes? f "/") (subs f 0 (str/last-index-of f "/")) ".")))
 ;; LW_RT_DIR: compile against a patched copy of rt/wasm (to verify a runtime
 ;; patch without editing rt/; the rtlib cache key covers the sources read)
-;; --target llvm compiles its own runtime, rt/llvm (D211, D213):
+;; --target llvm compiles its own runtime, rt/llvm (D240, D213):
 ;; the target is read from the command line or LW_TARGET here, because the
 ;; runtime loads before the driver parses its flags.
 (def llvm-target?
