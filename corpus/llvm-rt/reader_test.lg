@@ -90,7 +90,6 @@
    ["hex float literal" (fn [in [t _ _ v]] (and (= t :ok) (has-type? v "let-go.lang.Float")))]
    ["auto-resolved keyword" (fn [in _] (string/includes? in "::"))]
    ["#tag tagged literal" (fn [in _] (some? (re-find #"#[a-zA-Z]" in)))]
-   ["#? reader conditional" (fn [in _] (string/includes? in "#?"))]
    ["regex" (fn [in _] (string/includes? in "#\""))]
    ["#( fn literal" (fn [in _] (string/includes? in "#("))]
    ["syntax-quote" (fn [in _] (string/includes? in "`"))]
@@ -106,6 +105,28 @@
             (if (ok? in n) [:limit nm] [:mismatch (pop n) (pop w)])
             [:mismatch (pop n) (pop w)])
           :else [:mismatch (pop n) (pop w)])))
+
+;; Reader conditionals: the :lg or :default branch, the others skipped
+;; unread (another dialect's syntax, nested conditionals, comments and
+;; discards between key and value), #?@ splicing into each collection and
+;; standing alone at top level, and native's errors for a malformed one.
+(def ^:private conditionals
+  ["#?(:lg 1 :default 2)" "#?(:clj 1 :default 2)" "#?(:clj 1)" "[1 #?(:clj 2) 3]"
+   "#?(:cljs #js {:a [1 2]} :lg [:ok])" "#?(:clj (Long/MAX_VALUE) :lg \\x)"
+   "#?(:clj \"a)b\" :lg 3)" "#?(:clj \\) :lg 4)" "#?(:clj ;; ) not a close\n 1 :lg 5)"
+   "#?(:clj #?(:cljs 1 :clj 2) :lg 6)" "#?(:clj #_ (x)) :lg 7)" "#?(:clj ^{:tag a} b :lg 8)"
+   "#?(:clj foo#bar :lg 9)" "#?(:clj #inst \"2020\" :lg 10)" "#?(:clj ##Inf :lg 11)"
+   "#?(:lg ;; note\n 12 :default 13)" "#?(:default 14 :lg 15)"
+   "[0 #?@(:lg [1 2]) 3]" "(0 #?@(:lg (1 2)) 3)" "{:a 1 #?@(:lg [:b 2])}" "#{0 #?@(:lg [1 2])}"
+   "[#?@(:clj [1]) 2]" "#?@(:lg [1 2])"
+   "[#?@(:lg 1) 2]" "[#?@(:lg :k) 2]" "[#?@(:lg true) 2]" "[#?@(:lg \\a) 2]" "[#?@(:lg \"ab\") 2]"
+   "[#?@(:lg {:a 1}) 2]" "[#?@(:lg #{3}) 2]" "[#?@(:lg nil) 2]"
+   "#?lg-version" "#?" "#?@" "#?@x" "#?(:lg" "#?(:lg 1" "#?(:clj 1"])
+
+(deftest reader-conditionals
+  (c/install!)
+  (doseq [in conditionals]
+    (is (= [:match] (classify in)) (pr-str in))))
 
 ;; ---------------------------------------------------------------------------
 ;; The corpus
