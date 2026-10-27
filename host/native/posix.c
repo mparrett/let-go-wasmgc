@@ -3,6 +3,7 @@
  * lg_run. host/native/rt.c holds everything word-generic. */
 #include <fcntl.h>
 #include <poll.h>
+#include <pwd.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,40 @@ int64_t lg_host_nanotime(void) {
 }
 
 const char *lg_host_getenv_c(const char *name) { return getenv(name); }
+
+/* runtime.GOOS of this build, the working directory, os.TempDir, and the
+   home directory and name of the current user (os/user, then $HOME and
+   $USER), as let-go's system properties read them */
+const char *lg_host_sysinfo_c(int k) {
+  static char cwd[4096];
+  switch (k) {
+  case 0:
+#if defined(__APPLE__)
+    return "darwin";
+#elif defined(__linux__)
+    return "linux";
+#elif defined(__FreeBSD__)
+    return "freebsd";
+#else
+    return "";
+#endif
+  case 2:
+    return getcwd(cwd, sizeof cwd) ? cwd : "";
+  case 3: {
+    const char *t = getenv("TMPDIR");
+    return t && *t ? t : "/tmp";
+  }
+  case 4:
+  case 5: {
+    struct passwd *p = getpwuid(getuid());
+    const char *v = p ? (k == 4 ? p->pw_dir : p->pw_name) : 0;
+    if (v && *v) return v;
+    v = getenv(k == 4 ? "HOME" : "USER");
+    return v ? v : "";
+  }
+  }
+  return 0;
+}
 
 int lg_host_open_c(const char *path, int mode) {
   int fl = mode == 0 ? O_RDONLY : mode == 1 ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND);

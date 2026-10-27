@@ -244,6 +244,22 @@
     (is (trap? #(arch/host-exit 3)))
     (is (thrown? Exception (arch/host-exit "3")))))
 
+;; what the host knows about itself, as native lg reports it; build-property
+;; is the compiling lg's answer
+(deftest host-sysinfo-and-build-property
+  (let [s #(arch/string-of-bytes %)]
+    (is (= (os/os-name) (s (arch/host-sysinfo 0))))
+    (is (= (os/arch) (s (arch/host-sysinfo 1))))
+    (is (= (System/getProperty "user.dir") (s (arch/host-sysinfo 2))))
+    (is (= (System/getProperty "java.io.tmpdir") (s (arch/host-sysinfo 3))))
+    (is (= (System/getProperty "user.home") (s (arch/host-sysinfo 4))))
+    (is (= (System/getProperty "user.name") (s (arch/host-sysinfo 5))))
+    (is (arch/null? (arch/host-sysinfo 6)))
+    (is (thrown? Exception (arch/host-sysinfo "0")))
+    (is (= (System/getProperty "let-go.version") (s (arch/build-property "let-go.version"))))
+    (is (arch/null? (arch/build-property "no.such.property")))
+    (is (thrown? Exception (arch/build-property 1)))))
+
 (deftest traps
   (is (thrown-with-msg? Exception #"wasm trap: boom" (arch/trap "boom")))
   (is (trap? #(arch/trap "x"))))
