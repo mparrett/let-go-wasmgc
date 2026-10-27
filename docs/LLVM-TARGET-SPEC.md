@@ -36,8 +36,8 @@ described so that M1 does not paint them out.
   suite meets "Acceptance for M1" on the host profile, ahead of time and
   under `lli`. No code assumes a word size: the host profile narrowed to
   31-bit fixnums runs the same rows (decision 14).
-- **M2, a mark-sweep collector.** Written fresh, from the standard
-  algorithm; roots are taken at function entry (decision 7). Done when
+- **M2, a mark-sweep collector.** Built as `host/native/gc.c` (D215);
+  roots are taken at function entry (decision 7). Done when
   legmacs boots on the host profile and reaches the WasmGC lane's deftest
   count (316 of 373 as of 2026-10-02), with the suite still green on both
   host profiles.
@@ -177,6 +177,9 @@ described so that M1 does not paint them out.
    string building, collection internals) are leaves, so this keeps the
    number of continuations close to the number of user-level calls. A leaf
    never triggers a collection (decision 7).
+   *Not built yet:* every function compiles as CPS, apart from `println`
+   outside the runtime, which calls its C helper directly. Leaves remain the
+   planned way to cut continuations within CPS.
 
 6. **Values: let-go's numbers are fixed, the word is the profile's.**
    - An `:int` is always an LLVM `i64`, on every profile, because let-go's
@@ -213,6 +216,11 @@ described so that M1 does not paint them out.
    `host/ABI.md`'s pointer-and-length imports get object payloads directly
    (D176). LLVM's `gc "statepoint-example"` strategy is the named fallback
    if a collection is ever needed in the middle of a function.
+   *As built (D215):* the trigger is a flag, `lg_gc_pending`, that the
+   allocator sets when its budget is spent, not a reservation per body, and
+   the entry check collects when it is set; the roots are the function's
+   `k`, its `self` when it has one and its boxed arguments, plus
+   `lg_gc_globals` (every var global and `lg_handler`).
 
 8. **The fixnum range is parameterized.** The runtime stops hard-coding
    i31. Three intrinsics replace `wasm/i31`, `wasm/i31?` and
@@ -247,6 +255,9 @@ described so that M1 does not paint them out.
    That is one compare per leaf call, on every profile. There is no
    `setjmp` or `longjmp` anywhere: control moves only by calling
    continuations, and this target does not use Cheney on the MTA.
+   *As built:* the handler register, `try` frames and `finally` are in
+   place; the `lg_pending` sentinel waits for leaves (decision 5), since no
+   function returns to its caller yet.
 
 10. **Closures.** A fn value is a heap object `[header, info, code per
     arity 0 to 4, env...]`, mirroring `$Fn` (D52); variadic and higher
@@ -384,23 +395,31 @@ D15-caused failures are reported, not counted against the bar.
 
 ## Milestone 2: the collector
 
-- **Algorithm.** Non-moving mark-sweep over size-segregated pages: a mark
-  bit in each header, an explicit mark stack, precise tracing by kind from
-  a layout table the emitter generates from its struct types (reference
-  fields only; raw i64 and double fields skipped), sweeping each page into
-  its size class's free list, and a growth-based trigger (collect when
-  bytes allocated since the last collection exceed the live size). Page
-  and size-class sizes come from the profile, so a Cortex-M heap of tens of
-  kilobytes and a desktop heap of gigabytes use the same code.
-- **Roots.** As decision 7: the arguments of the function at whose entry
-  the collection runs, the globals, the var table, the interned keywords
-  and symbols, and `lg_handler`'s frames.
-- **Where it lives.** The collector is written in let-go (for example
-  `rt/native/gc.lg`) against a small set of raw-memory intrinsics (word
-  and byte loads and stores, address arithmetic, page allocation, copy and
-  fill), with a reference implementation over a byte array, so it is
-  tested under native lg before it is compiled. A compile-time check
-  rejects any allocation inside collector code.
+Built ahead of this milestone, as D215 records; this section describes it.
+
+- **Algorithm.** Non-moving mark-sweep over one heap region the host hands
+  over (`lg_host_heap`), so a heap test is a range test and static objects
+  are skipped: a header `{size | flags, descriptor}` on each block, an
+  explicit mark stack, precise tracing from a descriptor the emitter
+  generates beside each type (reference fields only; raw i64 and double
+  fields skipped), and freed blocks coalesced into size-class free lists.
+  The trigger is a flag the allocator sets, `lg_gc_pending`, checked at
+  the next function entry: bodies are loop-free, so the overshoot is one
+  body's allocation. An allocation that finds no free block once the heap
+  is exhausted is `error: out of memory`; it does not collect first, since
+  a collection runs only at an entry.
+- **Roots.** As built under decision 7: the continuation `k` of the
+  function at whose entry the collection runs, its `self` when it has one,
+  and its boxed arguments (unboxed int, float and bool arguments hold no
+  heap words); the continuation records and try frames are traced from `k`
+  through their `k` and `prior` links. Then `lg_gc_globals`, every var
+  global and `lg_handler`.
+- **Where it lives.** `host/native/gc.c`, C with no libc dependency
+  (`<stddef.h>` and `<stdint.h>` only). It asks the host for three calls,
+  `lg_host_write`, `lg_host_exit` and `lg_host_heap`, and the module for its
+  globals table (`lg_gc_globals`, `lg_gc_nglobals`); `lg_alloc` takes the
+  block's descriptor and `lg_gc(roots, n)` an explicit root array, so a
+  target that finds its roots another way can link the same file.
 - **Done** when legmacs boots on the host profile and its deftests reach
   the WasmGC lane's count, with peak memory recorded against native lg, and
   the jank suite still passes its ratchet on both host profiles.
