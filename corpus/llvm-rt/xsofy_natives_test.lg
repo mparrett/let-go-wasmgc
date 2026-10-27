@@ -61,9 +61,9 @@
   `(do (is (= (res (fn [] (str ~native))) (res (fn [] (arch/string-of-bytes (s/str-bytes (s/str ~mine)))))) (str "str " (pr-str '~native)))
        (is (= (res (fn [] (pr-str ~native))) (res (fn [] (arch/string-of-bytes (s/str-bytes (s/pr-str ~mine)))))) (str "pr-str " (pr-str '~native)))))
 
-;; A runtime answer that is a lower-wasm named limit passes when native's
+;; A runtime answer that is an llvm named limit passes when native's
 ;; answer is what it names (a Ratio or BigInt from `/`).
-(defn- limit? [[k v]] (and (#{:err :trap} k) (string/starts-with? v "lower-wasm:")))
+(defn- limit? [[k v]] (and (#{:err :trap} k) (string/starts-with? v "llvm:")))
 (defmacro same-or-limit [native mine named?]
   `(let [n# (res (fn [] (nat ~native))) r# (res (fn [] (<-r ~mine)))]
      (if (limit? r#)
@@ -344,7 +344,7 @@
       (is (= t1 t2))
       (is (= (quot t2 1000000) (sq/unbox-int (h/current-time-millis))))
       (is (nil? (h/close! (h/timeout (W 1)))))))
-  (is (string/starts-with? (second (res #(h/now))) "lower-wasm:")))
+  (is (string/starts-with? (second (res #(h/now))) "llvm:")))
 
 (deftest host-js-seam
   (c/install!)

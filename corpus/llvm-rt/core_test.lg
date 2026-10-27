@@ -443,8 +443,8 @@
   (same (apply quot [7.5 0]) (c/quot* (W 7.5) (W 0)))
   (same (apply mod [7 0.0]) (c/mod (W 7) (W 0.0)))
   (doseq [[a b] [[7.5 2] [7 2.0] [-7.5 2.5]]]                ; float quot/mod: named limit until f64 div/trunc
-    (is (string/starts-with? (second (res #(c/quot* (W a) (W b)))) "lower-wasm: ") (pr-str [:quot a b]))
-    (is (string/starts-with? (second (res #(c/mod (W a) (W b)))) "lower-wasm: ") (pr-str [:mod a b]))))
+    (is (string/starts-with? (second (res #(c/quot* (W a) (W b)))) "llvm: ") (pr-str [:quot a b]))
+    (is (string/starts-with? (second (res #(c/mod (W a) (W b)))) "llvm: ") (pr-str [:mod a b]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality, compare, hash (incl. the seq.lg print hook)
@@ -722,7 +722,7 @@
   (same (os/getenv nil) (c/getenv (W nil)))
   (is (= "v" (binding [arch/*host-env* {"K" "v"}] (<-w (c/getenv (W "K"))))))
   ;; slurp is llvm.natives' no-file-system twin since P6.6 (D138's text)
-  (is (string/starts-with? (second (res #(c/read-string (W "1")))) "lower-wasm: ") "named limit")
+  (is (string/starts-with? (second (res #(c/read-string (W "1")))) "llvm: ") "named limit")
   ;; open is llvm.host's (D224); natively the host has no fds, so it raises
   (is (string/includes? (second (res #(h/open (W "f") (s/kw-of-bytes (arch/bytes-of-string "append"))))) "cannot open")))
 

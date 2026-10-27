@@ -166,7 +166,7 @@
 (defn ^{:twin "System/nanoTime"} nano-time [] (sq/box-int (arch/host-nanotime)))
 (defn ^{:twin "System/currentTimeMillis"} current-time-millis [] (sq/box-int (quot (arch/host-nanotime) 1000000)))
 (defn ^{:twin "let-go.core/now"} now []
-  (arch/trap "lower-wasm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
+  (arch/trap "llvm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
 
 ;; sleep (lang.go:4572): Int or Float ms (a Float truncates); a non-positive
 ;; duration returns at once, as an expired time.Timer does. Through

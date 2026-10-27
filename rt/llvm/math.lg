@@ -343,9 +343,9 @@
     (cond (if (= ka 1) (= kb 1) false)
           (let [x (sq/unbox-int a) y (sq/unbox-int b)]
             (cond (= y 0) (c/raise (arch/bytes-of-string "divide by zero"))
-                  (if (= x -9223372036854775808) (= y -1) false) (c/raise (arch/bytes-of-string "lower-wasm: (/ MinInt64 -1) is a BigInt (numeric tower, D15)"))
+                  (if (= x -9223372036854775808) (= y -1) false) (c/raise (arch/bytes-of-string "llvm: (/ MinInt64 -1) is a BigInt (numeric tower, D15)"))
                   (= 0 (arch/i64-sub x (arch/i64-mul y (quot x y)))) (sq/box-int (quot x y))
-                  :else (c/raise (arch/bytes-of-string "lower-wasm: / of two Ints yielding a Ratio (numeric tower, D15)"))))
+                  :else (c/raise (arch/bytes-of-string "llvm: / of two Ints yielding a Ratio (numeric tower, D15)"))))
           (if (num-k? ka) (num-k? kb) false) (s/box-float (/ (f64-of a) (f64-of b)))
           :else (raise-two (arch/bytes-of-string "cannot divide ") a b))))
 

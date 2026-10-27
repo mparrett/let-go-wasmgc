@@ -50,7 +50,7 @@
 ;; Resolution order, def and the var stand-ins are the host's; each host
 ;; file's header states them, and its named limits.
 ;;
-;; Named limits of the evaluator, on every host (each raises `lower-wasm: ...
+;; Named limits of the evaluator, on every host (each raises `llvm: ...
 ;; (named limit)` or is a silent difference listed here):
 ;;   - catch clauses do not dispatch on the class: the first clause catches
 ;;     every exception (native matches by catch-matches?);
@@ -75,7 +75,7 @@
 (declare cur-ns ns-value enter-ns! canon resolve-global local-def? core-var
          cell-get set-cell! def-var! var-of def-root! raise var-value ensure-hook!)
 
-(defn- limit [msg] (raise (str "lower-wasm: " msg " (named limit)")))
+(defn- limit [msg] (raise (str "llvm: " msg " (named limit)")))
 (defn- cerr [msg] (raise (str "CompileError: " msg)))
 
 (defn- wrap

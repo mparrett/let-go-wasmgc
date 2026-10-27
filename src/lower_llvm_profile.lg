@@ -26,7 +26,7 @@
         :else (str targets-dir "/" arg ".edn")))
 
 (defn- refuse [n field reason]
-  (throw (ex-info (str "lower-wasm: profile " n ": " field " " reason) {:profile n :field field})))
+  (throw (ex-info (str "llvm: profile " n ": " field " " reason) {:profile n :field field})))
 
 (defn validate
   "The profile p with defaults filled in, or a named error for the first bad
@@ -63,7 +63,7 @@
   [arg]
   (let [path (profile-path arg)
         text (try (slurp path)
-                  (catch e (throw (ex-info (str "lower-wasm: profile " (or arg "host") ": not found at " path) {:path path}))))
+                  (catch e (throw (ex-info (str "llvm: profile " (or arg "host") ": not found at " path) {:path path}))))
         p (edn/read-string text)
         n (or (:name p) (let [b (subs path (inc (or (str/last-index-of path "/") -1)))]
                           (if (str/ends-with? b ".edn") (subs b 0 (- (count b) 4)) b)))]

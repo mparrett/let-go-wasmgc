@@ -26,7 +26,7 @@ for f in bad-word:word-bits bad-fixnum:fixnum-bits bad-tailcalls:tail-calls miss
     bad "$n: compiled"
   else
     e=$(first_err "$t/$n.log")
-    case "$e" in *"lower-wasm: profile $n: :$field"*) ok "$n: $e";; *) bad "$n: $e";; esac
+    case "$e" in *"llvm: profile $n: :$field"*) ok "$n: $e";; *) bad "$n: $e";; esac
   fi
 done
 case "$(first_err "$t/uniform.log")" in *"not implemented before M6"*) ok "uniform refused as M6";; *) bad "uniform refusal text";; esac

@@ -21,6 +21,8 @@
             [clojure.string :as str] [lw-rt] [lower-llvm-cache :as lc]))
 
 (def ^:dynamic *target* :gc)
+;; the backend a named error comes from, as its message's first word
+(defn target-prefix [] (if (= *target* :llvm) "llvm: " "lower-wasm: "))
 ;; --profile / LW_PROFILE for --target llvm (D236); read by lower_llvm.lg only
 (def ^:dynamic *llvm-profile-arg* nil)
 (def ^:dynamic *f* nil)
@@ -191,7 +193,7 @@
          expand-form qual-name var-sym analyze-fn* neg)
 
 (defn fail [msg data]
-  (throw (ex-info (str "lower-wasm: " msg " " (pr-str data)) data)))
+  (throw (ex-info (str (target-prefix) msg " " (pr-str data)) data)))
 
 (defn ty [nid]
   (if (contains? *func-vals* nid)
@@ -1242,9 +1244,9 @@
   (when (var? v)
     (let [x (try @v (catch e nil))]
       (cond (and (= "let-go.lang.NativeFn" (str (type x))) (nil? (:line (meta v))))
-            (str "lower-wasm: " (subs (str v) 2) " has no twin")
+            (str (target-prefix) (subs (str v) 2) " has no twin")
             (and (fn? x) (lw-rt/core-defn? v))
-            (str "lower-wasm: " (subs (str v) 2) " did not compile")
+            (str (target-prefix) (subs (str v) 2) " did not compile")
             :else nil))))
 
 (defn call-wat [nid v args]
@@ -3814,7 +3816,7 @@
     (list 'fn* [] (with-meta (symbol v) {:lw/var-read v}))
     (list 'fn* [] (list (lw-rt/rt-sym 'core 'raise)
                         (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string)
-                              (str "lower-wasm: the value of " v " is not reachable from its stand-in:"
+                              (str (target-prefix) "the value of " v " is not reachable from its stand-in:"
                                    " only a var the program defines has one (named limit)"))))))
 
 (defn var-const-form

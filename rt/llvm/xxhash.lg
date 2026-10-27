@@ -230,14 +230,14 @@
   (let [k (sq/kind x)]
     (cond (= k 0) (arch/bytes-new 0)
           (= k 17) (rune-bytes (s/str-bytes x))
-          (arch/null? (arr/byte-data x)) (arch/trap "lower-wasm: xxh3 of a value other than a byte-array, String or nil (reflection coercion not ported)")
+          (arch/null? (arr/byte-data x)) (arch/trap "llvm: xxh3 of a value other than a byte-array, String or nil (reflection coercion not ported)")
           :else (arr/byte-data x))))
 
 (defn- seed-bits [x]
   (let [k (sq/kind x)]
     (cond (= k 0) 0
           (= k 1) (sq/unbox-int x)
-          :else (arch/trap "lower-wasm: xxh3 seed other than an Int or nil (reflection coercion not ported)"))))
+          :else (arch/trap "llvm: xxh3 seed other than an Int or nil (reflection coercion not ported)"))))
 
 (defn ^{:twin "xxh3/HashSeed"} hash-seed [b seed] (sq/box-int (hash-bytes (input-bytes b) (seed-bits seed))))
 (defn ^{:twin "xxh3/Hash"} hash0 [b] (sq/box-int (hash-bytes (input-bytes b) 0)))

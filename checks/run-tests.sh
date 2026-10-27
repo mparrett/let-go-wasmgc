@@ -255,8 +255,8 @@ for f in "${files[@]}"; do
     secs=$(( $(date +%s) - start ))
     # the shim's indented "  error:" lines are a test's own error, not the
     # compiler's: left out, or a run that dies after one would read as compile
-    if ! grep -qE '^Ran [0-9]+ tests' "$t/$b.wasm.out" && grep -v '^  error: ' "$t/$b.wasm.out" | grep -qE 'lower-wasm'; then
-      msg="compile: $(sed -E 's/\x1b\[[0-9;]*m//g' "$t/$b.wasm.out" | grep -v catalog | grep -v '^  error: ' | grep -m1 -E 'lower-wasm' | strip)"
+    if ! grep -qE '^Ran [0-9]+ tests' "$t/$b.wasm.out" && grep -v '^  error: ' "$t/$b.wasm.out" | grep -qE 'lower-wasm|llvm: '; then
+      msg="compile: $(sed -E 's/\x1b\[[0-9;]*m//g' "$t/$b.wasm.out" | grep -v catalog | grep -v '^  error: ' | grep -m1 -E 'lower-wasm|llvm: ' | strip)"
       echo "FAIL $f: $msg"; record MISMATCH "$msg" "$msg"
       continue
     fi
@@ -275,7 +275,7 @@ for f in "${files[@]}"; do
     "$here/checks/limit.sh" run node "$here/src/run.mjs" "$t/$b.wasm" >"$t/$b.wasm.out" 2>&1
   fi
   norm <"$t/$b.native" >"$t/$b.n"; norm <"$t/$b.wasm.out" >"$t/$b.w"
-  werr=$(grep -m1 -E '^(error|lower-wasm)' "$t/$b.wasm.out" | strip)
+  werr=$(grep -m1 -E '^(error|lower-wasm|llvm: )' "$t/$b.wasm.out" | strip)
   # else the message the test shim prints under an ERROR line, preferring a
   # test that does not FAIL/ERROR natively (the one that diverges): the
   # compared lines carry only test names, and jank-suite.sh's cause column
