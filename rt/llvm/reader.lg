@@ -56,7 +56,7 @@
 (arch/defstruct RS [:ref :i64 [:mut :i64] [:mut :i64] [:mut :i64] [:mut :i64] :ref])
 (arch/defstruct Aux [[:mut :i64] [:mut :i64] [:mut :i64] [:mut :ref] [:mut :i64] :ref :ref [:mut :ref]])
 (arch/defstruct Kws [:ref :ref])
-(arch/defstruct Void [:i64])
+(arch/defstruct Void [[:mut :i64]])                          ; field 0: #?@'s one-shot splice flag
 (arch/defstruct ShortFn [[:mut :i64]])
 ;; P7.0: the code hook llvm.eval installs, a plain 2-arg fn. op 0 + a Str
 ;; name: the Str "<cur-ns>/name" of `::name`; op 1 + a Str alias: the Str ns
@@ -801,6 +801,20 @@
 (defn- vec->list [v]
   (loop [i (dec (pv/vcount v)) l (sq/empty-list)] (if (>= i 0) (recur (dec i) (sq/conj l (pv/vnth v i))) l)))
 
+;; #?@'s splice flag (r.splicing), set by a splicing conditional and cleared
+;; by the next form a collection takes
+(defn- splicing? [st] (= 1 (arch/get Void 0 (void st))))
+(defn- set-splicing! [st on] (arch/set! Void 0 (void st) (if on 1 0)))
+
+;; appendNonVoid (reader.go:230) when the flag is set: a seqable value's
+;; elements, nil as the one-element seq it is natively, and nothing for any
+;; other value
+(defn- splice-into [acc f]
+  (cond (= 0 (sq/kind f)) (pv/vconj acc f)
+        (sq/can-seq? f) (loop [acc acc x (sq/seq f)]
+                          (if (arch/null? x) acc (recur (pv/vconj acc (sq/first x)) (sq/next x))))
+        :else acc))
+
 ;; The forms up to `close`, Void dropped (appendNonVoid); st on failure.
 (defn- read-forms [st close]
   (loop [acc (pv/empty-vec)]
@@ -810,7 +824,8 @@
             :else (do (unread! st)
                       (let [f (read1 st)]
                         (cond (failed? st f) (wrap! st (s/lit "unexpected error"))
-                              (void? st f) (recur acc)
+                              (void? st f) (do (set-splicing! st false) (recur acc))
+                              (splicing? st) (do (set-splicing! st false) (recur (splice-into acc f)))
                               :else (recur (pv/vconj acc f)))))))))
 
 (defn- pos-meta [st line col]                            ; the FormSource position meta reads back (lang.go:3465)
@@ -949,6 +964,92 @@
             (void? st f) (no-value (s/lit "syntax-quote"))
             :else (sq/invoke2 (hook) (sq/box-int 2) f)))))
 
+;; Reader conditionals: readConditional and skipReaderForm (reader.go:1295,
+;; :1382). The data reader matches :lg and :default; :clj and :bb are
+;; native's opt-in switches, which no runtime twin sets. A branch that does
+;; not match is skipped by balanced delimiters, never read, since it may hold
+;; another dialect's syntax. Tagged literals in a skipped branch skip their
+;; tag and the form after it: no raw tagged reader (#go) is registered here.
+(defn- skip-ws [st]                                      ; eatWhitespace, -1 at EOF and no error layer
+  (loop [] (let [ch (next! st)] (if (if (>= ch 0) (whitespace? ch) false) (recur) ch))))
+(defn- line-end [st]                                     ; past a `;` comment: its newline, or -1
+  (loop [] (let [c (next! st)] (if (if (= c -1) true (if (= c 10) true (= c 13))) c (recur)))))
+(defn- skip-comments [st ch]                             ; the first rune after any `;` comments, or -1
+  (loop [ch ch] (if (= ch 59) (if (= -1 (line-end st)) -1 (recur (skip-ws st))) ch)))
+(defn- prefix-macro? [c] (if (= c 39) true (if (= c 96) true (if (= c 126) true (if (= c 64) true (= c 94))))))
+
+(declare skip-form)
+(defn- skip-atom [st]
+  (loop [] (let [c (next! st)] (cond (= c -1) nil (boundary? c) (unread! st) :else (recur)))))
+(defn- skip-string [st]
+  (loop [] (let [c (next! st)] (cond (= c -1) nil (= c 34) nil (= c 92) (do (next! st) (recur)) :else (recur)))))
+(defn- skip-delimited [st]                               ; after an opener: through its balanced closer
+  (loop [depth 1 in-str false in-atom false]
+    (when (> depth 0)
+      (let [c (next! st)]
+        (cond
+          (= c -1) nil
+          in-str (cond (= c 92) (do (next! st) (recur depth true in-atom))
+                       (= c 34) (recur depth false in-atom)
+                       :else (recur depth true in-atom))
+          (if (= c 35) (if in-atom false true) false) (do (unread! st) (skip-form st) (recur depth false false))
+          :else
+          (let [c (cond (= c 92) (do (next! st) c)
+                        (= c 59) (line-end st)
+                        :else c)
+                depth (cond (= c -1) 0
+                            (if (= c 40) true (if (= c 91) true (= c 123))) (inc depth)
+                            (if (= c 41) true (if (= c 93) true (= c 125))) (dec depth)
+                            :else depth)
+                atom (cond (boundary? c) false
+                           (if (prefix-macro? c) (if in-atom false true) false) in-atom
+                           :else true)]
+            (recur depth (= c 34) atom)))))))
+(defn- skip-tag [st]                                     ; a #tag token, then the form it tags
+  (loop [] (let [c (next! st)] (cond (= c -1) nil (if (whitespace? c) true (terminating? c)) (do (unread! st) (skip-form st)) :else (recur)))))
+(defn- skip-hash [st]
+  (let [c (next! st)]
+    (cond (= c -1) nil
+          (if (= c 40) true (= c 123)) (do (unread! st) (skip-form st))
+          (= c 34) (skip-string st)
+          (if (= c 39) true (= c 95)) (skip-form st)
+          (= c 35) (skip-atom st)
+          (= c 63) (let [cc (next! st)] (cond (= cc -1) nil (= cc 64) (skip-form st) :else (do (unread! st) (skip-form st))))
+          :else (skip-tag st))))
+(defn- skip-form [st]                                    ; skipReaderForm: one form, never an error
+  (let [ch (skip-comments st (skip-ws st))]
+    (cond (= ch -1) nil
+          (if (= ch 40) true (if (= ch 91) true (= ch 123))) (skip-delimited st)
+          (= ch 34) (skip-string st)
+          (= ch 35) (skip-hash st)
+          (= ch 94) (do (skip-form st) (skip-form st))
+          (if (= ch 39) true (if (= ch 96) true (if (= ch 126) true (= ch 64)))) (skip-form st)
+          :else (skip-atom st))))
+
+(defn- branch-match? [key]                               ; :lg or :default
+  (if (sq/equiv? key (s/kw-of-bytes (arch/bytes-of-string "lg"))) true
+      (sq/equiv? key (s/kw-of-bytes (arch/bytes-of-string "default")))))
+
+(defn- read-conditional [st]                             ; readConditional (reader.go:1295)
+  (let [n (next! st) splice (= n 64) n (if splice (next! st) n)]
+    (cond
+      (= n -1) (fail! st (if splice (s/lit "reading splicing reader conditional") (s/lit "reading reader conditional")))
+      (if (= n 40) false true) (fail! st (s/lit "reading reader conditional, list expected"))
+      :else
+      (loop [form (void st) found false]
+        (let [ch (skip-comments st (skip-ws st))]
+          (cond
+            (= ch -1) (fail! st (s/lit "reading reader conditional"))
+            (= ch 41) (do (set-splicing! st splice) form)
+            :else
+            (let [key (do (unread! st) (read1 st))]
+              (cond
+                (failed? st key) (fail! st (s/lit "reading reader conditional key"))
+                (if found false (if (void? st key) false (branch-match? key)))
+                (let [v (loop [] (let [v (read1 st)] (if (failed? st v) v (if (void? st v) (recur) v))))]
+                  (if (failed? st v) (fail! st (s/lit "reading reader conditional value")) (recur v true)))
+                :else (do (skip-form st) (recur form found))))))))))
+
 (defn- read-hash [st]                                    ; readHashMacro (reader.go:1724)
   (let [ch (next! st)]
     (cond (= ch -1) (fail! st (s/lit "reading hash macro"))
@@ -957,7 +1058,7 @@
           (= ch 40) (read-short-fn st)
           (= ch 123) (read-set st)
           (= ch 34) (read-regex st)
-          (= ch 63) (limit (s/lit "#? reader conditional (named limit)"))
+          (= ch 63) (read-conditional st)
           (= ch 35) (read-symbolic st)
           (if (if (>= ch 97) (<= ch 122) false) true (if (>= ch 65) (<= ch 90) false))
           (limit (s/lit "#tag tagged literal (#inst, #uuid, *data-readers*; named limit)"))
