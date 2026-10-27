@@ -27,7 +27,7 @@
 ;; program's own namespaces are not in the table) but resolves the clojure.*
 ;; aliases as native does; it takes effect when the src patch drops the
 ;; find-ns-v route. ns-name stays lw-ext's fill.
-;; Named limits (raised as `lower-wasm: ...`, never a native-looking error):
+;; Named limits (raised as `llvm: ...`, never a native-looking error):
 ;; the VALUE of a program var is not reachable from its stand-in, so var-get,
 ;; alter-var-root and push-binding! on one fail by name (with-redefs, which
 ;; is core.lg's with-redefs-fn over var-get/alter-var-root, inherits this);
@@ -61,7 +61,7 @@
 (defn- raise-lit [msg] (c/raise (s/str-bytes msg)))
 (defn- raise-arity [n] (raise-lit (str "wrong number of arguments " n)))
 (defn- tname [x] (s/mk-str (c/type-name x)))           ; type-name is Bytes
-(defn- limit [msg] (raise-lit (str "lower-wasm: " msg " (named limit)")))
+(defn- limit [msg] (raise-lit (str "llvm: " msg " (named limit)")))
 
 ;; ---------------------------------------------------------------------------
 ;; Small natives
@@ -650,7 +650,7 @@
   [text]
   (if (not (some #(contains? #{\. \e \E} %) text))
     (try (rd/read-string text)
-         (catch Exception e (raise-lit (str "lower-wasm: read-json: integer " text " is past int64, a BigInt natively (named limit)"))))
+         (catch Exception e (raise-lit (str "llvm: read-json: integer " text " is past int64, a BigInt natively (named limit)"))))
     ;; the reader refuses a float literal out of float64's range
     (let [f (try (rd/read-string text) (catch Exception e ::range))]
       (cond (= f ::range) (raise-lit (str "json: number " text " out of range"))

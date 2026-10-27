@@ -775,7 +775,7 @@
 (defn- f64-int [f]                                      ; Go's int(f) for a finite f inside int64; else a named limit
   (if (if (< f 9.223372036854775807e18) (>= f -9.223372036854775808e18) false)
     (arch/f64-to-i64 f)
-    (arch/trap "lower-wasm: a NaN, infinite or out-of-int64 Float converted to Int (Go leaves it platform-defined)")))
+    (arch/trap "llvm: a NaN, infinite or out-of-int64 Float converted to Int (Go leaves it platform-defined)")))
 
 (defn ^{:twin "core/repeat"} repeat                                             ; CoreRepeat (lang.go:6805)
   ([x] (arch/new Repeat -1 x))
