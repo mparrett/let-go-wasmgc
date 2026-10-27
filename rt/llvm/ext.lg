@@ -227,13 +227,13 @@
    String.getBytes (P2.14). Anything else is a named limit."
   ([obj m] (if (and (= m 'getBytes) (string? obj))
              (get-bytes obj)
-             (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported")))))
+             (llvm.core/raise (llvm.str/str-bytes (str "llvm: host interop (." m ") is not supported")))))
   ([obj m a] (cond (and (= m 'Sub) (int? obj) (int? a)) (ns-between obj a)
                    (and (= m 'getBytes) (string? obj)) (get-bytes-enc obj a)
-                   :else (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported")))))
+                   :else (llvm.core/raise (llvm.str/str-bytes (str "llvm: host interop (." m ") is not supported")))))
   ([obj m a b] (if (and (= m 'getBytes) (string? obj))
                  (llvm.core/raise (llvm.str/str-bytes "string.getBytes expected 0 or 1 argument, got 2"))
-                 (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported"))))))
+                 (llvm.core/raise (llvm.str/str-bytes (str "llvm: host interop (." m ") is not supported"))))))
 
 (defn char-v
   "core/char? (P4.1: reached through long-v once json-str calls long)."
@@ -440,7 +440,7 @@
    Runs natively, at build time."
   [src]
   (let [cs (vec src) n (count cs) pos (atom 0) ngroups (atom 0)
-        fail (fn [m] (throw (ex-info (str "lower-wasm: regex " m " (named limit)") {:src src})))
+        fail (fn [m] (throw (ex-info (str "llvm: regex " m " (named limit)") {:src src})))
         peekc (fn [] (when (< @pos n) (nth cs @pos)))
         nextc (fn [] (let [c (nth cs @pos)] (swap! pos inc) c))
         esc-class {\d :d \w :w \s :s \D :D \W :W \S :S}

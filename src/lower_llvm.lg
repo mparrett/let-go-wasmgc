@@ -1887,7 +1887,7 @@
   "lower-wasm/stub-fn under --target llvm: a runtime fn that failed to lower
    keeps its name and signature and raises the named error when called."
   [{:keys [name params]} msg]
-  (let [w (ll-word) m (str "lower-wasm: " name " did not compile (" msg ")")
+  (let [w (ll-word) m (str "llvm: " name " did not compile (" msg ")")
         raise (:name (get-in (callee-sig (lw-rt/rt-var 'core 'raise)) [:arities 1]))]
     (apply ll-unit
      (lir/with-refs

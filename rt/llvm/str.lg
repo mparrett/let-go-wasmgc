@@ -746,7 +746,7 @@
           (= k 22) (let [f (unbox-float x)]
                      (cond (if (< f -2147483648.0) true (> f 2147483647.0)) (raise-val (arch/bytes-of-string "") x (arch/bytes-of-string " can't be coerced to int"))
                            (if (< f 0.0) false (if (>= f 0.0) false true))
-                           (arch/trap "lower-wasm: (int ##NaN) is platform-defined in Go (0 on arm64, MinInt64 on amd64); not reproduced")
+                           (arch/trap "llvm: (int ##NaN) is platform-defined in Go (0 on arm64, MinInt64 on amd64); not reproduced")
                            :else (sq/box-int (arch/f64-to-i64 f))))   ; truncates, as math.Trunc
           (= k 19) (sq/box-int (char-val x))
           (= k 15) (sq/box-int (arch/get sq/Bool 0 x))
