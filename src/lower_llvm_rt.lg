@@ -493,6 +493,12 @@
                     (ll-emit! "  call void @lg_host_exit(i32 " e ")") [nil :void])
       "host-arg" [(call w "lg_host_arg" (str "i64 " (ll-arg (a 0) :int))) :box]
       "host-getenv" [(call w "lg_host_getenv" (str w " " (ll-arg (a 0) :box))) :box]
+      "host-sysinfo" [(call w "lg_host_sysinfo" (str "i64 " (ll-arg (a 0) :int))) :box]
+      ;; the compiling lg's answer, a constant of the module
+      "build-property" (if (string-const? (a 0))
+                         (let [v (System/getProperty (const-val (a 0)))]
+                           (if v [(ll-bytes-const! v) :box] ["0" :box]))
+                         (ll-fail "arch/build-property needs a string literal" {}))
       "host-open" [(call "i64" "lg_host_open" (str w " " (ll-arg (a 0) :box)) (str "i64 " (ll-arg (a 1) :int))) :int]
       "term-read-key" [(call w "lg_term_read_key") :box]
       "term-key-pending" (let [r (call "i32" "lg_term_key_pending") c (ll-fresh "%tpc")]
@@ -534,7 +540,7 @@
      (ll-declare "void" "lg_array_copy" ["ptr" w "i64" "ptr" w "i64" "i64" "i64"])
      (ll-declare w "lg_bytes_new" ["i64"]) (ll-declare w "lg_str_bytes_copy" [w])
      (ll-declare "i64" "lg_host_write_bytes" ["i64" w]) (ll-declare "void" "lg_host_sleep" ["i64"])
-     (ll-declare "i64" "lg_host_nanotime" []) (ll-declare w "lg_host_getenv" [w]) (ll-declare "i64" "lg_host_open" [w "i64"])
+     (ll-declare "i64" "lg_host_nanotime" []) (ll-declare w "lg_host_getenv" [w]) (ll-declare w "lg_host_sysinfo" ["i64"]) (ll-declare "i64" "lg_host_open" [w "i64"])
      (ll-declare "i64" "lg_host_argc64" []) (ll-declare w "lg_host_arg" ["i64"]) (ll-declare "void" "lg_host_exit" ["i32"])
      (ll-declare w "lg_term_read_key" []) (ll-declare "i32" "lg_term_key_pending" []) (ll-declare "i64" "lg_term_size" [])
      (ll-declare "i64" "lg_term_raw_mode" []) (ll-declare "i64" "lg_term_restore_mode" [])
@@ -727,7 +733,7 @@
 ;; terminal's raw mode
 (def ll-emitted-intrinsics
   (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "type-name-bytes" "type-anc-count" "type-anc"
-                             "term-raw-mode" "term-restore-mode" "host-exit"}))
+                             "term-raw-mode" "term-restore-mode" "host-exit" "host-sysinfo" "build-property"}))
 
 (when lw-rt/llvm-target?
   (let [missing (for [v (lw-rt/intrinsic-vars)

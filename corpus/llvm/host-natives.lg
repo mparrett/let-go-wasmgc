@@ -1,6 +1,7 @@
 ;; host natives on the llvm lane as native lg has them: core/. interop on a
-;; time and a string, the program's arguments, and the terminal's size off
-;; a terminal (the oracle captures stdout, so size is nil)
+;; time and a string, the program's arguments, the terminal's size off a
+;; terminal (the oracle captures stdout, so size is nil), the host's OS and
+;; architecture, and System's properties
 (def epoch (now))
 (println (int? (.Sub (now) epoch)) (>= (.Sub (now) epoch) 0))
 (println (vec (.getBytes "hi")) (vec (.getBytes "")))
@@ -9,3 +10,10 @@
 (println (try (.getBytes 7) (catch Exception e (ex-message e))))
 (prn *command-line-args*)
 (prn (term/size))
+(println (os/os-name) (os/arch))
+(doseq [k ["os.name" "os.arch" "os.version" "file.separator" "path.separator" "file.encoding"
+           "user.dir" "user.home" "user.name" "java.io.tmpdir" "let-go.version" "let-go.commit"]]
+  (println k (pr-str (System/getProperty k))))
+(prn (System/getProperty "line.separator") (System/getProperty "no.such") (System/getProperty "no.such" :dflt))
+(prn (sort (keys (System/getProperties))) (= (System/getProperties) (System/getProperties)))
+(println (try (System/getProperty 1) (catch Exception e (ex-message e))))
