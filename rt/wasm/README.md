@@ -1,6 +1,6 @@
 # rt/wasm — the wasm runtime in the runtime dialect
 
-Twenty namespaces (nineteen by default) that load together under native lg as one runtime (P2.9, P3.1),
+Twenty-four files (twenty-two namespaces; twenty files by default) that load together under native lg as one runtime (P2.9, P3.1),
 with the reference `wasm.intrinsics` standing in for the wasm instructions.
 Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
@@ -36,7 +36,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 
 Rows 19 and 20 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
-default build loads the other nineteen namespaces and its bytes do not
+default build loads twenty files (rows 22 and 23 wait on their own variables too) and its bytes do not
 change (`checks/gc-byte-identity.sh`).
 Row 22 is the same mechanism for `LW_HOST_FS` (D208): only a build with
 that flag loads it, and the backend's `env.read_file` import and helper are

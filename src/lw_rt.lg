@@ -789,8 +789,7 @@
 
 ;; --- lowering's questions about sources -----------------------------------------
 ;; Narrow on purpose: a caller's trace holds only what it used of another
-;; defn, so a body edit there does not invalidate it (the function cache,
-;; docs/superpowers/specs/2026-10-10-llvm-fn-cache-design.md).
+;; defn, so a body edit there does not invalidate it (the function cache).
 (lc/defquestion source-kind [v] [:source-kind v]
   (let [d (source-defn v)] (when d {:core-lg (boolean (:core-lg d)) :lib (boolean (:lib d))})))
 (lc/defquestion source-arity-shape [v] [:arity-shape v]
