@@ -1,0 +1,15 @@
+id: d798d14
+v: 2
+title: Proposed: DECISIONS.md is generated from the decision issues in git-issue
+status: open
+priority: medium
+created: 2026-10-27T19:29:29Z
+updated: 2026-10-27T19:29:29Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Decisions now start as git-issue issues (closed, `issue_type: decision`), but DECISIONS.md is still edited by hand, so the two drift and both lanes draw D-numbers from one sequence. #78 hit that: eight llvm decisions reused numbers main held (D206-D212, D217) and had to be renumbered to D235-D242.
+ 
+ I'd add a checks/ script that renders DECISIONS.md from the closed decision issues, ordered by date, each entry keyed by its D-number (`external_ref`) and citing its issue id, with a `workflow.mk` target to regenerate it and a check that the committed file matches. New decisions then take their number when the file is generated, not when someone writes it, so two branches cannot pick the same one. D1-D205 have no issues yet; they would be imported first, or kept as a fixed preamble the script leaves alone.
+ 
+ This is the same move git-issue:562dff4 proposes for STATUS.md, and it settles git-issue:2a446d9's README wording. DECISIONS.md is yours to maintain, so the format and whether to adopt it are your call.
