@@ -448,7 +448,7 @@
           (= k 23) (vec-seq (entry-vec x))                 ; MapEntry.Seq: ArrayVector{k,v}.Seq(), an ArrayVectorSeq (FNV-hashed, P2.13)
           :else (no-iseq x))))
 
-(defn- can-seq? [x]
+(defn can-seq? [x]
   (let [k (kind x)] (cond (= k 0) true (seq-kind? k) true (= k 11) true (= k 17) true (= k 18) true (= k 23) true :else false)))
 
 ;; A foreign value native lg cannot seq: the caller raises its own catchable
