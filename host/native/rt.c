@@ -196,6 +196,7 @@ int64_t lg_host_write_bytes(int64_t fd, intptr_t w) {
  * bare.c): getenv and url-param are Bytes -> Bytes or nil; read-key's 0
  * bytes is end of input (nil); size is cols << 32 | rows. */
 const char *lg_host_getenv_c(const char *name);
+const char *lg_host_sysinfo_c(int k); /* 0 os, 2 cwd, 3 temp dir, 4 home, 5 user name */
 int lg_host_read_key(unsigned char *buf, int cap);
 int lg_host_key_ready(void);
 void lg_host_term_dims(int *cols, int *rows);
@@ -210,6 +211,34 @@ int64_t lg_host_open(intptr_t w, int64_t mode) {
   for (intptr_t i = 0; i < p->len; i++) path[i] = (char)p->data[i];
   path[p->len] = 0;
   return lg_host_open_c(path, (int)mode);
+}
+
+/* runtime.GOARCH of this build: Go fixes it when it compiles, so do we */
+static const char *lg_arch(void) {
+#if defined(__aarch64__)
+  return "arm64";
+#elif defined(__x86_64__)
+  return "amd64";
+#elif defined(__arm__)
+  return "arm";
+#elif defined(__i386__)
+  return "386";
+#elif defined(__riscv) && __riscv_xlen == 64
+  return "riscv64";
+#else
+  return "";
+#endif
+}
+
+/* os/os-name, os/arch and System's properties: Bytes, or nil for an
+   unknown k */
+intptr_t lg_host_sysinfo(int64_t k) {
+  if (k < 0 || k > 5) return 0;
+  const char *v = k == 1 ? lg_arch() : lg_host_sysinfo_c((int)k);
+  if (!v) return 0;
+  size_t n = 0;
+  while (v[n]) n++;
+  return lg_bytes_of(v, n);
 }
 
 intptr_t lg_host_getenv(intptr_t w) {
