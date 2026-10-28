@@ -4,11 +4,12 @@ title: llvm warm compile spends most of its time parsing the 81 MB runtime snaps
 status: open
 priority: medium
 created: 2026-10-28T00:47:07Z
-updated: 2026-10-28T00:47:07Z
+updated: 2026-10-28T00:47:08Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
 issue_type: task
+labels: llvm
 description: A warm compile under --target llvm (P12.37's timed fib.clj compile) reads the runtime library's cached snapshot with `(read-string (slurp f))`. On my machine that parse takes 3.0-3.7 s of a 4.7-6 s compile; the read itself is 20-30 ms, and the reader is already buffered (bufio over a strings.Reader). The snapshot is 81 MB of EDN, and `:lowered` is 68 MB of it: the finished LLVM IR of all 2,498 runtime functions, each body one escaped string literal. A program uses a fraction of them after the shake, but every compile parses them all. P12.37's 5 s bound therefore fails under moderate load on both llvm branches (4.7-5.98 s at load averages 3-7) while its behavior checks pass.
  
  I'd keep an index in the EDN (names, dependencies, byte offsets) and the IR bodies in a side file. A compile then reads the index, takes the reachable set and loads only those bodies. A cheaper first step stores the bodies as raw text outside the EDN: it saves the escape handling but still reads everything. Either belongs to the runtime cache and the function cache plan (git-issue:3e08842).
