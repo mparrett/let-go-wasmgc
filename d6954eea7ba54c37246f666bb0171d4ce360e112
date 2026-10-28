@@ -15,8 +15,18 @@ rows (checks/run.sh unless noted):
   P2.12         ok    4/4 refused as documented (GC lane's lower-wasm text unchanged)
   oracle corpus/llvm/host-natives.lg   MATCH vs native lg, --target llvm
   oracle (one-off) compiled read-string of #?, #?@ and #?lg-version   MATCH vs native lg
-not run on this range: the full gate; P13.3/P13.4 (llvm corpora, jank suite); legmacs and
-  xsofy sessions; Linux (ndn.local unreachable)
+  gate 13 (checks/gate.sh 13, LW_ATTEST=0, LW_GATE_J=1)   19/20 ok, including P13.3 (llvm
+    corpora), P13.4 (jank suite), P13.5 (armv7, builds bare.c), P13.6, P13.8, P12.31-P12.40,
+    LLVM.*; P12.37 is the one not ok, see below
+  P2.3 2/2, P2.6 6/6, P5.10 3/3, P5.11 ok (the run-tests.sh classifier on the GC lane)
+  P12.37: behavior 4/4 SAME (cached vs --no-rtlib); its warm compile read 5.77, 5.98, 5.94
+    and 5.70 s against a 5 s bound, with load averages 4.5-7.5 from two unrelated processes.
+    llvm-poly at 0ac4a31 read 5.74, 4.7, 5.48 and 5.73 s alongside, so no regression is
+    measurable: the warm compile is mostly parsing the 81 MB runtime snapshot
+    ((read-string (slurp f)) 3.0-3.7 s on both branches; this branch's snapshot is 1.6%
+    larger). Filed separately as the snapshot parse cost.
+not run on this range: the full gate; legmacs and xsofy sessions; Linux (ndn.local
+  unreachable)
 
 reviews (read-only critic rounds on this diff):
   round 1: 1 blocker - #?@ of a non-seqable raised where native adds nothing. Fixed:
@@ -38,3 +48,5 @@ approvals (the operator's words in this session, quoted):
   2026-10-27 "all tree." (the three fixes: prefix, reader conditionals, os-name and properties)
   2026-10-27 "post the 4d19ae0 reply, then commit and push when clean"
   2026-10-27 "git note, hand-written for this push"
+  2026-10-27 "push both, each with its own note"
+  2026-10-27 "push both, post the replies, and file the issue"
