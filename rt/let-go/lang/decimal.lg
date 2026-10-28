@@ -1,0 +1,53 @@
+;; let-go.lang.decimal — BigDecimal as a value: an unscaled BigInt and a
+;; decimal exponent (u * 10^e), kept canonical (u has no trailing decimal
+;; zero; zero is 0 * 10^0), so 1.0M and 1M are one value, as native prints
+;; them the same and compares them equal (pkg/vm/bigdecimal.go, a big.Float
+;; at 128 bits; D233). The arithmetic is let-go.lang.bignum's; nothing here
+;; touches a string or a float but to-f64's result. Plain lg, shared by the
+;; targets (rt/let-go/lang/README.md); the wasm runtime declares the deftype
+;; as a struct in rt/wasm/numtower.lg.
+(ns let-go.lang.decimal
+  (:refer-clojure :exclude [compare zero? ->BigDecimal])
+  (:require [let-go.lang.bignum :as b]))
+
+(deftype BigDecimal [unscaled exp])
+
+(def ^:private ten (b/from-i64 10))
+(def ^:private one (b/from-i64 1))
+(defn- pow10 "10^k as a BigInt, k >= 0." [k] (loop [i 0 p one] (if (< i k) (recur (inc i) (b/mul p ten)) p)))
+(defn- pow2 "2^k as a BigInt, k >= 0." [k] (loop [i 0 p one] (if (< i k) (recur (inc i) (b/add p p)) p)))
+
+(defn make "u * 10^e (u a BigInt, e an int) in canonical form." [u e]
+  (if (b/zero? u)
+    (BigDecimal. u 0)
+    (loop [u u e e]
+      (if (b/zero? (b/rem u ten)) (recur (b/quot u ten) (inc e)) (BigDecimal. u e)))))
+(defn make-2 "u * 10^e * 2^k (k an int of either sign): a literal with a binary exponent." [u e k]
+  (if (< k 0)
+    (make (b/mul u (loop [i 0 p one] (if (< i (- 0 k)) (recur (inc i) (b/mul p (b/from-i64 5))) p))) (+ e k))   ; 2^-k = 5^k / 10^k
+    (make (b/mul u (pow2 k)) e)))
+
+(defn unscaled [d] (.-unscaled d))
+(defn exponent [d] (.-exp d))
+(defn signum "-1, 0 or 1." [d] (b/signum (.-unscaled d)))
+(defn zero? [d] (b/zero? (.-unscaled d)))
+
+(defn- scaled "u * 10^(e - emin): the integer a value is once brought to the smaller exponent." [u e emin]
+  (b/mul u (pow10 (- e emin))))
+(defn compare "-1, 0 or 1 of two BigDecimals (big.Float.Cmp)." [a b]
+  (let [emin (min (.-exp a) (.-exp b))]
+    (b/compare (scaled (.-unscaled a) (.-exp a) emin) (scaled (.-unscaled b) (.-exp b) emin))))
+
+(defn- as-rat [d]
+  (let [u (.-unscaled d) e (.-exp d)]
+    (if (< e 0) (b/rat-make u (pow10 (- 0 e))) (b/rat-make (b/mul u (pow10 e)) one))))
+(defn compare-m2
+  "-1, 0 or 1 of a against m * 2^k (ints: a finite double taken apart), the
+   exact comparison big.Float.Cmp makes against SetFloat64 of that double."
+  [a m k]
+  (let [mb (b/from-i64 m)
+        r (if (< k 0) (b/rat-make mb (pow2 (- 0 k))) (b/rat-make (b/mul mb (pow2 k)) one))]
+    (b/rat-compare (as-rat a) r)))
+(defn to-f64 "big.Float.Float64: nearest even; +-Inf beyond the range, 0.0 below it." [d]
+  (let [u (.-unscaled d) e (.-exp d)]
+    (if (< e 0) (b/rat->f64 (b/rat-make u (pow10 (- 0 e)))) (b/to-f64 (b/mul u (pow10 e))))))

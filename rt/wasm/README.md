@@ -18,7 +18,7 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 6 | `phs.lg` | `wasm.phs` | 1 2 3 5 | the persistent/transient set, set hooks (slot 1) |
 | 7 | `arrays.lg` | `wasm.arrays` | 1-4 | let-go's typed arrays (`int-array` `long-array` `byte-array` `into-array` `let-go.types/array?` `aget` `aset` `alength` `aclone` `bytes`), the `Arr` struct, and the count/seq/print/get view wasm.core routes to it (kind 37) |
 | 8 | `sorted.lg` | `wasm.sorted` | 1-6 | `sorted-map` / `sorted-set` (default comparator) as key-ordered arrays: `SMap`, `SSet`, which wasm.core routes here (kinds 38, 39); the comparator is wasm.core's, through a hook `install!` sets |
-| 9 | `numtower.lg` | `wasm.numtower` | 1 3 4, `let-go.lang.bignum` | BigInt and Ratio as runtime values (D230): the two library deftypes as structs (`wasm/deftype-struct`), `/` of two Ints, the literal parsers, printing, hash, `=` and `compare` of those values; the one dialect file that calls the shared library (rt/let-go/lang) |
+| 9 | `numtower.lg` | `wasm.numtower` | 1 3 4, `let-go.lang.bignum`, `let-go.lang.decimal` | BigInt and Ratio (D230) and BigDecimal (D233) as runtime values: the three library deftypes as structs (`wasm/deftype-struct`), `/` of two Ints, the literal parsers, printing, hash, `=` and `compare` of those values; the one dialect file that calls the shared library (rt/let-go/lang) |
 | 10 | `core.lg` | `wasm.core` | 1-9 | the generic dispatchers (`assoc` `get` `conj` `nth` `peek` `pop` `transient` ...), numbers as values, `compare`, atom/volatile, meta, `ifn?` `reversible?` `pop!`, exceptions, `apply*`, `sort`, `type`; the link step `install!` |
 | 11 | `reader.lg` | `wasm.reader` | 1-10 | `read-string` for data (EDN subset of let-go's data reader) and `read-string*`; per-call state, no global (READER.md) |
 | 12 | `math.lg` | `wasm.math` | 1 3 4 10 | `/` `rem`, the bit ops and unchecked arithmetic as values, `float` `float?` `int?` `bigint?` `abs`, `rand-int` `rand-nth` `shuffle` (one generator), math/abs sqrt exp pow (Go's portable float algorithms, i.e. lg's wasm build) |
@@ -55,7 +55,7 @@ others first/rest/seq/reduce/map raise their own message), the printer
 wasm.str uses for
 foreign values (`set-print-hook!`, called with a mode: 0 `Value.String()`,
 1 `pr-str`, 2 `print-str`, 3 `str` of the value itself, which a BigInt prints
-without its N; a map's String() has no commas, its pr-str does),
+without its N and a BigDecimal without its M; a map's String() has no commas, its pr-str does),
 and the printer seq.lg hashes Range/Repeat/PVecSeq elements with
 (`wasm.seq/set-print-hook!`, given `wasm.str/value-string`), and the type
 namer wasm.arrays and wasm.seq use in their messages for foreign values
@@ -111,8 +111,8 @@ wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 (phm's `HTransient`), 33 TransientSet (`TSet`), 34 TransientVector (`TVec`),
 35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`),
 37 a typed array (`wasm.arrays/Arr`; also its `type` id), 38 SortedMap, 39
-SortedSet, 40 Promise, 41 Delay, 42 BigInt and 43 Ratio (`wasm.numtower`, the
-library deftypes as structs, D230). Values of the
+SortedSet, 40 Promise, 41 Delay, 42 BigInt, 43 Ratio and 44 BigDecimal (`wasm.numtower`, the
+library deftypes as structs, D230 and D233). Values of the
 namespaces loaded after wasm.core stay plain kind 18 (wasm.host's `Handle`
 and `Chan`): they have no `type` name or printed form yet.
 
@@ -195,6 +195,17 @@ checks everything else live.
   the comparisons; promotion, numbers.go) is a named limit until the next
   piece (git-issue:4d19ae0); `bigint` of a Float truncates toward zero and
   does not reach past int64.
+- BigDecimal is a literal-only value (D233): `1.5M`, `1E+10M` and `1p3M` read
+  as native does, print (`1.0M` and `1M` are one value), hash as the Float of
+  their value, are `=` to a BigDecimal alone and `==`, `<`, `compare` and
+  sort against any number as native's numCmpFallback does (exactly against
+  the other side's float64, so `(compare 0.1M 0.1)` is -1). Every arithmetic
+  op on one, `abs`, `bigdec` and `with-precision` raise `lower-wasm:
+  arithmetic on a BigDecimal (numeric tower, named limit)`. The value is an
+  exact decimal (let-go.lang.decimal); native's is a big.Float at 128 bits,
+  so a literal past about 38 significant digits prints every digit here and
+  rounded there, and a hash can differ where the two roundings to float64
+  land on different sides of a halfway point.
 - math/exp and math/pow follow Go's portable algorithms, which is what lg
   computes on wasm; native arm64 lg differs by 1 ulp on some inputs (fused
   multiply-add in exp_arm64.s and in compiled log/pow). Integral-exponent

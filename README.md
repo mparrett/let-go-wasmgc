@@ -27,10 +27,10 @@ differential check (see "Checks"), and the design record is
 - **let-go's own core tests**: 271 of the 273 selected deftests pass, with
   the two remaining ones skipped by name.
 - **The jank clojure-test-suite** (241 files of core tests, run through
-  `checks/jank-suite.sh` against native lg) passes 128 files on the WasmGC
+  `checks/jank-suite.sh` against native lg) passes 168 files (as of 2026-10-25) on the WasmGC
   lane; `corpus/jank/baseline-wasm.tsv` ratchets the count, so a pull request
   may not drop a file. Most of the rest wait on the numeric tower (arithmetic
-  over BigInt and Ratio, BigDecimal literals).
+  over BigInt, Ratio and BigDecimal).
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
 - **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the

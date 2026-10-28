@@ -729,8 +729,8 @@
                  :lw/groups (:groups p) :lw/src src}
           (literal-regex v) (assoc :lw/lit (literal-regex v)))))))
 
-(defn tower-value? "A native BigInt or Ratio: wasm.numtower's constant (D230)." [v]
-  (let [t (str (type v))] (or (= t "let-go.lang.BigInt") (= t "let-go.lang.Ratio"))))
+(defn tower-value? "A native BigInt, Ratio or BigDecimal: wasm.numtower's constant (D230, D233)." [v]
+  (let [t (str (type v))] (or (= t "let-go.lang.BigInt") (= t "let-go.lang.Ratio") (= t "let-go.lang.BigDecimal"))))
 
 (defn const-box-wat
   "A boxed constant of a value kind the runtime owns, or nil."
@@ -3636,8 +3636,9 @@
 (declare const-form const-form*)
 
 (defn- plain-data? [x]
-  ;; a BigInt or Ratio is a number natively but not plain data here: it lowers
-  ;; through const-form* as a runtime call (D230)
+  ;; a BigInt, Ratio or BigDecimal is a number natively but not plain data
+  ;; here (int? and float? are false of each): it lowers through const-form*
+  ;; as a runtime call (D230, D233)
   (or (nil? x) (string? x) (int? x) (float? x) (keyword? x) (symbol? x) (boolean? x)
       (and (or (vector? x) (seq? x) (set? x)) (every? plain-data? x))
       (and (map? x) (every? plain-data? (keys x)) (every? plain-data? (vals x)))))
@@ -3834,6 +3835,9 @@
     ;; array constructor would be code the module has no other use for
     (= "let-go.lang.BigInt" (str (type v))) (list (lw-rt/rt-sym 'numtower 'bigint-of-text) (str v))
     (= "let-go.lang.Ratio" (str (type v))) (list (lw-rt/rt-sym 'numtower 'ratio-of-text) (str (numerator v)) (str (denominator v)))
+    ;; D233: str of a BigDecimal is its text without the M, big.Float's 128-bit
+    ;; value, so a literal past that precision lowers as native rounds it
+    (= "let-go.lang.BigDecimal" (str (type v))) (list (lw-rt/rt-sym 'numtower 'bigdec-of-text) (str v))
     :else v))
 
 ;; P1b (D199): a constant of plain data -- nil, booleans, strings, keywords,

@@ -23,7 +23,7 @@
 ;; the same type name, printed form, hash and =, but (compare (float 1) 1.0)
 ;; throws natively and is 0 here.
 (ns wasm.math
-  (:refer-clojure :exclude [float float? int? rem rand-int abs rand bigint numerator denominator])
+  (:refer-clojure :exclude [float float? int? rem rand-int abs rand bigint bigdec numerator denominator])
   (:require [wasm.intrinsics :as wasm] [wasm.intrinsics :as arch]
             [wasm.seq :as sq]
             [wasm.str :as s]
@@ -332,6 +332,11 @@
                        (raise-str (s/str (lit (wasm/bytes-of-string "cannot parse bigint: ")) (s/pr-str x)))))
           (nt/bigint? x) x
           :else (raise-str (s/str (lit (wasm/bytes-of-string "cannot coerce ")) (tn x) (lit (wasm/bytes-of-string " to bigint")))))))
+;; bigdec (CoreBigDec) and round-bigdec (what with-precision expands to): a
+;; BigDecimal is literal-only (D233), so both are the named limit whatever
+;; their arguments.
+(defn ^{:twin "core/bigdec"} bigdec [x] (c/raise-bigdec))
+(defn ^{:twin "core/round-bigdec"} round-bigdec [precision rounding x] (c/raise-bigdec))
 ;; numerator / denominator (CoreNumerator, CoreDenominator): of a Ratio only
 (defn ^{:twin "core/numerator"} numerator [x]
   (if (nt/ratio? x) (nt/numerator x) (c/raise (wasm/bytes-of-string "numerator expects a Ratio"))))
@@ -541,13 +546,15 @@
   ([a b & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
 
 ;; abs (CoreAbs -> vm.NumAbs): same type back, negated only when < 0, so -0.0
-;; and NaN come back as they are and MinInt64 wraps to itself. No BigDecimal
-;; here; a BigInt or Ratio operand is raise-num's named limit (D230).
+;; and NaN come back as they are and MinInt64 wraps to itself. A BigDecimal is
+;; literal-only (D233: its named limit); a BigInt or Ratio operand raises
+;; native's message as before D230.
 (defn ^{:twin "core/abs"} abs*
   ([] (raise-arity 0))
   ([x] (let [k (sq/kind x)]
          (cond (= k 1) (let [n (sq/unbox-int x)] (if (< n 0) (sq/box-int (wasm/i64-sub 0 n)) x))
                (= k 22) (let [f (s/unbox-float x)] (if (< f 0.0) (s/box-float (* -1.0 f)) x))
+               (nt/decimal? x) (c/raise-bigdec)
                :else (raise-str (s/str (lit (wasm/bytes-of-string "cannot abs ")) (tn x))))))
   ([x y] (raise-arity 2))
   ([x y & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
