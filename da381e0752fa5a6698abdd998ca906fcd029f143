@@ -1,0 +1,33 @@
+evidence: checks-evidence-fetch da381e0 (to main)
+range: 68280e6..da381e0
+  da381e0 feat(checks): every clone fetches the evidence notes
+machine: macOS 26.6.2 arm64; /bin/bash 3.2.57 and Homebrew bash
+tree: da381e0, clean
+
+checks:
+  make -f checks/workflow.mk selftest   ok, every case; the new ones: a repo with no origin
+    url passes, no fetch refspecs fails, the missing evidence refspec fails and names the
+    git config line, the configured refspec passes, and a push then fetch through a
+    temporary remote lands the note on refs/notes/remotes/origin/evidence
+  make -f checks/workflow.mk hooks, this clone   failed with exit 2 and the git config line
+    before the refspec was added; passes after
+  git fetch origin, this clone   brought both evidence notes on origin; `git notes
+    --ref=remotes/origin/evidence show <commit>` reads them
+  bash -n checks/workflow.sh   ok (the critic also ran it under /bin/bash 3.2.57)
+not run: gate rows (the change touches only checks/workflow.sh, checks/workflow.mk and
+  README.md; no row reads them)
+
+reviews:
+  round 1 (read-only critic): 2 blockers, fixed - the README's once-per-clone block lacked
+    the refspec, so a clone set up from it failed make start; a repo with no origin failed
+    with a hint that made an empty origin. Also taken: cases for no origin and no refspecs,
+    and a comment on the hooks target.
+  kept as is: make pushed depends on hooks, so it also needs the refspec; a clone that
+    publishes evidence should fetch it too.
+
+accepted gaps:
+  - the step checks the refspec; it does not configure it, as hooks does not install hooks.
+
+approvals (the operator's words in this session, quoted):
+  2026-10-27 "add refs/notes/evidence to the hooks fetch config"
+  2026-10-27 "write the note, push it, and open the PR"
