@@ -112,7 +112,8 @@ wasm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`),
 37 a typed array (`wasm.arrays/Arr`; also its `type` id), 38 SortedMap, 39
 SortedSet, 40 Promise, 41 Delay, 42 BigInt and 43 Ratio (`wasm.numtower`, the
-library deftypes as structs, D230). Values of the
+library deftypes as structs, D230), 44 a defrecord instance (`Rec`, with its
+interned `RecType`, D234). Values of the
 namespaces loaded after wasm.core stay plain kind 18 (wasm.host's `Handle`
 and `Chan`): they have no `type` name or printed form yet.
 
