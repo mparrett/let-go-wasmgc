@@ -7,6 +7,9 @@
 #                                  dir): prek's shims for pre-commit, commit-msg
 #                                  and pre-push, and git-issue's pre-push hook as
 #                                  pre-push.legacy, which prek runs after its own
+#   workflow.sh fetch-config [<repo>]  origin's fetch refspecs bring the evidence
+#                                  notes (refs/notes/evidence, the record behind
+#                                  each push) to refs/notes/remotes/origin/
 #   workflow.sh rows [<row>...]    run each row (default: checks/affected.sh's)
 #                                  through run.sh with LW_ATTEST=0; prints
 #                                  `<row> <exit>` and exits 1 if any is not 0
@@ -43,6 +46,18 @@ hooks() {
     fail=1
   fi
   return $fail
+}
+
+# Fetched to a remote-tracking ref, as git-issue's sync takes refs/notes/issue-*
+# to refs/issue-remotes, so a fetch never overwrites a local note not yet pushed;
+# under refs/notes/ so `git notes --ref=remotes/origin/evidence` reads it.
+evidence_refspec='+refs/notes/evidence:refs/notes/remotes/origin/evidence'
+fetch_config() {
+  local repo=${1:-.}
+  [ -n "$(git -C "$repo" config --get remote.origin.url)" ] || return 0   # no origin: nothing to fetch from
+  git -C "$repo" config --get-all remote.origin.fetch | grep -qxF "$evidence_refspec" && return 0
+  echo "fetch-config: origin does not fetch the evidence notes; run: git config --add remote.origin.fetch '$evidence_refspec'" >&2
+  return 1
 }
 
 run_rows() {   # <tree> <row>...: run each row in <tree>, print `<row> <exit>`; exit 1 if any failed
@@ -132,6 +147,19 @@ selftest() {
   git push -q origin refs/notes/issue-aaaaaaa 2>/dev/null
   git update-ref refs/notes/issue-aaaaaaa "$(git rev-parse refs/notes/issue-aaaaaaa^)"
   check 'a remote ahead of the local copy passes' 'pushed'
+  check 'a repo with no origin url passes' 'git init -q "$t/bare-repo" && fetch_config "$t/bare-repo"'
+  git config --unset-all remote.origin.fetch
+  check 'no fetch refspecs at all fails' '! fetch_config 2>/dev/null'
+  git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  out=$(fetch_config 2>&1); rc=$?
+  check 'no evidence refspec fails and names the git config line' '[ $rc = 1 ] && grep -qF "$evidence_refspec" <<<"$out"'
+  git config --add remote.origin.fetch "$evidence_refspec"
+  check 'the evidence refspec passes' 'fetch_config'
+  git -c user.name=t -c user.email=t@t notes --ref=refs/notes/evidence add -m ev HEAD
+  git push -q origin refs/notes/evidence 2>/dev/null
+  git update-ref -d refs/notes/evidence
+  git fetch -q origin
+  check 'a fetch brings the evidence to its remote-tracking ref' 'git notes --ref=refs/notes/remotes/origin/evidence show HEAD 2>/dev/null | grep -qx ev'
   cd - >/dev/null
 
   printf '#!/bin/sh\nexit $FAKE_RC\n' > "$t/gh" && chmod +x "$t/gh"
@@ -151,11 +179,12 @@ selftest() {
 
 case ${1:-} in
   hooks)    shift; hooks "$@" ;;
+  fetch-config) shift; fetch_config "$@" ;;
   rows)     shift; . checks/env.sh; rows "$@" ;;
   baseline) shift; . checks/env.sh; baseline "$@" ;;
   pushed)   shift; pushed "$@" ;;
   pr-ready) shift; pr_ready "$@" ;;
   ci)       shift; ci "$@" ;;
   '')       selftest ;;
-  *)        echo "usage: workflow.sh hooks|rows|baseline|pushed|pr-ready|ci" >&2; exit 2 ;;
+  *)        echo "usage: workflow.sh hooks|fetch-config|rows|baseline|pushed|pr-ready|ci" >&2; exit 2 ;;
 esac
