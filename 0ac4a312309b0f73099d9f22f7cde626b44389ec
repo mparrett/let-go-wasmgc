@@ -11,8 +11,13 @@ rows:
     was edited while it ran.
   checks/llvm-funnel-check.sh (the new P12.40 row's command)   0 violations
   bash -n checks/llvm-behavior-gates.sh   ok
-not run on this commit: gate 13 as a whole (P12.40 ran by its command, not through
-  gate.sh); the full gate since 3507107; Linux (ndn.local unreachable)
+  gate 13 (checks/gate.sh 13, LW_ATTEST=0, LW_GATE_J=1)   17/20 ok, P12.40 included; not ok:
+    P13.1 and P13.3 (corpus/llvm-scalar/ref.lg over its 12 s CPU limit under load) and
+    P12.37. Rerun alone: P13.1 4/4 MATCH, P13.3 ok. P12.37: behavior 4/4 SAME; its warm
+    compile read 5.74, 4.7, 5.48 and 5.73 s against a 5 s bound, passing at 4.7 s with load
+    average 3.4 (two unrelated processes held a core each); the compile is mostly parsing
+    the 81 MB runtime snapshot, filed separately.
+not run on this commit: the full gate since 3507107; Linux (ndn.local unreachable)
 
 reviews:
   round 1 (read-only critic): 4 blockers, all doc errors, fixed in this commit - the
@@ -30,3 +35,4 @@ accepted gaps:
 approvals (the operator's words in this session, quoted):
   2026-10-27 "yes, tell Matt, then start on the smaller asks"
   2026-10-27 "push both, each with its own note"
+  2026-10-27 "push both, post the replies, and file the issue"
