@@ -533,6 +533,15 @@
   (delay (require 'lower-llvm-poly) ((resolve 'lower-llvm-poly/ll-type-table))))
 (defn- type-row [who id] (check-int! who id) (nth @type-table id))
 
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[] -> :int"} static-named-count
+  "The number of keywords and symbols the llvm backend emitted as static
+   objects (llvm.str interns them at startup); natively none."
+  [] 0)
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int] -> :any"} static-named
+  "The i-th static keyword or symbol; natively there are none."
+  [i] (check-int! "arch/static-named" i) nil)
+
 (defn ^{:intrinsic true :wasm "llvm target only" :type "[] -> :int"} type-count
   "The number of type ids."
   [] (count @type-table))

@@ -20,7 +20,7 @@ row P12.3c slot checks/llvm-word-check.sh
 row P12.20 slot checks/llvm-armv7-check.sh
 row P12.21 slot checks/llvm-oom-check.sh
 row P12.23 env TEST_DIR=corpus/llvm-rt checks/run-intrinsics-native.sh
-row llvm-corpora llvm checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm
+row llvm-corpora llvm checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm corpus/consts
 row P1.10 checks/run-corpus.sh corpus/reader-ns
 row P1.10-llvm llvm checks/run-corpus.sh corpus/reader-ns
 row P12.30 slot checks/run-expected.sh corpus/poly-wasm

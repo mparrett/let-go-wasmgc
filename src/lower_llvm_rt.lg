@@ -295,6 +295,59 @@
                               ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }")))
     (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
 
+;; --- static keywords and symbols ---------------------------------------------
+;; A keyword or a symbol without metadata is a static Kw or Sym object, its
+;; hash computed here as llvm.str's named-of computes it; llvm.str/intern-statics!
+;; interns them at startup (lg_static_named lists them), so one made at run
+;; time with the same text is the same object.
+
+(defn- ll-mix-k1 [k]
+  (let [k (bit-and (unchecked-multiply k 0xcc9e2d51) 0xffffffff)
+        k (bit-and (bit-or (bit-shift-left k 15) (unsigned-bit-shift-right k 17)) 0xffffffff)]
+    (bit-and (unchecked-multiply k 0x1b873593) 0xffffffff)))
+
+(defn- ll-mix-h1 [h k]
+  (let [h (bit-xor h k)
+        h (bit-and (bit-or (bit-shift-left h 13) (unsigned-bit-shift-right h 19)) 0xffffffff)]
+    (bit-and (unchecked-add (unchecked-multiply h 5) 0xe6546b64) 0xffffffff)))
+
+(defn- ll-fmix [h len]
+  (let [h (bit-xor h len)
+        h (bit-xor h (unsigned-bit-shift-right h 16))
+        h (bit-and (unchecked-multiply h 0x85ebca6b) 0xffffffff)
+        h (bit-xor h (unsigned-bit-shift-right h 13))
+        h (bit-and (unchecked-multiply h 0xc2b2ae35) 0xffffffff)]
+    (bit-xor h (unsigned-bit-shift-right h 16))))
+
+(defn ll-named-hash
+  "llvm.str's hash of a keyword (kw? true) or symbol whose text is s."
+  [kw? s]
+  (let [bs (mapv #(bit-and % 255) (.getBytes (str s))) n (count bs)
+        h (loop [i 1 h 0]
+            (if (< i n)
+              (recur (+ i 2) (ll-mix-h1 h (ll-mix-k1 (bit-or (bs (dec i)) (bit-shift-left (bs i) 16)))))
+              (if (= i n) (bit-xor h (ll-mix-k1 (bs (dec i)))) h)))
+        sh (ll-fmix h (bit-and (* 2 n) 0xffffffff))]
+    (if kw? (bit-and (unchecked-add sh 0x9e3779b9) 0xffffffff) sh)))
+
+(def ^:private ll-static-names (atom {}))   ; keyword or symbol -> its global's name
+
+(defn ll-static-named!
+  "The word operand of keyword or plain symbol v as a static object. A
+   keyword is read at every use, so its global's name is remembered; the
+   global is made once per session (the *fn-values* entry ll-global! keeps)."
+  [v]
+  (let [w (ll-word) known (get @ll-static-names v)]
+    (if (and known (get @*fn-values* [:llvm :global known]))
+      (str "ptrtoint (ptr " (lir/ref known) " to " w ")")
+      (let [kw? (keyword? v) tn (if kw? "$Kw" "$Sym") text (named-text v)
+            nm (ll-const-sym (if kw? "kw" "sym") text)]
+        (ll-global! (ll-glob nm "internal constant" (ll-sty tn)
+                             (str "{ " w " " (ll-tid tn) ", " w " " (if (namespace v) (ll-bytes-const! (namespace v)) "0")
+                                  ", " w " " (ll-bytes-const! (name v)) ", i64 " (ll-named-hash kw? text) " }")))
+        (swap! ll-static-names assoc v nm)
+        (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))))
+
 ;; --- the type table (arch/type-*; spec §1) -----------------------------------
 
 ;; The intrinsics read the table by name only, with no length or count in
@@ -474,6 +527,8 @@
                           (ll-emit! "  store i64 -1, ptr " (ll-field-ptr! (ll-sty "$Str") p 2))
                           [(ll-word-of! p) :box])
       "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_tinfo_count")) [r :int])
+      "static-named-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_static_named_count")) [r :int])
+      "static-named" [(ll-tinfo-load! (lir/ref-bare "lg_static_named") w (ll-arg (a 0) :int)) :box]
       "type-static" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_types") w (ll-arg (a 0) :int)) :box]
       "type-name-bytes" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_names") w (ll-arg (a 0) :int)) :box]
       "type-anc-count" (let [i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
@@ -714,7 +769,7 @@
 ;; every llvm.arch intrinsic has an emitter here: the GC lane's set, plus
 ;; os/args's host-argc and host-arg and the type table's readers
 (def ll-emitted-intrinsics
-  (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "type-name-bytes" "type-anc-count" "type-anc"}))
+  (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "static-named-count" "static-named" "type-name-bytes" "type-anc-count" "type-anc"}))
 
 (when lw-rt/llvm-target?
   (let [missing (for [v (lw-rt/intrinsic-vars)

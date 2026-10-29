@@ -27,7 +27,7 @@
 (declare ll-q ll-fail ll-binding-var! ll-kbox ll-kfin ll-tryf ll-kinit llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declares ll-declare ll-desc-item ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
-         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
+         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals ll-static-named!)
 
 ;; A module unit (a lowered fn, a region, a global) is items plus the symbols
 ;; they define (their names) and name (recorded by lower-llvm-ir/ref while
@@ -265,8 +265,12 @@
       (char? v) (ll-char-const! v)
       (and *rt* (some? (ll-builtin-type-id v)))
       (str "ptrtoint (ptr " (lir/ref (str "lg_type." (ll-builtin-type-id v))) " to " (ll-word) ")")
-      ;; keywords, symbols, collections, vars, regexes: built once by the
-      ;; runtime at startup (const-global!, as the WasmGC lane builds them)
+      ;; a keyword or a symbol without metadata: a static object, interned
+      ;; at startup (ll-static-named!)
+      (and *rt* (or (keyword? v) (and (symbol? v) (nil? (meta v)))))
+      (ll-static-named! v)
+      ;; collections, vars, regexes: built once by the runtime at startup
+      ;; (const-global!, as the WasmGC lane builds them)
       *rt* (let [g (if-let [rs (regex-standin v)]
                     (const-global! rs [:regex *fname* (src-of nid)])
                     (const-global! v)) r (ll-fresh "%k")]
@@ -1818,8 +1822,36 @@
                   todo (cond-> (into todo (init-of x)) expand? (into (concat (:defs u) (:refs u))))]
               (recur (conj! live x) (if expand? (conj! done i) done) todo))))))))
 
+(defn- ll-intern-statics-sym []
+  (:name (get-in (callee-sig (lw-rt/rt-var 'str 'intern-statics!)) [:arities 0])))
+
+(defn- ll-with-intern-step
+  "steps with a call of llvm.str/intern-statics! right after the intern
+   table's own step: before it nothing can make a keyword, after it one made
+   at run time must find the static one."
+  [steps]
+  (let [g (:name (get (:globals @*rt*) (lw-rt/rt-var 'str 'globals)))
+        [pre post] (split-with #(not= g (:global %)) steps)]
+    (if (seq post)
+      (concat pre [(first post) {:call (ll-intern-statics-sym)}] (rest post))
+      steps)))
+
+(defn- ll-static-named-table
+  "lg_static_named (the static keywords and symbols the module kept) and
+   lg_static_named_count."
+  [kept-globals]
+  (let [w (ll-word)
+        names (sort (filter #(or (str/starts-with? % "kw.") (str/starts-with? % "sym."))
+                            (mapcat :defs kept-globals)))]
+    [(assoc-in (ll-glob "lg_static_named" "internal constant" (str "[" (count names) " x " w "]")
+                        (if (empty? names) "zeroinitializer"
+                            (str "[" (str/join ", " (map #(str w " ptrtoint (ptr " (lir/ref %) " to " w ")") names)) "]")))
+               [:llvm/global :bare] true)
+     (assoc-in (ll-glob "lg_static_named_count" "internal constant" "i64" (str (count names))) [:llvm/global :bare] true)]))
+
 (defn llvm-module [fns]
-  (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail)))
+  (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail))
+                (ll-intern-statics-sym))
         rt-fns (when *rt*
                  (let [a (ll-rt-fns!)
                        ;; D221: the cached library's lowered runtime, with what
@@ -1856,7 +1888,8 @@
                                                 (cond-> [(lir/sym (:init g))] (= hooks (:name g)) (conj install))]))
                        (into {} (for [g (when *rt* (:const-order @*rt*))] [(str "var" g) [(lir/sym (str (subs g 1) "__init"))]])))
         live (ll-live (concat fn-units g-units)
-                      (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs)
+                      (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs
+                              (when *rt* [(lir/sym (ll-intern-statics-sym))]))
                       #(get init-of % []))
         _ (when ll-refcheck?
             ;; the module's symbols: units' and every var global (not units)
@@ -1866,7 +1899,7 @@
         live? #(contains? live (str "var" %))
         kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
         kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))
-        inits (ll-init-chain (ll-init-steps unit-refs live?))
+        inits (ll-init-chain (cond-> (ll-init-steps unit-refs live?) *rt* ll-with-intern-step))
         gvars (distinct (concat (vals *var-globals*)
                                 (when *rt* (filter live? (map :name rt-gs)))
                                 (when *rt* (filter live? (:const-order @*rt*)))))
@@ -1895,6 +1928,7 @@
                                 (assoc-in (ll-glob "lg_gc_nglobals" "constant" "i32" (str (count roots))) [:llvm/global :bare] true)])))
          "\n"
          (str/join "\n" (map lir/render (ll-type-descs))) "\n"
+         (when *rt* (str (str/join "\n" (map lir/render (ll-static-named-table kept-globals))) "\n"))
          (str/join "\n" (map :text kept-globals)) "\n\n"
          (str/join "\n" (map lir/render inits)) "\n"
          (str/join "\n" (map :text kept)))))

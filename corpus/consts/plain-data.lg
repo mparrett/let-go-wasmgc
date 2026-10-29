@@ -3,6 +3,10 @@
 ;; nesting, empty collections, Ints at the i31 boundary and past it, Floats,
 ;; maps on both sides of the 8-entry array-map/hash-map boundary, booleans,
 ;; and regex literals (a symbol whose metadata is the compiled program).
+;; A keyword or symbol literal and one made at run time from its text behave
+;; alike through every path that observes them, starting from either side:
+;; =, hash, compare, map keys, set members, keyword-as-fn, case and identical?;
+;; plain, namespaced, dotted, one byte, odd and even lengths, non-ASCII.
 (ns plain-data)
 (def leaves [nil "s" "ünï 😀" :k :ns/k 'sym 'ns/sym 0 -1 1073741823 1073741824 -1073741824 -1073741825
              9223372036854775807 -9223372036854775808 1.5 -0.0 1e300])
@@ -19,3 +23,13 @@
 (prn (keys small) (vals small) (keys big) (seq kws))
 (prn (= small (into {} (seq small))) (= big (zipmap (keys big) (vals big))) (contains? kws :recur) (get nested 7) (get-in nested [:a 2 :b]))
 (prn (count leaves) (count nested) (hash small) (hash big) (hash kws) (hash leaves))
+(def named-pairs [[:k (keyword "k")] [:ab (keyword "ab")] [:abc (keyword "abc")] [:ns/k (keyword "ns" "k")]
+                  [:a.b/c (keyword "a.b" "c")] [:ünï (keyword "ünï")] [:é/😀 (keyword "é" "😀")]
+                  ['k (symbol "k")] ['ns/k (symbol "ns" "k")] ['a.b/c (symbol "a.b" "c")] ['ünï (symbol "ünï")]])
+(defn both-ways [[lit made]]
+  [(= lit made) (= made lit) (= (hash lit) (hash made)) (compare lit made) (compare made lit)
+   (get {lit 1} made) (get {made 2} lit) (contains? #{lit} made) (contains? #{made} lit)
+   (when (keyword? lit) [(lit {made 3}) (made {lit 4})]) (identical? lit made)])
+(prn (map both-ways named-pairs))
+(prn (map (fn [k] (case k :k 1 :ns/k 2 :ünï 3 :none)) (map second (take 7 named-pairs)))
+     (map (fn [[lit made]] (hash made)) named-pairs))
