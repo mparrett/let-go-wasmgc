@@ -1,0 +1,28 @@
+id: d7e3080
+v: 2
+title: llvm: direct calls to fns that cannot suspend, and how errors cross them
+status: open
+priority: medium
+created: 2026-10-29T03:00:35Z
+updated: 2026-10-29T03:00:35Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: On llvm every non-tail call is CPS: a record of the live values, a continuation function, a type and a GC descriptor. A call to a fn that can only return (no try, no binding, no raise, no call through an unknown fn value, transitively) needs none of that and could be a direct fastcc call returning its value, as ll-fast-op's inline arithmetic already is. The GC stays correct: it runs only at a CPS entry, and a direct callee never enters one.
+ 
+ Which fns qualify is a coloring of the call graph: red (needs CPS) at the sources, spreading to every caller. Measured on xsofy's world dump on 2026-10-28 (llvm-phase-times with the assemble patch and unread-param pruning; 20,045 functions, 11,731 continuations, from the emitted IR):
+ - with today's semantics, 12% of continuations follow a call to a green fn;
+ - three fns hold the rest down: the raise path lg_throw (2,713 fns reach it) and lazy-step's two try regions (2,427);
+ - if those three were direct-capable, 79% of continuations would go; with no red sources, 81%.
+ 
+ So the decision is how a raise crosses direct-style frames:
+ 1. An error-return flag: a raise in direct code sets a pending error and returns a sentinel; each direct call site branches on it; a CPS caller turns it into its normal raise; a try in direct code handles it in place. No host dependency, every board; one predictable branch per direct call.
+ 2. Zero-cost unwinding: invoke and landingpad at direct call sites, a personality function, _Unwind_RaiseException, unwind tables. Free on the non-raising path, microseconds per raise; needs libunwind built for every bare board, and ARM EHABI on armv7.
+ 
+ I propose 1. CPS stays the default (the keep-CPS decision); direct calls apply only where the coloring proves them safe. The color of each callee becomes a question in the function cache's traces (git-issue:3e08842), and the cached runtime stores each fn's color.
+ 
+ Open questions:
+ - A colors pass in let-go's IR (target-independent effects: raises, installs a handler, binds, calls unknown) with llvm deciding what is red, or all of it in the llvm lowering?
+ - A fn used as a value keeps a CPS entry for lg_invoke: a wrapper around its direct body.
+ 
+ Refs git-issue:7be2318 (compile cost), git-issue:144d705 (static constants).
