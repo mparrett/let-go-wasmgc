@@ -562,13 +562,14 @@
 
 (defn ll-note-abi!
   "note-call-abi! by each arg's representation as this lane has it (a
-   literal's included): a boxed value for an unboxed param, or a float for
-   an int one, is a violation the driver's boxing fixpoint resolves."
+   literal's included): a boxed value for an unboxed param, or a float or a
+   boolean for an int one, is a violation the driver's boxing fixpoint
+   resolves (the GC lane sees a boolean literal as boxed)."
   [v args sig]
   (when (and *abi-notes* v (:var (q-sig v))
              (some (fn [[a k]] (let [h (ll-arg-kind a)]
                                  (or (and (not= k :box) (not= k :func) (= h :box))
-                                     (and (= k :int) (= h :float)))))
+                                     (and (= k :int) (or (= h :float) (= h :bool))))))
                    (map vector args (:params sig))))
     (swap! *abi-notes* update :viol (fnil conj #{}) [v (count args)])))
 
