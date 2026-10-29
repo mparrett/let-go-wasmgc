@@ -137,6 +137,12 @@
   (let [rs (arch/get Globals 2 globals)]
     (arch/set! Globals 2 globals (m/massoc (if (arch/null? rs) (m/empty-map) rs) (var-key v) x))
     x))
+;; A rooted native read as a value (the GC lane's root test): its
+;; altered root when alter-var-root gave it one (key k, the var's text
+;; "#'ns/name"), else f, its static fn
+(defn rooted-value [k f]
+  (let [rs (arch/get Globals 2 globals)]
+    (if (if (arch/null? rs) false (m/mcontains? rs k)) (m/mget rs k (arch/null)) f)))
 (defn var-value [v]
   (if (var-root-set? v)
     (m/mget (arch/get Globals 2 globals) (var-key v) (arch/null))
