@@ -4,7 +4,7 @@ title: let-go IR: block params nothing reads are kept, so every join carries its
 status: open
 priority: medium
 created: 2026-10-29T03:00:35Z
-updated: 2026-10-29T03:00:35Z
+updated: 2026-10-29T03:00:44Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
@@ -14,4 +14,4 @@ description: At a join (a loop head, an if's merge) the IR gives the block a par
  
  On the llvm target every non-tail call saves its live values in a continuation record, so this is code and work: pruning those params in the llvm lowering cut the world dump's saved fields from 72,865 to 43,508 (the largest record from 160 to 30), the module from 55 to 42 MB, and assemble by 7%. On WasmGC they are locals, so the cost is smaller there but not zero.
  
- Proposed, in let-go's IR (~/development/let-go, its ir.build or a pass): a dead-block-param pass (a param is needed if an instruction or terminator reads it, or an edge passes it into a needed param; to a fixpoint), or build pruned SSA in ir.build. The llvm lowering's own pruning can then go.
+ Proposed, in let-go's IR (ir.build or a pass): a dead-block-param pass (a param is needed if an instruction or terminator reads it, or an edge passes it into a needed param; to a fixpoint), or build pruned SSA in ir.build. The llvm lowering's own pruning can then go.
