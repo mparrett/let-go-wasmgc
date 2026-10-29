@@ -562,6 +562,19 @@
   (delay (require 'lower-llvm-poly) ((resolve 'lower-llvm-poly/ll-type-table))))
 (defn- type-row [who id] (check-int! who id) (nth @type-table id))
 
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[] -> :int"} binding-count
+  "The number of program vars a binding can push (the module's binding
+   stacks, lg_binding_heads); natively none."
+  [] 0)
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int] -> :any"} binding-get
+  "The i-th binding stack (a List of frames, null when unbound)."
+  [i] (check-int! "arch/binding-get" i) nil)
+
+(defn ^{:intrinsic true :wasm "llvm target only" :type "[:int :any] -> :void"} binding-set!
+  "Replace the i-th binding stack."
+  [i x] (check-int! "arch/binding-set!" i) nil)
+
 (defn ^{:intrinsic true :wasm "llvm target only" :type "[] -> :int"} static-named-count
   "The number of keywords and symbols the llvm backend emitted as static
    objects (llvm.str interns them at startup); natively none."
