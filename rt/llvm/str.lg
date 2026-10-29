@@ -204,6 +204,20 @@
         (arch/aset! pv/Node tab i e)
         (recur (bit-and (inc i) mask))))))
 
+(defn- intern-add! [e]                                  ; e is not in the table yet
+  (let [tab (arch/get Globals 0 globals)
+        cnt (inc (arch/get Globals 1 globals))]
+    (when (> (* 2 cnt) (arch/alen tab))           ; keep load <= 1/2: rehash into twice the slots
+      (let [nt (arch/array-new pv/Node (* 2 (arch/alen tab)) (arch/null))]
+        (loop [i 0]
+          (when (< i (arch/alen tab))
+            (let [o (arch/aget pv/Node tab i)] (when-not (arch/null? o) (intern-insert! nt o)))
+            (recur (inc i))))
+        (arch/set! Globals 0 globals nt)))
+    (intern-insert! (arch/get Globals 0 globals) e)
+    (arch/set! Globals 1 globals cnt)
+    e))
+
 (defn- named-of [kw? full]
   (let [slash (slash-of full)
         sh (hash-unencoded full)
@@ -219,19 +233,21 @@
       (let [n (arch/alen full)
             ns (if (< slash 0) (arch/null) (slice full 0 slash))
             nm (if (< slash 0) (slice full 0 n) (slice full (inc slash) n))
-            e (if kw? (arch/new sq/Kw ns nm h) (arch/new sq/Sym ns nm h))
-            cnt (inc (arch/get Globals 1 globals))]
-        (when (> (* 2 cnt) (arch/alen tab))           ; keep load <= 1/2: rehash into twice the slots
-          (let [nt (arch/array-new pv/Node (* 2 (arch/alen tab)) (arch/null))]
-            (loop [i 0]
-              (when (< i (arch/alen tab))
-                (let [o (arch/aget pv/Node tab i)] (when-not (arch/null? o) (intern-insert! nt o)))
-                (recur (inc i))))
-            (arch/set! Globals 0 globals nt)))
-        (intern-insert! (arch/get Globals 0 globals) e)
-        (arch/set! Globals 1 globals cnt)
-        e)
+            e (if kw? (arch/new sq/Kw ns nm h) (arch/new sq/Sym ns nm h))]
+        (intern-add! e))
       hit)))
+
+(defn intern-statics!
+  "Intern the keywords and symbols the llvm backend emitted as static
+   objects, so one made at run time with the same text is the same object.
+   The init chain runs it right after the intern table exists."
+  []
+  (let [n (arch/static-named-count)]
+    (loop [i 0]
+      (when (< i n)
+        (intern-add! (arch/static-named i))
+        (recur (inc i)))))
+  nil)
 
 (defn- full-text [x]                                     ; "ns/name" or "name", as Go stores it
   (let [ns (named-ns x) nm (named-name x)]
