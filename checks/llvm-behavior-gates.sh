@@ -28,6 +28,7 @@ row P13.11 bash -c "RT=rt/llvm checks/native-twins.sh corpus/natives/natives-sha
 row P13.12 llvm checks/run-tests.sh --corpus corpus/core-tests.txt --bar 273
 row P13.13 env WASM_RUN=checks/native-run.sh LETGO_TEST=$LW_ROOT/legmacs/test SRC_PATHS=$LW_ROOT/legmacs:$LW_ROOT/legmacs/test bash -c 'checks/run-tests.sh --corpus corpus/legmacs-tests.txt && checks/run-tests.sh --corpus corpus/legmacs-eval-tests.txt'
 row P13.14 env LW_LANE=llvm checks/legmacs-parity.sh 6
+row P13.15 checks/lane-coverage.sh
 row P1.10 checks/run-corpus.sh corpus/reader-ns
 row P1.10-llvm llvm checks/run-corpus.sh corpus/reader-ns
 row P12.30 slot checks/run-expected.sh corpus/poly-wasm
