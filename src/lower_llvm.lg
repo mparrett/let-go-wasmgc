@@ -131,10 +131,18 @@
        (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
        (some? (ll-builtin-type-id (try @v (catch e nil))))))
 
+(declare ll-const-val*)
 (defn ll-const-val
   "[v] for a constant value, else nil (fn templates and Var objects are
-   handled as closures and :def targets)."
+   handled as closures and :def targets). Asked at every use of a value,
+   so it is remembered per value while a fn is cut and lowered."
   [nid]
+  (if-let [m (:const-vals *ll*)]
+    (let [c (get @m nid ::none)]
+      (if (= c ::none) (let [c (ll-const-val* nid)] (swap! m assoc nid c) c) c))
+    (ll-const-val* nid)))
+
+(defn- ll-const-val* [nid]
   (if-let [c (int-const-val nid)]
     [c]
     (let [r (src-of nid) op (ir/op r *f*) a (ir/aux r *f*)]
@@ -1568,11 +1576,11 @@
      ;; a nested fn (a closure, a try region) is lowered inside its parent's
      ;; *ll*: cut without it, so the parent's per-instruction memos never
      ;; answer; this fn's call plans, made while cutting, are kept for it
-     (let [plans (atom {})
-           cuts (binding [*ll* {:plans plans}] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
+     (let [plans (atom {}) const-vals (atom {})
+           cuts (binding [*ll* {:plans plans :const-vals const-vals}] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
       (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :ovf (atom false) :counter (atom 0)
                       :types (atom #{}) :self-type (:closure? info) :cap-kinds (:env-kinds info)
-                      :region-caps (:caps info) :plans plans :records (atom {})
+                      :region-caps (:caps info) :plans plans :records (atom {}) :const-vals const-vals
                       :unread-params (ll-unread-params f)
                       ;; every value an instruction, a terminator or an edge reads
                       :used (set (for [b (ir/blocks f)
