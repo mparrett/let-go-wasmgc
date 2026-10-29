@@ -691,13 +691,22 @@
       (map (fn [e] [(ir/branch-target-target e) 0]) (ll-term-edges b)))))
 
 (defn ll-liveness []
-  (let [ps (for [[b pieces] (:cuts *ll*) n (range (count pieces))] [b n])]
+  (let [ps (vec (for [[b pieces] (:cuts *ll*) n (range (count pieces))] [b n]))
+        ;; each piece's uses, defs and successors do not change between rounds
+        flow (into {} (for [p ps]
+                        (let [defs (ll-defs p)]
+                          [p [(set (remove defs (ll-value-uses p))) defs (vec (ll-succs p))]])))
+        ;; a backward problem: later pieces first, each round reading this
+        ;; round's sets; from empty they only grow, so a size change is a change
+        order (reverse (sort ps))]
     (loop [live (zipmap ps (repeat #{}))]
-      (let [next (into {} (for [p ps]
-                            [p (into (set (remove (ll-defs p) (ll-value-uses p)))
-                                     (remove (ll-defs p)
-                                             (mapcat #(get live %) (ll-succs p))))]))]
-        (if (= next live) live (recur next))))))
+      (let [[live changed?]
+            (reduce (fn [[live changed?] p]
+                      (let [[gen defs succs] (flow p)
+                            v (into gen (remove defs (mapcat #(get live %) succs)))]
+                        (if (= (count v) (count (get live p))) [live changed?] [(assoc live p v) true])))
+                    [live false] order)]
+        (if changed? (recur live) live)))))
 
 (defn ll-live-in [p] (vec (sort (get (:live *ll*) p))))
 
@@ -858,7 +867,10 @@
         (when-not (table-var? v)
           (ll-fail "unsupported op :def" {:var v}))
         (when val (ll-emit! "  store " (ll-typed val :box) ", ptr " (ll-var-ptr! v)))
-        (ll-bind! nid (ll-arg vr (ty nid))))
+        ;; the def's value is the Var, whose stand-in is a constant built at
+        ;; startup: made only when something reads it
+        (when (or (nil? (:used *ll*)) (contains? (:used *ll*) nid))
+          (ll-bind! nid (ll-arg vr (ty nid)))))
       (var-const? nid) nil
       (= op :call)
       (let [v (ll-callee-var (first refs))]
@@ -950,11 +962,18 @@
         (seq (:region-caps *ll*)) (vec (:region-caps *ll*))
         :else []))
 
+(declare ll-record-type*)
 (defn ll-record-type
   "The named struct type of continuation piece cont's record,
    {code, k, saved...}; its definition, and its collector descriptor (k,
-   then the boxed implicit and saved values), are collected for the module."
+   then the boxed implicit and saved values), are collected for the module
+   once per piece: the call site and the piece both ask for it."
   [cont]
+  (if-let [m (:records *ll*)]
+    (or (get @m cont) (doto (ll-record-type* cont) (->> (swap! m assoc cont))))
+    (ll-record-type* cont)))
+
+(defn- ll-record-type* [cont]
   (let [nm (lir/type-op (str "k." (ll-fn-name cont)))
         kinds (concat (ll-implicit-kinds) (map ty (ll-saved cont)))]
     (swap! (:types *ll*) conj
@@ -1520,11 +1539,19 @@
     (let [[linked tries] (closure-sets f)]
      (binding [*linked* linked *try-srcs* tries]
      ;; a nested fn (a closure, a try region) is lowered inside its parent's
-     ;; *ll*: cut without it, so the parent's per-instruction memos never answer
-     (let [cuts (binding [*ll* nil] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
+     ;; *ll*: cut without it, so the parent's per-instruction memos never
+     ;; answer; this fn's call plans, made while cutting, are kept for it
+     (let [plans (atom {})
+           cuts (binding [*ll* {:plans plans}] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
       (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :ovf (atom false) :counter (atom 0)
                       :types (atom #{}) :self-type (:closure? info) :cap-kinds (:env-kinds info)
-                      :region-caps (:caps info) :plans (atom {})}]
+                      :region-caps (:caps info) :plans plans :records (atom {})
+                      ;; every value an instruction, a terminator or an edge reads
+                      :used (set (for [b (ir/blocks f)
+                                       r (concat (mapcat #(ir/refs % f) (ir/block-insts b f))
+                                                 (when-let [t (ir/block-term b f)] (ir/refs t f))
+                                                 (mapcat ir/branch-target-args (ll-term-edges b)))]
+                                   r))}]
         (let [live (ll-liveness)]
           (binding [*ll* (assoc *ll* :live live)]
             (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))]
