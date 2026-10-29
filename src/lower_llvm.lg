@@ -596,6 +596,12 @@
       ;; lane's prim-wat does: only a boxed operand without one is generic
       (ll-float-op? prim kinds) nil
       (and *rt* (= prim :div)) (to (lw-rt/rt-var 'math 'div))
+      ;; a binary + - * keeps the IR op's overflow error, and pos? neg? the
+      ;; op's compare: the op forms
+      (and *rt* (#{:pos? :neg?} prim) (= 1 (count args)) (some #{:box} kinds))
+      (to (lw-rt/rt-var 'core ({:pos? 'pos-op :neg? 'neg-op} prim)))
+      (and *rt* (#{:add :sub :mul} prim) (= 2 (count args)) (some #{:box} kinds))
+      (to (lw-rt/rt-var 'core ({:add 'add-op :sub 'sub-op :mul 'mul-op} prim)))
       (and *rt* (ll-op-vars prim) (some #{:box :float} kinds)) (to (ll-op-vars prim))
       (= op :try) (ll-try-plan nid)
       (and *rt* (= op :load-var) (= (ir/aux nid *f*) #'*ns*))
