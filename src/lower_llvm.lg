@@ -2005,7 +2005,7 @@
    table's own step: before it nothing can make a keyword, after it one made
    at run time must find the static one."
   [steps]
-  (let [g (:name (get (:globals @*rt*) (lw-rt/rt-var 'str 'globals)))
+  (let [g (:name (q-rt-global (lw-rt/rt-var 'str 'globals)))
         [pre post] (split-with #(not= g (:global %)) steps)]
     (if (seq post)
       (concat pre [(first post) {:call (ll-intern-statics-sym)}] (rest post))
