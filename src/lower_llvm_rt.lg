@@ -338,7 +338,7 @@
    global is made once per session (the *fn-values* entry ll-global! keeps)."
   [v]
   (let [w (ll-word) known (get @ll-static-names v)]
-    (if (and known (get @*fn-values* [:llvm :global known]))
+    (if (and known (q-fn-value [:llvm :global known]))
       (str "ptrtoint (ptr " (lir/ref known) " to " w ")")
       (let [kw? (keyword? v) tn (if kw? "$Kw" "$Sym") text (named-text v)
             nm (ll-const-sym (if kw? "kw" "sym") text)]
