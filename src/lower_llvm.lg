@@ -177,7 +177,7 @@
    chain link. A var-table var is read where its :load-var sits."
   [nid]
   (or (some? (ll-const-val nid))
-      (let [v (ll-callee-var nid)] (and (some? v) (not= v #'*ns*) (not (ll-table-var? v))))
+      (let [v (ll-callee-var nid)] (and (some? v) (not= v #'*ns*) (not (ll-table-var? v)) (not (rooted? v))))
       (closure-hidden? nid)
       ;; a class symbol (consumed by catch-matches?) and a Var object (by :def)
       (symbol-const? nid) (var-const? nid)))
@@ -589,6 +589,15 @@
                       (when-not sig (ll-fail "no runtime signature for an op's generic form" {:var rv :argc (count args)}))
                       {:sig sig :args args}))]
     (cond
+      ;; a direct call of a rooted native that native does not compile to an
+      ;; opcode reads the var, so it goes through that value (rooted-call-wat)
+      (and *rt* (= :call op) v (not (ll-table-var? v)) (rooted-call? v (count args)))
+      (let [argc (count args)]
+        (if (> argc ll-max-invoke)
+          {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box}
+           :args [(first refs)] :rest args :empty-rest :list :apply-list true}
+          {:sig {:invoke argc :name (str "lg_invoke" argc) :params (vec (repeat (inc argc) :box)) :ret :box}
+           :args refs}))
       ;; with the runtime, = on anything but two ints or two bools is equiv?,
       ;; and arithmetic on a boxed or float operand is the core fn's twin
       (and *rt* (= prim :eq) (= 2 (count args)) (not-every? #{:int} kinds) (not-every? #{:bool} kinds))
@@ -607,6 +616,18 @@
       (= op :try) (ll-try-plan nid)
       (and *rt* (= op :load-var) (= (ir/aux nid *f*) #'*ns*))
       (to (lw-rt/rt-var 'natives 'current-ns))
+      ;; a rooted native read as a value: its altered root, else its static fn
+      ;; (the operands are made where the call is emitted, so the unit
+      ;; records the symbols they name)
+      (and *rt* (= op :load-var) (rooted? (ir/aux nid *f*)) (not (ll-table-var? (ir/aux nid *f*))))
+      (let [rv (ir/aux nid *f*)]
+        {:sig (get-in (callee-sig (lw-rt/rt-var 'core 'rooted-value)) [:arities 2]) :args []
+         :pre-fn (fn [] [[:box (ll-str-const! (str rv))] [:box (ll-var-value rv)]])
+         :root-fast true})
+      ;; *out* and *err* as values: the current handle, a binding's included
+      ;; (llvm.host's out-handle and err-handle, as the GC lane reads them)
+      (and *rt* (= op :load-var) (#{#'*out* #'*err*} (ir/aux nid *f*)))
+      (to (lw-rt/rt-var 'host (if (= (ir/aux nid *f*) #'*out*) 'out-handle 'err-handle)))
       (not= :call op) nil
       (= v #'throw) {:sig {:name "lg_throw" :params [:box] :ret :box} :args args}
       ;; wasm/call-ref: a call through a funcref, typed by its func decl
@@ -1070,6 +1091,10 @@
                (some #{:box} (map ll-arg-kind args)))
       prim)))
 
+;; a call whose result can also arrive without the call (its fast path):
+;; the next piece has a join entry, ll-return-value!'s target
+(defn ll-joined? [c] (or (ll-fast-op c) (:root-fast (ll-call-plan c))))
+
 (defn ll-fast-value!
   "Emit op's fixnum fast path on args; returns [kind operand], branching to
    label slow when an operand is not a fixnum or the result overflows i64."
@@ -1110,6 +1135,32 @@
         :eq (cmp "eq" x y)
         :zero? (cmp "eq" x "0") :pos? (cmp "sgt" x "0") :neg? (cmp "slt" x "0")))))
 
+(defn ll-return-value!
+  "Leave piece [b n] with res as call c's result, without the call: to the
+   caller's k when the call is returned, else into the next piece's join."
+  [b n c res]
+  (let [t (ll-type (:ret (ll-sig c)))]
+    (if (ll-returns-call? b n c)
+      (let [kc (ll-fresh "%kc")]
+        (ll-emit! "  " kc " = load ptr, ptr %k")
+        (ll-tail! kc ["ptr %k" (str t " " res)]))
+      (let [cont [b (inc n)]]
+        (ll-tail! (ll-q (str (ll-fn-name cont) ".j"))
+                  (concat ["ptr %k"] (ll-implicit-args)
+                          (map #(str (ll-type (ty %)) " " (ll-op %)) (ll-saved cont))
+                          [(str t " " res)]))))))
+
+(defn ll-no-roots!
+  "An i1: no native's root is altered (llvm.core/globals' roots map is nil)."
+  []
+  (let [gv (resolve 'llvm.core/globals) w (ll-word)
+        g (ll-fresh "%rg") rs (ll-fresh "%rs") z (ll-fresh "%rz")
+        p (do (ll-emit! "  " g " = load " w ", ptr " (ll-gvar gv)) (ll-ptr! g))
+        fp (ll-field-ptr! (ll-sty (lw-rt/type-name (resolve 'llvm.core/Globals))) p 3)]
+    (ll-emit! "  " rs " = load " w ", ptr " fp)
+    (ll-emit! "  " z " = icmp eq " w " " rs ", 0")
+    z))
+
 (defn ll-cps-call! [[b n] c]
   (let [sig (ll-sig c) plan (ll-call-plan c) args (:args plan)
         cr? (:call-ref sig)
@@ -1123,20 +1174,19 @@
         fast (ll-fast-op c)
         slow (when fast (ll-fresh "slow"))
         _ (when fast
-            (let [[k v] (ll-fast-value! fast (:args plan) slow)
-                  res (ll-coerce! k (:ret sig) v)]
-              (if (ll-returns-call? b n c)
-                (let [kc (ll-fresh "%kc")]
-                  (ll-emit! "  " kc " = load ptr, ptr %k")
-                  (ll-tail! kc ["ptr %k" (str (ll-type (:ret sig)) " " res)]))
-                (let [cont [b (inc n)]]
-                  (ll-tail! (ll-q (str (ll-fn-name cont) ".j"))
-                            (concat ["ptr %k"] (ll-implicit-args)
-                                    (map #(str (ll-type (ty %)) " " (ll-op %)) (ll-saved cont))
-                                    [(str (ll-type (:ret sig)) " " res)]))))
+            (let [[k v] (ll-fast-value! fast (:args plan) slow)]
+              (ll-return-value! b n c (ll-coerce! k (:ret sig) v))
               (ll-label! slow)))
         ps (if cr? (rest (:params sig)) (:params sig))
-        pre (:pre plan)
+        pre (or (:pre plan) (when-let [pf (:pre-fn plan)] (pf)))
+        ;; a rooted native read while no root is altered (the roots map is
+        ;; still nil): its static fn, without the call
+        _ (when (:root-fast plan)
+            (let [slow (ll-fresh "rslow") go (ll-fresh "rfast")]
+              (ll-emit! "  br i1 " (ll-no-roots!) ", label %" go ", label %" slow)
+              (ll-label! go)
+              (ll-return-value! b n c (ll-coerce! :box (:ret sig) (second (second pre))))
+              (ll-label! slow)))
         argv (if (:apply-list plan)
                [(ll-typed (first args) :box)
                 (str (ll-type :box) " " (ll-rest-list! (:rest plan) :list))
@@ -1243,7 +1293,7 @@
     (when (and (= b (ir/entry-block *f*)) (zero? n) (seq (ir/block-preds b *f*)))
       (ll-fail "a loop back to the fn entry" {:block b}))
     (cond
-      (and (pos? n) (ll-fast-op prev-call))
+      (and (pos? n) (ll-joined? prev-call))
       ;; a join: saved values arrive as params (from the fast path or the adapter)
       (do (doseq [s (ll-saved p)] (ll-bind! s (str "%a" s)))
           (ll-def! prev-call (:ret (ll-sig prev-call)) "%res"))
@@ -1263,7 +1313,7 @@
       (when-not (= b (ir/entry-block *f*))
         (doseq [s (concat live (ll-params b))] (ll-bind! s (str "%a" s)))))
     (ll-piece! p)
-    (let [fast? (and prev-call (ll-fast-op prev-call))
+    (let [fast? (and prev-call (ll-joined? prev-call))
           rt (when fast? (ll-record-type p))
           rty (when prev-call (ll-type (:ret (ll-sig prev-call))))
           jparams (when fast?
