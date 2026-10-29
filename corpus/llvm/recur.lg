@@ -1,3 +1,12 @@
-;; Task 5 (spec decision 4): fn-level recur back to the entry block.
+;; Task 5 (spec decision 4): fn-level recur back to the entry block. Loop
+;; variables the body never reads but code after the loop does, an outer
+;; loop's variables untouched in an inner one, and both across calls.
 (defn sum-to [n acc i] (if (> i n) acc (recur n (+ acc i) (inc i))))
 (println (sum-to 1000000 0 0))
+(defn after-loop [n] (loop [i 0 acc 0 tag :start] (if (< i n) (recur (inc i) (+ acc i) tag) [acc tag])))
+(defn nested [n] (loop [i 0 a 1 b :b acc []]
+                   (if (< i n)
+                     (recur (inc i) a b (conj acc (loop [j 0 s 0] (if (< j i) (recur (inc j) (+ s (count (str j)))) s))))
+                     [a b acc])))
+(defn across-calls [n] (loop [i 0 keep "k" acc ""] (if (< i n) (recur (inc i) keep (str acc i)) [keep acc])))
+(println (after-loop 10) (nested 5) (across-calls 12))

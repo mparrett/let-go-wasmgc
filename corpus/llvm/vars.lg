@@ -1,5 +1,7 @@
 ;; Task 5: var-table vars: top-level def, a def from another var, a
-;; redefinition, and a declared var defined after its first use.
+;; redefinition, and a declared var defined after its first use. A def's
+;; value (its Var) printed, its metadata read, through a join, and into a
+;; closure.
 (def x 1)
 (def y (inc x))
 (println x y)
@@ -9,3 +11,7 @@
 (defn use-later [] (later 5))
 (defn later [n] (* n n))
 (println (use-later))
+(println (def z 3) (:name (meta (def w 4))))
+(defn pick-def [x] (if (pos? x) (def p :pos) (def p :neg)))
+(println (pick-def 1) p (pick-def -1) p)
+(let [v (def q 5)] (println ((fn [] @v)) (var-get v)))

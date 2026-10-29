@@ -6,7 +6,10 @@
 ;; A keyword or symbol literal and one made at run time from its text behave
 ;; alike through every path that observes them, starting from either side:
 ;; =, hash, compare, map keys, set members, keyword-as-fn, case and identical?;
-;; plain, namespaced, dotted, one byte, odd and even lengths, non-ASCII.
+;; plain, namespaced, dotted, one byte, odd and even lengths, non-ASCII; made
+;; by the reader, from a symbol, from a built string, by the one-argument
+;; symbol split, and as a key of a var's metadata; and a symbol with metadata
+;; against the plain one.
 (ns plain-data)
 (def leaves [nil "s" "ünï 😀" :k :ns/k 'sym 'ns/sym 0 -1 1073741823 1073741824 -1073741824 -1073741825
              9223372036854775807 -9223372036854775808 1.5 -0.0 1e300])
@@ -33,3 +36,8 @@
 (prn (map both-ways named-pairs))
 (prn (map (fn [k] (case k :k 1 :ns/k 2 :ünï 3 :none)) (map second (take 7 named-pairs)))
      (map (fn [[lit made]] (hash made)) named-pairs))
+(def made-other-ways [[:ns/k (read-string ":ns/k")] [:sym (keyword 'sym)] [:ab (keyword (str "a" "b"))]
+                      ['ns/n (symbol "ns/n")] ['ns/n (read-string "ns/n")] [:name (first (keys (select-keys (meta #'both-ways) [:name])))]])
+(prn (map both-ways made-other-ways) (:name (meta #'both-ways)))
+(def meta-sym (with-meta 'msym {:m 1}))
+(prn (= meta-sym 'msym) (= (hash meta-sym) (hash 'msym)) (get {'msym 1} meta-sym) (contains? #{meta-sym} 'msym) (meta meta-sym))
