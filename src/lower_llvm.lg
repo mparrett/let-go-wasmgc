@@ -1613,6 +1613,10 @@
   "The word operand of var v used as a value: a defn's, a runtime twin's or
    (without the runtime) a core op's fn object, made once per session."
   [v0]
+  ;; *file* is the program's path wherever it is read (native binds it while
+  ;; the file loads), as the GC lane's
+  (if (and *rt* (= v0 #'*file*) (q-program-file))
+    (ll-str-const! (q-program-file))
   (let [v (get value-substs v0 v0)
         ;; nothing below can give a native with no twin a value: its stand-in
         v (if (or (q-sig v) (and *rt* (rt-target v) (callee-sig v)) (and (not *rt*) (core-var-ops v)))
@@ -1662,7 +1666,7 @@
                               (if e (:base e) (name (symbol (subs (str v) 2)))))
             o (ll-fn-object! id codes info)]
         (swap! *fn-values* assoc [:llvm v (q-sig v)] (str "fnval." id))
-        o))))
+        o)))))
 
 (def llvm-profiles (atom {}))
 
@@ -1846,9 +1850,18 @@
       (ll-host-declares)
       [{:llvm/global {:name "lg_handler" :bare true :kind "internal global" :type "ptr" :init "null"}}
        (decl "void" "lg_uncaught" [w] "noreturn" "cold")
+       (decl "i32" "lg_is_err" [w])
+       ;; no handler: an exception is reported; any other value is printed by
+       ;; the runtime first (core/uncaught-value rethrows it as one)
        (fnc "lg_throw" ["ptr %k" (str w " %exn")]
             (str "  %F = load ptr, ptr @lg_handler\n  %none = icmp eq ptr %F, null\n"
-                 "  br i1 %none, label %unc, label %h\nunc:\n  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
+                 "  br i1 %none, label %unc, label %h\nunc:\n"
+                 (if *rt*
+                   (str "  %ie = call i32 @lg_is_err(" w " %exn)\n  %isx = icmp ne i32 %ie, 0\n  br i1 %isx, label %rep, label %fmt\n"
+                        "fmt:\n  musttail call tailcc void " (ll-q (:name (get-in (callee-sig (lw-rt/rt-var 'core 'uncaught-value)) [:arities 1])))
+                        "(ptr @lg_halt_k, " w " %exn)\n  ret void\nrep:\n")
+                   "")
+                 "  call void @lg_uncaught(" w " %exn)\n  unreachable\nh:\n"
                  "  %pp = getelementptr %tryf, ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr %pp\n  store ptr %prior, ptr @lg_handler\n"
                  "  %code = load ptr, ptr %F\n  musttail call tailcc void %code(ptr %F, " w " %exn)\n  ret void\n"))
        (ll-desc-item (ll-kbox) [1]) (ll-desc-item (ll-kfin) [1 2]) (ll-desc-item (ll-tryf) [1 2]) (ll-desc-item (ll-kinit) [1])]
@@ -2003,6 +2016,7 @@
 
 (defn llvm-module [fns]
   (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail))
+                (callee-sig (lw-rt/rt-var 'core 'uncaught-value))
                 (ll-intern-statics-sym))
         rt-fns (when *rt*
                  (let [a (ll-rt-fns!)

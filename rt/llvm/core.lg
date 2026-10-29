@@ -523,6 +523,12 @@
 ;; The backend's inline int ops raise these (an overflowing IR op, a quot or
 ;; rem by zero), so the errors are catchable as natively.
 (defn overflow-error "An IR op's integer overflow." [] (op-overflow))
+;; An uncaught throw of a value that is not an exception (lg_throw with no
+;; handler): native's error line is the value as pr-str prints it (a
+;; string quoted, a fn as <fn ..>), so it is rethrown as an exception with
+;; that message, which the host reports
+(defn uncaught-value [x]
+  (let [m (s/str-bytes (s/pr-str x))] (throw (arch/new sq/Err 1 m m (arch/null) (arch/null)))))
 (defn div-zero-error "quot, rem or mod by zero." [] (raise (arch/bytes-of-string "divide by zero")))
 (defn unbox-error "A non-Int value in an Int-typed slot (the GC lane's $rt_unbox_fail)." []
   (raise (arch/bytes-of-string "a non-Int value reached an Int-typed slot")))

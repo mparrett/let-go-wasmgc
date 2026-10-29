@@ -360,6 +360,10 @@ void lg_print_i64(int64_t v) { lg_put_int(1, v); }
 /* An uncaught throw (spec decision 9): an Err's message, as native's error
  * line; any other thrown value by type. */
 typedef struct { intptr_t tid; int32_t kind; intptr_t msg, cmsg, data, cause; } lg_err;
+/* Whether thrown value v is an exception (lg_throw: anything else is printed
+ * by the runtime before it is reported). */
+int32_t lg_is_err(intptr_t v) { return lg_tid_of(v) == lg_tid_Err; }
+
 void lg_uncaught(intptr_t v) {
   const lg_err *e = lg_tid_of(v) == lg_tid_Err ? (const lg_err *)v : 0;
   lg_puts(2, "error: ");
