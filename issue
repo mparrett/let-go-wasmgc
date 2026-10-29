@@ -4,7 +4,7 @@ title: llvm: direct calls to fns that cannot suspend, and how errors cross them
 status: open
 priority: medium
 created: 2026-10-29T03:00:35Z
-updated: 2026-10-29T03:00:35Z
+updated: 2026-10-29T03:03:12Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
@@ -14,6 +14,8 @@ description: On llvm every non-tail call is CPS: a record of the live values, a 
  - with today's semantics, 12% of continuations follow a call to a green fn;
  - three fns hold the rest down: the raise path lg_throw (2,713 fns reach it) and lazy-step's two try regions (2,427);
  - if those three were direct-capable, 79% of continuations would go; with no red sources, 81%.
+ 
+ These are upper estimates from a scan of the IR text, not the compiler's call graph: it follows direct calls only, so a call through a fn value (lg_invoke), which can reach code that needs CPS, is under-counted as red, and it could not attribute 2,213 continuations (mostly fast-path slow calls). A count from the call graph comes before any plan.
  
  So the decision is how a raise crosses direct-style frames:
  1. An error-return flag: a raise in direct code sets a pending error and returns a sentinel; each direct call site branches on it; a CPS caller turns it into its normal raise; a try in direct code handles it in place. No host dependency, every board; one predictable branch per direct call.
