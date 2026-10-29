@@ -377,7 +377,7 @@
 
 (defn ll-leaf-var? [v] (and (not *rt*) (contains? ll-leaf-vars v)))
 
-(def ll-max-invoke 8)   ; args through a value; fixed code slots cover 0..4
+(def ll-max-invoke max-arity-x)   ; args through a value (positional cap, as FnX's slots); fixed code slots cover 0..4
 
 ;; IR ops whose generic form (boxed or float operands) is a core fn
 (def ll-op-vars {:add #'+ :sub #'- :mul #'* :lt #'< :lte #'<= :gt #'> :gte #'>=
@@ -525,7 +525,19 @@
                            "  %no = or i1 %fx, %nl\n  br i1 %no, label %fixed, label %obj\nobj:\n"
                            "  %p = inttoptr " w " %f to ptr\n  %h = load " w ", ptr %p\n"
                            "  %tv = icmp eq " w " %h, " (nth ids 1) "\n  %tx = icmp eq " w " %h, " (nth ids 2) "\n"
-                           "  %isv = or i1 %tv, %tx\n  br i1 %isv, label %vk, label %fixed\nvk:\n"
+                           (if *rt*
+                             ;; a with-meta'd fn: the inner fn's apply (its
+                             ;; variadic arity), as the GC lane's $rt_apply_vec
+                             (str "  %isv = or i1 %tv, %tx\n  br i1 %isv, label %vk, label %mx\n"
+                                  "mx:\n  %tf = icmp eq " w " %h, " (nth ids 0) "\n  br i1 %tf, label %me, label %fixed\n"
+                                  "me:\n  %ep = getelementptr " (ll-sty "$Fn") ", ptr %p, i32 0, i32 4\n  %e = load " w ", ptr %ep\n"
+                                  "  %elo = and " w " %e, 1\n  %eim = icmp ne " w " %elo, 0\n  %enl = icmp eq " w " %e, 0\n"
+                                  "  %eno = or i1 %eim, %enl\n  br i1 %eno, label %fixed, label %mchk\n"
+                                  "mchk:\n  %epp = inttoptr " w " %e to ptr\n  %eh = load " w ", ptr %epp\n"
+                                  "  %ism = icmp eq " w " %eh, " (ll-tid "$MetaEnv") "\n  br i1 %ism, label %minner, label %fixed\n"
+                                  "minner:\n  %ip = getelementptr " (ll-sty "$MetaEnv") ", ptr %epp, i32 0, i32 1\n  %g = load " w ", ptr %ip\n"
+                                  "  musttail call tailcc void @lg_apply_list(ptr %k, " w " %g, " w " %l, i64 %n)\n  ret void\nvk:\n")
+                             "  %isv = or i1 %tv, %tx\n  br i1 %isv, label %vk, label %fixed\nvk:\n")
                            ;; a FnX may have an exact code for n (native prefers it):
                            ;; lg_invoke<n> tries that slot before the variadic code
                            "  %nx = icmp sle i64 %n, " ll-max-invoke "\n  %xn = and i1 %tx, %nx\n  br i1 %xn, label %fixed, label %vcode\nvcode:\n"
@@ -671,6 +683,16 @@
                                      (ll-fail "no runtime signature for a collection constructor" {:var v}))
       :else (or (ll-variadic-plan v args)
                 (when-let [nv (ll-notwin! v)] (ll-variadic-plan nv args))
+                ;; a defn called with an arity it lacks: native compiles the
+                ;; call and raises its arity error when it runs, so the call
+                ;; goes through the fn value (lg_invoke raises it)
+                (when (q-sig v)
+                  (let [argc (count args)]
+                    (if (> argc ll-max-invoke)
+                      {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box}
+                       :args [(first refs)] :rest args :empty-rest :list :apply-list true}
+                      {:sig {:invoke argc :name (str "lg_invoke" argc) :params (vec (repeat (inc argc) :box)) :ret :box}
+                       :args refs})))
                 (ll-fail "call to a fn with no known signature" {:var v :argc (count args)})))))
 
 (defn ll-call-plan
@@ -1488,7 +1510,7 @@
                          (do (when (and (not variadic?) (> arity ll-max-invoke))
                                (ll-fail (str "unsupported closure arity > " ll-max-invoke) {:arity arity}))
                              (when (and variadic? (> (dec arity) ll-max-invoke))
-                               (ll-fail "unsupported variadic closure with more fixed params than lg_invoke takes" {:arity arity}))
+                               (ll-fail (str "unsupported variadic closure with more than " max-var-fixed " fixed params") {:arity arity}))
                              (let [cname (str base "_" (if variadic? "v" arity))
                                    info (assoc (binding [*box-params* true] (analyze-ir cname tfn))
                                                :params (vec (repeat arity :box)) :ret :box
@@ -1607,6 +1629,12 @@
       (let [id (str (safe-id (subs (str v) 2)) "_" (hex32 (str v)))
             e (or (q-sig v) (when (and *rt* (rt-target v)) (callee-sig v)))
             op (when-not *rt* (core-var-ops v))
+            ;; an arity past the cap is refused, never silently left out of
+            ;; the value (native takes 21 params, the cap is 20), as the GC lane
+            _ (when (and e (some #(> % max-arity-x) (keys (:arities e))))
+                (ll-fail (str "unsupported defn with more than " max-arity-x " params used as a value") {:var v}))
+            _ (when (and e (:variadic e) (> (:fixed (:variadic e)) max-var-fixed))
+                (ll-fail (str "unsupported variadic defn with more than " max-var-fixed " fixed params used as a value") {:var v}))
             codes (cond
                     e (into (if-let [vs (:variadic e)]
                               (let [c (str "fnval." id ".v") k (:fixed vs)]
@@ -1753,7 +1781,20 @@
                 "  %sl = getelementptr " xty ", ptr %p, i32 0, i32 " (+ 11 (- n 5)) "\n  %code = load ptr, ptr %sl\n"
                 "  %ok = icmp ne ptr %code, null\n  br i1 %ok, label %call, label %var\ncall:\n"
                 "  musttail call tailcc void %code(ptr %k, " w " %f" as ")\n  ret void\n"))
-         "var:\n  %isv = or i1 %t1, %t2\n  br i1 %isv, label %vk, label %bad\nvk:\n"
+         (if (and *rt* (> n 4))
+           ;; a with-meta'd fn (llvm.core's MetaEnv wrapper) has fixed arities
+           ;; 0-4 only: past them, the inner fn's dispatch (its variadic arity
+           ;; or its arity error), as the GC lane's $rt_invoke<n>
+           (let [me (ll-sty "$MetaEnv")]
+             (str "var:\n  %isv = or i1 %t1, %t2\n  br i1 %isv, label %vk, label %meta\n"
+                  "meta:\n  %ep = getelementptr " fnt ", ptr %p, i32 0, i32 4\n  %e = load " w ", ptr %ep\n"
+                  "  %elo = and " w " %e, 1\n  %eim = icmp ne " w " %elo, 0\n  %enl = icmp eq " w " %e, 0\n"
+                  "  %eno = or i1 %eim, %enl\n  br i1 %eno, label %bad, label %mchk\n"
+                  "mchk:\n  %epp = inttoptr " w " %e to ptr\n  %eh = load " w ", ptr %epp\n"
+                  "  %ism = icmp eq " w " %eh, " (ll-tid "$MetaEnv") "\n  br i1 %ism, label %minner, label %bad\n"
+                  "minner:\n  %ip = getelementptr " me ", ptr %epp, i32 0, i32 1\n  %g = load " w ", ptr %ip\n"
+                  "  musttail call tailcc void @lg_invoke" n "(ptr %k, " w " %g" as ")\n  ret void\nvk:\n"))
+           "var:\n  %isv = or i1 %t1, %t2\n  br i1 %isv, label %vk, label %bad\nvk:\n")
          "  %vp = getelementptr " vty ", ptr %p, i32 0, i32 9\n  %vc = load ptr, ptr %vp\n"
          "  %kp = getelementptr " vty ", ptr %p, i32 0, i32 10\n  %kk = load i32, ptr %kp\n"
          "  switch i32 %kk, label %bad [" (apply str (for [j (range (inc n))] (str " i32 " j ", label %v" j))) " ]\n"
