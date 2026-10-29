@@ -299,6 +299,12 @@
   (is (= 0 (arch/static-named-count)))
   (is (nil? (arch/static-named 0))))
 
+(deftest binding-stacks
+  ;; natively the module holds no binding stacks
+  (is (= 0 (arch/binding-count)))
+  (is (nil? (arch/binding-get 0)))
+  (is (nil? (arch/binding-set! 0 nil))))
+
 (def ^:private this-file-source
   (delay (slurp "corpus/llvm-rt/intrinsics_test.lg")))
 
