@@ -1,5 +1,6 @@
 ;; P7.0: special forms through (eval (read-string s)): if do let* loop*
-;; quote fn* recur, literal collections built at run time.
+;; quote fn* recur, literal collections built at run time; a keyword and a
+;; symbol eval makes behave as the compiled literals of the same text.
 (defn show [s]
   (println s "=>" (try (pr-str (eval (read-string s)))
                        (catch Exception e (str "ERR " (ex-message e))))))
@@ -46,3 +47,6 @@
 (show "(let [f (fn [x] (fn [y] (+ x y)))] ((f 10) 5))")
 (show "(let [x 1 f (fn [] x) x 2] [(f) x])")
 (show "(#'inc 1)")
+(let [e (eval (read-string ":ns/kw")) s (eval (read-string "'ns/sym"))]
+  (println [(= e :ns/kw) (= :ns/kw e) (= (hash e) (hash :ns/kw)) (get {:ns/kw 1} e) (get {e 2} :ns/kw) (contains? #{e} :ns/kw) (identical? e :ns/kw)]
+           [(= s 'ns/sym) (= (hash s) (hash 'ns/sym)) (identical? s 'ns/sym)]))

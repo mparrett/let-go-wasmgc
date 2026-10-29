@@ -1,7 +1,8 @@
 ;; Task 5 (spec decision 10): closures over ints and over other closures,
 ;; fns passed and returned as values, a direct 5-arity call, and a boxed-
 ;; return fn whose tail call returns an unboxed int (the continuation must
-;; box it, not pass k through).
+;; box it, not pass k through); a join's value read only by a closure made
+;; after it, and a loop variable read only inside a try.
 (defn make-adder [n] (fn [x] (+ x n)))
 (defn twice [f x] (f (f x)))
 (defn compose [f g] (fn [x] (f (g x))))
@@ -15,3 +16,6 @@
 (println (five 1 2 3 4 5))
 (println (kind-mix 3) (kind-mix -1))
 (println (twice inc 40))
+(defn at-join [x] (let [y (if (pos? x) (* x 2) (str "neg" x))] (fn [] y)))
+(defn try-reads [n] (loop [i 0 seen :none] (if (< i n) (recur (inc i) (try (if (= i 2) (throw (ex-info "two" {:i i})) (str seen i)) (catch Exception e seen))) seen)))
+(println ((at-join 3)) ((at-join -3)) (try-reads 4))

@@ -119,7 +119,7 @@ P8.11	src/ rt/ checks/linear-division-check.sh checks/fixtures/linear-float-divi
 P8.13	oracle host/wazero/ checks/wasm-run-linear.sh checks/run-corpus.sh corpus/linear-numeric/
 P13.1	oracle src/ host/native/ targets/ checks/native-run.sh corpus/llvm-scalar/ checks/llvm-probe.sh
 P13.2	src/ targets/ corpus/llvm-profile/ checks/llvm-profile-check.sh checks/llvm-probe.sh
-P13.3	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/ checks/llvm-probe.sh
+P13.3	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-word-check.sh corpus/llvm-scalar/ corpus/llvm/ corpus/llvm-profile/ checks/llvm-probe.sh corpus/consts/
 P13.4	oracle src/ host/native/ targets/ checks/native-run.sh checks/run-tests.sh checks/jank-suite.sh checks/jank-native.lg corpus/jank/ checks/llvm-probe.sh
 P13.5	oracle src/ host/native/ targets/ checks/native-run.sh checks/llvm-armv7-check.sh checks/build-builtins.sh corpus/llvm/ corpus/llvm-scalar/ checks/llvm-probe.sh
 P13.6	src/ host/native/ targets/ checks/native-run.sh checks/build-builtins.sh checks/llvm-oom-check.sh corpus/scalar/fib.clj checks/llvm-probe.sh
