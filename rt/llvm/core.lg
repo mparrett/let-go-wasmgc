@@ -317,13 +317,13 @@
   (cond
     (arch/null? x) false
     (arch/null? t) false
-    (not (arch/is? TypeVal t)) (or (identical? t x) (and (map? x) (identical? t (get x :lw/type))))
-    :else
+    (arch/is? TypeVal t)
     (let [xt (type-of x)]
       (if (arch/ref-eq xt t)
         true
         (let [anc (arch/get TypeVal 2 xt) n (arch/alen anc)]
-          (loop [j 0] (cond (>= j n) false (arch/ref-eq t (arch/aget pv/Node anc j)) true :else (recur (inc j)))))))))
+          (loop [j 0] (cond (>= j n) false (arch/ref-eq t (arch/aget pv/Node anc j)) true :else (recur (inc j)))))))
+    :else (or (arch/ref-eq t x) (and (map? x) (arch/ref-eq t (get x :lw/type))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Calling values. A Fn goes through its code slot for the arity (D52); the
