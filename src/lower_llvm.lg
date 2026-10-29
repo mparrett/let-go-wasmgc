@@ -982,6 +982,16 @@
         ;; startup: made only when something reads it
         (when (or (nil? (:used *ll*)) (contains? (:used *ll*) nid))
           (ll-bind! nid (ll-arg vr (ty nid)))))
+      ;; (set! v x) on a var the module holds: the innermost binding when v
+      ;; is bound, else its root (ll-var-ptr!), as native and the GC lane;
+      ;; the value is the Var
+      (= op :set-var)
+      (let [[vr val] refs v (const-val vr)]
+        (when-not (table-var? v)
+          (ll-fail "unsupported op :set-var" {:var v}))
+        (ll-emit! "  store " (ll-typed val :box) ", ptr " (ll-var-ptr! v))
+        (when (or (nil? (:used *ll*)) (contains? (:used *ll*) nid))
+          (ll-bind! nid (ll-arg vr (ty nid)))))
       (var-const? nid) nil
       (= op :call)
       (let [v (ll-callee-var (first refs))]
