@@ -294,6 +294,11 @@
   (let [anc (mapv #(arch/type-anc 22 %) (range (arch/type-anc-count 22)))]
     (is (= ["Number" "java.lang.Object"] (mapv #(arch/string-of-bytes (arch/type-name-bytes %)) anc)))))
 
+(deftest static-named-table
+  ;; natively the backend has emitted no static keywords or symbols
+  (is (= 0 (arch/static-named-count)))
+  (is (nil? (arch/static-named 0))))
+
 (def ^:private this-file-source
   (delay (slurp "corpus/llvm-rt/intrinsics_test.lg")))
 
