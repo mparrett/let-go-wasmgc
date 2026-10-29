@@ -3,9 +3,9 @@
 #
 # Each corpus here is plain lg checked against native lg (checks/oracle.sh
 # through checks/run-corpus.sh), so it is a behavior of the language, not of a
-# lane: the GC lane's rows run these dirs (their ids and commands unchanged)
-# and the llvm lane runs the same list here, so neither lane covers a program
-# the other skips. A test of one lane's mechanism is not common: it has a twin
+# lane: the GC lane's rows name these dirs themselves (their ids and commands
+# unchanged), the llvm lane runs this list, and checks/lane-coverage.sh fails
+# when a GC row runs a dir neither this list nor an llvm row covers. A test of one lane's mechanism is not common: it has a twin
 # in the other lane's own corpus instead (refusals: `;; refuse-llvm:` in
 # checks/refuse.sh; WasmGC's poly placeholders: corpus/poly).
 #
@@ -30,6 +30,9 @@ while read -r d sp; do
     WASM_RUN=$runner checks/run-corpus.sh "$d" || fail=1
   fi
 done <<'EOF'
+corpus/scalar
+corpus/seqs
+corpus/wasm
 corpus/opmatrix
 corpus/typed
 corpus/control
