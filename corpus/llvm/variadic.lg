@@ -1,6 +1,8 @@
 ;; Variadic closures and variadic defns called through fn values (FnV, D83's
 ;; layout): the rest is a list, nil when no arg is left over; exact arities
-;; win over the variadic one.
+;; win over the variadic one. A direct call with a long rest, apply over a
+;; long seq, and enough variadic calls in a loop that the collector runs
+;; while rest lists are being built.
 (defn vd [a & more] [a more])
 (defn pick ([x] [:one x]) ([x & r] [:many x r]))
 (defn call-with [f & args]
@@ -19,4 +21,7 @@
   (println (call-with pick 1) (call-with pick 1 2))
   (println (seq? (call-with r 1)) (nil? (call-with r))))
 (println ((fn [a & r] r) 1))
+(println (vd 1 2 3 4 5 6 7 8 9 10 11 12) (apply vd (range 40)))
+(defn churn [n] (loop [i 0 s 0] (if (< i n) (recur (inc i) (+ s (count (vector i i i i i i i i i i i i)) (count (vd i i i i i i i i i)))) s)))
+(println (churn 200000))
 (call-with (fn [a b & r] r) 1)
