@@ -1538,16 +1538,40 @@
                   (invoke-vec f (sq/vec args))
                   (raise (arch/bytes-of-string "apply expected Seq"))))))
 
-;; Binding frames for bound-fn* (llvm.natives, P6.7). binding is the
-;; backend's: each bound var saves on its own $bs_ stack (D149), so only the
-;; backend can enumerate them. It lowers these three as $rt_bframe (every
-;; var whose stack is non-empty with its current value; nil when none),
-;; $rt_bframe_push (re-establish a frame: push each var as binding does)
-;; and $rt_bframe_pop (undo it). Under the reference intrinsics no binding
-;; frame exists, so the bodies are the no-frame case.
-(defn binding-frame [] (arch/null))
-(defn frame-push! [fr] (arch/null))
-(defn frame-pop! [fr] (arch/null))
+;; Binding frames for bound-fn* (llvm.natives). Each program var a
+;; binding can push has a binding stack (a List of frames, the backend's
+;; binding.<var> global), which the module lists for arch/binding-get and
+;; arch/binding-set!. A frame is the value atop every stack, copied (nil when
+;; nothing is bound); pushing it re-establishes those values, as binding
+;; pushes, and popping it undoes that. Under the reference intrinsics there
+;; are none.
+(defn binding-frame []
+  (let [n (arch/binding-count) fr (arch/array-new pv/Node (if (< n 1) 1 n) (arch/null))]
+    (loop [i 0 any false]
+      (if (< i n)
+        (let [top (arch/binding-get i)]
+          ;; the value then, not the live node: a later set! changes that node
+          (arch/aset! pv/Node fr i (if (arch/null? top) top (arch/new sq/List (arch/get sq/List 0 top) (arch/null) 1 (arch/null))))
+          (recur (inc i) (if any true (if (arch/null? top) false true))))
+        (if any fr (arch/null))))))
+;; push each var the frame binds with its value then, as binding pushes
+(defn frame-push! [fr]
+  (let [n (arch/binding-count)]
+    (loop [i 0]
+      (when (< i n)
+        (let [top (arch/aget pv/Node fr i)]
+          (when-not (arch/null? top)
+            (arch/binding-set! i (arch/new sq/List (arch/get sq/List 0 top) (arch/binding-get i) 1 (arch/null)))))
+        (recur (inc i)))))
+  (arch/null))
+(defn frame-pop! [fr]
+  (let [n (arch/binding-count)]
+    (loop [i 0]
+      (when (< i n)
+        (when-not (arch/null? (arch/aget pv/Node fr i))
+          (arch/binding-set! i (arch/get sq/List 1 (arch/binding-get i))))
+        (recur (inc i)))))
+  (arch/null))
 
 ;; gensym (lang.go:5573): prefix (default "G__") + the next id.
 (defn ^{:twin "core/gensym"} gensym
