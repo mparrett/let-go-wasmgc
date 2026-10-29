@@ -1,0 +1,29 @@
+evidence: perf-llvm-assemble 43c912e (PR into llvm-poly)
+range: 0ac4a31..43c912e
+  43c912e perf(llvm): halve the world dump's compile by cutting repeated work in assemble
+issue: git-issue:7be2318
+machine: macOS 26.6.2 arm64; lg-e9789b7d53; Homebrew clang 23.1.4
+tree: the rows ran on 0ac4a31 plus the uncommitted change, content identical to 43c912e
+  (diff checked hunk by hunk); the timing ran on the same tree
+
+rows:
+  make -f checks/workflow.mk rows (111 affected rows, LW_GATE_J=1, 3 h 41 min)
+    98 ok; 8 not built (exit 3: P11.0-P11.7, the linear target's collector placeholders);
+    5 not ok: P1.GATE, P4.3, P7.4, P8.0, P12.37
+  make -f checks/workflow.mk baseline on origin/llvm-poly for those five
+    P1.GATE 1, P4.3 1, P8.0 1, P12.37 1: they fail on the base too
+    P7.4 2 on the base (SKIP: no Playwright tools found from a temporary worktree), 1 here
+      (the tools are found, the boot probe script they need is missing); a GC-lane row,
+      and lower_llvm.lg loads only for --target llvm
+  an earlier run of checks/llvm-behavior-gates.sh on the first three changes: 24/25,
+    P12.37 the miss (warm compile over its 5 s bound)
+
+timing (checks/quiet.sh, load 2.4-3.2, warm runtime caches, alternating):
+  llvm compile of corpus/dump-world.lg, wall: origin/llvm-poly 55.77 55.93 55.83 s;
+  this tree 27.53 27.89 27.96 s
+
+reviews:
+  two read-only critic rounds, no blockers: liveness, plan sharing and record memo (that
+  the fixpoint is the same and the memo inputs are fixed per fn); the def change (that no
+  reader of a def's value bypasses the reads it checks, and no side effect is lost)
+not run on this commit: the full gate; Linux; a quiet rerun of P12.37
