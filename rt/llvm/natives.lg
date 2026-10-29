@@ -45,7 +45,7 @@
 ;; spit and slurp fail as native does on a path whose directory does not exist, and
 ;; os/stat answers nil (native's not-found).
 (ns llvm.natives
-  (:refer-clojure :exclude [format fn? identical? rseq alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
+  (:refer-clojure :exclude [format fn? identical? rseq ns-aliases alias find-ns all-ns intern ns-publics ns-interns the-ns bound? resolve
                             find-var var? var-get alter-var-root alter-meta! push-binding! pop-binding!
                             spit slurp make-array complement bound-fn* ns-resolve future*])
   (:require [clojure.string :as string]
@@ -218,6 +218,12 @@
       (when (and (string/starts-with? t "<ns ") (string/ends-with? t ">"))
         (subs t 4 (dec (count t)))))))
 
+
+(defn ^{:twin "core/ns-aliases"} ns-aliases                ; CoreNsAliases (lang.go:7797): {alias-sym ns}
+  [x]
+  (let [nm (or (stand-in-ns x) (str x)) t (table)]
+    (reduce (fn [m kv] (assoc m (symbol (key kv)) (ns-of (val kv))))
+            {} (merge (get-in t [:program nm :aliases]) (get-in t [:aliases nm])))))
 (defn- ns-arg
   "resolveNSArg (lang.go:7641): a Symbol naming an existing namespace or a
    namespace; the canonical name, or the native error text with prefix."
@@ -379,6 +385,13 @@
          (raise-lit "find-var expected a symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
+(defn- private-var?
+  "Whether var v, found as nsn/nm, is :private: its cell's def meta, else
+   the stand-in's own meta."
+  [nsn nm v]
+  (let [cl (cell (str nsn "/" nm))]
+    (boolean (:private (if cl (:meta cl) (meta v))))))
+
 (defn ^{:twin "core/resolve"} resolve                     ; CoreResolvef (lang.go:7679): the current ns's Lookup
   ([] (raise-arity 0))
   ([x] (if (= 21 (sq/kind x))
@@ -392,8 +405,17 @@
                    ;; let-go.core is every ns's baseline refer: an intern
                    ;; there (legmacs.vibe's `vibe`) resolves from any ns
                    (lookup "let-go.core" nm)))
-             (let [nsn (or (get-in t [:aliases (:cur t) q]) (get-in t [:program (:cur t) :aliases q]) (canon q))]
-               (lookup nsn (name x)))))
+             (let [cur (:cur t)
+                   al (or (get-in t [:aliases cur q]) (get-in t [:program cur :aliases q]))
+                   nsn (or al (canon q))
+                   v (lookup nsn (name x))]
+               ;; Namespace.lookup (namespace.go:473, 486): a qualified
+               ;; reference sees a :private var only from the var's own
+               ;; namespace and never through an alias, so ns-resolve
+               ;; (core.lg:1658, a qualified resolve) of another ns's
+               ;; private is nil; find-var (lang.go:7851) still finds it
+               (when-not (and v (private-var? nsn (name x) v) (or al (not= nsn cur)))
+                 v))))
          (raise-lit "resolve expected Symbol")))
   ([x y & more] (raise-arity (+ 2 (count more)))))
 
@@ -408,12 +430,16 @@
             (native-var? v key) (c/var-value v)          ; its altered root, or the stand-in's value (or limit)
             :else (program-var-limit "var-get" v)))))
 
-;; CoreBoundQ (lang.go:9190). Named limit: a declared program var that is
-;; never defined is bound? here (natively false).
+;; CoreBoundQ (lang.go:9190): a var with a cell is bound once it has a value
+;; or a binding (a declared var evaluated code never defined is not); a var
+;; without one (a program or builtin var) is.
 (defn ^{:twin "core/bound?"} bound? [& args]
   (cond (not= 1 (count args)) (raise-lit "bound? expects 1 arg")
         (nil? (cell-key (first args))) (raise-lit "bound? expects a Var")
-        :else true))
+        :else (let [cl (cell (cell-key (first args)))]
+                (if cl
+                  (or (contains? cl :val) (some? (seq (:stack cl))))
+                  true))))
 
 (defn ^{:twin "core/alter-var-root"} alter-var-root [& args] ; alterVarRoot (lang.go:4364)
   (if (< (count args) 2)
