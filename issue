@@ -1,0 +1,20 @@
+id: f650769
+v: 2
+title: llvm: every common corpus runs on both lanes and matches native lg
+status: open
+priority: medium
+created: 2026-10-29T22:11:47Z
+updated: 2026-10-29T22:11:47Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: A program corpus that tests the language, not one lane's mechanism, should run on both the GC and llvm lanes, so neither covers a program the other skips. A test of one lane's mechanism gets a twin in the other lane instead: refusals through a `;; refuse-llvm:` header, WasmGC's poly placeholders through corpus/poly.
+ 
+ Plan:
+ 1. The llvm lane runs the GC lane's program corpora through checks/common-corpora.sh (row P13.9).
+ 2. The GC-only suites get llvm twins (P13.10-P13.14): refusals, core tests, legmacs' suites, legmacs parity, multimethods.
+ 3. To match native, llvm needs runtime twins for eval and namespaces, regex Unicode classes, overflow-checked boxed arithmetic, foreign error printing, bound-fn frames, multimethods and rooted natives (alter-var-root of a native fn).
+ 
+ Acceptance: P13.9-P13.14, P12.3a, P12.3b, P12.31 and the llvm corpora pass on the branch; rows and baseline recorded through checks/workflow.mk.
+ 
+ Refs git-issue:f7fff20 (ex-message on llvm), git-issue:646deae (common runtime core).
