@@ -686,10 +686,12 @@
   '#{+ - * inc dec < <= > >= = bit-and bit-or bit-xor bit-not bit-and-not bit-shift-left
      bit-shift-right unsigned-bit-shift-right unchecked-add unchecked-subtract unchecked-multiply})
 
-(defn refuse-core-op-redef! [sym]
+(defn refuse-core-op-redef!
+  "The refusal of a program redefining core op sym, in target's words."
+  [sym target]
   (when (and (symbol? sym) (contains? native-opcode-ops sym)
              (let [r (resolve sym)] (and (var? r) (= r (ns-resolve 'clojure.core sym)))))
-    (throw (ex-info (str "lower-wasm: redefining core op " sym " is not supported") {:var sym}))))
+    (throw (ex-info (str (binding [lw/*target* target] (lw/target-prefix)) "redefining core op " sym " is not supported") {:var sym}))))
 
 ;; P1.7 (bug-06/bug-11): native lg compiles and runs a program one top-level
 ;; form at a time, so a compile error (recur not in tail position, recur arity,
@@ -1500,7 +1502,7 @@
         register-nested! (fn [form]
                            (when (= :llvm (:target opts))
                              (reduce (fn [_ s]
-                                       (refuse-core-op-redef! s)
+                                       (refuse-core-op-redef! s (:target opts))
                                        (eval (list 'declare s))
                                        (let [v (resolve s)]
                                          (swap! nested-globals assoc v
@@ -1520,7 +1522,7 @@
         (fn [form]
           (when (and (seq? form) (#{'defn 'defn- 'def 'declare} (first form)))
             (doseq [s (if (= 'declare (first form)) (rest form) [(def-sym form)])]
-              (refuse-core-op-redef! s)))
+              (refuse-core-op-redef! s (:target opts))))
           (let [form (if (and (seq? form) (#{'defn 'defn-} (first form)) (contains? redef (definition-key (ns-name *ns*) (def-sym form))))
                        (defn->def form)
                        form)]
