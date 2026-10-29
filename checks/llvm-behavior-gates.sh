@@ -21,6 +21,13 @@ row P12.20 slot checks/llvm-armv7-check.sh
 row P12.21 slot checks/llvm-oom-check.sh
 row P12.23 env TEST_DIR=corpus/llvm-rt checks/run-intrinsics-native.sh
 row llvm-corpora llvm checks/run-corpus.sh corpus/scalar corpus/seqs corpus/wasm corpus/consts
+# the GC lane's common program corpora, refusals and twin coverage, on llvm
+row P13.9 checks/common-corpora.sh llvm
+row P13.10 env LW_LANE=llvm bash -c 'checks/refuse.sh corpus/refused && checks/refuse.sh corpus/review/refused'
+row P13.11 bash -c "RT=rt/llvm checks/native-twins.sh corpus/natives/natives-shared.txt --exclude term/ && RT=rt/llvm checks/native-twins.sh corpus/natives/natives-xsofy.txt --exclude term/ && RT=rt/llvm checks/native-twins.sh corpus/natives/natives-legmacs.txt --exclude term/ --skip corpus/natives/SKIP-legmacs"
+row P13.12 llvm checks/run-tests.sh --corpus corpus/core-tests.txt --bar 273
+row P13.13 env WASM_RUN=checks/native-run.sh LETGO_TEST=$LW_ROOT/legmacs/test SRC_PATHS=$LW_ROOT/legmacs:$LW_ROOT/legmacs/test bash -c 'checks/run-tests.sh --corpus corpus/legmacs-tests.txt && checks/run-tests.sh --corpus corpus/legmacs-eval-tests.txt'
+row P13.14 env LW_LANE=llvm checks/legmacs-parity.sh 6
 row P1.10 checks/run-corpus.sh corpus/reader-ns
 row P1.10-llvm llvm checks/run-corpus.sh corpus/reader-ns
 row P12.30 slot checks/run-expected.sh corpus/poly-wasm

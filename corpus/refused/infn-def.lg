@@ -1,5 +1,7 @@
 ;; refuse: unsupported op :def
 ;; P1.4: `def` inside a function body (the :def op). Neither target program does it.
 ;; The backend must refuse this with a clear "unsupported op :def" error.
+;; refuse-llvm: none
+;; The llvm lane lowers a def inside a fn, so there it behaves as native.
 (defn make [] (def late 42) late)
 (println (make))
