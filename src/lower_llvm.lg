@@ -636,12 +636,9 @@
   [nids empty]
   (let [sty (ll-sty "$List") w (ll-word)
         mk (fn [first-w next-w cnt]
-             (let [p (ll-alloc! sty (ll-tid "$List"))]
-               (ll-emit! "  store " w " " first-w ", ptr " (ll-field-ptr! sty p 1))
-               (ll-emit! "  store " w " " next-w ", ptr " (ll-field-ptr! sty p 2))
-               (ll-emit! "  store i64 " cnt ", ptr " (ll-field-ptr! sty p 3))
-               (ll-emit! "  store " w " 0, ptr " (ll-field-ptr! sty p 4))
-               (ll-word-of! p)))]
+             (let [r (ll-fresh "%ln")]
+               (ll-emit! "  " r " = call " w " " (lir/ref-bare "lg_list_node") "(" w " " first-w ", " w " " next-w ", i64 " cnt ")")
+               r))]
     (if (empty? nids)
       (if (= empty :nil) "0" (mk "0" "0" 0))
       (reduce (fn [acc [i nid]] (mk (ll-arg nid :box) acc i))
@@ -1733,7 +1730,19 @@
       [(fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
        {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
        {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :attrs ll-fn-attrs
-                  :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
+                  :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}
+       ;; one node of a rest List (ll-rest-list!): a call per node instead of
+       ;; its allocation and four stores inline; inlined, the code is the same
+       (let [lty (ll-sty "$List")]
+         {:llvm/fn {:name "lg_list_node" :bare true :linkage "internal" :ret w
+                    :params [(str w " %first") (str w " %next") "i64 %cnt"] :attrs ["alwaysinline" "nounwind"]
+                    :body (str "  %p = " (ll-alloc-call lty) "\n"
+                               "  store " w " " (ll-tid "$List") ", ptr %p\n"
+                               "  %p.1 = getelementptr " lty ", ptr %p, i32 0, i32 1\n  store " w " %first, ptr %p.1\n"
+                               "  %p.2 = getelementptr " lty ", ptr %p, i32 0, i32 2\n  store " w " %next, ptr %p.2\n"
+                               "  %p.3 = getelementptr " lty ", ptr %p, i32 0, i32 3\n  store i64 %cnt, ptr %p.3\n"
+                               "  %p.4 = getelementptr " lty ", ptr %p, i32 0, i32 4\n  store " w " 0, ptr %p.4\n"
+                               "  %w = ptrtoint ptr %p to " w "\n  ret " w " %w\n")}})])}))
 
 (defn ll-rt-fns!
   "Lower the runtime fns the program reached (they may reach more): the
