@@ -520,6 +520,24 @@
 (defn div-zero-error "quot, rem or mod by zero." [] (raise (arch/bytes-of-string "divide by zero")))
 (defn unbox-error "A non-Int value in an Int-typed slot (the GC lane's $rt_unbox_fail)." []
   (raise (arch/bytes-of-string "a non-Int value reached an Int-typed slot")))
+;; + - * as the IR op with a boxed operand (the backend's slow path): an Int
+;; overflow is the op's, its caught message prefixed, as inc* and dec*;
+;; anything else is the core fn's
+(defn add-op [a b]
+  (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b) r (arch/i64-add x y)]
+      (if (< (bit-and (bit-xor x r) (bit-xor y r)) 0) (op-overflow) (sq/box-int r)))
+    (add2 a b)))
+(defn sub-op [a b]
+  (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b) r (arch/i64-sub x y)]
+      (if (< (bit-and (bit-xor x y) (bit-xor x r)) 0) (op-overflow) (sq/box-int r)))
+    (sub2 a b)))
+(defn mul-op [a b]
+  (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+      (if (mul-ok? x y) (sq/box-int (arch/i64-mul x y)) (op-overflow)))
+    (mul2 a b)))
 (defn inc* [x]
   (if (= 1 (sq/kind x))
     (let [n (sq/unbox-int x)] (if (= n 9223372036854775807) (op-overflow) (sq/box-int (+ n 1))))
@@ -539,6 +557,12 @@
           (let [x (f64-of a ka) y (f64-of b kb)]
             (cond (= op 0) (< x y) (= op 1) (<= x y) (= op 2) (> x y) :else (>= x y)))
           :else (raise-two (lit (arch/bytes-of-string "cannot compare ")) a b))))
+
+;; pos? and neg? as the IR op with a boxed operand (the backend's slow path):
+;; the comparison with 0, x first, so a non-number is native's
+;; "cannot compare <x> and let-go.lang.Int"
+(defn pos-op [x] (cmp2 2 x (sq/box-int 0)))
+(defn neg-op [x] (cmp2 0 x (sq/box-int 0)))
 
 (defn- chain [op xs]                                      ; lt/gt/... over a seq: stop at the first false
   (loop [a (sq/first xs) s (sq/next xs)]
