@@ -2082,6 +2082,14 @@
          "\n"
          (str/join "\n" (map lir/render (ll-type-descs))) "\n"
          (when *rt* (str (str/join "\n" (map lir/render (ll-static-named-table kept-globals))) "\n"))
+         ;; the binding stacks (arch/binding-get and binding-set!, bound-fn*'s frames)
+         (when *rt*
+           (str (lir/render (assoc-in (ll-glob "lg_binding_heads" "internal constant" (str "[" (count binding-roots) " x ptr]")
+                                               (if (empty? binding-roots) "zeroinitializer"
+                                                   (str "[" (str/join ", " (map #(str "ptr " (lir/ref %)) binding-roots)) "]")))
+                                      [:llvm/global :bare] true))
+                "\n" (lir/render (assoc-in (ll-glob "lg_binding_count" "internal constant" "i64" (str (count binding-roots))) [:llvm/global :bare] true))
+                "\n"))
          (str/join "\n" (map :text kept-globals)) "\n\n"
          (str/join "\n" (map lir/render inits)) "\n"
          (str/join "\n" (map :text kept)))))

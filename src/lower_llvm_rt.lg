@@ -529,6 +529,11 @@
       "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_tinfo_count")) [r :int])
       "static-named-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_static_named_count")) [r :int])
       "static-named" [(ll-tinfo-load! (lir/ref-bare "lg_static_named") w (ll-arg (a 0) :int)) :box]
+      "binding-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_binding_count")) [r :int])
+      "binding-get" (let [slot (ll-tinfo-load! (lir/ref-bare "lg_binding_heads") "ptr" (ll-arg (a 0) :int)) r (ll-fresh "%bg")]
+                      (ll-emit! "  " r " = load " w ", ptr " slot) [r :box])
+      "binding-set!" (let [slot (ll-tinfo-load! (lir/ref-bare "lg_binding_heads") "ptr" (ll-arg (a 0) :int))]
+                       (ll-emit! "  store " w " " (ll-arg (a 1) :box) ", ptr " slot) [nil :void])
       "type-static" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_types") w (ll-arg (a 0) :int)) :box]
       "type-name-bytes" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_names") w (ll-arg (a 0) :int)) :box]
       "type-anc-count" (let [i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
@@ -787,7 +792,7 @@
 ;; os/args's host-argc and host-arg, the type table's readers and the
 ;; terminal's raw mode
 (def ll-emitted-intrinsics
-  (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "static-named-count" "static-named" "type-name-bytes" "type-anc-count" "type-anc"
+  (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "static-named-count" "static-named" "binding-count" "binding-get" "binding-set!" "type-name-bytes" "type-anc-count" "type-anc"
                              "term-raw-mode" "term-restore-mode" "host-exit" "host-sysinfo" "build-property"}))
 
 (when lw-rt/llvm-target?
