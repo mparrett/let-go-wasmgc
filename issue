@@ -1,0 +1,33 @@
+id: 144d705
+v: 2
+title: llvm: plain constants as static data, not init fns
+status: open
+priority: medium
+created: 2026-10-29T01:49:23Z
+updated: 2026-10-29T01:49:23Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: On llvm, every constant is built at startup by its own init fn, even a keyword. Each one is analysed (rt-init-fn!), lowered through llvm-fn and run once at start. Plain constants should be static data in the module, as strings and Types (D218) already are.
+ 
+ The world dump on 2026-10-28 (llvm-phase-times with the assemble patch) has 541 constant init fns:
+ - 417 keywords: one kw-of-bytes call each;
+ - 120 var stand-ins: a symbol plus its metadata map, 2,339 continuation pieces between them;
+ - 4 empty collections.
+ 
+ They are 500 of the 833 fns lowered at assemble (4.5 s of 36.9 s before the patch), and const-global!'s analysis of them takes another 2.5 s. Var stand-ins cost about 16 ms each.
+ 
+ Proposal, in steps:
+ 1. Keywords and symbols without metadata: a static Kw or Sym global over static Bytes, its hash computed at compile time with the runtime's hash-unencoded. One startup loop inserts the static objects into the intern table (rt/llvm/str.lg), so a keyword made at run time with the same text finds the static one. The collector already skips static objects (D215).
+ 2. Var stand-ins: the symbol static, its metadata map static once maps can be (a small array map needs no hashing), or the map alone left to an init fn.
+ 3. Vectors, then maps and sets: static only where the compiler can lay them out as the runtime would; the rest keep init fns.
+ 
+ Open questions:
+ - Insert at startup, or emit the intern table prefilled (no startup work, but the compiler must reproduce the table's layout and growth)?
+ - Does a static keyword's hash need a check against the runtime's at build time (a row comparing hashes for a corpus of names)?
+ 
+ Acceptance: the llvm corpora, P12.31 and the world dump (seeds 1–20) match native lg; the world dump's constant init fns fall from 541 to the var stand-ins and collections left; assemble and startup times recorded with their conditions.
+ 
+ Related: each keyword init tail-calls kw-of-bytes with its own k, yet still emits a continuation piece nothing calls (417 dead functions in the world dump). That is a separate fix in the lowering of a call whose result is returned.
+ 
+ Refs git-issue:7be2318 (llvm compile cost), git-issue:3e08842 (function cache).
