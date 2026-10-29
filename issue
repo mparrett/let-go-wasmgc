@@ -1,0 +1,31 @@
+id: bc33496
+v: 2
+title: Proposed: every backend runs one shared corpus list, and evidence records a result per program per backend
+status: open
+priority: medium
+created: 2026-10-29T22:33:17Z
+updated: 2026-10-29T22:33:17Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Each lane's row names its own corpus dirs: node's rows list theirs in items.tsv, P4.5 runs corpus/wasm and corpus/scalar for wasmtime (#74), and the llvm lane repeats the node list by hand in checks/common-corpora.sh. A dir added to one lane's row is silently skipped by the others. And the evidence for a change is a row and its exit plus a prose note, so nothing records "this program: native MATCH, wasm MATCH, llvm MISMATCH".
+ 
+ I propose:
+ 1. One list of the common program corpora (a tracked file) that every lane's corpus row reads, instead of naming dirs itself.
+ 2. A backend registry: each backend's WASM_RUN runner, its probe, and whether it is required. Required now: native lg (its .expected snapshot), WasmGC on node, llvm on the host profile. Recorded when present: llvm fix31, wasmtime, the linear target, self-compiled and ORC; a backend becomes required when its owner declares it supported. Required is the LW_REQUIRE_<runtime> switch git-issue:f1a846c proposes, D227's shape.
+ 3. run-corpus.sh emits one cell per program per backend: MATCH, MISMATCH, REFUSED, SKIP <reason>, NOT BUILT. Cells go in the row's TAP YAML block (D229) and in a keyed per-machine ledger beside gate-times.tsv: program, backend, input key (attest.sh's), result.
+ 4. pr-ready and the gate refuse when a required backend's cell for a common program is missing, or is neither MATCH nor a refusal the program declares (`;; refuse-<backend>: <text>`) with the backend refusing in that text.
+ 
+ The one change to your lanes is item 1: the node and wasmtime rows read their dirs from the list instead of naming them. Their ids, runners and SKIP behavior stay.
+ 
+ Facts that close it:
+ - F1 the lane rows for node, wasmtime and llvm read one list: grep of items.tsv names no corpus dir in those rows.
+ - F2 a row's TAP block carries one cell per program per backend: checks/gate.sh output parsed by P0.7.
+ - F3 a required cell missing or failing makes pr-ready and gate exit non-zero: a self-test that drops one cell.
+ - F4 checks/common-corpora.sh is gone or reads the list.
+ 
+ Open questions:
+ - The list's home: corpus/common.txt, or a column in corpus-budget.tsv?
+ - Does the ledger travel (a git note per commit, as evidence does), or stay per machine as gate-times.tsv does?
+ 
+ Refs git-issue:f1a846c (LW_REQUIRE_<runtime>), git-issue:907a973 (known-failing rows), git-issue:7e15c35 (a row that skips one lane reports a plain ok), git-issue:f650769 (llvm parity).
