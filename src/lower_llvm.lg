@@ -176,11 +176,12 @@
 (declare ll-var-value)
 
 (defn ll-param?
-  "A block param that takes a slot: not dead, and not one legalize threads a
-   materialized value through (a var, a literal, a closure link), whose uses
-   resolve through src-of instead."
+  "A block param that takes a slot: not dead, not one nothing reads (the IR
+   threads a join's whole scope through its params, read or not), and not one
+   legalize threads a materialized value through (a var, a literal, a closure
+   link), whose uses resolve through src-of instead."
   [p]
-  (not (or (dead? p) (ll-materialized? p))))
+  (not (or (dead? p) (contains? (:unread-params *ll*) p) (ll-materialized? p))))
 
 (defn ll-params [b] (filter ll-param? (ir/block-params b *f*)))
 
@@ -664,6 +665,27 @@
       :branch-if [(ir/cond-target-true a) (ir/cond-target-false a)]
       [])))
 
+(declare ll-term-edges)
+(defn ll-unread-params
+  "f's block params that nothing reads: no instruction or terminator refers
+   to one, and every edge passes it only into another such param."
+  [f]
+  (let [bs (ir/blocks f)
+        read (set (concat (mapcat (fn [b] (mapcat #(ir/refs % f) (ir/block-insts b f))) bs)
+                          (mapcat (fn [b] (when-let [t (ir/block-term b f)] (ir/refs t f))) bs)))
+        ;; param -> the args every edge passes it
+        args-of (reduce (fn [m [a p]] (update m p conj a)) {}
+                        (for [b bs e (ll-term-edges b)
+                              ap (map vector (ir/branch-target-args e) (ir/block-params (ir/branch-target-target e) f))]
+                          ap))
+        ;; from what is read, through the args of each needed param, once each
+        needed (loop [needed (transient read) todo (vec read)]
+                 (if (empty? todo)
+                   (persistent! needed)
+                   (let [x (peek todo) new (vec (distinct (remove #(contains? needed %) (get args-of x))))]
+                     (recur (reduce conj! needed new) (into (pop todo) new)))))]
+    (set (remove needed (mapcat #(ir/block-params % f) bs)))))
+
 (defn ll-value-uses
   "Values piece p reads, besides materialized ones."
   [[b n]]
@@ -673,7 +695,11 @@
                               (remove #(= :block-arg (ir/op % *f*)) insts))
                       (when (and last? (ir/block-term b *f*))
                         (concat (ir/refs (ir/block-term b *f*) *f*)
-                                (mapcat ir/branch-target-args (ll-term-edges b)))))]
+                                ;; an arg is read only by a param that takes a slot
+                                (mapcat (fn [e] (keep (fn [[a p]] (when (ll-param? p) a))
+                                                      (map vector (ir/branch-target-args e)
+                                                           (ir/block-params (ir/branch-target-target e) *f*))))
+                                        (ll-term-edges b)))))]
     (set (remove ll-materialized? reads))))
 
 (defn ll-defs
@@ -1546,6 +1572,7 @@
       (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :ovf (atom false) :counter (atom 0)
                       :types (atom #{}) :self-type (:closure? info) :cap-kinds (:env-kinds info)
                       :region-caps (:caps info) :plans plans :records (atom {})
+                      :unread-params (ll-unread-params f)
                       ;; every value an instruction, a terminator or an edge reads
                       :used (set (for [b (ir/blocks f)
                                        r (concat (mapcat #(ir/refs % f) (ir/block-insts b f))
