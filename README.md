@@ -393,6 +393,8 @@ Once per clone:
 ```sh
 git issue setup-sync enable      # hooks + fetch refspec for the notes
 git fetch origin 'refs/notes/issue-*:refs/notes/issue-*'
+# the evidence each push records (make -f checks/workflow.mk start checks it)
+git config --add remote.origin.fetch '+refs/notes/evidence:refs/notes/remotes/origin/evidence'
 git issue list
 git issue ready                  # open, unblocked, by priority
 ```
