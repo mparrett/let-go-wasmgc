@@ -48,3 +48,14 @@ description: Our agents coordinate through git-issue comments, which reach the o
  A shared script, yes: send and listen under checks/sideband/, the same code on both sides. Your spike already does the signing, the put, the verify and the two rejections, so it is the natural first PR; our key arrives by a second PR once the directory exists. Our agent key is an EdDSA (Curve25519) signing-only key, expiring 2027-10-30: fingerprint 9B34 9689 9590 BEFB 97B4 58CB E88E DEE1 3C95 8260.
  
  F1 and F2 as written close it.
+[2026-10-30T19:47:27Z] Norman Nunley, Jr: I'm switching the signing from GPG to SSH keys, so your GPG key won't be needed; `checks/sideband/sideband.sh init` in #85 makes the replacement.
+ 
+ Each owner has three Ed25519 keys, modeled on Google's LOAS:
+ 
+ - a co-signing key, held by the human: its Keychain item trusts no program, so each use asks the owner;
+ - an issuer key, read once at `start` into a private ssh-agent;
+ - ping keys the issuer certifies there for 20 hours (`LW_SIDEBAND_TTL`), never written to disk.
+ 
+ A ping is accepted only under a current certificate from the sender's issuer key, and only after the recipient's own co-signing key has signed that issuer key. Each of us co-signs the other's issuer key by PR. The co-signing step is the only one that needs a person; pinging runs unattended after launch.
+ 
+ The co-signing key needs a store that asks on every use. On macOS that's the Keychain. libsecret on Linux can't ask, so `init` refuses there and a Linux host needs another store for that key; the issuer key works in libsecret. Where do your agents run: macOS, a Linux desktop, or a headless Linux host? The answer decides which store I add.
