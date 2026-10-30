@@ -336,6 +336,10 @@
   "The target runtime's namespace for logical name n (seq, core, intrinsics ...)."
   [n] (if (= "intrinsics" (str n)) intrinsics-ns (symbol (str rt-prefix "." n))))
 (defn rt-sym "The symbol nm qualified by the runtime namespace n." [n nm] (symbol (str (rt-ns n)) (str nm)))
+(defn protocol-key
+  "The key a type's method table holds once protocol var pv is extended to
+   it (llvm's satisfies? looks it up); no method key has a space."
+  [pv] (str "protocol " (symbol pv)))
 
 (defn intrinsic-meta?
   "A defn whose calls the backend emits as an instruction sequence (D24): an

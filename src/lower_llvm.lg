@@ -652,6 +652,15 @@
       (and *rt* (= op :load-var) (#{#'*out* #'*err*} (ir/aux nid *f*)))
       (to (lw-rt/rt-var 'host (if (= (ir/aux nid *f*) #'*out*) 'out-handle 'err-handle)))
       (not= :call op) nil
+      ;; (satisfies? P x) of a protocol the program declares: a call of P's
+      ;; var, which the driver makes its predicate (P is never a value here)
+      (and *rt* (= v #'satisfies?) (= 2 (count args)) (q-protocol? (ll-callee-var (first args))))
+      (let [pv (ll-callee-var (first args)) sig (ll-var-sig pv 1)]
+        (when-not sig (ll-fail "satisfies?: the protocol's predicate has no signature" {:var pv}))
+        (ll-note-abi! pv [(second args)] sig)
+        {:sig sig :args [(second args)] :var pv})
+      (and *rt* (= v #'satisfies?))
+      (ll-fail "satisfies? of a protocol not named at the call (protocols are not values on the llvm target)" {:argc (count args)})
       (= v #'throw) {:sig {:name "lg_throw" :params [:box] :ret :box} :args args}
       ;; wasm/call-ref: a call through a funcref, typed by its func decl
       (and v (lw-rt/intrinsic? v) (= "call-ref" (name (symbol v))))
@@ -1651,6 +1660,8 @@
   [v0]
   ;; *file* is the program's path wherever it is read (native binds it while
   ;; the file loads), as the GC lane's
+  (when (and *rt* (q-protocol? v0))
+    (ll-fail "a protocol used as a value (protocols are not values on the llvm target; satisfies? takes a protocol named at the call)" {:var v0}))
   (if (and *rt* (= v0 #'*file*) (q-program-file))
     (ll-str-const! (q-program-file))
   (let [v (get value-substs v0 v0)

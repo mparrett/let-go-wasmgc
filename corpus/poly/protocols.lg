@@ -1,0 +1,22 @@
+;; satisfies? on the llvm target, checked against native (the GC lane raises
+;; its named limit, corpus/poly-wasm): a deftype and a record implementing a
+;; protocol, a value no extension names, nil, a deftype made under a macro
+;; (compiled into dispatch arms, not a method table); then extend-type to
+;; String, nil and Object. Object's extension answers satisfies? for every
+;; value, nil included, and reaches every value's dispatch but nil's (nil
+;; dispatches to its own extension only). A protocol held in a variable is refused
+;; (corpus/refused/satisfies-value.lg).
+(defprotocol Named (nm [this]) (greet [this s]))
+(defprotocol Anything (anything [x]))
+(deftype Dot [] Named (nm [this] "dot") (greet [this s] (str "hi " s)))
+(defrecord Pt [x y] Named (nm [this] (str "pt" x)) (greet [this s] (str s x y)))
+(defmacro in-do [& body] `(do ~@body))
+(in-do (deftype Ring [] Named (nm [this] "ring") (greet [this s] s)))
+(println (satisfies? Named (->Dot)) (satisfies? Named (->Pt 1 2)) (satisfies? Named (->Ring))
+         (satisfies? Named 1) (satisfies? Named nil) (satisfies? Anything (->Dot)))
+(extend-type String Named (nm [s] (str "str " s)) (greet [s x] x))
+(extend-type nil Named (nm [_] "nil") (greet [_ s] s))
+(extend-type Object Anything (anything [x] :any))
+(println (satisfies? Named "s") (nm "s") (satisfies? Named nil) (nm nil) (satisfies? Named 1)
+         (satisfies? Anything 5) (satisfies? Anything nil) (satisfies? Anything (->Dot)) (anything [1])
+         (try (anything nil) (catch Exception e :throws)))
