@@ -3,11 +3,12 @@
 Each lower-wasm module talks to its host only through the imports and exports
 listed here. `lg-wasm-host.js` implements them for browsers and Node,
 `node-host.mjs` wraps it for the command line, and `wasmtime-adapter.wat`
-implements the same set on WASI preview1 for wasmtime (which has no
-`emit`/`url_param`/`argc`/`arg`: it runs only the P4.0 smoke modules). As of
-2026-10-01 (P4.1-backend) the backend emits every import marked "emitted",
-each only when the program reaches it (imports are tree-shaken); `getenv` is
-still "defined".
+implements the same set on WASI preview1 for wasmtime, the third host lane
+(D232; `checks/wasmtime-run.sh` merges it in and runs the result; `assemble`
+is the one import it lacks). As of 2026-10-01 (P4.1-backend) the backend
+emits every import marked "emitted", each only when the program reaches it
+(imports are tree-shaken). The three rightmost columns of the import table
+name what provides each import on node, in the browser and under wasmtime.
 
 ## Exports (module side)
 
@@ -29,25 +30,25 @@ wasm stack parks until the returned Promise settles, and the JS event loop
 keeps running in the meantime. wasmtime has no JSPI, so there these imports
 simply block the thread.
 
-| import | signature | suspends | status | semantics |
-|---|---|---|---|---|
-| `env.print_i64` | `(i64) -> ()` | no | emitted | decimal text of the value to the current output fd |
-| `env.print_str` | `(ptr i32, len i32) -> ()` | no | emitted | UTF-8 bytes `[ptr, ptr+len)` to the current output fd |
-| `env.print_nl` | `() -> ()` | no | emitted | `"\n"` to the current output fd |
-| `env.write` | `(fd i32, ptr i32, len i32) -> i32` | no | emitted | bytes to fd 1 (program stdout) or fd 2 (stderr); returns `len`. The runtime copies the bytes to address 32 first (`rt_host_write`) |
-| `env.sleep` | `(ms i64) -> ()` | **yes** | emitted | resumes after `ms` milliseconds (`setTimeout`); `ms <= 0` resumes on the next macrotask. Reached from `(<!! (timeout ms))` via `wasm.host/take!!` (D6, D87) |
-| `env.nanotime` | `() -> i64` | no | emitted | monotonic ns (`performance.now()*1e6` in JS hosts, `CLOCK_MONOTONIC` under WASI); only differences mean anything |
-| `env.getenv` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | emitted (2026-10-02) | `os/getenv`: copies the value into `[buf, buf+cap)` and returns its byte length; returns `> cap` (nothing copied, retry with a bigger buffer) or `-1` when unset (the runtime reads unset as `""`, as os.Getenv does). The browser host's env is `{}`; node-host passes `process.env` (plus `--env K=V`), so `XSOFY_DEV=1` reaches xsofy's `dev?` there |
-| `env.read_file` | `(path_ptr i32, path_len i32, buf i32, cap i32) -> i32` | no | emitted under `LW_HOST_FS=1` (D208) | `slurp` (rt/wasm/host_fs.lg): the file's bytes under getenv's copy contract; `-1` = not found or not a regular file, which slurp raises as native's no-such-file error. node-host and src/run.mjs read the process's file system (a relative path from its cwd, as native lg); the browser host has none and answers `-1` to every read (so does `node-host --no-fs`). Only a module built with the flag imports it; `spit`, `os/*` and directory reads stay unsupported |
-| `env.assemble` | `(wat_ptr i32, wat_len i32) -> i32` | no | emitted under `LW_HOST_ASM=1` (D211) | `wasm.host-asm/assemble` (rt/wasm/host_asm.lg): the UTF-8 bytes are a module's WAT text, which the host parses to a binary and keeps (node-host: `--assemble-out <path>` writes it, and the text to `<path>.wat`; src/run.mjs: `LW_ASSEMBLE_OUT`; the browser host holds it in `assembled` for the page to instantiate); returns the binary's byte length, or `-1` with the parse error on stderr. The module reads nothing back: B2 will hand the encoded binary through the same seam and the host only stores it. node's hosts run `wasm-tools parse`; the browser host has no assembler unless the page passes one (`assemble` option), and answers `-1` |
-| `env.emit` | `(name_ptr i32, name_len i32, json_ptr i32, json_len i32) -> ()` | no | emitted (P4.1) | `js/emit`: the event name and the data as JSON text, let-go's `_lgEmit(name, dataJson)` shape; the JSON is byte-identical to let-go's (`fromValue` + `encoding/json`: sorted keys, HTML escaping). The browser host parses the JSON and fires the `window` CustomEvent the shell listens for (`xsofy/startup` sets the title and quest, `xsofy/stats`, `xsofy/replay-dump`, …); node and run.mjs drop it. xsofy calls `js/emit` 10 times |
-| `env.url_param` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | emitted (P4.1) | `js/url-param`: getenv's contract over the page's query string; `-1` when absent or off-browser (native returns nil). xsofy reads `?seed=` and friends through it (6 calls) |
-| `env.argc` | `() -> i32` | no | emitted (P3.2, D115) | `os/args` length; JS hosts take `argv` (default `['lg']`) |
-| `env.arg` | `(i i32, buf i32, cap i32) -> i32` | no | emitted (P3.2, D115) | argument `i`, getenv's copy contract |
-| `term.read_key` | `(buf i32, cap i32) -> i32` | **yes** | emitted (D104) | waits for the next key and copies its UTF-8 bytes (one `sendInput` call = one key, ≤ 16 bytes, as in let-go's SAB ring) into `[buf, buf+cap)`; returns the byte count, **0 = end of input** (`read-key` → nil). Coalesces (D98, below). The runtime builds the lg String |
-| `term.key_pending` | `() -> i32` | no | emitted (D104) | 1 if a key is queued, else 0 (`key-pending?`) |
-| `term.size` | `() -> (i32 i32)` | no | emitted (D104) | `cols rows` as a multi-value result (`term/size` → `[cols rows]`); default 80×24 |
-| `term.write` | `(ptr i32, len i32) -> i32` | no | defined | same stream as `env.write` fd 1. let-go's `term/write` is `(write *out* s)`, so the runtime may use either; this exists so a terminal host can tell term output apart if it ever needs to |
+| import | signature | suspends | status | semantics | node (`src/run.mjs`; `node-host.mjs` on `lg-wasm-host.js`) | browser (`lg-wasm-host.js`) | wasmtime (`wasmtime-adapter.wat`) |
+|---|---|---|---|---|---|---|---|
+| `env.print_i64` | `(i64) -> ()` | no | emitted | decimal text of the value to the current output fd | stdout | `onOutput` | `fd_write` |
+| `env.print_str` | `(ptr i32, len i32) -> ()` | no | emitted | UTF-8 bytes `[ptr, ptr+len)` to the current output fd | stdout | `onOutput` | `fd_write` |
+| `env.print_nl` | `() -> ()` | no | emitted | `"\n"` to the current output fd | stdout | `onOutput` | `fd_write` |
+| `env.write` | `(fd i32, ptr i32, len i32) -> i32` | no | emitted | bytes to fd 1 (program stdout) or fd 2 (stderr); returns `len`. The runtime copies the bytes to address 32 first (`rt_host_write`) | fd 1 stdout, fd 2 stderr | `onOutput(fd)` | `fd_write(fd)` |
+| `env.sleep` | `(ms i64) -> ()` | **yes** | emitted | resumes after `ms` milliseconds (`setTimeout`); `ms <= 0` resumes on the next macrotask. Reached from `(<!! (timeout ms))` via `wasm.host/take!!` (D6, D87) | `Atomics.wait` (run.mjs); `setTimeout`, suspending (node-host) | `setTimeout`, suspending | `poll_oneoff` on the monotonic clock; blocks the thread |
+| `env.nanotime` | `() -> i64` | no | emitted | monotonic ns; only differences mean anything | `process.hrtime` (run.mjs); `performance.now()*1e6` (node-host) | `performance.now()*1e6` | `clock_time_get` (`CLOCK_MONOTONIC`) |
+| `env.getenv` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | emitted (2026-10-02) | `os/getenv`: copies the value into `[buf, buf+cap)` and returns its byte length; returns `> cap` (nothing copied, retry with a bigger buffer) or `-1` when unset (the runtime reads unset as `""`, as os.Getenv does) | `process.env` (node-host also `--env K=V`, so `XSOFY_DEV=1` reaches xsofy's `dev?`) | `{}`: every name is unset | `environ_get`; the process environment under `-S inherit-env=y` (D232) |
+| `env.read_file` | `(path_ptr i32, path_len i32, buf i32, cap i32) -> i32` | no | emitted under `LW_HOST_FS=1` (D208) | `slurp` (rt/wasm/host_fs.lg): the file's bytes under getenv's copy contract; `-1` = not found or not a regular file, which slurp raises as native's no-such-file error. Only a module built with the flag imports it; `spit`, `os/*` and directory reads stay unsupported | the process's file system, relative paths from the cwd as native lg (`node-host --no-fs` answers `-1`) | no file system: `-1` to every read | `path_open` + `fd_read` through the first preopen (`--dir .`, fd 3): cwd-relative paths; `-1` for a missing path, a non-file or an absolute path (no preopen for `/`) |
+| `env.assemble` | `(wat_ptr i32, wat_len i32) -> i32` | no | emitted under `LW_HOST_ASM=1` (D211) | `wasm.host-asm/assemble` (rt/wasm/host_asm.lg): the UTF-8 bytes are a module's WAT text, which the host parses to a binary and keeps; returns the binary's byte length, or `-1` with the parse error on stderr. The module reads nothing back: B2 will hand the encoded binary through the same seam and the host only stores it | `wasm-tools parse`; node-host `--assemble-out <path>` writes the binary and `<path>.wat`, run.mjs `LW_ASSEMBLE_OUT` | the page's `assemble` option, else `-1` and `assembled` holds nothing | **not provided**: a `LW_HOST_ASM=1` module fails to instantiate |
+| `env.emit` | `(name_ptr i32, name_len i32, json_ptr i32, json_len i32) -> ()` | no | emitted (P4.1) | `js/emit`: the event name and the data as JSON text, let-go's `_lgEmit(name, dataJson)` shape; the JSON is byte-identical to let-go's (`fromValue` + `encoding/json`: sorted keys, HTML escaping). xsofy calls `js/emit` 10 times | dropped | `onEmit`, by default the `window` CustomEvent the shell listens for (`xsofy/startup` sets the title and quest, `xsofy/stats`, `xsofy/replay-dump`, …) | dropped |
+| `env.url_param` | `(name_ptr i32, name_len i32, buf i32, cap i32) -> i32` | no | emitted (P4.1) | `js/url-param`: getenv's contract over the page's query string; `-1` when absent or off-browser (native returns nil). xsofy reads `?seed=` and friends through it (6 calls) | `-1` | the page's query string (`urlParams`) | `-1` |
+| `env.argc` | `() -> i32` | no | emitted (P3.2, D115) | `os/args` length | `[lg path, program, args…]` (run.mjs: `LG`, the oracle's native binary) | the `argv` option (default `['lg']`) | WASI `args_sizes_get`; `wasmtime-run.sh` passes `--argv0 $LG`, the program and its args |
+| `env.arg` | `(i i32, buf i32, cap i32) -> i32` | no | emitted (P3.2, D115) | argument `i`, getenv's copy contract; past the end `""` | as above | as above | WASI `args_get` |
+| `term.read_key` | `(buf i32, cap i32) -> i32` | **yes** | emitted (D104) | waits for the next key and copies its UTF-8 bytes (one `sendInput` call = one key, ≤ 16 bytes, as in let-go's SAB ring) into `[buf, buf+cap)`; returns the byte count, **0 = end of input** (`read-key` → nil). Coalesces (D98, below). The runtime builds the lg String | run.mjs: always 0 (no terminal); node-host: `--keys` or stdin, no coalescing unless `--coalesce` | the `sendInput` queue, suspending, coalescing | one byte of stdin per `fd_read`, blocking; 0 at EOF; no coalescing |
+| `term.key_pending` | `() -> i32` | no | emitted (D104) | 1 if a key is queued, else 0 (`key-pending?`) | run.mjs 0; node-host the queue | the queue | always 0 (a peek would need `poll_oneoff` on fd 0) |
+| `term.size` | `() -> (i32 i32)` | no | emitted (D104) | `cols rows` as a multi-value result (`term/size` → `[cols rows]`) | run.mjs `(-1, -1)` = no terminal, as native off a TTY (P3.2); node-host 80×24 or `--size` | `setSize` from the shell, 80×24 before it | 80×24 |
+| `term.write` | `(ptr i32, len i32) -> i32` | no | defined | same stream as `env.write` fd 1. let-go's `term/write` is `(write *out* s)`, so the runtime may use either; this exists so a terminal host can tell term output apart if it ever needs to | stdout | `onOutput` | `fd_write` 1 |
 
 **Not imports, and why:**
 - **Colour and cursor** (`term/set-fg`, `set-bg`, `move-cursor`, `clear`, `bold`, …):
@@ -109,8 +110,10 @@ Failing both, the host prints the JS error message. A newline follows, and the
 result is `{code: 1, error: <that line>}`. A trap in the start function
 surfaces from `instantiate` and gets the same `error:` line. node-host matches
 run.mjs byte for byte on `corpus/control/uncaught{,-value,-raw}.lg`. Under
-wasmtime an uncaught lg exception exits 1 with wasmtime's "thrown Wasm
-exception" backtrace instead; the adapter does not format it.
+wasmtime the adapter's `_start` catches the `lw lgex` tag and prints the same
+`error: ` line through `lw report` on fd 2, then `proc_exit(1)`; a wasm trap
+surfaces as wasmtime's own report (exit 1 as well), after a `wasm/trap` has
+printed its message.
 
 ## Browser surface: `window.LetGoHost`
 

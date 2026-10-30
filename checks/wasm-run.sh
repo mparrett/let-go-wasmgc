@@ -11,7 +11,9 @@
 # native-lg args oracle.sh passes; its `-source-paths <dirs>` names the
 # library roots a multi-namespace program requires from, P3.2),
 # LW_MODULE_CACHE=<dir> (reuse the compiled module of an unchanged program:
-# keyed by the program, its source roots, src/ and rt/; args are run-time).
+# keyed by the program, its source roots, src/ and rt/; args are run-time),
+# LW_WASM_OUT=<path> (compile only: write the module there and exit 0; the
+# wasmtime runner, checks/wasmtime-run.sh, builds its module this way).
 #
 # The compile and the run go through checks/limit.sh (run-corpus.sh's limits).
 # The compile holds one slot of the machine-wide pool (checks/sem.sh) for its
@@ -45,4 +47,5 @@ else
   wasm-tools parse "$t/m.wat" -o "$t/m.wasm" || exit 1
   [ -n "$key" ] && command cp "$t/m.wasm" "$LW_MODULE_CACHE/$key.wasm.tmp$$" && command mv -f "$LW_MODULE_CACHE/$key.wasm.tmp$$" "$LW_MODULE_CACHE/$key.wasm"
 fi
+if [ -n "${LW_WASM_OUT:-}" ]; then command cp "$t/m.wasm" "$LW_WASM_OUT"; exit 0; fi
 "$here/checks/limit.sh" run node "$here/src/run.mjs" "$t/m.wasm" "$prog" "$@"

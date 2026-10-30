@@ -8,7 +8,8 @@
 #   hello: stdout must equal native lg's for the same program, byte for byte;
 #   keys:  a, b, q pressed must be echoed by term.read_key.
 # Then runs both modules under host/node-host.mjs and under wasmtime (the
-# module merged with host/wasmtime-adapter.wat), and prints one table.
+# module merged with host/wasmtime-adapter.wat by checks/wasmtime-run.sh),
+# and prints one table.
 #
 # Exit 0 iff hello and keys pass in the browser UNDER COI. The no-COI row is
 # reported either way (JSPI needs no SharedArrayBuffer, so it is expected to
@@ -61,7 +62,6 @@ mode=default
 case "${1:-}" in --xsofy-shell) mode=xsofy-shell ;; --xsofy) mode=xsofy ;; --legmacs) mode=legmacs ;; "") ;; *) echo "usage: browser-boot.sh [--xsofy-shell|--xsofy|--legmacs]"; exit 2 ;; esac
 here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
-MERGE=$WASM_MERGE
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }
 trap cleanup EXIT
@@ -218,15 +218,9 @@ LG_HOST_TIMING=1 node "$here/host/node-host.mjs" "$www/hello.wasm" </dev/null >"
 node "$here/host/node-host.mjs" "$www/keys.wasm" --keys abq >"$t/node-keys.out" 2>&1
 host_row node "$t/node-hello.out" "$nx" "$t/node-keys.out" >"$t/rows.tsv"
 
-if command -v wasmtime >/dev/null 2>&1; then
-feat=(--enable-gc --enable-reference-types --enable-exception-handling --enable-tail-call --enable-multivalue
-      --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --disable-compact-imports)
-wasm-tools parse "$here/host/wasmtime-adapter.wat" -o "$t/adapter.wasm"
-grep -v '(export "memory"' "$here/host/wasmtime-adapter.wat" | wasm-tools parse -o "$t/adapter-term.wasm" -
-wt_run() {  # wt_run <module> <out>; keys a b q on stdin
-  "$MERGE" "${feat[@]}" --rename-export-conflicts "$1" main "$t/adapter.wasm" env "$t/adapter-term.wasm" term -o "$1.wt" 2>/dev/null || return 1
-  printf 'abq' | wasmtime run -W gc=y,exceptions=y,function-references=y,tail-call=y,max-wasm-stack=268435456 \
-    --invoke 'lw main' "$1.wt" 2>"$2.err" | grep -v '^<null anyref>$' >"$2"
+if "$here/checks/wasmtime-run.sh" --probe >/dev/null 2>&1; then
+wt_run() {  # wt_run <module> <out>; keys a b q on stdin (the merge and the flags: checks/wasmtime-run.sh, D232)
+  printf 'abq' | "$here/checks/wasmtime-run.sh" --wasm "$1" >"$2" 2>"$2.err"
   return "${PIPESTATUS[1]}"
 }
 wt_run "$www/hello.wasm" "$t/wt-hello.out"; wx=$?
