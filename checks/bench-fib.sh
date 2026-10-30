@@ -3,10 +3,14 @@
 # corpus/scalar/fib.clj (checked arithmetic, hybrid boxing, as shipped) must
 # run within 1.5x of the probe's fib-i31 variant (unchecked, i31 boxing,
 # ^long-hinted source; ../emit-wasm-probe/ext/gen-ext.lg), both built fresh
-# and timed in one node process. Exits 0 iff backend/probe <= 1.5.
+# and timed in one node process. Exits 0 iff backend/probe <= 1.5. The
+# reference source is not in this repository: without ../emit-wasm-probe/
+# ext/gen-ext.lg the row is SKIP (exit 2, before anything is built), as the
+# optional-runtime rows are (D227).
 # Env: LG, REPS (default 5).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
+[ -f "$here/../emit-wasm-probe/ext/gen-ext.lg" ] || { echo "SKIP reference fib source (../emit-wasm-probe) not present"; exit 2; }
 . "$(dirname "$0")/env.sh"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 "$LG" -source-paths "$here/src" "$here/src/driver.lg" "$here/corpus/scalar/fib.clj" "$t/backend.wat" >"$t/drv.log" 2>&1 \

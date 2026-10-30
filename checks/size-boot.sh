@@ -9,12 +9,15 @@
 # base64 of gzip, as `lg -w` emits it) + coi-serviceworker.js; lw = index.html
 # (the same shell injected) + xsofy-shell-adapter.js + lg-wasm-host.js +
 # module.wasm. Sizes raw, brotli -q 11 and gzip -9 (GitHub Pages serves gzip
-# only). Boot = local-scripts/browser-smoke-playwright/zz-boot-time-probe.mjs
-# (navigation to "press any key", then Space to the HUD), REPS runs per lane
-# (default 5), medians. Both lanes are built by checks/lane5.sh's caches
-# (run it first, or this script builds them the same way).
+# only). Boot = checks/boot-time-probe.mjs (navigation to "press any key",
+# then Space to the HUD), REPS runs per lane (default 5), medians. Both lanes
+# are built by checks/lane5.sh's caches (run it first, or this script builds
+# them the same way).
 # Writes the table to corpus/xsofy/size-boot.md and prints it.
 # Exit 0 iff both lanes boot to the map in every run and the table is written.
+# Boot needs Playwright's Chromium: when checks/browser-probe.mjs finds none
+# the row is SKIP (exit 2) before anything is built; LW_REQUIRE_BROWSER=1
+# makes that a FAIL.
 #
 # checks/size-boot.sh --legmacs — P6.5: the same table for legmacs, in
 # checks/size-boot-legmacs.sh (corpus/legmacs/size-boot.md).
@@ -24,11 +27,12 @@ for a in "$@"; do case "$a" in
   *) echo "size-boot.sh: unknown arg $a" >&2; exit 2;;
 esac; done
 here=$(cd "$(dirname "$0")/.." && pwd)
-ws=$(cd "$here/../.." && pwd)
 . "$(dirname "$0")/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 REPS=${REPS:-5}
-pw=${LW_BROWSER_TOOLS:-$ws/local-scripts}/browser-smoke-playwright
+browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
+[ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
+[ -n "$browser_skip" ] && { echo "SKIP (xsofy size/boot: $browser_skip)"; exit 2; }
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
 
 # the stock lane: lane5.sh's cache (same key), built by lane5.sh if missing
@@ -57,8 +61,8 @@ read -r l_raw l_br l_gz <<<"$(sizes "$t/lw/index.html" "$t/lw/xsofy-shell-adapte
 read -r m_raw m_br m_gz <<<"$(sizes "$t/lw/module.wasm")"
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
-(cd "$pw" && node zz-boot-time-probe.mjs "$stock" "$(free_port)" stock "$REPS") >"$t/boot-stock.json" 2>&1
-(cd "$pw" && node zz-boot-time-probe.mjs "$t/lw" "$(free_port)" lw "$REPS") >"$t/boot-lw.json" 2>&1
+node "$here/checks/boot-time-probe.mjs" "$stock" "$(free_port)" stock "$REPS" >"$t/boot-stock.json" 2>&1
+node "$here/checks/boot-time-probe.mjs" "$t/lw" "$(free_port)" lw "$REPS" >"$t/boot-lw.json" 2>&1
 
 python3 - "$t" "$here/corpus/xsofy/size-boot.md" "$s_raw" "$s_br" "$s_gz" "$l_raw" "$l_br" "$l_gz" "$m_raw" "$m_br" "$m_gz" "$raw_module" "$REPS" <<'EOF'
 import json, sys, datetime, subprocess
@@ -80,7 +84,7 @@ rows = [
   ('TinyGo (recorded 2026-09-20, not re-run)', '2.3 MB', '1.27 MB (floor build)', '1.70 MB (floor build)', '8725 ms', '12553 ms'),
 ]
 out = [f'# P4.3: lane 5 size and boot (measured {today}, checks/size-boot.sh)', '',
-       f'xsofy {xs}, lg e9789b7d (`lg-e9789b7d53`), headless Chromium via zz-boot-time-probe.mjs, {reps} runs per lane, medians.',
+       f'xsofy {xs}, lg e9789b7d (`lg-e9789b7d53`), headless Chromium via checks/boot-time-probe.mjs, {reps} runs per lane, medians.',
        'Bundle = every file the page fetches (shell included in both). Boot times are from navigation; the title card itself',
        'animates for part of the time-to-title on every lane.', '',
        '| lane | bundle raw | brotli -q 11 | gzip -9 | time-to-title | time-to-map |', '|---|---|---|---|---|---|']
