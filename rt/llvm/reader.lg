@@ -608,6 +608,35 @@
 ;; ---------------------------------------------------------------------------
 ;; readNumber (reader.go:638): the token, then the same cascade of parsers.
 
+(defn- word-at? [tk a n w]                                ; tk[a..n) equals w ignoring ASCII case
+  (if (= (- n a) (arch/alen w))
+    (loop [i 0] (if (>= i (arch/alen w)) true
+                  (let [c (arch/bget tk (+ a i)) c (if (if (>= c 65) (<= c 90) false) (+ c 32) c)]
+                    (if (= c (arch/bget w i)) (recur (inc i)) false))))
+    false))
+
+;; parse-double (strconv.ParseFloat): a decimal float, an infinity word
+;; (signed or not), an unsigned NaN, else nil. A hex float is a named limit
+;; here (native parses it).
+(defn- pd-arity [n] (c/raise (s/str-bytes (s/str (s/lit "wrong number of arguments ") (sq/box-int n)))))
+(defn ^{:twin "core/parse-double"} parse-double*
+  ([] (pd-arity 0))
+  ([s]
+   (if (= 17 (sq/kind s))
+     (let [tk (s/str-bytes s) n (arch/alen tk)]
+       (cond
+         (= 1 (float-syntax tk 0 n)) (parse-float tk 0 n)
+         (= 2 (float-syntax tk 0 n)) (c/raise (s/str-bytes (s/str (s/lit "llvm: parse-double of a hex float ") s (s/lit " (named limit)"))))
+         :else
+         (let [sg (sign-at tk 0 n) a (if (= sg 0) 0 1)]
+           (cond (if (word-at? tk a n (arch/bytes-of-string "inf")) true (word-at? tk a n (arch/bytes-of-string "infinity")))
+                 (let [inf (* 1.7976931348623157e308 10.0)] (s/box-float (if (= sg -1) (- 0.0 inf) inf)))
+                 (if (= sg 0) (word-at? tk 0 n (arch/bytes-of-string "nan")) false) (s/box-float ##NaN)
+                 :else (arch/null)))))
+     (c/raise (arch/bytes-of-string "parse-double expected String"))))
+  ([s x] (pd-arity 2))
+  ([s x & more] (pd-arity (+ 2 (sq/unbox-int (sq/count more))))))
+
 (defn- invalid-number [st tk] (fail! st (s/str (s/lit "invalid number: ") (s/mk-str tk))))
 
 (defn- big-limit [tk why]

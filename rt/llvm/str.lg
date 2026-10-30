@@ -616,6 +616,13 @@
 ;; Fixed arities until the backend's variadic-native convention exists;
 ;; the -seq forms take the argument list (what apply passes).
 (defn ^{:twin "core/str"} str ([] (lit "")) ([a] (out1 0 a)) ([a b] (out2 0 a b)) ([a b c] (out3 0 a b c)))
+(defn- nl-lit [] (mk-str (arch/bytes-of-string "\n")))
+(defn ^{:twin "core/prn-str"} prn-str*                    ; CorePrnStr (lang.go:7494): pr-str + "\n"
+  ([] (nl-lit)) ([a] (str (out1 1 a) (nl-lit))) ([a b] (str (out2 1 a b) (nl-lit))) ([a b c] (str (out3 1 a b c) (nl-lit)))
+  ([a b c & more] (str (out-seq 1 (sq/cons a (sq/cons b (sq/cons c more)))) (nl-lit))))
+(defn ^{:twin "core/println-str"} println-str*            ; CorePrintlnStr (lang.go:7510): print-str + "\n"
+  ([] (nl-lit)) ([a] (str (out1 2 a) (nl-lit))) ([a b] (str (out2 2 a b) (nl-lit))) ([a b c] (str (out3 2 a b c) (nl-lit)))
+  ([a b c & more] (str (out-seq 2 (sq/cons a (sq/cons b (sq/cons c more)))) (nl-lit))))
 (defn ^{:twin "core/pr-str"} pr-str ([] (lit "")) ([a] (out1 1 a)) ([a b] (out2 1 a b)) ([a b c] (out3 1 a b c)))
 (defn ^{:twin "core/print-str"} print-str ([] (lit "")) ([a] (out1 2 a)) ([a b] (out2 2 a b)) ([a b c] (out3 2 a b c)))
 (defn str-seq [xs] (out-seq 0 xs))
@@ -1053,6 +1060,18 @@
           (buf-done b))))
 
 ;; ---------------------------------------------------------------------------
+(defn- arity-err [n] (raise-val (arch/bytes-of-string "wrong number of arguments ") (sq/box-int n) (arch/bytes-of-string "")))
+(defn ^{:twin "core/parse-boolean"} parse-boolean*
+  ([] (arity-err 0))
+  ([s] (if (= 17 (sq/kind s))
+         (let [bs (str-bytes s)]
+           (cond (sq/bytes-eq? bs (arch/bytes-of-string "true")) (sq/bool true)
+                 (sq/bytes-eq? bs (arch/bytes-of-string "false")) (sq/bool false)
+                 :else (arch/null)))
+         (raise-lit (arch/bytes-of-string "parse-boolean expected String"))))
+  ([s x] (arity-err 2))
+  ([s x & more] (arity-err (+ 2 (sq/unbox-int (sq/count more))))))
+
 ;; parse-long (lang.go:2836): strconv.ParseInt(s, 10, 64), nil on any error.
 
 (defn ^{:twin "core/parse-long"} parse-long [s]

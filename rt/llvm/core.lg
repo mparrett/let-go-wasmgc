@@ -797,13 +797,20 @@
                  (= k 11) true
                  (= k 20) true
                  (= k 21) true
-                 (= k 30) true
-                 (= k 31) true
+                 (if (>= k 30) (<= k 34) false) true    ; maps, sets and their transients
+                 (= k 37) true                          ; a typed array
                  (= k 38) true
                  (= k 39) true
                  (= k 40) true
                  (= k 36) (if (= 1 (standin x)) false true)
                  :else false))))
+  ([x y & more] (sq/bool false)))
+
+;; reversible? (CoreIsReversible): vectors (a MapEntry is not one) and the sorted collections.
+(defn ^{:twin "core/reversible?"} reversible?*
+  ([] (sq/bool false))
+  ([x] (let [k (ckind x)] (sq/bool (cond (= k 11) true (= k 38) true :else (= k 39)))))
+  ([x y] (sq/bool false))
   ([x y & more] (sq/bool false)))
 
 (defn ^{:twin "core/not"} lnot [x] (sq/bool (if (sq/truthy? x) false true)))
@@ -1124,11 +1131,33 @@
           :else (raise-not-supported (lit (arch/bytes-of-string "assoc! not supported on ")) t))))
 
 (defn ^{:twin "core/assoc!"} assoc!
+  ([] (raise-arity 0))
   ([t] (raise-arity 1))
   ([t key] (assoc!1 t key (arch/null)))                  ; a missing val is nil (lang.go:7133)
   ([t key v] (assoc!1 t key v))
   ([t key v key2] (assoc!1 (assoc!1 t key v) key2 (arch/null)))
-  ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2)))
+  ([t key v key2 v2] (assoc!1 (assoc!1 t key v) key2 v2))
+  ([t key v key2 v2 & more]                              ; pairs past the second; an odd tail key gets nil
+   (loop [t (assoc!1 (assoc!1 t key v) key2 v2) q (sq/seq more)]
+     (if (arch/null? q)
+       t
+       (let [nq (sq/next q)]
+         (if (arch/null? nq)
+           (assoc!1 t (sq/first q) (arch/null))
+           (recur (assoc!1 t (sq/first q) (sq/first nq)) (sq/next nq))))))))
+
+;; pop! (CorePopBang, TransientVector.Pop): editable first, then non-empty.
+(defn ^{:twin "core/pop!"} pop!*
+  ([] (raise (arch/bytes-of-string "pop! expects 1 arg")))
+  ([t] (if (= 34 (ckind t))
+         (do (tvec-editable t)
+             (let [v (arch/get TVec 0 t)]
+               (if (= 0 (pv/vcount v))
+                 (raise (arch/bytes-of-string "can't pop empty transient vector"))
+                 (do (arch/set! TVec 0 t (pv/vpop v)) t))))
+         (raise (arch/bytes-of-string "pop! expects a transient vector"))))
+  ([t x] (raise (arch/bytes-of-string "pop! expects 1 arg")))
+  ([t x & more] (raise (arch/bytes-of-string "pop! expects 1 arg"))))
 
 (defn ^{:twin "core/dissoc!"} dissoc!
   ([t] (raise-arity 1))
