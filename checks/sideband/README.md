@@ -81,7 +81,8 @@ exits, which wakes the session. The listener has already fetched the note
 into `refs/issue-watch/issue-<id>`, where the prompt hook reads it, so the
 woken session reads the issue at once, runs `done <issue> <commit>`, and
 starts `wait` again. A ping that lands meanwhile stays queued, so the next
-`wait` returns at once. Issue ids match by prefix, so a short and a full id
+`wait` returns at once. `wait` returns each ping once: one a session ignores
+without `done` stays in `pending` but does not wake it again. Issue ids match by prefix, so a short and a full id
 name the same issue.
 
 `sideband.sh` with no arguments is the offline self-test (row P0.8): a
