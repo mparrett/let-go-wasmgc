@@ -1,0 +1,23 @@
+id: c372584
+v: 2
+title: Rows P1.GATE, P4.3 and P7.4 depend on probes and scripts outside the repo
+status: open
+priority: medium
+created: 2026-10-30T13:35:20Z
+updated: 2026-10-30T13:35:20Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Three rows fail on any checkout without two files from a local workspace, on llvm-poly and its branches alike, so a red gate there says nothing about the change under test:
+ 
+ - P1.GATE: checks/bench-fib.sh builds the reference fib from `../emit-wasm-probe` (bench-fib-probe.lg requires its lower-wasm, ext/gen-ext.lg), the prototype src/lower_wasm.lg was promoted from at P1.0. It is not in this repo or on GitHub, so the row stops at "unable to load namespace lower-wasm" after gate 1 passes 11/11. README.md says it "fails outside the workspace". tools/reach.sh calls `../emit-wasm-probe/reach.lg` too.
+ - P4.3 and P7.4: checks/size-boot.sh times boot with `$LW_BROWSER_TOOLS/browser-smoke-playwright/zz-boot-time-probe.mjs`. The Playwright install there is present (playwright 1.64); the probe script is not in it or in this repo, so both rows fail at "Cannot find module .../zz-boot-time-probe.mjs".
+ 
+ Proposed: bring both into the repo (the fib reference as a checked-in or generated module under checks/, the boot probe beside checks/browser-boot.mjs, which already boots the lanes), or have each row exit 2 with `SKIP <reason>` when its probe is absent, as the optional-runtime rows do (git-issue:f1a846c).
+ 
+ Facts that close it:
+ - F1 P1.GATE runs to its fib comparison on a checkout with no ../emit-wasm-probe: checks/run.sh P1.GATE exits 0 or 2 with SKIP, never on a missing namespace.
+ - F2 P4.3 and P7.4 time boot with a probe from this repo, or SKIP naming the missing probe.
+ - F3 tools/reach.sh runs from this repo alone, or its README says what it needs.
+ 
+ Refs git-issue:f1a846c (optional runtimes SKIP with a reason), git-issue:f650769 (llvm parity, where these rows showed up).
