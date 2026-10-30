@@ -1,0 +1,16 @@
+;; satisfies? across a library and the program (lib: polylib.shapes): the
+;; library's protocol on its deftype and record, on a native type (String)
+;; and nil it extended, and on a program record; the program's protocol
+;; extended to a library record and to a native type. Dispatch agrees.
+(ns poly.protocols-lib (:require [polylib.shapes :as s]))
+
+(defprotocol Named (nm [this]))
+(defrecord Disc [r] s/Shape (area [this] (* 3 r r)))
+(extend-type s/Rect Named (nm [this] "rect"))
+(extend-type java.lang.Long Named (nm [n] (str "long " n)))
+
+(println (satisfies? s/Shape (s/->Unit)) (satisfies? s/Shape (s/->Rect 2 3)) (satisfies? s/Shape (s/->Plain 1))
+         (satisfies? s/Shape "abc") (satisfies? s/Shape nil) (satisfies? s/Shape 7) (satisfies? s/Shape (->Disc 1)))
+(println (satisfies? Named (s/->Rect 1 1)) (satisfies? Named (s/->Unit)) (satisfies? Named 5) (satisfies? Named "x"))
+(println (s/area (s/->Unit)) (s/area (s/->Rect 2 3)) (s/area "abc") (s/area nil) (s/area (->Disc 1))
+         (nm (s/->Rect 1 1)) (nm 5))
