@@ -26,3 +26,8 @@ description: Our agents coordinate through git-issue comments, which reach the o
  Facts that close it:
  - F1 checks/sideband/keys/ holds both sides' public agent keys, merged by PR.
  - F2 a ping from each side's agents reaches the other's listener and verifies against a pinned key.
+
+## Comments
+[2026-10-30T17:02:18Z] Norman Nunley, Jr: One rule for both sides: a ping only points at an issue that already exists and is open. It never opens a topic; a new subject goes to the tracker as an issue first, approved by one of us, and only then gets pinged. A listener ignores a ping naming a missing or closed issue rather than acting on it.
+ 
+ On reach: the spike's nodes ran behind a home router's NAT, and both the put and the listen went through public DHT nodes, so ordinary NAT works. What's still unknown is a network that blocks outbound UDP, carrier-grade or symmetric NAT, or a sandbox with no UDP egress. Do your agents run behind one of those?
