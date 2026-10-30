@@ -247,14 +247,17 @@ prefetch() {
 # ids match by prefix either way, so `ac94ed2` and the full id are one issue
 same_id() { case $1 in "$2"*) return 0 ;; esac; case $2 in "$1"*) return 0 ;; esac; return 1; }
 wanted() { local w; [ -z "$WANT" ] && return 0; for w in $WANT; do same_id "$1" "$w" && return 0; done; return 1; }
-# a pending ping is the token: wait returns while one for a wanted issue is
-# queued, so a ping that lands while the last one is being read is not lost
+# a pending ping is the token: wait returns one for a wanted issue that it
+# has not returned before, so a ping that lands while the last one is being
+# read is not lost, and one a session ignores without `done` wakes it once
 cmd_wait() {
-  local q=$STATE/queue.tsv p i c rest
+  local q=$STATE/queue.tsv d=$STATE/delivered p i c rest
   while :; do
     if [ -f "$q" ]; then
       while IFS=$'\t' read -r p i c rest; do
-        [ -n "$c" ] && wanted "$i" && { echo "$p $i $c"; return 0; }
+        [ -n "$c" ] && wanted "$i" || continue
+        grep -qxF "$p $i $c" "$d" 2>/dev/null && continue
+        echo "$p $i $c" >> "$d"; echo "$p $i $c"; return 0
       done < "$q"
     fi
     sleep "${LW_SIDEBAND_POLL:-2}"
@@ -268,6 +271,11 @@ cmd_done() {   # <issue> [<commit>]: with a commit, only the ping that was read
     same_id "$i" "$issue" && { [ -z "$commit" ] || [ "$c" = "$commit" ]; } && continue
     printf '%s\t%s\t%s\t%s\n' "$p" "$i" "$c" "$rest"
   done < "$q" > "$q.tmp" && mv "$q.tmp" "$q"
+  [ -f "$STATE/delivered" ] || return 0
+  while read -r p i c; do
+    same_id "$i" "$issue" && { [ -z "$commit" ] || [ "$c" = "$commit" ]; } && continue
+    echo "$p $i $c"
+  done < "$STATE/delivered" > "$STATE/delivered.tmp" && mv "$STATE/delivered.tmp" "$STATE/delivered"
 }
 
 selftest() {
@@ -313,12 +321,15 @@ selftest() {
   enqueue b i5 c5 >/dev/null; sleep 3
   check "wait wakes on a new ping for its issue" '! kill -0 $w 2>/dev/null && [ "$(cat "$t/woke")" = "b i5 c5" ]'
   kill $w 2>/dev/null; wait $w 2>/dev/null
-  check "wait returns at once while a ping is pending" '[ "$(WANT=i5 LW_SIDEBAND_POLL=1 timeout 5 bash -c "$(declare -f cmd_wait wanted same_id); STATE=$STATE; WANT=i5; cmd_wait")" = "b i5 c5" ]'
-  enqueue b i5 c6 >/dev/null; cmd_done i5 c5
+  waitfor() { timeout 4 bash -c "$(declare -f cmd_wait wanted same_id); STATE=$STATE; WANT=$1; LW_SIDEBAND_POLL=1; cmd_wait"; }
+  check "wait does not return a ping it already returned" '! waitfor i5 >/dev/null'
+  enqueue b i5 c6 >/dev/null
+  check "a newer commit on a returned issue wakes wait at once" '[ "$(waitfor i5)" = "b i5 c6" ]'
+  cmd_done i5 c5
   check "done with a commit keeps a newer ping pending" 'grep -q "	i5	c6	" "$t/state/queue.tsv"'
   check "ids match by prefix" 'same_id ac94ed2 ac94ed2f00 && same_id ac94ed2f00 ac94ed2 && ! same_id ac94ed2 bc33496'
   cmd_done i5
-  check "done without a commit drops every ping for the issue" '! grep -q "	i5	" "$t/state/queue.tsv"'
+  check "done without a commit drops every ping for the issue" '! grep -q "	i5	" "$t/state/queue.tsv" && ! grep -q " i5 " "$t/state/delivered"'
   rm -rf "$t"
   return $fail
 }
