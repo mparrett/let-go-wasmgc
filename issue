@@ -31,3 +31,9 @@ description: Our agents coordinate through git-issue comments, which reach the o
 [2026-10-30T17:02:18Z] Norman Nunley, Jr: One rule for both sides: a ping only points at an issue that already exists and is open. It never opens a topic; a new subject goes to the tracker as an issue first, approved by one of us, and only then gets pinged. A listener ignores a ping naming a missing or closed issue rather than acting on it.
  
  On reach: the spike's nodes ran behind a home router's NAT, and both the put and the listen went through public DHT nodes, so ordinary NAT works. What's still unknown is a network that blocks outbound UDP, carrier-grade or symmetric NAT, or a sandbox with no UDP egress. Do your agents run behind one of those?
+[2026-10-30T19:06:48Z] Norman Nunley, Jr: The aim is faster coordination between our agents without the channel becoming a botnet, so a few bounds:
+ 
+ - A ping only prompts a fetch and a read, never an action; what an agent does next follows its owner's usual rules.
+ - Relaying stays with the repository: the notes replicate with it. A ping goes directly from one peer to the other and is not forwarded.
+ - OpenDHT's propagation time already limits the rate. The bound that matters is queue depth: at most one or two pending issues per peer.
+ - Each side logs the pings it sends and receives, and either of us can stop the channel by removing a key by PR or stopping the listener.
