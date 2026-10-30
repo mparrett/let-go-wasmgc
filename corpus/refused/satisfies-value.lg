@@ -1,0 +1,9 @@
+;; refuse-runtime: defprotocol is not supported on the WasmGC target
+;; refuse-llvm: satisfies? of a protocol not named at the call (protocols are not values on the llvm target)
+;; A protocol taken from a collection is a value. Natively satisfies? takes
+;; any protocol value; the llvm lane answers satisfies? only for a protocol
+;; named at the call (corpus/poly/protocols.lg), and the GC lane raises its
+;; named limit for protocols when the program runs.
+(defprotocol Named (nm [this]))
+(def protocols [Named])
+(println (satisfies? (first protocols) "s"))

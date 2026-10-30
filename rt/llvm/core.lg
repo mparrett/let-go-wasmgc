@@ -50,8 +50,10 @@
 ;; User instances have a real type, shared field array, metadata, and a stable
 ;; allocation token. The token is independent of compiler names and gensyms.
 (arch/defstruct UserInstance [:ref :ref :ref :i64])
-(arch/defstruct UserGlobals [[:mut :i64] [:mut :ref]]) ; identity counter, nil protocol methods
-(def user-globals (arch/new UserGlobals 0 (arch/null)))
+;; identity counter, nil's protocol methods, and the methods of a library
+;; type's stand-in (a library deftype or defrecord): stand-in -> method table
+(arch/defstruct UserGlobals [[:mut :i64] [:mut :ref] [:mut :ref]])
+(def user-globals (arch/new UserGlobals 0 (arch/null) (arch/null)))
 (arch/defstruct WatchTable [[:mut :ref]]) ; alternating keys/functions, shared by atom with-meta copies
 (arch/defstruct MetaEnv [:ref :ref])              ; a with-meta'd fn's env: inner fn, meta (vm.NewMetaFn)
 ;; A keyword or symbol with meta: let-go's is a distinct value that is still
@@ -241,14 +243,24 @@
   (let [anc (arch/array-new pv/Node 1 (type-of-id 42))]
     (arch/new TypeVal (s/str-bytes nm) -1 anc (arch/null) 0 fields)))
 
+;; t is nil, a Type, or a library type's stand-in (an extend-type of a
+;; library deftype or defrecord: its methods go in the stand-in's own table)
 (defn install-type-method! [t key method]
-  (let [table (if (arch/null? t) (arch/get UserGlobals 1 user-globals) (arch/get TypeVal 3 t))
-        updated (m/massoc (if (arch/null? table) (m/empty-map) table) key method)]
-    (if (arch/null? t)
-      (arch/set! UserGlobals 1 user-globals updated)
-      (do (arch/set! TypeVal 3 t updated)
-          (arch/set! TypeVal 4 t (arch/i64-add (arch/get TypeVal 4 t) 1))))
-    (arch/null)))
+  (cond
+    (arch/null? t)
+    (let [table (arch/get UserGlobals 1 user-globals)]
+      (arch/set! UserGlobals 1 user-globals (m/massoc (if (arch/null? table) (m/empty-map) table) key method)))
+    (arch/is? TypeVal t)
+    (let [table (arch/get TypeVal 3 t)]
+      (arch/set! TypeVal 3 t (m/massoc (if (arch/null? table) (m/empty-map) table) key method))
+      (arch/set! TypeVal 4 t (arch/i64-add (arch/get TypeVal 4 t) 1)))
+    :else
+    (let [all (arch/get UserGlobals 2 user-globals)
+          all (if (arch/null? all) (m/empty-map) all)
+          table (m/mget all t (arch/null))]
+      (arch/set! UserGlobals 2 user-globals
+                 (m/massoc all t (m/massoc (if (arch/null? table) (m/empty-map) table) key method)))))
+  (arch/null))
 
 (defn- new-user-instance [t fields mt]
   (let [id (arch/i64-add (arch/get UserGlobals 0 user-globals) 1)]
@@ -304,10 +316,35 @@
     (= 42 (ckind x)) (arch/get UserInstance 0 x)
     :else (type-of-id (dispatch-id x))))
 
+(defn- table-get [table key] (if (arch/null? table) (arch/null) (m/mget table key (arch/null))))
+
+;; a library type's stand-in table holding x's methods, when one was
+;; extended: a field-less deftype's value is its keyword tag, a record's map
+;; carries the tag under :lw/type; any other value has no stand-in
+(defn- standin-method [x key]
+  (let [all (arch/get UserGlobals 2 user-globals)]
+    (cond (arch/null? all) (arch/null)
+          (= 20 (sq/kind x)) (table-get (m/mget all x (arch/null)) key)
+          (map? x) (let [tag (get x :lw/type)] (if (arch/null? tag) (arch/null) (table-get (m/mget all tag (arch/null)) key)))
+          :else (arch/null))))
+
+;; the method of x's own type (nil's own table for nil; a library type's
+;; stand-in table first), else, for any value but nil, Object's: native's
+;; dispatch falls back to an Object extension, and nil takes only its own
 (defn type-method [x key]
-  (let [t (type-of x)
-        table (if (arch/null? t) (arch/get UserGlobals 1 user-globals) (arch/get TypeVal 3 t))]
-    (if (arch/null? table) (arch/null) (m/mget table key (arch/null)))))
+  (let [t (type-of x)]
+    (if (arch/null? t)
+      (table-get (arch/get UserGlobals 1 user-globals) key)
+      (let [m (standin-method x key)
+            m (if (arch/null? m) (table-get (arch/get TypeVal 3 t) key) m)]
+        (if (arch/null? m) (table-get (arch/get TypeVal 3 (type-of-id 42)) key) m)))))
+
+;; satisfies? of a protocol through its key (lw-rt/protocol-key): extended
+;; to x's own type, or to Object, for nil too (Protocol.Satisfies: no ancestry)
+(defn satisfies-key? [key x]
+  (sq/bool (if (arch/null? (type-method x key))
+             (if (arch/null? x) (if (arch/null? (table-get (arch/get TypeVal 3 (type-of-id 42)) key)) false true) false)
+             true)))
 
 ;; t is a Type (the value's type or in its ancestry), or a library type's
 ;; stand-in from the static lowering (a library deftype or defrecord):

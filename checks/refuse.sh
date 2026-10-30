@@ -70,8 +70,11 @@ for f in $(find "$dir" -maxdepth 1 -type f \( -name '*.lg' -o -name '*.clj' \) |
   "$run" "$f" >"$t/out" 2>&1; x=$?
   if [ $x -eq 0 ]; then echo "ACCEPTED     $f ($(basename "$run") exited 0)"; continue; fi
   first=$(sed -E 's/\x1b\[[0-9;]*m//g' "$t/out" | grep -m1 '^error:' | sed 's/^error: //')
+  # a run-time refusal the runtime raises itself (a named limit, such as the
+  # GC lane's protocols) has no backend prefix; a compile-time one always does
   case "$first" in
     "$prefix$want"*) echo "REFUSED      $f: $first"; ok=$((ok+1)) ;;
+    "$want"*) if [ -n "$wantrt" ]; then echo "REFUSED      $f: $first"; ok=$((ok+1)); else echo "WRONG-ERROR  $f: want '$prefix$want', got '$first'"; fi ;;
     *) echo "WRONG-ERROR  $f: want '$prefix$want', got '$first'" ;;
   esac
 done

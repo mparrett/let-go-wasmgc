@@ -1,0 +1,12 @@
+;; A library's protocol, its types implementing it, and its extension of a
+;; native type and nil (corpus/poly/protocols-lib.lg).
+(ns polylib.shapes)
+
+(defprotocol Shape (area [this]))
+
+(deftype Unit [] Shape (area [this] 1))
+(defrecord Rect [w h] Shape (area [this] (* w h)))
+(defrecord Plain [x])
+
+(extend-type String Shape (area [s] (count s)))
+(extend-type nil Shape (area [_] 0))
