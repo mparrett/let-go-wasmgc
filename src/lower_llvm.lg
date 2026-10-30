@@ -159,7 +159,7 @@
 ;; native's class-name vars for the clojure.lang interfaces -> llvm.poly's def
 ;; of the abstract Type with that name
 (def ll-interface-vars
-  (into {} (map (fn [[s d]] [(or (resolve s) (throw (ex-info (str "lower-llvm: native lg has no " s) {}))) d]))
+  (into {} (map (fn [e] [(or (resolve (first e)) (throw (ex-info (str "lower-llvm: native lg has no " (first e)) {}))) (second e)]))
         '[[clojure.lang.Seqable seqable-type] [clojure.lang.Counted counted-type]
           [clojure.lang.IPersistentCollection ipersistentcollection-type]
           [clojure.lang.Associative associative-type] [clojure.lang.Indexed indexed-type]
@@ -652,10 +652,10 @@
       (and *rt* (= op :load-var) (#{#'*out* #'*err*} (ir/aux nid *f*)))
       (to (lw-rt/rt-var 'host (if (= (ir/aux nid *f*) #'*out*) 'out-handle 'err-handle)))
       (not= :call op) nil
-      ;; (satisfies? P x) of a protocol the program declares: a call of P's
-      ;; var, which the driver makes its predicate (P is never a value here)
-      (and *rt* (= v #'satisfies?) (= 2 (count args)) (q-protocol? (ll-callee-var (first args))))
-      (let [pv (ll-callee-var (first args)) sig (ll-var-sig pv 1)]
+      ;; (satisfies? P x) of a protocol the program declares: a call of the
+      ;; predicate the driver made for P
+      (and *rt* (= v #'satisfies?) (= 2 (count args)) (q-protocol-pred (ll-callee-var (first args))))
+      (let [pv (q-protocol-pred (ll-callee-var (first args))) sig (ll-var-sig pv 1)]
         (when-not sig (ll-fail "satisfies?: the protocol's predicate has no signature" {:var pv}))
         (ll-note-abi! pv [(second args)] sig)
         {:sig sig :args [(second args)] :var pv})
@@ -1660,8 +1660,6 @@
   [v0]
   ;; *file* is the program's path wherever it is read (native binds it while
   ;; the file loads), as the GC lane's
-  (when (and *rt* (q-protocol? v0))
-    (ll-fail "a protocol used as a value (protocols are not values on the llvm target; satisfies? takes a protocol named at the call)" {:var v0}))
   (if (and *rt* (= v0 #'*file*) (q-program-file))
     (ll-str-const! (q-program-file))
   (let [v (get value-substs v0 v0)
