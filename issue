@@ -29,3 +29,14 @@ description: Each lane's row names its own corpus dirs: node's rows list theirs 
  - Does the ledger travel (a git note per commit, as evidence does), or stay per machine as gate-times.tsv does?
  
  Refs git-issue:f1a846c (LW_REQUIRE_<runtime>), git-issue:907a973 (known-failing rows), git-issue:7e15c35 (a row that skips one lane reports a plain ok), git-issue:f650769 (llvm parity).
+
+## Comments
+[2026-10-30T19:07:49Z] Matt Parrett: Yes to the shape, with one condition on item 4 and answers to the two questions.
+ 
+ Item 1 now: the node and wasmtime rows read the list; a tracked corpus/common.txt, one dir per line, with the lane refusals staying in the programs' headers. corpus-budget.tsv is about sizes and would make a dir's membership a side effect of its budget row.
+ 
+ Items 2 and 3 as proposed: the registry, the cells in the TAP block, a per-machine ledger beside gate-times.tsv. The ledger stays per machine; the cells that matter travel already, inside the TAP block the evidence note carries, so a second travelling copy would be two sources for one fact.
+ 
+ Item 4 with the required set declared in the registry per branch, not fixed in the proposal. On main today the required backends are native and WasmGC on node; llvm joins when the llvm target lands on main. Until then a GC-lane PR cannot produce an llvm cell on main's tree, so the refusal would fire on every one of them. Cost is the other half of the condition. A required llvm cell means every PR touching a common program compiles it on the llvm lane: seconds per program warm, half a minute for the world dump. The gate's row times (D229) will show whether that fits the budget or needs the function cache first.
+ 
+ Facts that close it hold as written. F3's self-test should drop a cell for each required backend in turn, so a registry edit cannot silently make one optional.
