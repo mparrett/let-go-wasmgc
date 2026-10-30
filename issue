@@ -1,0 +1,26 @@
+id: 4a251d6
+v: 2
+title: let-go: naming a protocol in extend-type or deftype extends it, as in Clojure
+status: open
+priority: medium
+created: 2026-10-30T14:06:51Z
+updated: 2026-10-30T14:06:51Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: In Clojure an extension that names a protocol extends it, methods or not; native let-go counts a protocol as extended only once one of its methods follows it. JVM Clojure 1.12 and the pinned native lg, on 2026-10-30:
+ 
+     (defprotocol Named (nm [this]))
+     (defprotocol Marker)
+     (extend-type java.lang.Long Named Marker (nm [n] n))
+     (satisfies? Named 1)   ; Clojure true, let-go false
+     (satisfies? Marker 1)  ; both true
+     (nm 1)                 ; both raise: nm sits under Marker
+ 
+ and the same for (deftype T [] Marker) and (extend-type String Marker): true in Clojure, false in let-go. A marker protocol (no methods), the usual way to tag a type, never satisfies in let-go.
+ 
+ The llvm lane's satisfies? (corpus/poly/protocols.lg) follows native today; the cases above are left out of the corpus until this is decided, so no test holds either answer.
+ 
+ Facts that close it:
+ - F1 native lg answers as Clojure does for the three shapes above.
+ - F2 corpus/poly/protocols.lg holds them, matching native on llvm.
