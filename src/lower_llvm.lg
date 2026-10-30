@@ -573,7 +573,7 @@
                                   (for [j (range 5 (inc ll-max-invoke))]
                                     (let [tg (str "n" j)]
                                       (str tg ":\n" (walk tg j)
-                                           "  musttail call tailcc void @lg_invoke" j "(ptr %k, " w " %f" (es tg j) ")\n  ret void\n"))))
+                                           "  musttail call tailcc void " (ll-q (str "lg_invoke" j)) "(ptr %k, " w " %f" (es tg j) ")\n  ret void\n"))))
                            "fail:\n"
                            (if (= :int (second (:params cf)))
                              (str "  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, i64 %n)\n")
@@ -1919,7 +1919,8 @@
         (fnc (str "lg_kbox_" (name k)) ["ptr %rec" (str t " %v")]
              (str "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
                   "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n")))
-      (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
+      ;; the code-slot arities; lg_invoke5.. are units the shake keeps when used
+      (for [n (range (inc max-arity))] (ll-invoke-fn n fnt fn-ids))
       ;; a trap: under --test a catchable error, "wasm trap: <msg>", as the
       ;; GC lane's $rt_trap with *trap-throws*; else the host's lg_trap
       [(fnc "lg_trapk" ["ptr %k" "ptr %msg"]
@@ -2079,7 +2080,13 @@
         ;; by its latest lowering
         regions (let [rs @*regions* last-of (into {} (keep-indexed (fn [i r] (when (:name r) [(:name r) i])) rs))]
                   (keep-indexed (fn [i r] (when (or (nil? (:name r)) (= i (last-of (:name r)))) r)) rs))
-        all (concat fns rt-fns regions)
+        ;; lg_invoke5..ll-max-invoke, each a unit: a program keeps only the
+        ;; arities its live code calls through a value
+        invoke-units (let [fnt (ll-sty "$Fn") ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
+                       (mapv (fn [n] (let [r (lir/with-refs (fn [] (ll-invoke-fn n fnt ids)))]
+                                       (ll-unit {:items [(first r)]} (second r))))
+                             (range (inc max-arity) (inc ll-max-invoke))))
+        all (concat fns rt-fns regions invoke-units)
         w (ll-word)
         [pre prelude-refs] (lir/with-refs llvm-prelude)
         unit-refs (into {} (map (juxt :name :refs) all))
