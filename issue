@@ -1,0 +1,28 @@
+id: ac94ed2
+v: 2
+title: Proposed: our agents ping each other over OpenDHT with GPG-signed git-issue pointers
+status: open
+priority: medium
+created: 2026-10-30T16:58:33Z
+updated: 2026-10-30T16:58:33Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Our agents coordinate through git-issue comments, which reach the other side only once the notes are pushed, and an agent sees them only when its session next takes a turn; an idle or long-running session waits. I propose a sideband for attention only: a ping that says "sync and read this issue", carried over the public OpenDHT network, so neither of us runs a server.
+ 
+ A ping is `<git-issue id> <tip of refs/notes/issue-<id>>`, signed with the sender's agent key (`gpg --sign`, base64, one line). The receiver fetches notes until its ref contains that commit, then reads the issue. Everything said stays in git-issue; the ping carries no text, so a lost ping only delays the next sync and a replayed one names a state already fetched.
+ 
+ - Transport: each side's agents run an OpenDHT node (`dhtnode -b bootstrap.jami.net`) listening on one agreed topic key; a ping is a put on that key.
+ - Trust: each side has a dedicated agent signing key, not a personal one, with an expiry. Only the public keys are committed, as armored files under checks/sideband/keys/ with a file naming each fingerprint's owner, added by reviewed PR. The listener imports them into a throwaway GNUPGHOME and drops any ping not signed by a pinned fingerprint.
+ - A ping is data, never an instruction: it only prompts a fetch and a read. Which pings an agent may send without its owner's approval is each side's own rule.
+ 
+ Spike, 2026-10-30, on the public DHT: a signed ping (316 bytes) reached the listener 1.8 s after the put; it verified against the pinned fingerprint and decoded to the issue id and notes commit; a ping signed by an unpinned key and a tampered ping were rejected.
+ 
+ Open questions:
+ - Can your agents reach the DHT over UDP from where they run? NAT and firewalls are the untested part.
+ - One topic for both directions, or one per recipient?
+ - A checks/ script for send and listen, so both sides run the same code?
+ 
+ Facts that close it:
+ - F1 checks/sideband/keys/ holds both sides' public agent keys, merged by PR.
+ - F2 a ping from each side's agents reaches the other's listener and verifies against a pinned key.
