@@ -14,14 +14,14 @@
 //   prefix  ' 1 is one form, value 1; ' then a comment then 1 is two forms,
 //           as native reads it.
 // Exit 0 all pass, 1 a failed assertion (each printed), 2 the page or its
-// build script does not exist yet. Playwright comes from the workspace's
-// smoke-script install, as in checks/browser-boot.mjs.
+// build script does not exist yet. Playwright is whichever
+// checks/playwright.mjs finds.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findChromium } from './playwright.mjs';
+import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -29,12 +29,9 @@ if (!fs.existsSync(path.join(root, 'host/explorer.html')) || !fs.existsSync(path
   console.log('NOT IMPLEMENTED: host/explorer.html or host/build-explorer-serve.sh missing');
   process.exit(3);
 }
-const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
-const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
-let pw;
-try { pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href); }
-catch { console.log(`SKIP no playwright under ${pwDir} (set LW_BROWSER_TOOLS)`); process.exit(2); }
-const chromium = pw.chromium || pw.default.chromium;   // resolve() lands on the CJS entry
+const found = await findChromium();
+if (!found.chromium) { console.log(`SKIP ${found.why}`); process.exit(2); }
+const chromium = found.chromium;
 
 // native's reader error for the third source, the text both panes must show
 const LG = process.env.LG;

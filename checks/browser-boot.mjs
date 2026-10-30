@@ -28,19 +28,16 @@
 // Drives host/build-xsofy-serve.sh's page (the real xsofy-shell.html on
 // xsofy-shell-adapter.js) instead: see xsofyShell() below.
 //
-// Prints one JSON line. Playwright comes from the workspace's smoke-script
-// install (local-scripts/browser-smoke-playwright), not a local npm install.
+// Prints one JSON line. Playwright is whichever checks/playwright.mjs finds.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findChromium } from './playwright.mjs';
+import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// Explicit external tools root supports standalone checkouts (2026-10-03).
-const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
-const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
-const pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href);
-const chromium = pw.chromium || pw.default.chromium;   // resolve() lands on the CJS entry
+const found = await findChromium();
+if (!found.chromium) throw new Error(found.why);
+const chromium = found.chromium;
 
 if (process.argv[2] === '--walk') {
   console.log(JSON.stringify(await heldWalk(...process.argv.slice(3))));
