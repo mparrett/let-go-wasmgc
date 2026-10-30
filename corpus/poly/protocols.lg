@@ -8,7 +8,6 @@
 ;; (corpus/refused/satisfies-value.lg).
 (defprotocol Named (nm [this]) (greet [this s]))
 (defprotocol Anything (anything [x]))
-(defprotocol Marker)
 (deftype Dot [] Named (nm [this] "dot") (greet [this s] (str "hi " s)))
 (defrecord Pt [x y] Named (nm [this] (str "pt" x)) (greet [this s] (str s x y)))
 (defmacro in-do [& body] `(do ~@body))
@@ -21,8 +20,3 @@
 (println (satisfies? Named "s") (nm "s") (satisfies? Named nil) (nm nil) (satisfies? Named 1)
          (satisfies? Anything 5) (satisfies? Anything nil) (satisfies? Anything (->Dot)) (anything [1])
          (try (anything nil) (catch Exception e :throws)))
-;; a protocol with no methods, and extensions that name a protocol with no
-;; method after it: natively only the protocol named before a method counts
-(deftype Plain [] Marker)
-(extend-type java.lang.Long Named Marker (nm [n] n))
-(println (satisfies? Marker (->Plain)) (satisfies? Marker 1) (satisfies? Named 1) (satisfies? Marker "s"))

@@ -859,6 +859,7 @@
 (def protocol-methods (atom {}))   ; method var -> signatures and implementations keyed by [type tag, arity]
 (def protocol-vars (atom {}))      ; every defprotocol's var -> its method vars (llvm's satisfies?)
 (def protocol-preds (atom {}))     ; a protocol var -> the var of its satisfies? predicate (llvm)
+(def protocol-named (atom {}))     ; a protocol var -> [tag fields?] of each arms type that names it (llvm)
 
 (defn type-tag [ns-sym nm] (keyword (str ns-sym) (str nm)))
 
@@ -953,22 +954,27 @@
 
 (defn extension-forms [ns-sym form]
   ;; Extensions receive the runtime type expression, including a saved old type.
-  ;; llvm: a protocol's satisfies? marker, held until one of its methods
-  ;; follows (an extension naming no method satisfies nothing, natively)
-  (let [type-expr (second form) out (atom []) marker (atom nil)]
+  ;; llvm: naming a protocol extends it, methods or not, as in Clojure (native
+  ;; let-go counts it only once a method follows: git-issue:4a251d6)
+  (let [type-expr (second form) out (atom []) cur (atom nil)]
     (reduce (fn [pns x]
               (if (symbol? x)
                 (let [pv (lw-rt/call-in-ns ns-sym (fn [] (resolve x)))]
-                  (reset! marker (when lw-rt/llvm-target?
-                                   (list (lw-rt/rt-sym 'core 'install-type-method!) type-expr (lw-rt/protocol-key pv) true)))
+                  ;; an unresolved protocol leaves cur nil, so the methods after it are
+                  ;; all kept: natively such a program does not compile at all
+                  (reset! cur (when (var? pv) pv))
+                  (when (and lw-rt/llvm-target? (var? pv))
+                    (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!) type-expr (lw-rt/protocol-key pv) true)))
                   (ns-name (:ns (meta pv))))
                 (let [mv (lw-rt/call-in-ns pns (fn [] (resolve (first x))))
                       e (get @protocol-methods mv)]
                   (when-not e (throw (ex-info (str "Unknown protocol method " (first x)) {})))
-                  (when @marker (swap! out conj @marker) (reset! marker nil))
-                  (swap! protocol-methods assoc-in [mv :impls [::extension 0]] {:type true})
-                  (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!)
-                                        type-expr (protocol-method-key e) (cons 'fn (rest x))))
+                  ;; llvm: a method extends the protocol named before it, as in
+                  ;; Clojure; one of another protocol's methods there is dropped
+                  (when (or (not lw-rt/llvm-target?) (nil? @cur) (some #(= mv %) (get @protocol-vars @cur)))
+                    (swap! protocol-methods assoc-in [mv :impls [::extension 0]] {:type true})
+                    (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!)
+                                          type-expr (protocol-method-key e) (cons 'fn (rest x)))))
                   pns)))
             ns-sym (drop 2 form))
     @out))
@@ -1008,21 +1014,24 @@
     ;; a method body names its method bare, as native does; it resolves in
     ;; the namespace of the protocol symbol before it (a program's type
     ;; implementing a library's protocol), else in the type's own
-    (let [hidden (atom []) installs (atom []) marker (atom nil)
+    (let [hidden (atom []) installs (atom [])
           _ (reduce (fn [pns x]
                       (cond (symbol? x)
                             (let [pv (lw-rt/call-in-ns ns-sym (fn [] (try (resolve x) (catch e nil))))]
-                              ;; the marker waits for one of the protocol's methods, as above
-                              (reset! marker (when (and llvm-type? (var? pv))
-                                               (list (lw-rt/rt-sym 'core 'install-type-method!)
-                                                     (symbol (str ns-sym) (str nm)) (lw-rt/protocol-key pv) true)))
+                              ;; naming the protocol extends it, as above: an llvm deftype
+                              ;; (a table type) gets the marker, a record joins the
+                              ;; predicate's arms
+                              (when (and lw-rt/llvm-target? (var? pv))
+                                (if llvm-type?
+                                  (swap! installs conj (list (lw-rt/rt-sym 'core 'install-type-method!)
+                                                             (symbol (str ns-sym) (str nm)) (lw-rt/protocol-key pv) true))
+                                  (swap! protocol-named update pv (fnil conj #{}) [tag (boolean (seq fields))])))
                               (if (and (var? pv) (:ns (meta pv))) (ns-name (:ns (meta pv))) ns-sym))
                             (seq? x)
                             (let [m (first x)
                                   mv (lw-rt/call-in-ns pns (fn [] (try (resolve m) (catch e nil))))]
                               (when-not (contains? @protocol-methods mv)
                                 (throw (ex-info (str "lower-wasm: " ns-sym "/" nm " implements " m ", not a method of a protocol the loaded namespaces declare") {})))
-                              (when @marker (swap! installs conj @marker) (reset! marker nil))
                               (if llvm-type?
                                 (let [e (get @protocol-methods mv)
                                       clauses (mapv (fn [arity]
@@ -1115,7 +1124,9 @@
                 (if (:type impl)
                   acc
                   (conj acc (if (seq (:fields impl)) (list 'identical? tag (list :lw/type x)) (list 'identical? tag x))))))
-        arms (reduce (fn [acc mv] (let [e (get @protocol-methods mv)] (if e (reduce arm acc (:impls e)) acc))) [] mvs)]
+        arms (reduce (fn [acc mv] (let [e (get @protocol-methods mv)] (if e (reduce arm acc (:impls e)) acc))) [] mvs)
+        arms (reduce (fn [acc tf] (conj acc (if (second tf) (list 'identical? (first tf) (list :lw/type x)) (list 'identical? (first tf) x))))
+                     arms (get @protocol-named pv))]
     [(list [x] (apply list 'or (list (lw-rt/rt-sym 'core 'satisfies-key?) (lw-rt/protocol-key pv) x) (distinct arms)))]))
 
 (declare hidden-defn!)
