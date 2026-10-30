@@ -23,7 +23,7 @@
 ;; to fd 1, as llvm.host's printing does); the escape-only fns take no
 ;; arguments, where Go's ignore any they are given.
 (ns llvm.term
-  (:refer-clojure :exclude [flush])
+  (:refer-clojure :exclude [flush read-line])
   (:require [llvm.arch :as arch]
             [llvm.seq :as sq]
             [llvm.pvec :as pv]
@@ -60,6 +60,20 @@
     (if (arch/null? bs) (arch/null) (s/mk-str bs))))
 
 (defn ^{:twin "term/key-pending?"} key-pending? [] (sq/bool (term-key-pending)))
+
+;; read-line (pkg/rt/iort.go:220): keys up to an LF, the line without it (a
+;; CR is kept, as native's bufio line is); nil at end of input with nothing
+;; read, what was read when input ends mid-line. The handle form is a named
+;; limit, as on the GC lane.
+(defn ^{:twin "core/read-line"} read-line
+  ([] (loop [acc (arch/null)]
+        (let [bs (term-read-key)]
+          (if (arch/null? bs)
+            acc
+            (if (= 10 (arch/bget bs 0))
+              (if (arch/null? acc) (lit (arch/bytes-new 0)) acc)
+              (recur (if (arch/null? acc) (s/mk-str bs) (s/str acc (s/mk-str bs)))))))))
+  ([h] (c/raise (arch/bytes-of-string "llvm: read-line of a handle is a named limit (stdin only)"))))
 
 ;; size: a PersistentVector (NewPersistentVector builds that type at any
 ;; length, persistent_vector.go:690), so pkind 1 (D73). A zero dimension

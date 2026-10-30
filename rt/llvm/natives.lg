@@ -59,6 +59,20 @@
             [llvm.reader :as rd]))
 
 (defn- raise-lit [msg] (c/raise (s/str-bytes msg)))
+
+;; the kinds the module lacks (ratios, decimals, UUIDs) answer false; a
+;; record is a map tagged :lw/type (a deftype with fields too: named limit)
+(defn ^{:twin "core/boolean?"} boolean?* [x] (or (= true x) (= false x)))
+(defn ^{:twin "core/decimal?"} decimal?* [x] false)
+(defn ^{:twin "core/ratio?"} ratio?* [x] false)
+(defn ^{:twin "core/uuid?"} uuid?* [x] false)
+(defn ^{:twin "core/record?"} record?* [x] (and (map? x) (contains? x :lw/type)))
+
+;; System/getenv (os.LookupEnv): nil when unset, unlike os/getenv's ""
+(defn ^{:twin "System/getenv"} system-getenv [& args]
+  (cond (not= 1 (count args)) (raise-lit "System/getenv expects 1 arg")
+        (not (string? (first args))) (raise-lit "System/getenv expected String name")
+        :else (let [v (arch/host-getenv (s/str-bytes (first args)))] (when-not (arch/null? v) (s/mk-str v)))))
 (defn- raise-arity [n] (raise-lit (str "wrong number of arguments " n)))
 (defn- tname [x] (s/mk-str (c/type-name x)))           ; type-name is Bytes
 (defn- limit [msg] (raise-lit (str "llvm: " msg " (named limit)")))

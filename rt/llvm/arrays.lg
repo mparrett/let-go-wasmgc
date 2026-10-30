@@ -175,7 +175,16 @@
          (raise-str (s/str (lit (arch/bytes-of-string "unknown array type: ")) t))
          (build k coll (arch/null) false)))
      (build 2 coll (arch/null) false)))
-  ([t coll extra] (raise-arity 3)))
+  ([t coll extra] (raise-arity 3))
+  ([t coll extra & more] (raise-arity (+ 3 (sq/unbox-int (sq/count more))))))
+
+;; let-go.types/array? (lang.go:4380): a TypedArray of any element kind; any
+;; arity but one is false.
+(defn ^{:twin "let-go.types/array?"} array?*
+  ([] (sq/bool false))
+  ([x] (sq/bool (arr? x)))
+  ([x y] (sq/bool false))
+  ([x y & more] (sq/bool false)))
 
 ;; vec (lang.go:2063) is llvm.seq/vec except on an object array, whose
 ;; storage the vector shares (lang.go:2077).
