@@ -3,6 +3,8 @@
 ;; hierarchy (1/2-arg forms, derive/underive return nil) and an explicit one
 ;; (3-arg forms return the new map), lookups with 1 and 2 args, unknown tags,
 ;; multi-level ancestry, a diamond, isa? shapes, and native's error texts.
+;; What a type's ancestors are and isa? on vectors are where the lanes'
+;; designs differ: corpus/poly-native (native's) and corpus/poly-clj (llvm's).
 ;; Keywords are spelled :h/x, not ::x: the backend reads ::x in the driver's
 ;; namespace, so the printed sets would differ by namespace, not by twin.
 (defn t [f] (try (pr-str (f)) (catch Exception e (str "ERR " (ex-message e)))))
@@ -15,12 +17,12 @@
          (t #(derive :h/p-1 'ns/p-0)) (t #(derive TestRecord :h/record)) (t #(derive (type 1) :h/num)))
 (println "parents1" (parents :h/leaf) (parents :h/t) (parents :h/p-1) (parents :h/p-2) (parents :h/nope)
          (parents TestRecord) (parents (type 1)) (parents nil) (parents "x") (parents 42) (parents []))
-(println "ancestors1" (ancestors :h/leaf) (ancestors :h/t) (ancestors :h/p-2) (ancestors :h/nope) (ancestors (type 1)))
+(println "ancestors1" (ancestors :h/leaf) (ancestors :h/t) (ancestors :h/p-2) (ancestors :h/nope))
 (println "descendants1" (descendants 'ns/p-0) (descendants :h/p-1) (descendants :h/leaf) (descendants :h/nope)
          (descendants :h/record) (descendants 1) (descendants nil))
 (println "isa-global" (isa? :h/leaf :h/t) (isa? :h/leaf 'ns/p-0) (isa? :h/t :h/leaf) (isa? TestRecord :h/record)
          (isa? (type 1) :h/num) (isa? 1 1) (isa? "a" "a") (isa? nil nil) (isa? nil :h/t) (isa? :h/nope :h/t))
-(println "isa-vec" (isa? [:h/a :h/b] [:h/a :h/b]) (isa? [:h/leaf :h/t] [:h/t :h/p-1]) (isa? [:h/leaf] [:h/t :h/p-1])
+(println "isa-vec" (isa? [:h/a :h/b] [:h/a :h/b]) (isa? [:h/leaf] [:h/t :h/p-1])
          (isa? [] []) (isa? [:h/leaf :h/t] [:h/t]))
 
 ;; diamond on an explicit hierarchy
@@ -32,7 +34,7 @@
 (println "diamond-descendants" (descendants diamond :h/d) (descendants diamond :h/b) (= #{:h/b :h/c :h/d :h/leaf} (descendants diamond :h/a))
          (descendants diamond :h/nope) (descendants nil nil))
 (println "diamond-isa" (isa? diamond :h/leaf :h/a) (isa? diamond :h/d :h/c) (isa? diamond :h/a :h/d) (isa? diamond :h/leaf :h/t)
-         (isa? nil :h/a :h/a) (isa? {} :h/a :h/a) (isa? diamond [:h/d :h/b] [:h/a :h/a]))
+         (isa? nil :h/a :h/a) (isa? {} :h/a :h/a))
 
 (def small (derive (make-hierarchy) :h/rect :h/shape))
 (println "derive-h" small)

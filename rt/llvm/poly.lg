@@ -44,6 +44,16 @@
     (map #(arch/aget pv/Node anc %) (range (arch/alen anc)))))
 
 (def object-type (c/type-of-id 42))                       ; core/Object's value
+;; native's class-name vars for the clojure.lang interfaces (a registry
+;; of marker symbols in let-go's core) read as the abstract Type of that name
+;; here, so isa? and ancestors agree with native on them
+(def seqable-type (c/type-of-id 43))
+(def counted-type (c/type-of-id 44))
+(def ipersistentcollection-type (c/type-of-id 45))
+(def associative-type (c/type-of-id 48))
+(def indexed-type (c/type-of-id 49))
+(def ireduce-type (c/type-of-id 57))
+(def ieditablecollection-type (c/type-of-id 58))
 
 ;; register-type-parent!'s parents, by Type (native's registeredTypeParents)
 (def ^:private type-parents (atom {}))
@@ -56,8 +66,12 @@
 (defn- empty-hierarchy [] {:parents {} :ancestors {} :descendants {}})
 (def ^:private global (atom (empty-hierarchy)))
 
+;; native's asHierarchy wants a plain persistent map: a sorted map is another
+;; type, and a record is a map tagged :lw/type here
+(defn- h-map? [x] (and (map? x) (not (sorted? x)) (not (contains? x :lw/type))))
+
 (defn- hierarchy? [h]
-  (and (map? h) (map? (:parents h)) (map? (:ancestors h)) (map? (:descendants h))))
+  (and (h-map? h) (h-map? (:parents h)) (h-map? (:ancestors h)) (h-map? (:descendants h))))
 
 (defn- as-hierarchy [h] (if (hierarchy? h) h (raise-lit "invalid hierarchy")))
 
@@ -115,7 +129,8 @@
 (defn- ancestors-for [h tag empty-set?]
   (when (lookup-tag? tag)
     (let [own (into (or (get (:ancestors h) tag) #{}) (when (type? tag) (type-ancestry tag)))
-          own (reduce (fn [acc p] (into (conj acc p) (when (type? p) (type-ancestry p))))
+          ;; a registered parent's own ancestors too, as native's ancestorsFor
+          own (reduce (fn [acc p] (into (conj acc p) (ancestors-for h p false)))
                       own (direct-type-parents tag))]
       (nil-or-set own empty-set?))))
 

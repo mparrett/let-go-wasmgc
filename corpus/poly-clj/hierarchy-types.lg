@@ -11,6 +11,10 @@
 (println (isa? [::a ::b] [::p ::q]) (isa? [::a ::b] [::p ::b])
          (isa? [::a ::b] [::q ::p]) (isa? [::a ::b] [::p]))
 (println (isa? [(type []) ::a] [::coll-like ::p]))
+;; a type's own ancestry, and vectors element-wise in an explicit hierarchy
+;; (corpus/poly-native has native's answers)
+(println (contains? (ancestors (type 1)) Object)
+         (isa? (-> (make-hierarchy) (derive ::b ::a) (derive ::d ::b)) [::d ::b] [::a ::a]))
 (underive (type []) ::coll-like)
 (println (isa? (type []) ::coll-like) (contains? (parents (type [])) ::coll-like))
 ;; a derive of an abstract Type (Object) reaches every type below it
