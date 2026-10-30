@@ -13,7 +13,7 @@ progs=(corpus/llvm/*.lg corpus/poly/*.lg corpus/control/*.lg corpus/scalar/fib.c
 n=0; bad=0
 for p in "${progs[@]}"; do
   n=$((n + 1))
-  if ! LW_LL_CHECK_REFS=1 "$LG" -source-paths src src/driver.lg --target llvm --no-rtlib "$p" "$t/m.ll" > "$t/log" 2>&1; then
+  if ! LW_LL_CHECK_REFS=1 "$LG" -source-paths src:corpus/poly/lib src/driver.lg -source-paths corpus/poly/lib --target llvm --no-rtlib "$p" "$t/m.ll" > "$t/log" 2>&1; then
     echo "COMPILE FAIL $p"; bad=$((bad + 1)); continue
   fi
   if grep -q '^refs-check:' "$t/log"; then bad=$((bad + 1)); echo "MISSES $p"; grep '^refs-check:' "$t/log" | head -3
