@@ -873,6 +873,17 @@
 (defn ll-prim! [nid op refs]
   (let [n (count refs)]
     (cond
+      ;; no operand needed: (+) is 0 and (*) is 1, and a comparison of one
+      ;; value is true (unit-call-wat's cases)
+      (and (zero? n) (#{:add :mul} op)) (ll-def! nid :int (if (= op :add) "0" "1"))
+      (and (= 1 n) (ll-cmp op)) (ll-def! nid :bool "true")
+      ;; any other op with no operand: the runtime's arity error, as native
+      ;; raises it (catchable); the value after it is never read. Without the
+      ;; runtime the op is refused below, as before
+      (and (zero? n) *rt*)
+      (do (ll-emit! (ll-raise-text 'no-operand-error nil))
+          (ll-label! (ll-fresh "unreached"))
+          (ll-def! nid :box "0"))
       (and (= op :eq) (= 2 n) (every? #(= :bool (ll-arg-kind %)) refs))
       (let [a (ll-arg (first refs) :bool) b (ll-arg (second refs) :bool)
             v (str "%v" nid)]
@@ -1118,6 +1129,9 @@
         prim (if (= :call op) (core-var-ops v) op)
         args (if (= :call op) (rest refs) refs)]
     (when (and (ll-fast-ops prim) (:sig (ll-call-plan c)) (not (:invoke (ll-sig c)))
+               ;; the fast path is for the op's own operand count: (>= x) and
+               ;; the like go to the generic twin
+               (= (count args) (if (#{:inc :dec :zero? :pos? :neg?} prim) 1 2))
                (every? #{:box :int} (map ll-arg-kind args))
                (some #{:box} (map ll-arg-kind args)))
       prim)))

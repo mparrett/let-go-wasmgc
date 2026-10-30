@@ -542,6 +542,7 @@
 (defn uncaught-value [x]
   (let [m (s/str-bytes (s/pr-str x))] (throw (arch/new sq/Err 1 m m (arch/null) (arch/null)))))
 (defn div-zero-error "quot, rem or mod by zero." [] (raise (arch/bytes-of-string "divide by zero")))
+(defn no-operand-error "A core op called with no operand: its arity error, as native." [] (raise-arity 0))
 (defn unbox-error "A non-Int value in an Int-typed slot (the GC lane's $rt_unbox_fail)." []
   (raise (arch/bytes-of-string "a non-Int value reached an Int-typed slot")))
 ;; + - * as the IR op with a boxed operand (the backend's slow path): an Int

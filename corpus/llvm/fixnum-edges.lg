@@ -12,3 +12,12 @@
 (show 4611686018427387903) (show 4611686018427387904)
 (show -4611686018427387904) (show -4611686018427387905)
 (show 9223372036854775807) (show -9223372036854775808)
+;; n-ary and one-operand ops on boxed params (each fn also takes a Float, so
+;; its params stay boxed): every operand counts, and (>= x) is true
+(defn add3 [a b c] (+ a b c))
+(defn sub3 [a b c] (- a b c))
+(defn mul3 [a b c] (* a b c))
+(defn lt3 [a b c] (< a b c))
+(defn ge1 [x] (>= x))
+(println (add3 1 2 3) (add3 1.5 2 3) (add3 4611686018427387903 1 1) (sub3 1 2 3) (mul3 2 3 4) (mul3 2.0 3 4))
+(println (lt3 1 2 3) (lt3 1 3 2) (lt3 1.0 2 3) (ge1 5) (ge1 5.0))
