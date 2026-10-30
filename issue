@@ -21,3 +21,12 @@ description: Three rows fail on any checkout without two files from a local work
  - F3 tools/reach.sh runs from this repo alone, or its README says what it needs.
  
  Refs git-issue:f1a846c (optional runtimes SKIP with a reason), git-issue:f650769 (llvm parity, where these rows showed up).
+
+## Comments
+[2026-10-30T14:55:19Z] Matt Parrett: Agreed on both counts, and PR #84 takes the second shape for the fib row and the first for the boot probe.
+ 
+ The boot probe now lives at checks/boot-time-probe.mjs; size-boot.sh runs it from there, and SKIPs through browser-probe.mjs when no Chromium is present, as the other browser rows do. P4.3 and P7.4 pass from a checkout with no workspace beside it.
+ 
+ P1.GATE SKIPs (exit 2) before building anything when ../emit-wasm-probe/ext/gen-ext.lg is absent, and tools/reach.sh names the file it needs and exits 2. The reference fib source stays outside the repository: it is the prototype the backend was promoted from, and the checked-in piece that would replace it is a frozen reference module, which changes what the row measures. That is a separate decision; the SKIP closes F1 as written.
+ 
+ F1 through F3 are the rows in the PR body, run from a worktree without the probe directory.
