@@ -27,48 +27,58 @@
 ;; The one record of the llvm target's type ids, their printed names and
 ;; their direct supertypes (spec §1). Native ids are (type x)'s numbering in
 ;; rt/llvm/core.lg's type-id (holes are ids no value has); the abstract
-;; Types follow from 42, with no instances; Object prints as native's
-;; java.lang.Object, the others by bare name. A type's ancestry is its C3
+;; Types follow from 42, with no instances. An abstract Type native names
+;; among a Go type's interfaces (directTypeParents: Object, Throwable and the
+;; clojure.lang ones) carries native's name, so native's ancestry of a type is
+;; part of llvm's; the composed ones native has no name for (Seq,
+;; Sequential, Map, Set, Vector, List, Fn, Named, Number) keep bare names,
+;; and every type but nil sits under Object. A type's ancestry is its C3
 ;; linearization without itself. Supertypes are keyed by type, not by
 ;; runtime struct, since $PVec, $Err and $TypeVal each carry two types.
 
 (def ll-abstract-supers
-  [["java.lang.Object" []] ["Seqable" ["java.lang.Object"]] ["Counted" ["java.lang.Object"]] ["Coll" ["Seqable" "java.lang.Object"]]
-   ["Sequential" ["java.lang.Object"]] ["Seq" ["Coll" "Sequential"]] ["Associative" ["Coll"]]
-   ["Indexed" ["Counted"]] ["Map" ["Associative" "Counted"]] ["Set" ["Coll" "Counted"]]
-   ["Vector" ["Associative" "Indexed" "Sequential"]] ["List" ["Seq" "Counted"]]
-   ["Fn" ["java.lang.Object"]] ["Named" ["java.lang.Object"]] ["Number" ["java.lang.Object"]]])
+  [["java.lang.Object" []] ["clojure.lang.Seqable" ["java.lang.Object"]] ["clojure.lang.Counted" ["java.lang.Object"]]
+   ["clojure.lang.IPersistentCollection" ["clojure.lang.Seqable" "clojure.lang.IReduce" "java.lang.Object"]]
+   ["Sequential" ["java.lang.Object"]] ["Seq" ["clojure.lang.IPersistentCollection" "Sequential"]]
+   ["clojure.lang.Associative" ["clojure.lang.IPersistentCollection"]]
+   ["clojure.lang.Indexed" ["clojure.lang.Counted"]] ["Map" ["clojure.lang.Associative" "clojure.lang.Counted"]]
+   ["Set" ["clojure.lang.IPersistentCollection" "clojure.lang.Counted"]]
+   ["Vector" ["clojure.lang.Associative" "clojure.lang.Indexed" "Sequential"]] ["List" ["Seq" "clojure.lang.Counted"]]
+   ["Fn" ["java.lang.Object"]] ["Named" ["java.lang.Object"]] ["Number" ["java.lang.Object"]]
+   ;; appended, so the ids above keep their numbers
+   ["clojure.lang.IReduce" ["java.lang.Object"]] ["clojure.lang.IEditableCollection" ["java.lang.Object"]]
+   ["java.lang.Throwable" ["java.lang.Object"]] ["java.lang.RuntimeException" ["java.lang.Exception"]]])
 
 (def ll-native-types
   [[0 "nil" []]
    [1 "let-go.lang.Int" ["Number"]]
    [2 "let-go.lang.PersistentList" ["List"]]
-   [7 "let-go.lang.Range" ["Seq" "Counted"]]
+   [7 "let-go.lang.Range" ["Seq" "clojure.lang.Counted"]]
    [9 "let-go.lang.Repeat" ["Seq"]]
    [10 "let-go.lang.Sequence" ["Seq"]]
-   [11 "let-go.lang.PersistentVector" ["Vector" "Fn"]]
-   [12 "java.lang.Exception" ["java.lang.Object"]]
+   [11 "let-go.lang.PersistentVector" ["Vector" "clojure.lang.IEditableCollection" "Fn"]]
+   [12 "java.lang.Exception" ["java.lang.Throwable"]]
    [14 "let-go.lang.Reduced" ["java.lang.Object"]]
    [15 "let-go.lang.Boolean" ["java.lang.Object"]]
    [16 "let-go.lang.Fn" ["Fn"]]
-   [17 "let-go.lang.String" ["java.lang.Object"]]
+   [17 "let-go.lang.String" ["clojure.lang.Seqable" "clojure.lang.Indexed"]]
    [18 "let-go.lang.Unknown" ["java.lang.Object"]]
    [19 "let-go.lang.Character" ["java.lang.Object"]]
    [20 "let-go.lang.Keyword" ["Named" "Fn"]]
    [21 "let-go.lang.Symbol" ["Named" "Fn"]]
    [22 "let-go.lang.Float" ["Number"]]
-   [23 "let-go.lang.ArrayVector" ["Vector" "Fn"]]
+   [23 "let-go.lang.ArrayVector" ["Vector" "clojure.lang.IEditableCollection" "Fn"]]
    [24 "let-go.lang.Atom" ["java.lang.Object"]]
    [25 "let-go.lang.Volatile" ["java.lang.Object"]]
-   [26 "let-go.lang.ExceptionInfo" ["java.lang.Object"]]
-   [30 "let-go.lang.Map" ["Map" "Fn"]]
-   [31 "let-go.lang.Set" ["Set" "Fn"]]
+   [26 "let-go.lang.ExceptionInfo" ["java.lang.RuntimeException"]]
+   [30 "let-go.lang.Map" ["Map" "clojure.lang.IEditableCollection" "Fn"]]
+   [31 "let-go.lang.Set" ["Set" "clojure.lang.IEditableCollection" "Fn"]]
    [32 "let-go.lang.TransientMap" ["java.lang.Object"]]
    [33 "let-go.lang.TransientSet" ["java.lang.Object"]]
    [34 "let-go.lang.TransientVector" ["java.lang.Object"]]
    [35 "let-go.lang.Type" ["java.lang.Object"]]
    [36 "let-go.lang.Regex" ["java.lang.Object"]]
-   [37 "let-go.lang.Array" ["java.lang.Object"]]
+   [37 "let-go.lang.Array" ["clojure.lang.IReduce" "clojure.lang.Seqable"]]
    [38 "let-go.lang.PersistentTreeMap" ["Map" "Fn"]]
    [39 "let-go.lang.PersistentTreeSet" ["Set" "Fn"]]
    [40 "let-go.lang.Promise" ["java.lang.Object"]]

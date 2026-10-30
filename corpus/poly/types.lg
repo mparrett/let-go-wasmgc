@@ -16,3 +16,8 @@
 ;; a sorted set's and sorted map's types are their own
 (println (type (into [] (range 40))) (type (sorted-set 1)) (type (sorted-map 1 2))
          (= (type (into [] (range 40))) (type (sorted-set 1))))
+;; native's class-name registry: the clojure.lang interface names a type's
+;; ancestry holds natively are in llvm's too (the GC lane has none: a named limit)
+(println (isa? (type []) clojure.lang.Seqable) (contains? (ancestors (type {})) clojure.lang.Associative)
+         (isa? (type "s") clojure.lang.Counted) (isa? (type 1) clojure.lang.Seqable)
+         (isa? (type (sorted-map)) clojure.lang.IEditableCollection) (isa? (type (range 3)) IReduce))

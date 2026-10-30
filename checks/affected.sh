@@ -134,6 +134,7 @@ P13.7	rt/llvm/ corpus/llvm-rt/ checks/run-intrinsics-native.sh checks/intrinsics
 P13.8	oracle corpus/reader-ns/ checks/run-corpus.sh checks/native-run.sh checks/llvm-probe.sh host/native/ targets/
 P11.0	src/ rt/ host/wazero/ checks/linear-gc.sh checks/wasm-run-linear.sh
 P12.30	rt/wasm/poly.lg src/driver.lg corpus/poly-wasm/ checks/run-expected.sh
+P12.41	oracle corpus/poly-native/ checks/run-corpus.sh
 P12.31	oracle src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ host/native/ checks/native-run.sh corpus/poly/ checks/llvm-probe.sh
 P12.32	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_poly.lg rt/llvm/ host/native/ checks/native-run.sh checks/run-expected.sh corpus/poly-clj/ checks/llvm-probe.sh
 P12.37	src/ rt/llvm/ host/native/ checks/native-run.sh checks/llvm-rtlib-check.sh checks/quiet.sh checks/sem.sh corpus/scalar/fib.clj corpus/poly/ corpus/llvm/ checks/llvm-probe.sh

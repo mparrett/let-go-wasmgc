@@ -156,11 +156,22 @@
         (let [v (if (typed-aux? a) (nth a 2) a)]
           (when-not (var? v) [v]))))))
 
+;; native's class-name vars for the clojure.lang interfaces -> llvm.poly's def
+;; of the abstract Type with that name
+(def ll-interface-vars
+  (into {} (map (fn [[s d]] [(or (resolve s) (throw (ex-info (str "lower-llvm: native lg has no " s) {}))) d]))
+        '[[clojure.lang.Seqable seqable-type] [clojure.lang.Counted counted-type]
+          [clojure.lang.IPersistentCollection ipersistentcollection-type]
+          [clojure.lang.Associative associative-type] [clojure.lang.Indexed indexed-type]
+          [clojure.lang.IReduce ireduce-type] [IReduce ireduce-type]
+          [clojure.lang.IEditableCollection ieditablecollection-type]]))
+
 ;; core vars the llvm runtime implements as one of its top-level defs
 (defn ll-var-alias [v]
   (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
         (and *rt* (= v #'*command-line-args*)) (lw-rt/rt-var 'host 'command-line-args)
         (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
+        (and *rt* (ll-interface-vars v)) (lw-rt/rt-var 'poly (ll-interface-vars v))
         (and *rt* (= v #'*out*)) (lw-rt/rt-var 'host 'stdout-handle)
         (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
         (and *rt* (= v #'*in-wasm*)) (lw-rt/rt-var 'host 'in-wasm)

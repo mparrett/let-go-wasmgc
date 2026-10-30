@@ -1,0 +1,11 @@
+;; Native's type hierarchy (corpus/poly-clj is the llvm lane's twin): an Int
+;; has no ancestors of its own, a derive adds one, and isa? on vectors is
+;; equality, in the global hierarchy and an explicit one.
+(println (ancestors (type 1)) (isa? (type 1) Object))
+(derive (type 1) :h/num)
+(println (ancestors (type 1)) (isa? (type 1) :h/num))
+(derive :h/leaf :h/t)
+(derive :h/t :h/p)
+(println (isa? [:h/leaf :h/t] [:h/t :h/p]) (isa? [:h/leaf :h/t] [:h/leaf :h/t]))
+(def diamond (-> (make-hierarchy) (derive :h/b :h/a) (derive :h/d :h/b)))
+(println (isa? diamond [:h/d :h/b] [:h/a :h/a]) (isa? diamond [:h/d] [:h/d]))
