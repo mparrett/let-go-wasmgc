@@ -98,11 +98,15 @@ agent_up() { agent_env; ssh-add -l >/dev/null 2>&1; [ $? -ne 2 ]; }
 
 # --- envelope --------------------------------------------------------------
 envelope() {   # <issue> -> `<issue> <notes commit>`, or dies
-  local issue=$1 status tip
+  local issue=$1 status tip remote
   status=$(git issue show "$issue" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^status: //p')
   [ -n "$status" ] || die "no issue $issue (a ping never opens a topic)"
   case $status in closed|deferred|done) die "issue $issue is $status: a ping only names an open issue" ;; esac
   tip=$(git rev-parse --verify -q "refs/notes/issue-$issue") || die "issue $issue has no notes ref"
+  # the peer fetches from the remote, so the ping waits until the note is there
+  remote=$(git ls-remote "${LW_SIDEBAND_REMOTE:-origin}" "refs/notes/issue-$issue" | cut -f1)
+  [ "$remote" = "$tip" ] || { [ -n "$remote" ] && git merge-base --is-ancestor "$tip" "$remote" 2>/dev/null; } \
+    || die "issue $issue's note $tip is not pushed yet: push it, then send"
   printf '%s %s' "$issue" "$tip"
 }
 sign() {       # <payload> <certificate> -> one-line ping (payload and signature)

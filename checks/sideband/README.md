@@ -57,9 +57,15 @@ A lapsed ping certificate is rejected; `send` rotates to a fresh one.
    `keys/<you>-cosign.pub` and `keys/<you>-issuer.pub` by PR.
 2. Once both owners' keys are merged, each runs `sideband.sh cosign <peer>`
    (it asks for the key store's approval) and commits
-   `keys/<peer>-issuer.by-<you>.sig` by PR.
+   `keys/<peer>-issuer.by-<you>.sig` by PR. At the Keychain prompt, click
+   Allow, never Always Allow: Always Allow adds `security` to the item's
+   access list, and from then on any of your processes reads the co-signing
+   key without asking. `security dump-keychain -a` shows an access list that
+   has grown.
 3. At launch: `sideband.sh start`, then `sideband.sh listen`. From then on,
    `send <peer> <issue>`, `pending` and `done <issue>` run unattended.
+   `send` refuses until the issue's note is on the remote, since the peer
+   fetches it from there.
    `sideband.sh stop` ends the agent, and the issuer and ping keys with it.
 
 `sideband.sh` with no arguments is the offline self-test (row P0.8): a
