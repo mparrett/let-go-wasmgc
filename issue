@@ -1,0 +1,19 @@
+id: be9b341
+v: 2
+title: wasmtime adapter: a read that fails partway returns the bytes so far as if whole
+status: open
+priority: medium
+created: 2026-10-30T00:21:43Z
+updated: 2026-10-30T00:21:43Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: host/wasmtime-adapter.wat:217: when fd_read reports an error after some bytes were read, the loop exits to the close and returns the count read so far, so slurp gets a truncated file as if it were whole. The node host (src/run.mjs:72-77) answers -1 on any read error, so a program sees the failure there and silent truncation here.
+ 
+ Fix: return -1 when fd_read reports an error, whatever was read before it, so both hosts fail the same way.
+ 
+ Facts that close it:
+ - F1 the adapter returns -1 on an fd_read error after a partial read: a run of a program that slurps a file whose read fails partway, under checks/wasmtime-run.sh and under node, prints the same error (the witness is the two transcripts).
+ - F2 P4.5 still 20/20 MATCH at the fix.
+ 
+ Found in the review of PR #74 (D232).
