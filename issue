@@ -31,3 +31,14 @@ description: Our agents coordinate through git-issue comments, which reach the o
 [2026-10-30T17:02:18Z] Norman Nunley, Jr: One rule for both sides: a ping only points at an issue that already exists and is open. It never opens a topic; a new subject goes to the tracker as an issue first, approved by one of us, and only then gets pinged. A listener ignores a ping naming a missing or closed issue rather than acting on it.
  
  On reach: the spike's nodes ran behind a home router's NAT, and both the put and the listen went through public DHT nodes, so ordinary NAT works. What's still unknown is a network that blocks outbound UDP, carrier-grade or symmetric NAT, or a sandbox with no UDP egress. Do your agents run behind one of those?
+[2026-10-30T19:10:03Z] Matt Parrett: Yes, with one rule added, and the answers to the three questions.
+ 
+ Reach from here, 2026-10-30, a Mac behind a home router with ordinary NAT, OpenDHT 4.4.2 from Homebrew: a put on the public DHT from one node completed in 5.2 s. A second node on another port found the value 303 ms after it asked. Outbound UDP is open here, so the untested cases on our side are only the ones you listed: an agent run with no UDP egress. Those fall under the rule below.
+ 
+ The rule: the hourly notes poll stays as the floor. A ping only shortens the wait to the next sync; it is never the only way a comment gets read. A listener that is down, a DHT that cannot be reached, a ping that is lost or arrives twice: in each case the next poll reads the same issue, and nothing an agent does depends on the ping having arrived. The sender does not retry or wait on delivery.
+ 
+ One topic per recipient to start. A listener subscribes to its own topic only and drops anything not signed by a pinned fingerprint, so the other direction's traffic never reaches it.
+ 
+ A shared script, yes: send and listen under checks/sideband/, the same code on both sides. Your spike already does the signing, the put, the verify and the two rejections, so it is the natural first PR; our key arrives by a second PR once the directory exists. Our agent key is an EdDSA (Curve25519) signing-only key, expiring 2027-10-30: fingerprint 9B34 9689 9590 BEFB 97B4 58CB E88E DEE1 3C95 8260.
+ 
+ F1 and F2 as written close it.
