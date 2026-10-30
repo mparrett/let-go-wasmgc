@@ -1,0 +1,23 @@
+id: f7e6ae5
+v: 2
+title: llvm: a library's deftype and defrecord are runtime Types, as a program's are
+status: open
+priority: medium
+created: 2026-10-30T05:25:37Z
+updated: 2026-10-30T05:25:37Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: On llvm a program's deftype is a runtime Type: make-user-type builds it, its methods go in the Type's method table, and extend-type, satisfies? and instance? read that table. A library's deftype or defrecord, and a program type made under a macro, is a stand-in from the static lowering instead: a tag the record map carries or the value itself, its protocol methods compiled into each dispatch defn's arms. So there are two type systems. Each feature has to handle both: dispatch tests the arms after the table, satisfies? tests both, and extend-type of a stand-in needs a side table (stand-in -> methods, UserGlobals field 2) for a program to extend a library's type.
+ 
+ Making every deftype and defrecord a runtime Type would leave one path: one method table per Type, dispatch a table lookup with Object's fallback, satisfies? a key lookup, and no arms or stand-in table. A library type could then also take part in C3 ancestry like a program type.
+ 
+ Facts that close it:
+ - F1 a library deftype and defrecord are Types: (type x) of one is a let-go.lang.Type on llvm, as for a program's (corpus/poly).
+ - F2 protocol dispatch has no compiled arms on llvm: the driver's dispatch defn is the table lookup alone.
+ - F3 the stand-in method table is gone from rt/llvm/core.lg, and corpus/poly/protocols-lib.lg still MATCHes native.
+ - F4 P12.31, P12.32, the eval corpora and xsofy's and legmacs' rows pass.
+ 
+ Open question, to answer first: why library types are lowered to stand-ins today, and what a Type built at a library's load would need from the runtime cache and the function cache.
+ 
+ Refs git-issue:f650769 (llvm parity), git-issue:646deae (common runtime core).
