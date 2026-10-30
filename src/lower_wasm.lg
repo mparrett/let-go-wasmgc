@@ -1843,9 +1843,10 @@
 ;; Every other native keeps its static twin call.
 (def ^:dynamic *rooted-natives* #{})
 (lc/defquestion q-rooted? [v] [:rooted v] (contains? *rooted-natives* v))
-;; every defprotocol's var: llvm lowers (satisfies? P x) for one of them
-(def ^:dynamic *protocol-vars* #{})
-(lc/defquestion q-protocol? [v] [:protocol v] (contains? *protocol-vars* v))
+;; a defprotocol's var -> its satisfies? predicate's var: llvm lowers
+;; (satisfies? P x) for one of them as a call of the predicate
+(def ^:dynamic *protocol-vars* {})
+(lc/defquestion q-protocol-pred [v] [:protocol-pred v] (get *protocol-vars* v))
 ;; D201: while the runtime library is built, the vars its lowering asks
 ;; about, so the library is keyed on just the rooted natives that change it
 (def natives-asked (atom nil))
