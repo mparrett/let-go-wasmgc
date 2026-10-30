@@ -28,8 +28,9 @@
 // Drives host/build-xsofy-serve.sh's page (the real xsofy-shell.html on
 // xsofy-shell-adapter.js) instead: see xsofyShell() below.
 //
-// Prints one JSON line. Playwright comes from the workspace's smoke-script
-// install (local-scripts/browser-smoke-playwright), not a local npm install.
+// Prints one JSON line. Playwright comes from an external install
+// (LW_BROWSER_TOOLS/browser-smoke-playwright, else ../../../local-scripts
+// relative to checks/), not a local npm install.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -250,8 +251,8 @@ async function xsofyShell(base, expectedFile) {
 
 // ---- --xsofy -----------------------------------------------------------------
 // The emitted xsofy module (module.wasm, the adapter's default) in the real
-// shell, booted the way local-scripts/browser-smoke-playwright/
-// zz-boot-time-probe.mjs boots the four let-go lanes: page load to "press any
+// shell, booted the way checks/boot-time-probe.mjs boots a lane for the
+// size/boot table (rows P4.3 and P7.4): page load to "press any
 // key" in the page text (the title card) = time-to-title; Space; then "hp" or
 // "floor" in the page text (the map screen's HUD) = time-to-map, both from
 // navigation. Also asserts what only the D100 imports can make true: the

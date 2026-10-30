@@ -39,7 +39,7 @@
 # served as module.wasm in the real shell (host/build-xsofy-serve.sh, plain
 # http.server, no COI: D91) must reach the title card and, after Space, the
 # map screen in headless Chromium (checks/browser-boot.mjs --xsofy, the
-# detection of zz-boot-time-probe.mjs), with ?seed= honoured and the shell's
+# detection of checks/boot-time-probe.mjs), with ?seed= honoured and the shell's
 # xsofy/startup + xsofy/stats events received. Prints time-to-title and
 # time-to-map. Exit 0 iff (1) and (2) hold. Env: LG, XSOFY, SEED (424242).
 #

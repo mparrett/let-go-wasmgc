@@ -41,9 +41,10 @@
 # indexed; should be at the SHA the lg was built from).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
+reach_lg=$here/../emit-wasm-probe/reach.lg
+[ -f "$reach_lg" ] || { echo "tools/reach.sh: $reach_lg is missing; this script needs the original probe checked out beside this repository (its reach.lg is not in this repository)" >&2; exit 2; }
 . "$(dirname "$0")/../checks/env.sh"
 LETGO=${LETGO:-$LW_ROOT/let-go}
-reach_lg=$here/../emit-wasm-probe/reach.lg
 
 extras=() exclude_ns=() deftests=0
 while [ $# -gt 0 ]; do

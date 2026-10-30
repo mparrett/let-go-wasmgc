@@ -372,8 +372,9 @@ mirror of that workspace. In practice:
   means this script. `checks/run-corpus.sh <dir>...` runs it over a corpus
   directory.
 - Row P1.GATE's `checks/bench-fib.sh` compares against the original probe at
-  `../emit-wasm-probe`, which is not in this repo; it fails outside the
-  workspace. Gate 1 itself does not depend on it.
+  `../emit-wasm-probe/ext/gen-ext.lg`, which is not in this repo; without it
+  the row exits 2 with a `SKIP` line, which the gate reports as `# SKIP`.
+  Gate 1 itself does not depend on it.
 - `LW_ATTEST`: by default a gate skips rows whose inputs are unchanged since
   their last green run on this machine (`checks/attest.sh`, keyed by the
   input table in `checks/affected.sh`). Gate decisions are taken with
