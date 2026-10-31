@@ -1821,20 +1821,30 @@
 (defn- elem-str [x mode] (cond (= mode 0) (s/value-string x) (= mode 1) (s/pr-str x) :else (s/print-str x)))
 
 (defn- print-map [mm mode]                                ; String(): {k v k v}; print-method: {k v, k v}
-  (let [e (m/entries mm) n (arch/alen e)]
-    (loop [i 0 acc (lit (arch/bytes-of-string "{"))]
-      (if (< i n)
-        (recur (+ i 2) (s/str (if (> i 0) (s/str acc (if (= mode 0) (lit (arch/bytes-of-string " ")) (lit (arch/bytes-of-string ", ")))) acc)
-                              (elem-str (arch/aget m/HSlots e i) mode)
-                              (s/str (lit (arch/bytes-of-string " ")) (elem-str (arch/aget m/HSlots e (inc i)) mode))))
-        (s/str acc (lit (arch/bytes-of-string "}")))))))
+  (let [e (m/entries mm) n (arch/alen e) b (s/sb-new)
+        sep (if (= mode 0) (lit (arch/bytes-of-string " ")) (lit (arch/bytes-of-string ", ")))
+        sp (lit (arch/bytes-of-string " "))]
+    (s/sb-add! b (lit (arch/bytes-of-string "{")))
+    (loop [i 0]
+      (when (< i n)
+        (when (> i 0) (s/sb-add! b sep))
+        (s/sb-add! b (elem-str (arch/aget m/HSlots e i) mode))
+        (s/sb-add! b sp)
+        (s/sb-add! b (elem-str (arch/aget m/HSlots e (inc i)) mode))
+        (recur (+ i 2))))
+    (s/sb-add! b (lit (arch/bytes-of-string "}")))
+    (s/sb-done b)))
 
 (defn- print-set [st mode]                                ; #{e e}
-  (let [ks (hs/sseq st) n (arch/alen ks)]
-    (loop [i 0 acc (lit (arch/bytes-of-string "#{"))]
-      (if (< i n)
-        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (arch/bytes-of-string " "))) acc) (elem-str (arch/aget m/HSlots ks i) mode)))
-        (s/str acc (lit (arch/bytes-of-string "}")))))))
+  (let [ks (hs/sseq st) n (arch/alen ks) b (s/sb-new) sp (lit (arch/bytes-of-string " "))]
+    (s/sb-add! b (lit (arch/bytes-of-string "#{")))
+    (loop [i 0]
+      (when (< i n)
+        (when (> i 0) (s/sb-add! b sp))
+        (s/sb-add! b (elem-str (arch/aget m/HSlots ks i) mode))
+        (recur (inc i))))
+    (s/sb-add! b (lit (arch/bytes-of-string "}")))
+    (s/sb-done b)))
 
 ;; A fn prints as native's Fn/MultiArityFn String(): `<fn NAME 0x..>`,
 ;; `<fn 0x..>`, `<mfn NAME 0x..>`, `<mfn  0x..>` (empty name kept). The
