@@ -1,0 +1,19 @@
+id: d2b7f41
+v: 2
+title: Decided: llvm per-program compile cost: a cheap restore, then the runtime compiled once
+status: open
+priority: medium
+created: 2026-10-31T15:21:26Z
+updated: 2026-10-31T15:21:26Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Decided: the llvm target's per-program compile cost comes down through a cheap runtime restore, then the runtime compiled once. There is no batch mode, and a program may run at most 10% slower than today on the llvm benchmarks rows. The design is docs/superpowers/specs/2026-10-30-llvm-batch-compile-and-runtime-objects-design.md.
+ 
+ Measured 2026-10-30 on `corpus/scalar/fib.clj`, with the reader fix in nooga/let-go#1106: a warm compile is 4 to 5 s of fixed cost whatever the program. Most of it is restoring the 75 MB runtime snapshot and assembling the runtime's IR, 3.8 MB of the module against 0.01 MB of program. clang's 3.2 s at `-O2` goes to that runtime IR. P13.9 pays this 271 times.
+ 
+ - No batch mode: the driver evaluates each program's forms in the host, so one process compiling many programs would need a let-go snapshot and restore of the namespace registry to keep them apart.
+ - Part 1, a cheap restore: the cached IR text moves to a sidecar beside the snapshot, read only for units the shake keeps. The restore reads only the snapshot's index.
+ - Part 2, the runtime compiled once: a spike measures a plain runtime object against runtime bitcode linked with ThinLTO, and builds whichever keeps program run time within 10%.
+ 
+ Open: P13.9's target time, and whether part 1 waits for the function cache's plan 1.
