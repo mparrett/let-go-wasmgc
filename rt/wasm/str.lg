@@ -113,6 +113,12 @@
 
 (defn- buf-done [b] (mk-str (slice (wasm/get Buf 0 b) 0 (wasm/get Buf 1 b))))
 
+;; A string builder for code outside this namespace: appending is amortized
+;; linear, where building a long string with repeated str copies it each time.
+(defn sb-new [] (buf-new))
+(defn sb-add! [b s] (buf-bytes! b (str-bytes s)) b)
+(defn sb-done [b] (buf-done b))
+
 (defn- encode-rune! [b r]                                ; utf8.AppendRune: surrogates and out-of-range -> U+FFFD
   (let [r (if (if (< r 0) true (if (> r 0x10FFFF) true (if (>= r 0xD800) (<= r 0xDFFF) false))) 0xFFFD r)]
     (cond (< r 0x80) (buf-byte! b r)
