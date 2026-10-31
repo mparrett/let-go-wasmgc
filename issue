@@ -1,0 +1,26 @@
+id: 420a324
+v: 2
+title: Proposed: the llvm backend reaches let-go through the WasmGC backend's seam and issue
+status: open
+priority: medium
+created: 2026-10-31T17:39:14Z
+updated: 2026-10-31T17:39:14Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: The llvm backend should reach let-go on the WasmGC backend's terms, through the same seam and the same let-go issue, rather than as a second proposal with its own seam. This is the llvm lane's account to sit beside git-issue:c2838dd: how far the lane is from let-go proper, what it adds to the seam, and the choices only the maintainers can make.
+ 
+ Where parity stands. The llvm lane holds itself to the GC lane's bars rather than keeping its own: the program corpora the GC lane runs, 271 of 271 (P13.9), with no corpus the GC lane covers left uncovered (P13.15); let-go's core tests at P5.1's bar (P13.12); legmacs' suite and eval tests failing the same tests as the GC lane (P13.13); xsofy's world dump identical to native lg on seeds 1 to 20 (P12.38). The parity branch reaches that on the current pin with one stopgap in the runtime snapshot, which goes when nooga/let-go#1106 lands.
+ 
+ The seam is shared, and the llvm side adds nothing to it. The ten overridden vars all live in the driver and lower_wasm; the llvm lowering's files override none of them. Whichever shape the maintainers choose for the seam, a backend record or the vars declared as the contract, carries both backends, so one let-go issue covering both is the simpler ask.
+ 
+ What the llvm lane adds is its own packaging cost:
+ - a compile needs LLVM's clang and lld on the machine, and the host runtime in C (host/native);
+ - a warm compile takes 4 to 5 s with the reader fix and 9.8 s without it, against a goal of under 1 s; the plan is git-issue:d2b7f41;
+ - the runtime under rt/llvm is a deliberate fork of rt/wasm, to be joined later through a shared core rather than merged.
+ 
+ Packaging, then: the same three shapes, and the same order as git-issue:c2838dd, with the llvm lowering last. It should stay in this repo until the compile-time plan lands, because an in-tree target that needs a full LLVM install and minutes per corpus is not a cost let-go's CI should take on.
+ 
+ The public reasons: native speed for code written in let-go, against the bytecode VM, from docs/benchmarks/llvm-compute-2026-10-16: fib in 627 ms against 1,818 ms, and xxh in 45.6 ms against 3,760 ms. The claim is about let-go code: native lg calling Go's own xxh through interop takes 0.32 ms. Beyond speed, the lane targets 32-bit and bare-metal boards through hardware profiles (P13.5, P13.6), which the VM cannot reach.
+ 
+ Facts that close this: F1, the co-driver's read on folding the llvm lane into git-issue:c2838dd's let-go issue, as a comment here; F2, that issue carrying an llvm section built from this one, linked from here.
