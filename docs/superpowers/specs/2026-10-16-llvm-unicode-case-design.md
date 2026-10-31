@@ -1,0 +1,9 @@
+# LLVM Unicode simple case compatibility
+
+The authorized jank compatibility work requires upper-case, lower-case, and capitalize to match pinned let-go e9789b7d53. Existing ASCII and Latin-1 paths are correct; the heuristic caseless fallback rejects valid symbols and cased scripts.
+
+Use generated range tables plus a binary search in llvm.str. Generate them by querying the pinned executable over every Unicode scalar, not the ambient Go toolchain (installed Go 1.23.4 differs from the pinned executable built with Go 1.27.1). This makes the reference behavior explicit and reproducible. Host locale APIs introduce platform/version variation. A generated branch tree avoids data lookup but increases function IR size substantially; compact data is preferred.
+
+Each direction gets ordered non-overlapping ranges. A range records first rune, last rune, first mapped rune, and stride (1 or 2). A rune in a stride-2 gap is unchanged. Four printable six-bit digits encode each 24-bit unsigned field; sixteen ASCII bytes per range permit static byte literals without heap vectors, Unicode-escape ambiguity, or signed deltas. Querying a range computes mapped-first + rune - first. Missing ranges are identity. Keep the existing ASCII and Latin-1 fast paths and UTF-8 decode/encode behavior, including invalid-byte replacement.
+
+The generator validates reconstructed mappings against the pinned native oracle while constructing its output and emits deterministic source with provenance. Extend the existing string runtime test group and consolidated values fixture; cover Greek, Armenian, Georgian, supplementary-plane letters, special simple mappings, caseless symbols, and range gaps. Verify the actual three jank string-case files, gensym/snapshot preservation, and durable-cache compatibility. No suite skips or relaxed counters.
