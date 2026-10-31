@@ -1,0 +1,17 @@
+id: 7c1289c
+v: 2
+title: Review the let-go reader fix that P12.37 waits on
+status: open
+priority: medium
+created: 2026-10-31T03:24:08Z
+updated: 2026-10-31T03:24:08Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Please review nooga/let-go#1106, a let-go reader fix that P12.37 waits on.
+ 
+ `read-string` checks a data map literal for duplicate keys pairwise, so a map of n keys costs n²/2 equality checks. The llvm runtime cache is a 75 MB EDN file with maps of thousands of keys, and a quarter of every warm compile went to that check. The warm compile ran 6 to 18 s under load against P12.37's 5 s bound, on base and head alike; the head paid more because its cache maps are larger.
+ 
+ The fix compares keys within a hash bucket past 32 keys, for the kinds whose hash agrees with `=`, and keeps the pairwise check for every other key, since nooga/let-go#1034's pairs (`[]` and `()`, `0.0` and `-0.0`) still hash apart. A 5000-key map reads in 3 ms instead of 1.3 s, and P12.37 passes at 3.1 s with an lg built from the pinned commit plus the fix.
+ 
+ Once it merges I'll bump the lg pin here. Does the hash-safe set of key kinds match your reading of nooga/let-go#1034?
