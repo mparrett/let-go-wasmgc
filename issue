@@ -1,0 +1,21 @@
+id: c2838dd
+v: 2
+title: Proposed: the shape in which the WasmGC backend reaches let-go, and who decides what
+status: open
+priority: medium
+created: 2026-10-31T16:44:47Z
+updated: 2026-10-31T16:44:47Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: The let-go maintainers would like this backend in let-go proper. Before that reaches them as a let-go issue, this is the lane's own account of how far away that is, what the seam looks like, and the three choices only they can make. The ask here is a read from the lane's co-driver and let-go's prior primary contributor; the let-go issue follows a day or two later, framed as the maintainers' architecture choice and carrying the corrections from here.
+ 
+ Where parity stands, from the roadmap's scoreboard: jank suite 168 of 241 files (P5.13), core deftests 271 of 273, legmacs deftests 316 of 373 (P7.0), legmacs eval 28 of 30 (P7.1). The milestones to a 1.0 are R4 numbers (BigInt and Ratio, in flight under #72 and #75), R5 shapes (the remaining deftest misses named or closed), R6 the concurrency decision, and R7 the 1.0 itself. Nothing in this proposal waits on R7; the seam work can go first and the parity work keeps running beside it.
+ 
+ The seam is the real cost. The backend reaches into let-go's IR pipeline through alter-var-root on ten vars: five in ir.build (build-form, build-def, build-loop, bind-local!, build-builtin-op), the default pass list, and four predicates inside passes (typeinfer's declared call type, purity's effect-free test, LICM's pure-op test, infer-arg-types). Each override is a backend-specific answer to a question the pass already asks. The let-go issue puts two shapes to the maintainers: a backend record threaded through the builder and the passes with the bytecode answers as defaults, or the ten vars declared as the contract and pinned by a test. Which one is the team's architecture call; the record is what this side would build first.
+ 
+ Packaging has three shapes. In-tree behind a target flag, like gogen; a let-go package the lgx manager installs, with the backend pinned to a let-go version; or this repo staying separate with the seam as its only contract. My recommendation is the third until the seam lands and the 1.0 milestone closes, then the first for the WasmGC lowering only, with the hosts, the corpus and the checks staying here. The pin budget decides between the first two: in-tree means every let-go PR runs this lane's gate rows, and P13.9 at an hour is not a budget the let-go CI can carry today.
+ 
+ The public reasons, in the order they would be stated: footprint (115 to 172 KB brotli against 9 MB for the stock wasm build), in-browser performance against the stock VM-in-wasm build (the xsofy turn at 42.9 ms against 164.1 ms, corpus/xsofy/turn-time.md), and native performance through the llvm target, stated with the llvm lane's acceptance rows and bounds once they are in.
+ 
+ Facts that close this: F1, the co-driver's read on the two seam shapes and the packaging order, as a comment here; F2, the let-go issue opened with those corrections folded in, linked from this issue. M1: if the let-go issue is better opened from the llvm lane's side, a comment here saying so, and this side writes nothing upstream.
