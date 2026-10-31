@@ -9,7 +9,7 @@
 #                                  pre-push.legacy, which prek runs after its own
 #   workflow.sh rows [<row>...]    run each row (default: checks/affected.sh's)
 #                                  through run.sh with LW_ATTEST=0; prints
-#                                  `<row> <exit>` and exits 1 if any is not 0.
+#                                  `<row> <exit> <seconds>s` and exits 1 if any is not 0.
 #                                  Each row's output is kept as <row>.log in
 #                                  $LW_ROW_LOGS (default: a new directory under
 #                                  $LW_STATE/rows, else $TMPDIR/rows), a `/` in
@@ -57,12 +57,13 @@ row_logs() {   # <suffix>: the directory a run's row logs go to, made, as an abs
   mkdir -p "$d" && (cd "$d" && pwd) || { echo "rows: cannot make the log directory $d" >&2; return 2; }
 }
 
-run_rows() {   # <tree> <logs> <row>...: run each row in <tree>, print `<row> <exit>`, keep its output as <logs>/<row>.log; exit 1 if any failed
-  local tree=$1 logs=$2 id rc log fail=0; shift 2
+run_rows() {   # <tree> <logs> <row>...: run each row in <tree>, print `<row> <exit> <seconds>s`, keep its output as <logs>/<row>.log; exit 1 if any failed
+  local tree=$1 logs=$2 id rc log start fail=0; shift 2
   for id in "$@"; do
     log=$logs/${id//\//_}.log
+    start=$SECONDS
     (cd "$tree" && LW_ATTEST=0 checks/run.sh "$id" >"$log" 2>&1); rc=$?
-    printf '%s %s\n' "$id" "$rc"
+    printf '%s %s %ss\n' "$id" "$rc" "$((SECONDS - start))"
     [ $rc = 0 ] || { fail=1; echo "rows: $id exited $rc; log: $log" >&2; }
   done
   return $fail
@@ -161,11 +162,12 @@ selftest() {
   printf '#!/bin/sh\necho "ran $1"; [ "$1" = good ]\n' > "$t/tree/checks/run.sh" && chmod +x "$t/tree/checks/run.sh"
   mkdir -p "$t/logs"
   out=$(run_rows "$t/tree" "$t/logs" good bad 2>"$t/rows.err"); rc=$?
-  check 'rows prints each row and its exit, and fails on one failure' '[ $rc = 1 ] && [ "$out" = "$(printf "good 0\nbad 1")" ]'
+  check 'rows prints each row and its exit, and fails on one failure' '[ $rc = 1 ] && [ "$(cut -d" " -f1,2 <<<"$out")" = "$(printf "good 0\nbad 1")" ]'
+  check 'rows prints each row'"'"'s seconds' '! grep -vqE "^[^ ]+ [0-9]+ [0-9]+s$" <<<"$out"'
   check 'rows keeps every row'"'"'s output' 'grep -qx "ran good" "$t/logs/good.log" && grep -qx "ran bad" "$t/logs/bad.log"'
   check 'rows names the failing row'"'"'s log on stderr' 'grep -q "bad exited 1; log: $t/logs/bad.log" "$t/rows.err" && ! grep -q "good exited" "$t/rows.err"'
   out=$(run_rows "$t/tree" "$t/logs" good/x 2>/dev/null)
-  check 'a row id with / keeps its log' '[ "$out" = "good/x 1" ] && grep -qx "ran good/x" "$t/logs/good_x.log"'
+  check 'a row id with / keeps its log' '[ "${out% *}" = "good/x 1" ] && grep -qx "ran good/x" "$t/logs/good_x.log"'
   out=$(cd "$t" && LW_ROW_LOGS=rel/logs/ row_logs -base)
   check 'row_logs makes a relative LW_ROW_LOGS absolute, the suffix on the name' '[ "$out" = "$(cd "$t" && pwd)/rel/logs-base" ] && [ -d "$t/rel/logs-base" ]'
   check 'row_logs fails when it cannot make the directory' '! LW_ROW_LOGS=/dev/null/x row_logs "" 2>/dev/null'
