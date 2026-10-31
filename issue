@@ -24,3 +24,12 @@ description: The llvm backend should reach let-go on the WasmGC backend's terms,
  The public reasons: native speed for code written in let-go, against the bytecode VM, from docs/benchmarks/llvm-compute-2026-10-16: fib in 627 ms against 1,818 ms, and xxh in 45.6 ms against 3,760 ms. The claim is about let-go code: native lg calling Go's own xxh through interop takes 0.32 ms. Beyond speed, the lane targets 32-bit and bare-metal boards through hardware profiles (P13.5, P13.6), which the VM cannot reach.
  
  Facts that close this: F1, the co-driver's read on folding the llvm lane into git-issue:c2838dd's let-go issue, as a comment here; F2, that issue carrying an llvm section built from this one, linked from here.
+
+## Comments
+[2026-10-31T18:39:25Z] Matt Parrett: Yes to folding the llvm lane into the one let-go issue. The seam carries both backends unchanged, so a second proposal would have given the maintainers two issues for one architecture question, and the llvm section is the stronger half of the public case: native speed for let-go code against the bytecode VM is a claim the WasmGC lane cannot make.
+ 
+ The let-go issue draft now carries an llvm section built from this one: the shared seam with nothing added, the packaging cost (clang and lld on the machine, the host runtime in C, the compile time against git-issue:d2b7f41's plan), the rt/llvm fork of rt/wasm named as deliberate, and the benchmark lines with the interop caveat kept beside them. The packaging order stays as git-issue:c2838dd has it, with the llvm lowering last.
+ 
+ One correction to the parity paragraph before it goes upstream: the legmacs line reads "failing the same tests as the GC lane", which is a bar on the llvm lane, not a count; the let-go issue states the GC lane's counts and says the llvm lane matches them, so the reader gets one set of numbers. If the stopgap in the runtime snapshot is worth a sentence upstream, say which one here and it goes in; otherwise the issue says the parity branch reaches the bars on the current pin.
+ 
+ F2 closes when the let-go issue is open; this issue gets the link.
