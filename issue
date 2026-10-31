@@ -1,0 +1,22 @@
+id: 50d286e
+v: 2
+title: Proposed: rows reuse unchanged results and run in parallel, through the gate's machinery
+status: open
+priority: medium
+created: 2026-10-31T19:44:52Z
+updated: 2026-10-31T19:44:52Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Proposed: `make rows` and the gate reuse a row's result when its inputs have not changed, and run rows in parallel, through the gate's existing machinery.
+ 
+ The last full row runs on the llvm-parity branch took 3.9 to 4.2 hours for 119 to 134 rows, and a pin move makes the last one worthless. Most of that reruns rows whose inputs have not changed, one at a time: `workflow.sh rows` runs each row serially with `LW_ATTEST=0`. `gate.sh` already runs `LW_GATE_J` rows at once and skips a row whose `attest.sh key` matches its last green run, but a phase-gate decision turns that off, because the key sees only what `affected.sh`'s table names.
+ 
+ 1. Make the key trustworthy: it also covers the toolchain a row uses (clang and lld, Go, the wazero runner) and the `LW_*` variables it reads, declared in the table. An audit row runs a row in a worktree holding only its declared inputs and requires the same verdict; a row that reads something undeclared fails the audit and is not reused. Gate decisions then reuse audited rows.
+ 2. `rows` and `baseline` run through `gate.sh`'s scheduler with attestation on, instead of their own serial loop. An `items.tsv` column marks the rows that must run alone (P12.37, the benchmarks rows, any row using `quiet.sh`). `rows` with no list is the rows whose key moved, not `git diff HEAD`, so a commit no longer hides its rows.
+ 
+ The per-backend cells from git-issue:bc33496 are recorded against the same key, and the ledger stays per machine as agreed there. The design is docs/superpowers/specs/2026-10-31-rows-reuse-and-parallel-design.md.
+ 
+ Facts that close it: F1, an unchanged tree's full set reports every audited row attested in under a minute; F2, a planted undeclared input fails the audit; F3, P12.37 meets its bound under the scheduler as it does alone.
+ 
+ Open: the column's name, and whether the audit runs in CI or only locally.
