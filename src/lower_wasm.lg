@@ -4903,6 +4903,15 @@
      ;; D221: the llvm lowering's session state
      :llvm (when (= *target* :llvm) ((resolve 'lower-wasm/ll-rtlib-snapshot)))}))
 
+;; The snapshot's large maps, written as vectors of [k v] pairs: the pinned
+;; lg's reader checks a data map's keys pairwise, quadratic in its size
+;; (fixed upstream in let-go), and these maps hold thousands of keys.
+(def rtlib-pair-paths [[:lowered] [:state] [:sigs] [:rt-globals] [:llvm :ll-fn-values]])
+(defn rtlib-maps->pairs [snap]
+  (reduce (fn [s path] (if (map? (get-in s path)) (update-in s path vec) s)) snap rtlib-pair-paths))
+(defn rtlib-pairs->maps [snap]
+  (reduce (fn [s path] (if (vector? (get-in s path)) (update-in s path (fn [ps] (into {} ps))) s)) snap rtlib-pair-paths))
+
 (defn rtlib-restore! [snap]
   ;; the llvm lane's no-twin stand-ins exist before any name is resolved
   (when (:llvm snap) ((resolve 'lower-wasm/ll-notwin-restore!) (:llvm snap)))
@@ -4968,7 +4977,7 @@
         asked (if (rtlib-exists? asked-f) (set (read-string (slurp asked-f))) nil)
         f (str rtlib-dir "/" base (if asked (rtlib-variant asked) "") ".edn")]
     (if (and asked (rtlib-exists? f))
-      (let [snap (read-string (slurp f))]
+      (let [snap (rtlib-pairs->maps (read-string (slurp f)))]
         (rtlib-restore! snap)
         (replay-gensyms! snap))
       (let [built (try (reset! natives-asked #{})
@@ -4980,7 +4989,7 @@
         (os/sh "mkdir" "-p" rtlib-dir)
         (spit (str asked-f tmp) (pr-str (vec (sort asked))))
         (os/rename (str asked-f tmp) asked-f)
-        (spit (str f tmp) (pr-str (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built))))
+        (spit (str f tmp) (pr-str (rtlib-maps->pairs (assoc (rtlib-snapshot (:result built)) :gensyms (:gensyms built)))))
         (os/rename (str f tmp) f)
         ;; LLVM profiles and compiler generations are reusable content-keyed
         ;; entries: switching A -> B -> A must not rebuild A. Keep these until
