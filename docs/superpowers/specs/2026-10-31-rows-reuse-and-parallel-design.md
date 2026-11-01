@@ -59,9 +59,17 @@ a key that sees everything a row reads.
   differs reads something the table does not name, and the audit names it.
   The audit runs on every row whose table line changed, and on the full set
   when the pin moves.
-- **Decisions may use reuse once a row is audited.** `gate.sh <n>` reuses a
-  row's attestation when its audit passed with the same table line; an
-  unaudited row runs.
+- **Decisions may use reuse once a row is audited.** The audit's verdict is
+  recorded in the per-machine ledger beside the row's key and table line,
+  and `gate.sh <n>` reuses a row only when the ledger shows the audit at the
+  current table line; an unaudited row runs. The audit runs locally only: CI
+  has no ledger, so CI keeps running every row fresh.
+- **A reused row says so where the decision is read.** Reuse changes what a
+  green decision means: verified at a tree with the same declared inputs,
+  not at this head. So the row's TAP line carries the attestation key's
+  short form and the date of the audit that licensed the reuse, and the
+  evidence note a PR carries holds the same two fields for each reused row,
+  so a reader can tell a run from a reuse without the ledger.
 - **Per-backend cells use the same key.** git-issue:bc33496's cells are
   recorded against the row's key, so a reused row reports the cells it
   recorded.
@@ -72,10 +80,12 @@ a key that sees everything a row reads.
   attestation on, instead of a separate serial loop. The output stays
   `<row> <exit> <seconds>s`, now from the gate's timings, and each row keeps
   its log (#83).
-- **Rows that must run alone say so.** An `items.tsv` column marks a row
-  `alone`: P12.37, the benchmarks rows, and any row that runs `quiet.sh`.
-  The scheduler runs an `alone` row after the rows before it finish and
-  before the next starts.
+- **Rows that must run alone say so.** An `items.tsv` column `run` takes
+  `shared` or `alone`, so a third mode has somewhere to go. P12.37, the
+  benchmarks rows and any row that runs `quiet.sh` are `alone`. An alone
+  row's bound is measured on an emptied machine, so the scheduler waits for
+  the slot pool to drain, not only for the rows before it in the list,
+  before an alone row starts, and starts nothing else until it ends.
 - **`rows` with no list is the rows whose key moved,** not `git diff HEAD`,
   so a commit does not hide its rows.
 - **Concurrency defaults to the slot pool's size** (`LW_SLOTS`), since each
@@ -90,25 +100,34 @@ a key that sees everything a row reads.
 - After an edit to one runtime file, `rows` runs exactly the rows whose
   table names `rt/`, and the 134-row set's wall time on a quiet machine is
   recorded before and after part 2.
-- P12.37 run by the scheduler meets its bound as it does alone.
+- P12.37 meets its bound run by the scheduler and run alone, both measured
+  in one session, so the comparison is on the same machine state.
 
 ## Decided
 
 - Reuse is per machine (git-issue:bc33496's answer); a fresh clone runs
   everything once.
-- `rows` becomes the gate's scheduler rather than a second loop. (My
-  recommendation.)
+- `rows` becomes the gate's scheduler rather than a second loop.
+- A reused row reports its key's short form and its audit's date, in its
+  TAP line and in the PR's evidence note.
+- The column is `run`, with `shared` and `alone`; an alone row waits for
+  the slot pool to drain.
+- The audit runs locally only, and its verdict lives in the ledger beside
+  the key and the table line.
 
-## Open
-
-- The column's name and values for rows that must run alone.
-- Whether the audit runs in CI or only locally.
+These were agreed on git-issue:50d286e (2026-11-01).
 
 ## Risks
 
 - **The audit's worktree differs from the full tree in ways that matter**
   (an ignored cache such as `src/.rtlib`): the audit seeds the same ignored
   caches the row's declared inputs build, or it reports a false gap.
+- **The audit tests verdicts, not reads.** A row that reads an undeclared
+  input and still returns the same verdict passes the audit, and its key
+  stays incomplete until that input changes the verdict. A read trace under
+  the audit (the files the row's processes open, diffed against its table
+  line) closes the gap; it becomes a follow-up row if a planted silent read
+  gets past the verdict audit.
 - **Two rows that write the same cache** (the runtime snapshot, the
   wazero runner) race; the caches already write to a temporary name and move, and
   the scheduler serializes rows the table marks as writing one.
