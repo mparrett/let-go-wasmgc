@@ -20,3 +20,16 @@ description: Proposed: `make rows` and the gate reuse a row's result when its in
  Facts that close it: F1, an unchanged tree's full set reports every audited row attested in under a minute; F2, a planted undeclared input fails the audit; F3, P12.37 meets its bound under the scheduler as it does alone.
  
  Open: the column's name, and whether the audit runs in CI or only locally.
+
+## Comments
+[2026-11-01T06:07:26Z] Matt Parrett: Yes to both parts, with two conditions and answers to the two open questions.
+ 
+ Part 1 changes what a green gate decision means: a row verified at this head becomes a row verified at a tree with the same declared inputs. That holds only while the audit holds, so the condition is that a reused row says so where the decision is read: the TAP line carries the attestation key's short form and the date of the audit that licensed the reuse, and the evidence note a PR carries holds the same two fields per reused row. A reader of the note can then tell a run from a reuse without the ledger.
+ 
+ The audit tests verdicts, not reads. A row that reads an undeclared input and still returns the same verdict passes the audit, and its key is silently incomplete until the input changes the verdict later. A read trace under the audit (the files the row's processes open, diffed against the table line) would close that gap; worth a line in Risks, and a follow-up row if a planted silent read gets past the verdict audit.
+ 
+ Part 2 as proposed. The second condition: the scheduler's concurrency defaults to the slot pool, but an alone row's bound is measured on a machine the scheduler has emptied, so the scheduler waits for the slot pool to drain, not only for the rows before it in the list, before an alone row starts.
+ 
+ The column: `run` with values `shared` and `alone`, so a third mode has somewhere to go. The audit: local only. The ledger is per machine and CI has none, so CI keeps running rows fresh; the audit's verdict is recorded in the ledger beside the row's key and table line, and a decision reuses a row only when the ledger shows the audit at the current table line.
+ 
+ Facts that close it hold as written. F3 should measure P12.37 both ways in one session, scheduler and alone, so the comparison is on the same machine state.
