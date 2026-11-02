@@ -1,0 +1,22 @@
+id: a7ee80a
+v: 2
+title: Proposed: move the let-go pin from e9789b7d to dbccbf0f
+status: open
+priority: medium
+created: 2026-11-02T06:48:48Z
+updated: 2026-11-02T06:48:48Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream main with the linear duplicate-key check in the data reader (nooga/let-go#1106), 40 commits past the current pin.
+ 
+ Why now: the reader fix removes the cost that kept P12.37's warm compile over its bound, so the snapshot's pair-vector stopgap comes out with the move. On the llvm-parity branch it is three commits, verified so far by P9.1, P12.37, P13.1, P12.31 and P1.0; the full row set is running at that head.
+ 
+ - The driver now requires the test namespace it names (#'test/deftest). It was loaded as a side effect, and the new lg loads namespaces lazily, so without the require the driver fails to compile with "Can't resolve test/deftest". The require changes nothing at the current pin.
+ - lw_rt's letgo-commit, env.sh's lg path, ir-pipeline.sh, lane5.sh, the size-boot scripts, the legmacs build default, the README, the spec and the review corpora's scripts move to dbccbf0f.
+ - P9.1's gensym count at load moves from 1133 to 1161.
+ - The records of the old pin (D217, STATUS.md, the benchmark docs, the byte guard's history comment) stay as written.
+ 
+ What it touches on your side: P8.0's byte guard and the size-boot measurements are recorded at the old pin and will need a fresh capture at the new one; P4.3 and P7.4 already need the boot-time probe.
+ 
+ Facts that close it: F1, the full row set at the llvm-parity head passes on the new pin; F2, the pin move lands on main by PR, with P9.1 at 1161.
