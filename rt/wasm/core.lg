@@ -218,6 +218,22 @@
         (let [nt (wasm/new TypeVal (type-name x) id)] (wasm/aset! pv/Node tab id nt) nt)
         t))))
 
+;; A let-go class name used as a value (core.lg's vector? compares (type x)
+;; with let-go.lang.ArrayVector): the type that value's type-of interns, by
+;; the driver's code for the name (lower-wasm/class-name-codes).
+(defn- class-example [c]
+  (cond (= c 0) (pv/empty-vec)
+        (= c 1) (pv/vretag (pv/empty-vec) 1 (wasm/null))
+        (= c 2) (m/transient-map (m/empty-map))
+        :else (arr/object-array (sq/box-int 0))))
+;; Read on every call (vector?, reduce-kv), so a type already interned is
+;; taken from the table by its id.
+(defn class-type [code]
+  (let [c (sq/unbox-int code)
+        id (cond (= c 0) 23 (= c 1) 11 (= c 2) 32 :else 37)
+        t (wasm/aget pv/Node (wasm/get Globals 1 globals) id)]
+    (if (wasm/null? t) (type-of (class-example c)) t)))
+
 ;; ---------------------------------------------------------------------------
 ;; Calling values. A Fn goes through its code slot for the arity (D52); the
 ;; other let-go IFns (keyword, symbol, map, set, vector) look themselves up.

@@ -1592,6 +1592,13 @@
 
 (declare try-wat analyze-ir lower-fn)
 
+;; Upstream ir.passes.constfold finding: it counts :eq as commutative and
+;; moves a Const operand to the right, but let-go's = is not symmetric for a
+;; vector and a list ((= #{(list 1)} #{[1]}) is true, (= #{[1]} #{(list 1)})
+;; false, natively), so (= #{[1]} x) became (= x #{[1]}) once a set literal
+;; of literals is one Const. Keep = in the order the program wrote.
+(alter-var-root #'ir.passes.constfold/commutative disj :eq)
+
 ;; Upstream ir.build finding: it folds a one-argument comparison to its
 ;; argument ("comparisons -> identity"), so (< x) would lower as x where
 ;; native returns true for any x (the bytecode compiler agrees with native).
@@ -1872,6 +1879,20 @@
     (str "(if (result (ref null eq)) " (root-test-wat v) " (then " (root-value-wat v) ") (else " (var-value-wat* v) "))")
     (var-value-wat* v)))
 
+;; let-go class names a program or core.lg reads as values, which native
+;; resolves to their types (lang.go's class registry): the code
+;; wasm.core/class-type takes for each
+(def class-name-codes {"let-go.lang.ArrayVector" 0 "let-go.lang.PersistentVector" 1
+                       "let-go.lang.TransientMap" 2 "let-go.lang.Array" 3})
+
+(defn class-name-code
+  "The class-type code of a var named let-go.lang.<Class>, nil for other
+   vars; a let-go class the runtime has no type for fails the compile."
+  [v]
+  (let [s (str v) n (subs s (inc (str/last-index-of s "/")))]
+    (when (str/starts-with? n "let-go.lang.")
+      (or (class-name-codes n) (fail "unsupported class name as a value" {:class n :fn *fname*})))))
+
 (defn var-value-wat*
   "A constant var used as a value (not in callee position)."
   [v]
@@ -1908,6 +1929,7 @@
         ;; P6.8: a native with no twin as a value (map, apply, a local) is a
         ;; fn raising D139's named error when called, not the nil slot
         (and *rt* (no-twin-message v)) (str "(global.get " (no-twin-fn-global v) ")")
+        (and *rt* (class-name-code v)) (rt-call-expr (lw-rt/rt-var 'core 'class-type) [(scalar-const-wat (class-name-code v))])
         :else (str "(global.get " (extern-global v) ")")))
 
 (defn closure-of [nid]
