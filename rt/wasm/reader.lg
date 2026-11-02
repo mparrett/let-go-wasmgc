@@ -1082,7 +1082,8 @@
       (macro? ch) (read-macro st ch)
       (if (= ch 43) true (= ch 45))
       (let [ch2 (next! st)]
-        (cond (= ch2 -1) (fail-eof! st (s/lit "unexpected error"))
+        ;; a sign at end of input is the complete symbol + or -, as native reads it
+        (cond (= ch2 -1) (interpret st (read-token st (dec (wasm/get RS 2 st))))
               (nd-digit? ch2) (do (unread! st) (read-number st (dec (wasm/get RS 2 st))))
               :else (do (unread! st) (interpret st (read-token st (dec (wasm/get RS 2 st)))))))
       :else (interpret st (read-token st (last-start st))))))
