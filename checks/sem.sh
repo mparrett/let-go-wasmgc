@@ -7,7 +7,10 @@
 # from 8 s to 30 s. Three agents each running a serial gate already
 # oversubscribe the machine; a parallel gate per agent would make it worse.
 # So parallelism is granted by ONE pool shared by every agent and every
-# script, not per script: LW_SLOTS (default 4) tokens in $LW_SEM. The default,
+# script, not per script: LW_SLOTS tokens in $LW_SEM. LW_SLOTS defaults to one
+# slot per 8 GB of physical memory, from 1 to 4: each slot's command can hold
+# several GB (an lg compile, clang, a GC-disabled run), and on 2026-10-31 four
+# slots on a 16 GB machine filled its memory and swap. The pool path's default,
 # /tmp/lw-sem-<uid>, is the same path in every shell, session and TMPDIR, so
 # the pool is machine-wide by construction (it used to sit under $TMPDIR,
 # which is per session: on 2026-10-08 three agents each had their own four
@@ -48,7 +51,11 @@ if [ -n "${LW_SEM_HELD:-}" ]; then exec "$@"; fi
 got_ms=""
 sem_ms() { if [ -n "${EPOCHREALTIME:-}" ]; then local u=${EPOCHREALTIME/[.,]/}; echo $(( u / 1000 )); else perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; fi; }
 [ -z "${LW_SEM_TRACE:-}" ] || asked=$(sem_ms)
-n=${LW_SLOTS:-4}; d=${LW_SEM:-/tmp/lw-sem-$(id -u)}; d=${d%/}; mkdir -p "$d"
+mem_slots() {
+  local b; b=$(sysctl -n hw.memsize 2>/dev/null || awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo 2>/dev/null)
+  b=$(( ${b:-0} / 8589934592 )); [ "$b" -lt 1 ] && b=1; [ "$b" -gt 4 ] && b=4; echo "$b"
+}
+n=${LW_SLOTS:-$(mem_slots)}; d=${LW_SEM:-/tmp/lw-sem-$(id -u)}; d=${d%/}; mkdir -p "$d"
 deadline=$(( $(date +%s) + ${LW_SEM_WAIT:-1800} ))
 got=""
 # a slot whose holder died, or that never recorded a pid (killed between
