@@ -94,3 +94,5 @@
 ;; review gap-02: printing fns/atoms/exceptions (addresses differ, so print a predicate)
 (show "r1-gap02-print-atom" (subs (pr-str (atom 1)) 0 7))
 (show "r1-gap02-print-ex" (msg (fn [] (throw (ex-info "x" {})))))
+;; a large vector and a sorted set have distinct types
+(show "type-pvec-vs-sorted-set" (let [v (reduce conj [] (range 100)) s (sorted-set 1 2)] [(str (type v)) (str (type s)) (= (type v) (type s))]))
