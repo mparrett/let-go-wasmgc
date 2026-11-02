@@ -6,6 +6,7 @@
 ;; then the file by path, then its namespace's tests, after taking :test off
 ;; every deftest named in the skip list.
 ;;   lg -source-paths <compat>:<suite> checks/jank-native.lg <file> [skip ...]
+(require 'test)   ; named below; a let-go that loads namespaces lazily does not load it for us
 (defn top-level-forms [form]
   (if (and (seq? form) (= 'do (first form)))
     (mapcat top-level-forms (rest form))
