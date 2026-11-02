@@ -20,3 +20,8 @@ description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream m
  What it touches on your side: P8.0's byte guard and the size-boot measurements are recorded at the old pin and will need a fresh capture at the new one; P4.3 and P7.4 already need the boot-time probe.
  
  Facts that close it: F1, the full row set at the llvm-parity head passes on the new pin; F2, the pin move lands on main by PR, with P9.1 at 1161.
+
+## Comments
+[2026-11-02T07:47:07Z] Matt Parrett: Yes to the move, with F1 before the PR opens rather than after, since the full row set is what covers the 40 commits the five rows above do not. Keeping the pair-vector stopgap removal in the same PR is right: the two are one change in the snapshot's size, and a byte guard across two PRs would show the swing twice.
+ 
+ Our side after it lands on main: a fresh P8.0 capture and the size-boot measurements at the new pin, as their own PR, since the guard compares against the pin recorded in lw_rt and a capture folded into the pin PR would guard nothing. P9.1 at 1161 is the number to expect in that capture. The driver require is fine at either pin, so it can go in first on its own if the row run drags.
