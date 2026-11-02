@@ -6,7 +6,7 @@
 #   lw     host/build-legmacs-module.sh's module in host/build-legmacs-serve.sh's
 #          page: index.html + xsofy-shell-adapter.js + lg-wasm-host.js + let-go's
 #          lg-shell-xterm.js + module.wasm; served without COI (D91).
-#   stock  `lg -w <dir> main.lg` at let-go e9789b7d with its default xterm shell
+#   stock  `lg -w <dir> main.lg` at let-go dbccbf0f with its default xterm shell
 #          (index.html with the wasm inline + coi-serviceworker.js), LETGO_SRC a
 #          `git archive` of that commit as in lane5.sh, cached under
 #          $LW_LEGMACS_STOCK_CACHE; served with COOP/COEP (its key ring needs SAB).
@@ -31,7 +31,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
 LETGO=${LETGO:-$LW_ROOT/let-go}
-COMMIT=e9789b7d
+COMMIT=dbccbf0f
 REPS=${REPS:-5}
 browser_skip=$(node "$here/checks/browser-probe.mjs" 2>&1) || true
 [ -n "$browser_skip" ] && [ -n "${LW_REQUIRE_BROWSER:-}" ] && { echo "FAIL (LW_REQUIRE_BROWSER is set: $browser_skip)"; exit 1; }
@@ -117,7 +117,7 @@ lw_ok = bl is not None and not bl.get('failure') and len(bl.get('firstFrameMs', 
 rev = subprocess.run(['git', '-C', legmacs, 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
 today = datetime.date.today().isoformat()
 out = [f'# P6.5: legmacs size and boot (measured {today}, checks/size-boot.sh --legmacs)', '',
-       f'legmacs {rev} `main.lg`, lg e9789b7d (`lg-e9789b7d53`), headless Chromium via `checks/browser-boot.mjs --legmacs-time`, '
+       f'legmacs {rev} `main.lg`, lg dbccbf0f (`lg-dbccbf0f63`), headless Chromium via `checks/browser-boot.mjs --legmacs-time`, '
        f'{reps} runs per lane, medians.',
        'Bundle = every file the page fetches except xterm.js + addon-fit, which both pages load from cdn.jsdelivr.net. Times are',
        'from navigation: boot = first text in xterm, first frame = the *scratch* mode line on screen.', '',
@@ -128,7 +128,7 @@ def row(name, k, b):
     s = sz[k]
     return '| ' + ' | '.join([name, mb(s[0]), mb(s[1]), mb(s[2]), boot(b, 'bootMedian'), boot(b, 'firstFrameMedian')]) + ' |'
 out.append(row('lower-wasm (emitted)', 'lw', bl) if 'lw' in sz else '| lower-wasm (emitted) | did not compile | - | - | - | - |')
-out.append(row('stock Go (lg -w, let-go e9789b7d)', 'stock', bs) if 'stock' in sz else '| stock Go (lg -w, let-go e9789b7d) | lg -w could not build legmacs | - | - | - | - |')
+out.append(row('stock Go (lg -w, let-go dbccbf0f)', 'stock', bs) if 'stock' in sz else '| stock Go (lg -w, let-go dbccbf0f) | lg -w could not build legmacs | - | - | - | - |')
 out.append('')
 if 'module' in sz:
     out.append(f"lower-wasm module alone: {sz['raw'][0]:,} B as emitted, {sz['module'][0]:,} B after `wasm-opt -O3` (served), "

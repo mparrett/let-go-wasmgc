@@ -3,7 +3,7 @@
 # the stock-Go lane after the same scripted play, at seed 424242.
 #
 # Lanes:
-#   stock  xsofy main.lg bundled by `lg -w -w-shell none` at let-go e9789b7d
+#   stock  xsofy main.lg bundled by `lg -w -w-shell none` at let-go dbccbf0f
 #          (the backend's ground truth, LETGO_SRC = a `git archive` export of
 #          that commit, so the canonical let-go checkout is not touched), then
 #          xsofy-shell.html injected by host/inject-shell.sh (the client-shell
@@ -42,7 +42,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LETGO=${LETGO:-$LW_ROOT/let-go}
-COMMIT=e9789b7d
+COMMIT=dbccbf0f
 SEED=${SEED:-424242}
 t=$(mktemp -d); pids=()
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; [ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"; }

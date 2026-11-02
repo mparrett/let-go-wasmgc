@@ -29,7 +29,7 @@
 set -uo pipefail
 . "$(dirname "$0")/env.sh"
 cd "$(dirname "$0")/.."
-EXPECT=1133   # 1130 at let-go ff1e6dac; the e9789b7d lg takes three more at load (D217)
+EXPECT=1161   # 1130 at let-go ff1e6dac, 1133 at e9789b7d (D217); the dbccbf0f lg takes 28 more at load
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 env -u LW_RUNTIME_COMPILE -u LW_EXPORT_RT -u LW_RT_DIR \
   "$LG" -source-paths "$PWD/src" src/driver.lg --no-rt checks/fixtures/gensym-probe.lg "$t/p.wat" >"$t/log" 2>&1 \
