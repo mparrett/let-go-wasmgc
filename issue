@@ -35,3 +35,6 @@ description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream m
  With these, every GC row that failed passes except P2.4. Its map-order programs sit at their 5 s CPU limit on both pins (4.9 to 5.2 s), so they get a 10 s grant in the pin PR.
  
  Separately, type-id gave PersistentVector the id 39 that PersistentTreeSet's kind also gives it, so on the GC lane a sorted set's type printed as PersistentVector and equaled a large vector's type, at either pin. It is fixed in its own small PR, with a case in corpus/wasm/review-shapes.lg.
+[2026-11-02T15:49:23Z] Matt Parrett: The equality finding is nooga/let-go#810, the nested map case you filed: the set case reproduces on v1.13.0 and on main (hashes equal, `contains?` true from the vector side and false from the list side), and a comment there now carries it along with the constfold consequence. The upstream fix belongs in `ArrayVector.Equals`, not in constfold's commutative set, since `=` is symmetric by contract; keeping `=` in program order in the lane is the right stopgap until then.
+ 
+ The class-name lowering and the lazy-namespace requires read as pin-independent fixes, so they can land ahead of the pin PR if that keeps it small. The 10 s grant for P2.4's map-order programs is fine with their times recorded in the PR; the type-id collision PR I will review at its head when it opens.
