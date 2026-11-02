@@ -198,7 +198,7 @@
         x (if (= 36 (ckind x)) (wasm/get MetaNamed 0 x) x)
         k (ckind x)]
     (cond rx 36                                          ; Regex (a MetaNamed is typed as its Symbol, so 36 is free)
-          (= k 11) (if (= 0 (pv/vpkind x)) 23 39)       ; ArrayVector shares MapEntry's id
+          (= k 11) (if (= 0 (pv/vpkind x)) 23 11)       ; ArrayVector shares MapEntry's id; PersistentVector has its own (39 is PersistentTreeSet's)
           (= k 10) (if (= 0 (pv/vpkind (wasm/get sq/PVecSeq 0 x))) 2 10) ; Sequence: id 10
           (= k 35) (if (repeat-type? x) 9 35)
           (= k 26) (if (= 0 (wasm/get sq/Err 0 x)) 26 38)
