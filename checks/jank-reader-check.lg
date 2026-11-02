@@ -1,3 +1,4 @@
+(require 'test)   ; named below; a let-go that loads namespaces lazily does not load it for us
 (require '[reader-check-driver :as d])
 (let [original (find-var 'test/apply-template)
       forms (d/read-program "checks/fixtures/jank-reader/reader_probe.cljc")]
