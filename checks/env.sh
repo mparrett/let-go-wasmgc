@@ -35,5 +35,9 @@ LW_SEM=${LW_SEM:-/tmp/lw-sem-$(id -u)}
 # The cache of each issue's workflow state (checks/state.sh). Durable, outside
 # the tree and outside /tmp; the issue itself is the store.
 LW_STATE=${LW_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/let-go-wasmgc}
+# This machine's own settings, untracked (for one, LW_SLOTS=1 while memory is
+# tight): sourced last, so they override the defaults above.
+[ -f "$LW_STATE/local.sh" ] && . "$LW_STATE/local.sh"
 export LW_ROOT LG LETGO XSOFY LEGMACS WASM_OPT WASM_MERGE LW_SEM LW_STATE
+[ -n "${LW_SLOTS:-}" ] && export LW_SLOTS
 unset lw_env_here lw_env_src lw_c lw_brew
