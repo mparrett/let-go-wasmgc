@@ -25,3 +25,13 @@ description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream m
 [2026-11-02T07:47:07Z] Matt Parrett: Yes to the move, with F1 before the PR opens rather than after, since the full row set is what covers the 40 commits the five rows above do not. Keeping the pair-vector stopgap removal in the same PR is right: the two are one change in the snapshot's size, and a byte guard across two PRs would show the swing twice.
  
  Our side after it lands on main: a fresh P8.0 capture and the size-boot measurements at the new pin, as their own PR, since the guard compares against the pin recorded in lw_rt and a capture folded into the pin PR would guard nothing. P9.1 at 1161 is the number to expect in that capture. The driver require is fine at either pin, so it can go in first on its own if the row run drags.
+[2026-11-02T14:59:29Z] Norman Nunley, Jr: F1 is not met yet: a full run on the new pin stopped at 29 rows after eight GC-lane rows failed (P2.1, P2.3, P2.4, P2.6, P2.9, P2.11, P3.0, P3.2). The llvm rows sampled so far pass. Four causes, each fixed on the llvm-parity branch, not yet committed:
+ 
+ - Class names as values. core.lg's vector? and reduce-kv now compare (type x) with let-go.lang.ArrayVector and friends. The GC lane compiled a class name as an extern var that is never set, so vector? was false for every vector. A class-name var now lowers to the type wasm.core/type-of interns for a value of that class; a class the runtime has no type for fails the compile.
+ - Lazy namespaces. The new lg does not load test as a side effect, so the four native-side runners that name test/ (native-test-runner, intrinsics-native-runner, jank-native, jank-reader-check) now require it.
+ - An upstream constfold finding. constfold counts :eq as commutative and moves a Const operand right. let-go's = is not symmetric for a vector and a list: (= #{(list 1)} #{[1]}) is true natively, the reverse false. The new IR build makes a set of literals one Const, so (= #{[1]} x) became (= x #{[1]}). The lane now keeps = in program order. The same swap should affect the Go lowering, so the fix belongs upstream too.
+ - The reader. let-go now reads a lone + or - at end of input as the symbol; both runtimes' readers do the same.
+ 
+ With these, every GC row that failed passes except P2.4. Its map-order programs sit at their 5 s CPU limit on both pins (4.9 to 5.2 s), so they get a 10 s grant in the pin PR.
+ 
+ Separately, type-id gave PersistentVector the id 39 that PersistentTreeSet's kind also gives it, so on the GC lane a sorted set's type printed as PersistentVector and equaled a large vector's type, at either pin. It is fixed in its own small PR, with a case in corpus/wasm/review-shapes.lg.
