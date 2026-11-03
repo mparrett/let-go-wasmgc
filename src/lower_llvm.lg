@@ -153,8 +153,7 @@
         (and (= op :load-var) *rt* (not (table-var? a))
              (not (rooted? a)) (or (native-scalar-const? a) (ll-native-type-const? a))) [@a]
         (and (= :const op) (not (template? r)))
-        (let [v (if (typed-aux? a) (nth a 2) a)]
-          (when-not (var? v) [v]))))))
+        (when-not (var? a) [a])))))
 
 ;; native's class-name vars for the clojure.lang interfaces -> llvm.poly's def
 ;; of the abstract Type with that name

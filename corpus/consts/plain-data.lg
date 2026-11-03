@@ -41,3 +41,8 @@
 (prn (map both-ways made-other-ways) (:name (meta #'both-ways)))
 (def meta-sym (with-meta 'msym {:m 1}))
 (prn (= meta-sym 'msym) (= (hash meta-sym) (hash 'msym)) (get {'msym 1} meta-sym) (contains? #{meta-sym} 'msym) (meta meta-sym))
+;; a vector literal shaped like [:const <type> <value>] is a vector, whatever
+;; it looks like, as a def and as a fn's constant
+(def const-shaped [:const :int 0])
+(defn const-shaped-fn [] [:const :float 0.0])
+(prn const-shaped (first const-shaped) (count const-shaped) (= const-shaped (vector :const :int 0)) (const-shaped-fn) (vector? (const-shaped-fn)))
