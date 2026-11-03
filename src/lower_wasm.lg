@@ -4156,31 +4156,6 @@
                  (not (and (= "clojure.core" (namespace sym))
                            (contains? allocation-sensitive-calls (name sym))))))))))
 
-;; LLVM must preserve native allocation of evaluated map/set literals.
-;; Quoted collections do not pass through these builders. Empty metadata-free
-;; literals retain the native shared-empty path; metadata still evaluates.
-(alter-var-root #'ir.build/build-set
-  (fn [orig]
-    (fn [form ctx]
-      (let [elements ((get (ns-interns 'ir.build) 'set-elements) form)]
-        (if (and (= *target* :llvm) (not (sorted? form))
-                 (or (seq elements) (seq (meta form))))
-          (ir.build/with-meta-call form ctx
-            (fn [plain inner]
-              (ir.build/build-form (apply list 'clojure.core/hash-set elements) inner)))
-          (orig form ctx))))))
-
-(alter-var-root #'ir.build/build-map
-  (fn [orig]
-    (fn [form ctx]
-      (let [entries ((get (ns-interns 'ir.build) 'map-entries) form)]
-        (if (and (= *target* :llvm) (not (sorted? form))
-                 (or (seq entries) (seq (meta form))))
-          (ir.build/with-meta-call form ctx
-            (fn [plain inner]
-              (ir.build/build-form (apply list 'clojure.core/array-map (mapcat identity entries)) inner)))
-          (orig form ctx))))))
-
 ;; P2.11 (F2/F5): CSE keyed :const insts by (op refs aux) with `=`, merging
 ;; [] with () and 0.0 with -0.0 inside one fn; and it merges equal :calls of
 ;; the "pure" builtins (vector, list, hash-map, conj, ex-info, ...), each of
