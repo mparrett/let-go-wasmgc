@@ -3918,6 +3918,11 @@
     ;; (str v): natively `namespace` refuses a meta'd symbol
     (list (lw-rt/rt-sym 'core 'with-meta) (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (str v)))
           (const-form (meta v)))
+    ;; a regex inside a constant collection, on llvm: its stand-in is built
+    ;; here, in the collection's own init. As a constant global of its own it
+    ;; would be registered while this init is lowered, after the collection,
+    ;; and the collection's init would read it unset.
+    (and (= *target* :llvm) (regex-standin v)) (const-form (regex-standin v))
     (vector? v) (list (lw-rt/rt-sym 'pvec 'varray) (reduce (fn [acc x] (list (lw-rt/rt-sym 'pvec 'vconj) acc (const-form x))) (list (lw-rt/rt-sym 'pvec 'empty-vec)) v))
     (map? v) (reduce (fn [acc [k x]] (list (lw-rt/rt-sym 'core 'assoc) acc (const-form k) (const-form x))) (list (lw-rt/rt-sym 'phm 'empty-map)) v)
     (set? v) (reduce (fn [acc x] (list (lw-rt/rt-sym 'phs 'sconj) acc (const-form x))) (list (lw-rt/rt-sym 'phs 'empty-set)) v)
