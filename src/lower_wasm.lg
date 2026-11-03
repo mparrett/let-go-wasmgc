@@ -179,7 +179,7 @@
     :func
     (let [t (ir/type-of nid *f*)]
       (cond (= t :int) :int (= t :bool) :bool (= t :float) :float
-            ;; a constant-typed number (typeinfer's [:const :int n]) is unboxed
+            ;; a constant-typed number (the inferred type [:const :int n], never an aux) is unboxed
             (and (vector? t) (= :const (first t)) (= :int (second t))) :int
             (and (vector? t) (= :const (first t)) (= :float (second t))) :float
             :else :box))))
@@ -344,16 +344,8 @@
 (defn dead? [nid] (= :invalid (ir/op nid *f*)))
 
 
-(defn typed-aux?
-  "typeinfer rewrites some consts' aux to [:const <type> <value>]; any other
-   vector aux is a vector literal."
-  [a]
-  ;; P3.2: not a Var: lg's vector?/string?/keyword? see through a Var to its
-  ;; value, and a library def's var is bound at compile time
-  (and (not (var? a)) (vector? a) (= 3 (count a)) (= :const (first a)) (keyword? (second a))))
-
 (defn const-val [nid]
-  (let [a (ir/aux (src-of nid) *f*)] (if (typed-aux? a) (nth a 2) a)))
+  (ir/aux (src-of nid) *f*))
 
 (defn template? [nid]
   (and (= :const (ir/op nid *f*))
@@ -389,7 +381,7 @@
   [nid]
   (let [r (src-of nid)]
     (when (and (= :const (ir/op r *f*)) (= :int (ty nid)))
-      (let [a (ir/aux r *f*) v (if (typed-aux? a) (nth a 2) a)]
+      (let [v (ir/aux r *f*)]
         (when (int? v) v)))))
 
 (defn string-const?
@@ -755,8 +747,6 @@
 (defn const-wat [nid aux]
   (let [k (ty nid)]
     (cond
-      ;; typeinfer rewrites some consts' aux to [:const <type> <value>]
-      (typed-aux? aux) (const-wat nid (nth aux 2))
       (int? aux) (str "(i64.const " aux ")" (coerce :int k))
       (nil? aux) (if (= k :box) "(ref.null none)" (fail "nil const in unboxed slot" {:nid nid :fn *fname*}))
       (boolean? aux) (str "(i32.const " (if aux 1 0) ")" (coerce :bool k))
