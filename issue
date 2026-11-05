@@ -1,0 +1,17 @@
+id: c1aaa19
+v: 2
+title: Native twins missing: Long/parseLong, a radix for Integer/parseInt, NumberFormatException as a catch class
+status: open
+priority: medium
+created: 2026-11-05T15:12:25Z
+updated: 2026-11-05T15:12:25Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Three places where a program that runs natively has no twin on either lane, found during the pin-move row run (git-issue:a7ee80a) and covered by no row:
+ 
+ - Long/parseLong has no twin.
+ - Integer/parseInt takes no radix argument.
+ - NumberFormatException is not a catch class, so (try (Integer/parseInt "x") (catch NumberFormatException e ...)) cannot be written for both lanes.
+ 
+ Facts that close it: F1, each of the three runs on both lanes with the native result, witnessed by a case per item in corpus/wasm/review-shapes.lg with its expected output; F2, a program catching NumberFormatException around a bad parse prints the same on native and on each lane.
