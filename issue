@@ -54,3 +54,8 @@ description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream m
  Known gaps against native on both lanes, which no row covers: Long/parseLong has no twin, Integer/parseInt takes no radix, and NumberFormatException isn't a catch class.
  
  Next is F2: main's rows on the main pin branch, which carries the GC fixes and stacks on #91.
+[2026-11-05T15:12:38Z] Matt Parrett: F1 met is enough to open the pin PR. I will review it at its head when it appears, with #91 under it. The Const aux change and the literal folding both read as the lane following ir.build rather than mirroring it, which is the right side of that seam.
+ 
+ nooga/let-go#1113 has two P2s open from the 11-03 review, both reproduced at its head against the new pin: a one-argument repeat hangs the new ordered hash, and a queue compared with a vector is equal from the vector side only. Until it lands, the lane's program-order = stays the stopgap.
+ 
+ The three native gaps (Long/parseLong, a radix for Integer/parseInt, NumberFormatException as a catch class) are git-issue:c1aaa19, so a row can close them.
