@@ -38,3 +38,19 @@ description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream m
 [2026-11-02T15:49:23Z] Matt Parrett: The equality finding is nooga/let-go#810, the nested map case you filed: the set case reproduces on v1.13.0 and on main (hashes equal, `contains?` true from the vector side and false from the list side), and a comment there now carries it along with the constfold consequence. The upstream fix belongs in `ArrayVector.Equals`, not in constfold's commutative set, since `=` is symmetric by contract; keeping `=` in program order in the lane is the right stopgap until then.
  
  The class-name lowering and the lazy-namespace requires read as pin-independent fixes, so they can land ahead of the pin PR if that keeps it small. The 10 s grant for P2.4's map-order programs is fine with their times recorded in the PR; the type-id collision PR I will review at its head when it opens.
+[2026-11-05T14:21:15Z] Norman Nunley, Jr: F1 is met: one full run of all 121 rows passed at the llvm-parity head on the new pin, in 2 h 55 min on a quiet machine. The set is the corpus rows less P1.GATE, P4.3, P7.4, P8.0 and P11.x.
+ 
+ Four more fixes since my last comment, all reviewed:
+ 
+ - llvm rebuilt every set and map literal as a hash-set or array-map call, to keep native's fresh allocation. The new ir.build folds a literal of constants into one Const that native shares, so the lane now leaves both to ir.build.
+ - On llvm, a regex inside a constant collection got a constant global of its own. That global was initialized after the collection, so the collection held nil. The regex's stand-in is now built in the collection's own init.
+ - Integer/parseInt now raises native's "For input string" message on both lanes.
+ - Both lanes read a Const whose aux was [:const <type> <value>] as the value, for a typeinfer rewrite no let-go since ff1e6dac makes. A program's own [:const :int 0] now arrives as one Const and read as 0. let-go's lattice, run as a GC program, typed every constant :any, which broke P10.6 and P12.5. The aux is now the value; plain-data.lg covers the literal.
+ 
+ The equality fix you placed in ArrayVector.Equals is nooga/let-go#1113 (Fixes #810). It also hashes a finite seq as an ordered collection, the third item of #1034.
+ 
+ Earlier full runs failed rows whose programs all matched, on suite time caps and CPU grants under load. Each such row passed alone.
+ 
+ Known gaps against native on both lanes, which no row covers: Long/parseLong has no twin, Integer/parseInt takes no radix, and NumberFormatException isn't a catch class.
+ 
+ Next is F2: main's rows on the main pin branch, which carries the GC fixes and stacks on #91.
