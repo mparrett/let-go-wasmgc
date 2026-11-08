@@ -12,16 +12,16 @@
 //   limit  a defmulti: the compiler stops with native's named limit, there
 //          is no module, and the page keeps working.
 // Exit 0 all pass, 1 a failed assertion (each printed), 2 the page or its
-// build script does not exist yet. Playwright comes from the workspace's
-// smoke-script install, as in checks/explorer-page-check.mjs. A compile in
+// build script does not exist yet. Playwright is whichever
+// checks/playwright.mjs finds. A compile in
 // the page takes tens of seconds (the P12.5 figures); the waits allow 15 min.
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findChromium } from './playwright.mjs';
+import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -29,12 +29,9 @@ if (!fs.existsSync(path.join(root, 'host/compile.html')) || !fs.existsSync(path.
   console.log('NOT IMPLEMENTED: host/compile.html or host/build-compile-serve.sh missing');
   process.exit(3);
 }
-const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
-const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
-let pw;
-try { pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href); }
-catch { console.log(`SKIP no playwright under ${pwDir} (set LW_BROWSER_TOOLS)`); process.exit(2); }
-const chromium = pw.chromium || pw.default.chromium;
+const found = await findChromium();
+if (!found.chromium) { console.log(`SKIP ${found.why}`); process.exit(2); }
+const chromium = found.chromium;
 
 const LG = process.env.LG;
 if (!LG) { console.log('SKIP LG unset (source checks/env.sh)'); process.exit(2); }
