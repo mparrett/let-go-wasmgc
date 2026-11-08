@@ -78,7 +78,7 @@
 ;;  36 keyword/symbol with meta  37 a typed array (wasm.arrays)
 ;;  38 SortedMap  39 SortedSet (wasm.sorted)  40 Promise  41 Delay
 ;;  42 BigInt  43 Ratio (wasm.numtower, D230)
-;;  44 a defrecord instance (Rec; 42 and 43 are wasm.numtower's)
+;;  45 a defrecord instance (Rec; 42 and 43 are wasm.numtower's, 44 BigDecimal's, D233)
 (defn ckind [x]
   (let [k (sq/kind x)]
     (if (= k 18)
@@ -96,7 +96,7 @@
             (wasm/is? Delay x) 41
             (wasm/is? nt/BigInt x) 42
             (wasm/is? nt/Ratio x) 43
-            (wasm/is? Rec x) 44
+            (wasm/is? Rec x) 45
             :else 18)
       k)))
 
@@ -180,7 +180,7 @@
           (= k 41) (wasm/bytes-of-string "let-go.lang.Delay")
           (= k 42) (wasm/bytes-of-string "let-go.lang.BigInt")
           (= k 43) (wasm/bytes-of-string "let-go.lang.Ratio")
-          (= k 44) (wasm/get sq/Kw 1 (wasm/get RecType 0 (wasm/get Rec 0 x))) ; a RecordType's name is the record's
+          (= k 45) (wasm/get sq/Kw 1 (wasm/get RecType 0 (wasm/get Rec 0 x))) ; a RecordType's name is the record's
           :else (wasm/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -225,9 +225,9 @@
     (wasm/null? x) (wasm/null)
     (= 2 (standin x)) (type-of (var-value x))             ; native: a Var's type is its value's
     ;; a record's type is its RecType's, interned there on first use
-    (= 44 (ckind x)) (let [t (wasm/get Rec 0 x) tv (wasm/get RecType 2 t)]
+    (= 45 (ckind x)) (let [t (wasm/get Rec 0 x) tv (wasm/get RecType 2 t)]
                        (if (wasm/null? tv)
-                         (let [nt (wasm/new TypeVal (type-name x) 44)] (wasm/set! RecType 2 t nt) nt)
+                         (let [nt (wasm/new TypeVal (type-name x) 45)] (wasm/set! RecType 2 t nt) nt)
                          tv))
     :else
     (let [tab (wasm/get Globals 1 globals) id (type-id x) t (wasm/aget pv/Node tab id)]
@@ -280,7 +280,7 @@
 (defn callable? [x]                                       ; vm.AsFn
   (let [k (ckind x)]
     (cond (= k 16) true (= k 20) true (= k 21) true (= k 11) true (= k 30) true (= k 31) true
-          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true (= k 44) true
+          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true (= k 45) true
           (= k 36) (= 2 (standin x))                      ; a Var (P5.9)
           :else false)))          ; transients are IFns (transient.go)
 
@@ -619,7 +619,7 @@
                         (= k 16) true (= k 20) true (= k 21) true (= k 11) true
                         (if (>= k 30) (<= k 34) false) true
                         (if (>= k 37) (<= k 40) false) true
-                        (= k 44) true                   ; a record looks itself up (vm.Record.Invoke)
+                        (= k 45) true                   ; a record looks itself up (vm.Record.Invoke)
                         :else false))))
   ([x y] (F))
   ([x y & more] (F)))
@@ -666,7 +666,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Records (D234). The program's ->Name and map->Name call make-record and
 ;; record-of-map with the type's tag and declared field keywords; everything
-;; else reaches a record through the generic arms below by kind 44.
+;; else reaches a record through the generic arms below by kind 45.
 
 (defn- rec-types [] (let [t (wasm/get Globals 3 globals)] (if (wasm/null? t) (let [e (m/empty-map)] (wasm/set! Globals 3 globals e) e) t)))
 (defn record-type
@@ -685,7 +685,7 @@
 (defn- rec-vals [r] (wasm/get Rec 1 r))
 (defn- rec-extra [r] (wasm/get Rec 2 r))
 (defn record-tag "The tag of a record; null for any other value." [x]
-  (if (= 44 (ckind x)) (wasm/get RecType 0 (wasm/get Rec 0 x)) (wasm/null)))
+  (if (= 45 (ckind x)) (wasm/get RecType 0 (wasm/get Rec 0 x)) (wasm/null)))
 (defn- field-index [fs k]                                 ; -1 when k is no declared field (keywords are interned)
   (let [n (wasm/alen fs)]
     (loop [i 0] (cond (>= i n) -1 (wasm/ref-eq (wasm/aget m/HSlots fs i) k) i :else (recur (inc i))))))
@@ -773,7 +773,7 @@
   (let [e (rec-entries r) n (wasm/alen e)]
     (if (= n 0) (wasm/null) (m/entries->map-seq e (unsigned-bit-shift-right n 1)))))
 (defn- rec-equiv? [a b]                                   ; vm.Record.Equals: one type, fields pairwise, the extras as maps
-  (if (if (= 44 (ckind b)) (wasm/ref-eq (wasm/get Rec 0 a) (wasm/get Rec 0 b)) false)
+  (if (if (= 45 (ckind b)) (wasm/ref-eq (wasm/get Rec 0 a) (wasm/get Rec 0 b)) false)
     (let [n (wasm/alen (rec-vals a))]
       (if (loop [i 0]
             (if (< i n)
@@ -871,7 +871,7 @@
           (= k 37) (arr/aget-nf coll key nf)
           (= k 38) (so/smap-get coll key nf)
           (= k 39) (so/sset-get coll key nf)
-          (= k 44) (rec-get coll key nf)
+          (= k 45) (rec-get coll key nf)
           :else nf)))
 
 (defn ^{:twin "core/get"} get
@@ -885,7 +885,7 @@
           (= k 31) (sq/bool (hs/scontains? coll key))
           (= k 38) (sq/bool (so/smap-contains? coll key))
           (= k 39) (sq/bool (so/sset-contains? coll key))
-          (= k 44) (sq/bool (rec-contains? coll key))
+          (= k 45) (sq/bool (rec-contains? coll key))
           (= k 11) (sq/bool (index-in? key (pv/vcount coll)))
           (= k 23) (sq/bool (index-in? key 2))
           (= k 32) (let [t coll] (sq/bool (if (wasm/ref-eq (m/tget t key t) t) false true)))
@@ -910,7 +910,7 @@
     (cond (= c 0) (m/massoc (m/empty-map) k v)            ; nil assocs into {}
           (= c 30) (m/massoc coll k v)
           (= c 38) (so/smap-assoc coll k v)
-          (= c 44) (rec-assoc coll k v)
+          (= c 45) (rec-assoc coll k v)
           (= c 11) (if (index-in? k (inc (pv/vcount coll)))
                      (pv/vassoc coll (sq/unbox-int k) v)
                      (raise-str (s/str (lit (wasm/bytes-of-string "assoc failed for key ")) (s/value-string k))))
@@ -935,7 +935,7 @@
     (cond (= c 0) (wasm/null)
           (= c 30) (m/mdissoc coll k)
           (= c 38) (so/smap-dissoc coll k)
-          (= c 44) (rec-dissoc coll k)
+          (= c 45) (rec-dissoc coll k)
           (= c 11) (raise-str (s/str (lit (wasm/bytes-of-string "dissoc failed for key ")) (s/value-string k)))
           :else (raise (wasm/bytes-of-string "dissoc expected Associative")))))
 
@@ -977,7 +977,7 @@
           (= k 31) (hs/sconj coll x)
           (= k 38) (conj-smap coll x)
           (= k 39) (so/sset-conj coll x)
-          (= k 44) (rec-conj coll x)
+          (= k 45) (rec-conj coll x)
           (if (= k 0) true (if (if (>= k 2) (<= k 11) false) true (if (= k 23) true (= k 27)))) (sq/conj coll x)
           :else (raise (wasm/bytes-of-string "conj expected Collection")))))
 
@@ -992,7 +992,7 @@
 
 (defn- seqable-k? [k]                                     ; a TransientMap seqs natively (transient.go:231)
   (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true (= k 32) true (= k 37) true
-        (= k 38) true (= k 39) true (= k 44) true :else false))
+        (= k 38) true (= k 39) true (= k 45) true :else false))
 
 (defn ^{:twin "core/nth"} nth                             ; Nth/Nth3 plus TransientVector (Indexed, not seqable)
   ([coll i] (let [k (ckind coll) n (sq/int-arg i)]
@@ -1346,7 +1346,7 @@
           (= k 31) (hs/swith-meta x mt)
           (= k 38) (so/smap-with-meta x mt)
           (= k 39) (so/sset-with-meta x mt)
-          (= k 44) (wasm/new Rec (wasm/get Rec 0 x) (rec-vals x) (rec-extra x) mt)
+          (= k 45) (wasm/new Rec (wasm/get Rec 0 x) (rec-vals x) (rec-extra x) mt)
           (if (= k 2) true (= k 3)) (sq/list-with-meta x mt)
           (= k 16) (fn-with-meta x mt)
           (if (= k 20) true (= k 21)) (wasm/new MetaNamed x mt)
@@ -1362,7 +1362,7 @@
           (= k 31) (hs/smeta x)
           (= k 38) (so/smeta x)
           (= k 39) (so/ssmeta x)
-          (= k 44) (wasm/get Rec 3 x)
+          (= k 45) (wasm/get Rec 3 x)
           (if (= k 2) true (= k 3)) (wasm/get sq/List 3 x)
           (= k 16) (if (meta-fn? x) (wasm/get MetaEnv 1 (wasm/get sq/Fn 3 x)) (wasm/null))
           (= k 36) (if (= 2 (standin x)) (m/mdissoc (wasm/get MetaNamed 1 x) (lw-var-kw)) (wasm/get MetaNamed 1 x))
@@ -1624,7 +1624,7 @@
           (= k 40) (s/str (lit (wasm/bytes-of-string "#<Promise@0x0: "))
                           (if (= 1 (wasm/get Promise 1 x)) (s/value-string (wasm/get Promise 0 x)) (lit (wasm/bytes-of-string ":pending")))
                           (lit (wasm/bytes-of-string ">")))
-          (= k 44) (print-rec x)
+          (= k 45) (print-rec x)
           (= k 41) (s/str (lit (wasm/bytes-of-string "#<Delay@0x0: "))
                           (if (= 0 (wasm/get Delay 1 x)) (lit (wasm/bytes-of-string ":pending"))
                               (s/value-string (if (= 1 (wasm/get Delay 1 x)) (wasm/get Delay 0 x) (wasm/null))))
@@ -1642,21 +1642,21 @@
           (= k 37) (arr/acount x)
           (= k 38) (sq/box-int (so/smap-count x))
           (= k 39) (sq/box-int (so/sset-count x))
-          (= k 44) (sq/box-int (rec-count x))
+          (= k 45) (sq/box-int (rec-count x))
           :else (raise (wasm/bytes-of-string "count expected Counted")))))
 (defn- foreign-seq [self x]
   (cond (= 32 (ckind x)) (m/tentry-seq x)
     (= 37 (ckind x)) (arr/aseq x)
     (= 38 (ckind x)) (so/smap-seq x)
     (= 39 (ckind x)) (so/sset-seq x)
-    (= 44 (ckind x)) (rec-seq x)
+    (= 45 (ckind x)) (rec-seq x)
     :else
     (raise-str (s/str (lit (wasm/bytes-of-string "don't know how to create ISeq from ")) (tn x)))))
 (defn- foreign-seqable [self x]                          ; maps, sets and transient maps are vm.Sequable
-  (let [k (ckind x)] (sq/bool (if (= k 18) true (if (= k 44) true (if (>= k 37) (<= k 39) (if (>= k 30) (<= k 32) false)))))))
+  (let [k (ckind x)] (sq/bool (if (= k 18) true (if (= k 45) true (if (>= k 37) (<= k 39) (if (>= k 30) (<= k 32) false)))))))
 (defn- foreign-equiv [self a b]                          ; identity: the transients and types; sorted colls as maps/sets
   (sq/bool (cond (if (tower? a) true (tower? b)) (nt/equiv? a b)   ; a BigInt = an Int of its value (D230)
-                 (= 44 (ckind a)) (rec-equiv? a b) (= 44 (ckind b)) (rec-equiv? b a)
+                 (= 45 (ckind a)) (rec-equiv? a b) (= 45 (ckind b)) (rec-equiv? b a)
                  (= 38 (ckind a)) (so/smap-equiv? a b) (= 38 (ckind b)) (so/smap-equiv? b a)
                  (= 39 (ckind a)) (so/sset-equiv? a b) (= 39 (ckind b)) (so/sset-equiv? b a)
                  ;; P10.6: two stand-ins of one var are that var (natively one
@@ -1672,7 +1672,7 @@
   (let [k (ckind x)]
     (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x))
           (= k 42) (sq/box-int (nt/bigint-hash x)) (= k 43) (sq/box-int (nt/ratio-hash x))
-          (= k 44) (sq/box-int (rec-hash x))
+          (= k 45) (sq/box-int (rec-hash x))
           :else (sq/hash (s/value-string x)))))
 (defn- tn-hook [self x] (tn x))                          ; wasm.arrays names argument types through this
 

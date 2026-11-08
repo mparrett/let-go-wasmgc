@@ -833,7 +833,7 @@
     (same (= (->R nil 2) (assoc (->R 1 2) :a nil)) (sq/equals rn (c/assoc r (W :a) (wasm/null))))
     (same (str (type (->R 1 2))) (s/str (c/type-of r)))
     (same (= (type (->R 1 2)) (type (->R 3 4))) (sq/equals (c/type-of r) (c/type-of rn)))
-    (same (record? (->R 1 2)) (sq/bool (= 44 (c/ckind r))))
+    (same (record? (->R 1 2)) (sq/bool (= 45 (c/ckind r))))
     (same (map? (->R 1 2)) (c/map? r))
     (same (vec (keys (->R 1 2))) (W (vec (map first (<-w (sq/seq r))))))
     (same (vec (vals (assoc (->R 1 2) :c 3))) (W (vec (map second (<-w (sq/seq (c/assoc r (W :c) (W 3))))))))))
