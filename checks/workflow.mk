@@ -19,8 +19,11 @@ W := checks/workflow.sh
 
 start: hooks in-flight
 
+# the clone's setup: prek's and git-issue's hooks, and the fetch of the
+# evidence notes (README.md, Issues)
 hooks:
 	@$(W) hooks
+	@$(W) fetch-config
 
 in-flight:
 	@checks/state.sh inflight
