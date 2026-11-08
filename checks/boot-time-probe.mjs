@@ -4,17 +4,13 @@
 // needs SharedArrayBuffer), then REPS fresh pages: navigation to "press any
 // key" in the page text = time-to-title; Space; "hp" or "floor" in the page
 // text (the map screen's HUD) = time-to-map. Prints one JSON line. Driven by
-// checks/size-boot.sh (rows P4.3 and P7.4). Playwright is resolved the way
-// checks/browser-boot.mjs does: LW_BROWSER_TOOLS, else ../../../local-scripts,
-// each holding browser-smoke-playwright/.
+// checks/size-boot.sh (rows P4.3 and P7.4). Playwright is whichever
+// checks/playwright.mjs finds.
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
-import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-const here = path.dirname(fileURLToPath(import.meta.url));
-const toolsDir = process.env.LW_BROWSER_TOOLS || path.resolve(here, '../../../local-scripts');
-const pwDir = path.resolve(toolsDir, 'browser-smoke-playwright');
-const pw = await import(pathToFileURL(createRequire(path.join(pwDir, 'package.json')).resolve('playwright')).href);
-const chromium = pw.chromium || pw.default.chromium;
+import { findChromium } from './playwright.mjs';
+const found = await findChromium();
+if (!found.chromium) throw new Error(found.why);
+const chromium = found.chromium;
 const dir = path.resolve(process.argv[2]), port = parseInt(process.argv[3]), label = process.argv[4];
 const reps = parseInt(process.argv[5] || '3');
 const types = { '.html':'text/html', '.js':'text/javascript', '.wasm':'application/wasm' };
