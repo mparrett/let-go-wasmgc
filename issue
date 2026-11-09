@@ -21,3 +21,8 @@ description: The practice until #57 was that each of us merged our own lane's PR
  What this costs: a defect in a lane-only PR reaches main before the other lane sees it. Both lanes already run the oracle rows and gate 2 at the head, so the rows check the behavior the other lane depends on, not the reading. The rows caught the P7.1 and P7.7 regressions on main that reading missed (#73).
  
  Facts that close this: F1 the governance file carries rules 1 to 4 (one PR, shared by rule 2, so it waits for both of us). F2 the four open wasm PRs are classified under it in a comment here, and the ones that are lane-only merge on their proof. M1: if you want pre-merge review kept for a class of change (the runtime registry, the twin manifest, anything else), name it and it joins rule 2's list.
+
+## Comments
+[2026-11-09T05:31:19Z] Matt Parrett: Data point from 2026-11-08: 20 PRs were open, 7 of them conflicting with main, some after two rebases. Four merged that day. Under rules 1 and 2, about 8 of the 20 were lane-only (#77, #78, #82, #83, #84, #87, #89, #90; #79 too if `corpus/llvm-rt/` counts as its lane's own tree). The other 12 touch a shared file, mostly `checks/items.tsv`, and would still have waited.
+ 
+ Waiting on review is not the only cause. Several conflicts came from shared append-only files (`DECISIONS.md`, `items.tsv`, `affected.sh`), and #75 and #76 both claimed ckind 44 from the same base, which no merge rule catches. Still, the queue is what this issue set out to cut. Do you want rules 1 to 4 as written, a narrower version, or neither?
