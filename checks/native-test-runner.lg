@@ -7,6 +7,7 @@
 ;; (test/language_test.go executes each file): a file whose ns does not
 ;; match its name (chunked_seq_test.lg declares test.chunked-seq) runs too.
 ;; An ns symbol instead of a path is still accepted (required as before).
+(require 'test)   ; named below; a let-go that loads namespaces lazily does not load it for us
 (let [[target & skips] *command-line-args*
       skips (map symbol skips)
       ns-name (if (clojure.string/ends-with? target ".lg")

@@ -19,3 +19,8 @@
 (prn (keys small) (vals small) (keys big) (seq kws))
 (prn (= small (into {} (seq small))) (= big (zipmap (keys big) (vals big))) (contains? kws :recur) (get nested 7) (get-in nested [:a 2 :b]))
 (prn (count leaves) (count nested) (hash small) (hash big) (hash kws) (hash leaves))
+;; a vector literal shaped like [:const <type> <value>] is a vector, whatever
+;; it looks like, as a def and as a fn's constant
+(def const-shaped [:const :int 0])
+(defn const-shaped-fn [] [:const :float 0.0])
+(prn const-shaped (first const-shaped) (count const-shaped) (= const-shaped (vector :const :int 0)) (const-shaped-fn) (vector? (const-shaped-fn)))

@@ -5,6 +5,7 @@
 ;; tests only the CURRENT ns (here `user`) and reports 0 tests, exit 0.
 ;; The test namespaces arrive after the count, one per *_test.lg file, so a
 ;; new file needs no edit here.
+(require 'test)   ; named below; a let-go that loads namespaces lazily does not load it for us
 (def ^:private test-nss (mapv symbol (rest *command-line-args*)))
 (apply require test-nss)
 
