@@ -390,8 +390,12 @@
 
 (def rt-nss (set (keep second file-forms)))
 
-(def decl-heads #{(rt-var 'intrinsics 'defstruct) (rt-var 'intrinsics 'defarray) (rt-var 'intrinsics 'deffunc)
-                  (rt-var 'intrinsics 'deftype-struct)})
+;; nil kept out: an intrinsic the target's runtime lacks (llvm has no
+;; deftype-struct) would make every form whose head resolves to nil, def
+;; among them, a declaration
+(def decl-heads (disj #{(rt-var 'intrinsics 'defstruct) (rt-var 'intrinsics 'defarray) (rt-var 'intrinsics 'deffunc)
+                        (rt-var 'intrinsics 'deftype-struct)}
+                      nil))
 
 (def decls
   ;; [{:var v :decl map :ns sym}] in source order
