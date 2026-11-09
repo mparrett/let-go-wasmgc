@@ -1,0 +1,330 @@
+; Definition indexing, execution timing, closure writes, and returned Vars.
+(println (await) (await (atom 1)) (await-for 1 (atom 2)))
+(let [r (atom 1)]
+  (println (ref-set r 2) @r)
+  (println (alter r + 3 4) @r))
+(println (set-error-handler! (atom 1) nil) (set-error-mode! (atom 1) :continue))
+(println (error-handler (atom 1)) (error-mode (atom 1)))
+
+(def counter 10)
+(defn update-counter [x]
+  (def counter x))
+(println counter)
+(println (var? (update-counter 20)) counter)
+(println (identical? #'counter (update-counter 21)))
+(defn make-writer [offset]
+  (fn [x] (def closure-value (+ offset x))))
+(def writer (make-writer 3))
+(println (var? (writer 4)) closure-value)
+(writer 8)
+(println closure-value)
+(def conditional-value 7)
+(defn conditional [run?]
+  (when run? (def conditional-value 42)))
+(conditional false)
+(println conditional-value)
+(conditional true)
+(println conditional-value)
+(defn retain [] (def counter))
+(println (var? (retain)) counter)
+(println '(def quoted-only 99))
+(def direct-writer (fn [x] (def direct-value x)))
+(println (var? (direct-writer 31)) direct-value)
+
+;; Same spelling in different namespaces must use separate storage.
+(ns nested-def-first)
+(defn install [x] (def shared-name x))
+(ns nested-def-second)
+(defn install [x] (def shared-name x))
+(ns user)
+(println @(nested-def-first/install 11) @(nested-def-second/install 22))
+(println @#'nested-def-first/shared-name @#'nested-def-second/shared-name)
+
+;; Root writes survive nested bindings; closures and deref see the binding.
+(def ^:dynamic *bound-value* 1)
+(def ^:dynamic *other-value* 2)
+(defn read-bound [] [*bound-value* @#'*bound-value* *other-value*])
+(println (read-bound))
+;; Keep heap-valued bindings alive across allocation and collection.
+(binding [*bound-value* (vec (range 11 16)) *other-value* (vec (range 21 26))]
+  (println (loop [n 2000 total 0]
+             (if (zero? n) total
+               (let [xs (vec (range 32))]
+                 (recur (dec n) (+ total (nth xs (mod n 32))))))))
+  (println (read-bound)))
+(binding [*bound-value* 100]
+  (let [v #'*bound-value* alter alter-var-root]
+    (println (var-get v) (alter v identity))
+    (println (alter v + 2 3) (read-bound))
+    (def *bound-value* 200)
+    (println (alter v + 4) (var-get v) (read-bound))))
+(println (read-bound))
+(println (some #(= "lw" (namespace %)) (keys (meta #'*bound-value*))))
+
+;; Var watches observe committed roots, even while deref sees a binding.
+(def ^:dynamic *watched* 0)
+(let [v #'*watched* events (atom [])
+      f (fn [key ref old new]
+          (swap! events conj [key (identical? v ref) old new @ref]))]
+  (println (identical? v (add-watch v :key f)))
+  (binding [*watched* 100]
+    (println (alter-var-root v inc) *watched*))
+  (println @events *watched*)
+  (add-watch v :key (fn [key ref old new] (swap! events conj [:replacement old new])))
+  (alter-var-root v + 2)
+  (println @events)
+  (println (identical? v (remove-watch v :key)))
+  (def *watched* 8)
+  (println @events *watched*)
+  (add-watch v :throws (fn [& xs] (throw (ex-info "watch-failed" {}))))
+  (println (try (alter-var-root v inc) (catch e (ex-message e))) *watched*)
+  (remove-watch v :throws)
+  (println (alter-var-root v inc)))
+(binding [*bound-value* 10]
+  (def *bound-value* 3)
+  (println (read-bound))
+  (binding [*bound-value* 20 *other-value* 30]
+    (def *bound-value* 4)
+    (def *other-value* 5)
+    (println (read-bound)))
+  (println (read-bound))
+  (try (binding [*bound-value* nil]
+         (def *bound-value* 6)
+         (println (read-bound))
+         (throw (ex-info "unwind-binding" {})))
+       (catch e (println (ex-message e))))
+  (println (read-bound)))
+(println (read-bound))
+
+;; Genuine redefinitions still update one Var, and defonce stays single-shot.
+(defn replaced [] 10)
+(println (replaced))
+(defn replaced [] 20)
+(println (replaced))
+(defonce initialized-once 7)
+(defonce initialized-once 8)
+(println initialized-once)
+
+;; User-defined types retain object identity rather than map/keyword semantics.
+(deftype IdentityProbe [x])
+(deftype EmptyIdentityProbe [])
+(let [a (->IdentityProbe 7) b (->IdentityProbe 7) e (->EmptyIdentityProbe) e2 (->EmptyIdentityProbe)]
+  (println (map? a) (keyword? a) (= a b) (identical? a b) (identical? a a))
+  (println (= (type a) IdentityProbe) (instance? IdentityProbe a) (instance? EmptyIdentityProbe a))
+  (println (map? e) (keyword? e) (= e e2) (identical? e e2))
+  (println (= (type e) EmptyIdentityProbe) (instance? EmptyIdentityProbe e))
+  (println (get a :x :missing)))
+(defmacro compiler-type-probe []
+  (let [a (->IdentityProbe 7)]
+    (and (= (type a) IdentityProbe) (not (map? a)) (= 7 (.-x a)))))
+(println (compiler-type-probe))
+(let [a (->IdentityProbe 7)]
+  (println (.-x a) (.x a))
+  (println (try (.-missing a) (catch e (ex-message e)))))
+(let [a (->IdentityProbe "hello") b (with-meta a {:k 1}) c (with-meta a nil)]
+  (println (meta a) (meta b) (= (type a) (type b))
+           (identical? a b) (= a b) (identical? a c))
+  (println (.-x b))
+  (println a (pr-str a) (print-str a))
+  (println (= (hash a) (hash a))
+           (get {a :original b :copy} a) (get {a :original b :copy} b)))
+
+;; Protocol dispatch must recognize real types, including fieldless instances.
+(defprotocol ProbeValue (probe-value [this offset]))
+(deftype FieldProbe [x] ProbeValue (probe-value [this offset] (+ x offset)))
+(deftype EmptyProbe [] ProbeValue (probe-value [this offset] (+ 100 offset)))
+(println (probe-value (->FieldProbe 7) 3) (probe-value (->EmptyProbe) 3))
+(println (probe-value (with-meta (->FieldProbe 11) {:copied true}) 4))
+(deftype ShadowProbe [__this x] ProbeValue (probe-value [self offset] (+ x offset)))
+(println (probe-value (->ShadowProbe :unused 20) 2))
+(defmacro compiler-protocol-probe []
+  (probe-value (->FieldProbe 7) 3))
+(println (compiler-protocol-probe))
+(def __lw_receiver 30)
+(deftype ArgumentProbe [] ProbeValue (probe-value [__a0 x] x))
+(deftype FreeSymbolProbe [] ProbeValue (probe-value [self offset] (+ __lw_receiver offset)))
+(defrecord RecordProbe [x] ProbeValue (probe-value [self offset] (+ x offset)))
+(println (probe-value (->ArgumentProbe) 21) (probe-value (->FreeSymbolProbe) 2))
+(println (probe-value (->RecordProbe 8) 2) (probe-value (map->RecordProbe {:x 9}) 2))
+(defmacro compiler-record-probe []
+  (+ (probe-value (->RecordProbe 8) 2) (probe-value (map->RecordProbe {:x 9}) 2)))
+(println (compiler-record-probe))
+
+;; Retained instances and identity map keys survive allocation and collection.
+(defprotocol BuiltinGcProbe (builtin-gc-value [this]))
+(extend-type (type 1) BuiltinGcProbe (builtin-gc-value [this] (+ this 17)))
+(extend-type nil BuiltinGcProbe (builtin-gc-value [this] [17]))
+(let [a (->IdentityProbe (vec (range 64)))
+      b (with-meta a {:retained (vec (range 8))})
+      p (with-meta (->FieldProbe 41) {:protocol true})
+      hashes [(hash a) (hash b) (hash p)]
+      table {a :original b :copy p :protocol}]
+  (println
+    (loop [n 10000 total 0]
+      (if (zero? n) total
+        (let [temporary (->IdentityProbe (vec (range n (+ n 32))))]
+          (recur (dec n) (+ total (nth (.-x temporary) (mod n 32))))))))
+  (println (= hashes [(hash a) (hash b) (hash p)])
+           (get table a) (get table b) (get table p)
+           (= (.-x a) (.-x b)) (count (.-x b))
+           (meta b) (meta p) (probe-value p 1) (builtin-gc-value 1) (builtin-gc-value nil)))
+
+;; Protocols can expose several arities and implementations in other namespaces.
+(defprotocol ArityProbe (arity-probe [this] [this value] [this a b c d e]))
+(deftype ArityType [x]
+  ArityProbe
+  (arity-probe ([this] (.-x this))
+               ([this value] (+ (.-x this) value))
+               ([this a b c d e] (+ (.-x this) a b c d e))))
+(let [a (->ArityType 7)]
+  (println (arity-probe a) (arity-probe a 5) (arity-probe a 1 2 3 4 5)))
+(ns protocol-foreign)
+(defn foreign-bias [] 2)
+(deftype ForeignProbe [self x]
+  user/ProbeValue
+  (probe-value [self offset] (+ x offset (foreign-bias))))
+(deftype ForeignArity [x]
+  user/ArityProbe
+  (arity-probe ([this] (.-x this)) ([this value] (+ (.-x this) value (foreign-bias)))))
+(ns user)
+(println (probe-value (protocol-foreign/->ForeignProbe :unused 7) 3))
+(let [a (protocol-foreign/->ForeignArity 11)]
+  (println (arity-probe a) (arity-probe a 5)))
+(defmacro compiler-foreign-probe []
+  (probe-value (protocol-foreign/->ForeignProbe :unused 7) 3))
+(println (compiler-foreign-probe))
+
+;; Top-level storage and runtime lookup preserve namespace ownership.
+(ns globals-first)
+(def shared 11)
+(def derived (+ shared 1))
+(ns globals-second)
+(def shared 21)
+(defn read-shared [] shared)
+(ns user)
+(println globals-first/shared globals-first/derived
+         globals-second/shared (globals-second/read-shared))
+(println (eval 'globals-first/shared) (eval '(globals-second/read-shared)))
+
+;; symbol accepts Vars and exposes the public namespace spelling.
+(println (symbol #'IdentityProbe) (symbol #'inc) (symbol #'string/join))
+(println (symbol #'globals-first/shared) (= (symbol #'IdentityProbe) 'user/IdentityProbe))
+(let [v (intern 'user 'symbol-probe-value 9)]
+  (println (symbol v) (name (symbol v)) (namespace (symbol v))))
+
+(let [plain (symbol "#'user/symbol-collision")
+      v (intern 'user 'symbol-collision 17)]
+  (println (symbol plain) (var? plain) (symbol v) (var? v))
+  (println (meta v) @v (= v (intern 'user 'symbol-collision)))
+  (alter-meta! v assoc :probe true)
+  (println (meta v))
+  (alter-var-root v inc)
+  (println @v (var-get v)))
+
+(let [v (intern 'user 'watched-intern 1) seen (atom [])]
+  (add-watch v :watch (fn [k r old new] (swap! seen conj [k (= r v) old new])))
+  (alter-var-root v inc)
+  (println @seen))
+
+;; Namespace creation leaves the current namespace unchanged.
+(let [before (ns-name *ns*) n (create-ns 'runtime-created)
+      v (intern n 'value 42)]
+  (println (var-get v) (var-get (intern 'runtime-created 'value)))
+  (println (= before (ns-name *ns*)) (= n (create-ns 'runtime-created)))
+  (println (try (intern 'never-created 'x) (catch e (ex-message e)))))
+(doseq [args [[] [1] ['one 'two]]]
+  (println (try (apply create-ns args) (catch e (ex-message e)))))
+
+;; Metadata copies share deftype field storage, but keep distinct identities.
+(let [a (->IdentityProbe 1) b (with-meta a {:copy true})
+      before (hash a) values {a :original b :copy}]
+  (println (set-field! a 'x [2 3]) (.x a) (.x b))
+  (set-field! a 'x (vec (range 64)))
+  (println
+    (loop [n 10000 total 0]
+      (if (zero? n) total
+        (let [temporary (->IdentityProbe (vec (range n (+ n 32))))]
+          (recur (dec n) (+ total (nth (.-x temporary) (mod n 32))))))))
+  (println (= (vec (range 64)) (.x b)))
+  (println (set-field! b 'x nil) (.x a) (.x b))
+  (println (= before (hash a)) (get values a) (get values b) (meta b))
+  (println (try (set-field! a 'missing 2) (catch e (ex-message e)))))
+
+;; Mutable methods read live slots and preserve lexical shadowing.
+(defprotocol CounterOps
+  (advance [this delta])
+  (read-counter [this]))
+(deftype Counter [^:mutable x]
+  CounterOps
+  (advance [this delta]
+    (let [before x]
+      (set! x (+ x delta))
+      [before x ((fn [] x)) (let [x 99] x)]))
+  (read-counter [this] x))
+(let [a (->Counter 1) b (with-meta a {:copy true})]
+  (println (advance a 4) (read-counter b))
+  (println (advance b 2) (read-counter a)))
+
+(defprotocol DeferredField (field-reader [this]))
+(deftype DeferredCounter [^:mutable x]
+  DeferredField
+  (field-reader [this] (fn [] x)))
+(let [a (->DeferredCounter 3) reader (field-reader a)]
+  (set-field! a 'x 17)
+  (println (reader)))
+
+(defprotocol MacroField (read-macro-field [this]))
+(defmacro field-macro [] '(let [__lw_field_receiver :shadow] x))
+(deftype MacroCounter [x]
+  MacroField
+  (read-macro-field [this] (field-macro)))
+(println (read-macro-field (->MacroCounter 42)))
+
+(ns mutable-foreign)
+(defmacro next-field [v] (list '+ v 3))
+(deftype ForeignCounter [^:unsynchronized-mutable x]
+  user/CounterOps
+  (advance [this delta] (set! x (+ (next-field x) delta)) x)
+  (read-counter [this] x))
+(ns user)
+(let [a (mutable-foreign/->ForeignCounter 10)]
+  (println (advance a 2) (read-counter a)))
+
+;; Old instances keep their type and accept extensions to that saved type.
+(defprotocol VersionValue (version-value [this]))
+(deftype Versioned [x] VersionValue (version-value [this] x))
+(def old-instance (->Versioned 3))
+(def old-type Versioned)
+(def saved-constructor ->Versioned)
+(deftype Versioned [x] VersionValue (version-value [this] (+ 100 x)))
+(def new-instance (->Versioned 4))
+(println (instance? Versioned (saved-constructor 8)))
+(println (= old-type Versioned) (instance? old-type old-instance)
+         (instance? Versioned old-instance) (version-value old-instance)
+         (version-value new-instance))
+(extend-type old-type VersionValue (version-value [this] (+ 10 (.x this))))
+(println (version-value old-instance) (version-value new-instance))
+
+;; Macro expansion sees extensions to compiler-side native types too.
+(defprotocol MacroExtension (extension-value [this]))
+(deftype MacroExtended [] MacroExtension (extension-value [this] 1))
+(extend-type MacroExtended MacroExtension (extension-value [this] 8))
+(defmacro expanded-extension [] (extension-value (->MacroExtended)))
+(println (extension-value (->MacroExtended)) (expanded-extension))
+
+;; Redefining a compiler-side type alias must invalidate its old value.
+(def macro-type-alias MacroExtended)
+(def macro-type-alias nil)
+(defmacro cleared-type-alias [] (nil? macro-type-alias))
+(println (nil? macro-type-alias) (cleared-type-alias))
+(def false-root 1)
+(def false-root false)
+(println false-root)
+
+;; Nil extensions remain separate from instance methods, including macro calls.
+(extend-type nil MacroExtension (extension-value [this] 23))
+(defmacro expanded-nil-extension [] (extension-value nil))
+(println (extension-value nil) (extension-value (->MacroExtended)) (expanded-nil-extension))
+(extend-type macro-type-alias MacroExtension (extension-value [this] 31))
+(defmacro expanded-nil-alias [] (extension-value nil))
+(println (extension-value nil) (extension-value (->MacroExtended)) (expanded-nil-alias))

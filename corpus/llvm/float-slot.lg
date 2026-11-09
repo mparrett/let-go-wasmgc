@@ -1,0 +1,8 @@
+;; a float in an int-typed slot: a program defn is re-lowered with a boxed
+;; param; a runtime fn's slot gets the checked unbox, a catchable error
+(defn twice [n] (* 2 n))
+(println (twice 3) (twice 1.5))
+(println (try (nth [1 2 3] 1.5) (catch Exception e "caught")))
+(println (try (subs "abcd" 1.5) (catch Exception e "caught")))
+(println (try (bit-and 1.5 3) (catch Exception e "caught")))
+(println "alive")

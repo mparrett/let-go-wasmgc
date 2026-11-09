@@ -1,0 +1,43 @@
+(ns llvm-analysis-cache-test
+  (:require [test :refer [deftest is]]
+            [lower-llvm-analysis-cache :as ac]))
+
+(deftest reuse-and-interface-invalidation
+  (let [cache (ac/new-cache true) calls (atom 0)
+        compile (fn [] {:generation (swap! calls inc)})
+        input {:interfaces {'f {:params [:int] :ret :int}}}]
+    (is (= {:generation 1} (ac/analyze! cache 'g input (constantly true) compile)))
+    (is (= {:generation 1} (ac/analyze! cache 'g input (constantly true) compile)))
+    (is (= {:generation 2} (ac/analyze! cache 'g (assoc-in input [:interfaces 'f :ret] :box) (constantly true) compile)))
+    (is (= {:executed 2 :reused 1 :bypassed 0 :rounds 0} (ac/stats cache)))))
+
+(deftest disabled-and-mutable-results-are-never-reused
+  (doseq [enabled [false true]]
+    (let [cache (ac/new-cache enabled) calls (atom 0)
+          compile (fn [] {:generation (swap! calls inc)})]
+      (ac/analyze! cache 'g {} (constantly false) compile)
+      (is (= {:generation 2} (ac/analyze! cache 'g {} (constantly false) compile)))
+      (is (= {:executed 2 :reused 0 :bypassed 2 :rounds 0} (ac/stats cache))))))
+
+(deftest source-metadata-and-boxing-are-inputs
+  (let [src '(defn f [x] x)
+        a (ac/input src 'user "f" false false {})]
+    (is (not= a (ac/input src 'user "f" false true {})))
+    (is (not= a (ac/input (with-meta src {:line 9}) 'user "f" false false {})))
+    (is (not= a (ac/input (list 'defn 'f [(with-meta 'x {:tag 'long})] 'x) 'user "f" false false {})))
+    (is (not= a (ac/input src 'another "f" false false {})))))
+
+(deftest failed-analysis-is-not-cached
+  (let [cache (ac/new-cache true) calls (atom 0)
+        analyze (fn [] (when (= 1 (swap! calls inc)) (throw (ex-info "first fails" {}))) {:ok true})]
+    (is (thrown? Exception (ac/analyze! cache 'f {} (constantly true) analyze)))
+    (is (= {:ok true} (ac/analyze! cache 'f {} (constantly true) analyze)))
+    (is (= {:ok true} (ac/analyze! cache 'f {} (constantly true) analyze)))
+    (is (= 2 @calls))))
+
+(deftest compilations-own-independent-caches
+  (let [a (ac/new-cache true) b (ac/new-cache true) calls (atom 0)
+        analyze (fn [] {:generation (swap! calls inc)})]
+    (is (= {:generation 1} (ac/analyze! a 'f {} (constantly true) analyze)))
+    (is (= {:generation 2} (ac/analyze! b 'f {} (constantly true) analyze)))
+    (is (= {:generation 1} (ac/analyze! a 'f {} (constantly true) analyze)))))

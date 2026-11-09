@@ -1,0 +1,6 @@
+(require '[lw-rt :as rt])
+(when (not= rt/letgo-dir (os/getenv "LW_EXPECT_LETGO"))
+  (throw (ex-info "wrong let-go source root" {:actual rt/letgo-dir})))
+(when-not (seq rt/core-forms)
+  (throw (ex-info "embedded core was not loaded" {})))
+(println "runtime-root: OK")

@@ -1,0 +1,33 @@
+(require '[reader-check-driver :as d])
+(let [original (find-var 'test/apply-template)
+      forms (d/read-program "checks/fixtures/jank-reader/reader_probe.cljc")]
+  (assert (= 3 (count forms)) "reader must preserve all forms")
+  (assert (nil? (find-var 'reader-probe/should-not-be-bound))
+          "reading a namespace must not load or execute its source")
+  (assert (identical? original (find-var 'test/apply-template))
+          "reading must preserve the native test namespace"))
+(reset! d/source-paths ["checks/fixtures/jank-reader"])
+(assert (= [['library-probe "checks/fixtures/jank-reader/library_probe.cljc"]]
+           (d/lib-order! ['library-probe])) "dependency scan finds the source")
+(assert (nil? (find-ns 'library-probe)) "dependency scan must leave require able to load the library")
+(require 'library-probe)
+(assert (= :loaded @(find-var 'library-probe/should-not-be-bound)) "require still executes the library")
+;; Test compilation must not leak its assertion macros into later loads,
+;; including when lowering fails after installing them.
+(let [vars [#'test/is #'test/are #'test/testing #'test/deftest]
+      roots (mapv deref vars)
+      unchanged? (fn [] (every? true? (map identical? roots (mapv deref vars))))]
+  (assert (= :ok (d/with-test-assertions "checks/fixtures/jank-reader/wrapped_test.cljc"
+                   (fn []
+                     (assert (not (unchanged?)))
+                     (assert (some #{'wrapped-test/__t-report}
+                                   (tree-seq coll? seq (macroexpand '(test/is true))))
+                             "imported assertions target the namespace inside a top-level do")
+                     :ok))))
+  (assert (unchanged?) "successful compilation restores native test macros")
+  (assert (= "expected compile failure"
+             (try (d/with-test-assertions "checks/fixtures/jank-reader/wrapped_test.cljc"
+                    (fn [] (throw (ex-info "expected compile failure" {}))))
+                  (catch e (ex-message e)))))
+  (assert (unchanged?) "failed compilation restores native test macros"))
+(println "jank-reader: OK")

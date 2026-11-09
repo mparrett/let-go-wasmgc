@@ -1,0 +1,13 @@
+;; The collector (spec decision 7): a loop that makes garbage (strings,
+;; vectors, closures, boxed floats) with a small live set must run in a heap
+;; much smaller than everything it allocates (checks/llvm-gc-check.sh runs it
+;; under a 16 MB budget).
+(defn churn [n]
+  (loop [i 0 acc 0]
+    (if (< i n)
+      (let [s (str "item-" i)
+            v [i (count s) (* 1.5 i)]
+            f (fn [x] (+ x (nth v 0)))]
+        (recur (inc i) (+ acc (f (count s)))))
+      acc)))
+(println (churn 400000))

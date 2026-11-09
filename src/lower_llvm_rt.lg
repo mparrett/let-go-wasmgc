@@ -1,0 +1,725 @@
+;; lower-llvm-rt: the runtime's object model and intrinsics under --target
+;; llvm (spec decisions 6 and 8). Part of the lower-wasm namespace, required
+;; by lower_llvm.lg.
+;;
+;; Objects. Every runtime declaration (wasm/defstruct, defarray), in the
+;; WasmGC lane's rec-group order, then the program's declarations, then FnV
+;; and FnX, then closure environments, is an LLVM struct type whose first
+;; word is the type's id. A struct's fields follow; an array has its length,
+;; then its elements. A value is a word: 0 nil, low bit 1 a fixnum, anything
+;; else the address of an object. Booleans are the Bool objects @lg_false and
+;; @lg_true (D22's singletons). wasm/is? and the casts compare the id, so they
+;; are nominal like ref.test; Fn's subtypes FnV and FnX pass as Fn.
+(in-ns 'lower-wasm)
+
+;; --- the type registry ----------------------------------------------------
+
+(defn ll-fn-decl []
+  (:decl (first (filter #(= "$Fn" (:tn %)) (lw-rt/rt-decls)))))
+
+(defn ll-static-types
+  "[{:tn :decl}] in id order (id = index + 1): the runtime's declarations,
+   then FnV and FnX. No program type is among them, so these ids are the
+   same in every compile and cached runtime text can hold them (D221)."
+  []
+  (or (q-fn-value [:llvm :types])
+      (let [fnd (ll-fn-decl)
+            extra [{:type :funcref :mut false} {:type :i32 :mut false}]
+            fnv (assoc fnd :fields (into (:fields fnd) extra))
+            fnx (assoc fnd :fields (into (into (:fields fnd) extra)
+                                         (repeat (- max-arity-x max-arity) {:type :funcref :mut false})))
+            ts (vec (concat (for [d (lw-rt/rt-decls)] {:tn (:tn d) :decl (:decl d)})
+                            [{:tn "$FnV" :decl fnv} {:tn "$FnX" :decl fnx}]))]
+        (swap! *fn-values* assoc [:llvm :types] ts)
+        ts)))
+
+(defn ll-next-id!
+  "The next free type id: program types and closure environments take ids
+   from one counter that starts after the static types, so neither shifts
+   the other's, nor a static one."
+  []
+  (let [id (or (q-fn-value [:llvm :next-id]) (inc (count (ll-static-types))))]
+    (swap! *fn-values* assoc [:llvm :next-id] (inc id))
+    id))
+
+(defn ll-prog-types
+  "[{:tn :decl :id}] for the program's declarations, in declaration order,
+   each with its id from ll-next-id! (assigned on first use)."
+  []
+  (vec (for [[_ d] (sort-by (comp :order val) (q-prog-decls))]
+         (let [k [:llvm :prog-tid (:name d)]
+               id (or (q-fn-value k) (let [i (ll-next-id!)] (swap! *fn-values* assoc k i) i))]
+           {:tn (:name d) :decl (:decl d) :id id}))))
+
+(defn ll-registered-types
+  "Every struct and array type of the module: the static types, then the
+   program's."
+  []
+  (concat (ll-static-types) (ll-prog-types)))
+
+(defn ll-tid
+  "The id of runtime or program type tn ($Int, $Fn ...)."
+  [tn]
+  (let [m (or (q-fn-value [:llvm :tids])
+              (let [m (into {} (map-indexed (fn [i t] [(:tn t) (inc i)]) (ll-static-types)))]
+                (swap! *fn-values* assoc [:llvm :tids] m)
+                m))]
+    (or (get m tn)
+        (:id (first (filter #(= tn (:tn %)) (ll-prog-types))))
+        (ll-fail "unknown runtime type" {:type tn}))))
+
+(defn ll-env-tid!
+  "The id of the closure environment for capture kinds (one type per kind
+   vector, as the WasmGC lane keeps them), from ll-next-id!."
+  [kinds]
+  (let [m (or (q-fn-value [:llvm :envs]) {})]
+    (or (get m kinds)
+        (let [id (ll-next-id!)]
+          (swap! *fn-values* assoc [:llvm :envs] (assoc m kinds id))
+          id))))
+
+(defn ll-sty [tn] (lir/type-op (str "T." (subs tn 1))))
+(defn ll-env-sty [kinds] (lir/type-op (str "Env." (apply str (map {:int "i" :bool "z" :box "b" :float "f"} kinds)))))
+;; the backend's own continuation and frame records (the prelude defines them)
+(defn ll-kbox [] (lir/type-op "kbox" true))
+(defn ll-kfin [] (lir/type-op "kfin" true))
+(defn ll-tryf [] (lir/type-op "tryf" true))
+(defn ll-kinit [] (lir/type-op "kinit" true))
+
+(defn ll-slot-type [t]
+  (case t :i64 "i64" :i32 "i32" :i8 "i8" :f64 "double" :ref (ll-word) :funcref "ptr"))
+
+(defn ll-type-defs
+  "The LLVM struct type definitions of every registered type."
+  []
+  (let [w (ll-word)]
+    (concat
+     (for [{:keys [tn decl]} (ll-registered-types)
+           :when (#{:struct :array} (lw-rt/decl-kind decl))]
+       {:llvm/type {:name (ll-sty tn)
+                    :fields (cons w (if (= :array (lw-rt/decl-kind decl))
+                                      [w (str "[0 x " (ll-slot-type (:elem decl)) "]")]
+                                      (map #(ll-slot-type (:type %)) (:fields decl))))}})
+     (for [[kinds _] (get @*fn-values* [:llvm :envs])]
+       {:llvm/type {:name (ll-env-sty kinds) :fields (cons w (map ll-type kinds))}}))))
+
+;; --- collector descriptors (spec decision 7, host/native/gc.c) ------------
+;; Every block's header points at its type's descriptor {kind, len offset,
+;; element offset, n, offsets of the n word fields to trace}; an array of
+;; refs (kind 1) also traces each element. A type with no ref field gets a
+;; descriptor with n = 0, which the collector never scans.
+
+(defn ll-desc-sym
+  "The descriptor global's symbol for named type sty (%\"T.Int\" ->
+   gcd.T.Int, %kbox -> gcd.kbox)."
+  [sty]
+  (str "gcd." (lir/type-name sty)))
+
+(defn ll-desc-name "The descriptor global of sty, as an operand." [sty] (lir/ref (ll-desc-sym sty)))
+
+(defn ll-desc-item
+  "The descriptor global of sty: LLVM field indices fields hold words to
+   trace; with an array elem index, the length at len and each element of
+   the array at elem are traced too."
+  ([sty fields] (ll-desc-item sty fields nil nil))
+  ([sty fields len elem]
+   (let [off (fn [i] (str "i32 ptrtoint (ptr getelementptr (" sty ", ptr null, i32 0, i32 " i ") to i32)"))
+         n (count fields)]
+     {:llvm/global {:name (ll-desc-sym sty) :kind "internal constant"
+                    :type (str "{ i32, i32, i32, i32, [" n " x i32] }")
+                    :init (str "{ i32 " (if elem 1 0) ", " (if len (off len) "i32 0") ", " (if elem (off elem) "i32 0") ", i32 " n ", "
+                               "[" n " x i32] " (if (zero? n) "zeroinitializer" (str "[" (str/join ", " (map off fields)) "]")) " }")}})))
+
+(defn ll-alloc-call
+  "The text of a call allocating one sty, with its descriptor."
+  [sty]
+  (let [w (ll-word)]
+    (str "call ptr @lg_alloc(" w " ptrtoint (ptr getelementptr (" sty ", ptr null, i32 1) to " w "), ptr " (ll-desc-name sty) ")")))
+
+(defn ll-kind-fields
+  "LLVM field indices, from first, of the :box kinds in kinds."
+  [first kinds]
+  (keep-indexed (fn [i k] (when (= k :box) (+ first i))) kinds))
+
+(defn ll-type-descs
+  "Descriptors of every registered type: runtime and program structs (their
+   :ref fields), arrays (of refs: every element), closure environments."
+  []
+  (concat
+   (for [{:keys [tn decl]} (ll-registered-types)
+         :let [k (lw-rt/decl-kind decl)]
+         :when (#{:struct :array} k)]
+     (if (= :array k)
+       (if (= :ref (:elem decl)) (ll-desc-item (ll-sty tn) [] 1 2) (ll-desc-item (ll-sty tn) []))
+       (ll-desc-item (ll-sty tn) (keep-indexed (fn [i f] (when (= :ref (:type f)) (inc i))) (:fields decl)))))
+   (for [[kinds _] (get @*fn-values* [:llvm :envs])]
+     (ll-desc-item (ll-env-sty kinds) (ll-kind-fields 1 kinds)))))
+
+;; type ids and the boolean objects the C host reads (host/native/rt.c)
+(def ll-host-types ["$Int" "$Err" "$Bool" "$Float" "$Str" "$Bytes" "$Fn" "$FnV" "$FnX" "$FnInfo" "$Kw" "$Sym" "$Char"])
+
+(defn ll-object-globals []
+  (let [w (ll-word) bare #(assoc-in % [:llvm/global :bare] true)]
+    (concat
+     (for [tn ll-host-types :when (some #(= tn (:tn %)) (ll-static-types))]
+       (ll-glob (str "lg_tid_" (subs tn 1)) "constant" w (str (ll-tid tn))))
+     [(bare (ll-glob "lg_false" "global" (ll-sty "$Bool") (str "{ " w " " (ll-tid "$Bool") ", i64 0 }")))
+      (bare (ll-glob "lg_true" "global" (ll-sty "$Bool") (str "{ " w " " (ll-tid "$Bool") ", i64 1 }")))])))
+
+(defn ll-false [] (str "ptrtoint (ptr " (lir/ref-bare "lg_false") " to " (ll-word) ")"))
+(defn ll-true [] (str "ptrtoint (ptr " (lir/ref-bare "lg_true") " to " (ll-word) ")"))
+
+;; --- object access ----------------------------------------------------------
+
+(defn ll-ptr!
+  "A ptr register for object word x."
+  [x]
+  (let [p (ll-fresh "%op")] (ll-emit! "  " p " = inttoptr " (ll-word) " " x " to ptr") p))
+
+(defn ll-word-of! [p] (let [o (ll-fresh "%ow")] (ll-emit! "  " o " = ptrtoint ptr " p " to " (ll-word)) o))
+
+(defn ll-word-of-i64!
+  "A word from an i64 (a no-op on 64-bit profiles)."
+  [x]
+  (if (= "i64" (ll-word)) x (let [r (ll-fresh "%wt")] (ll-emit! "  " r " = trunc i64 " x " to " (ll-word)) r)))
+
+(defn ll-i64-of-word!
+  "An i64 from an unsigned word (lengths, indices)."
+  [x]
+  (if (= "i64" (ll-word)) x (let [r (ll-fresh "%wz")] (ll-emit! "  " r " = zext " (ll-word) " " x " to i64") r)))
+
+(defn ll-obj?!
+  "An i1: word x is an object (not nil, not a fixnum)."
+  [x]
+  (let [w (ll-word) lo (ll-fresh "%lo") a (ll-fresh "%ob") b (ll-fresh "%nz") r (ll-fresh "%isob")]
+    (ll-emit! "  " lo " = and " w " " x ", 1")
+    (ll-emit! "  " a " = icmp eq " w " " lo ", 0")
+    (ll-emit! "  " b " = icmp ne " w " " x ", 0")
+    (ll-emit! "  " r " = and i1 " a ", " b)
+    r))
+
+(defn ll-is-type!
+  "An i1: word x is an object whose id is one of ids. A non-object reads its
+   id through @lg_false instead, so the test needs no branch."
+  [x ids]
+  (let [w (ll-word) ok (ll-obj?! x) sx (ll-fresh "%sx") t (ll-fresh "%tid")]
+    (ll-emit! "  " sx " = select i1 " ok ", " w " " x ", " w " " (ll-false))
+    (ll-emit! "  " t " = load " w ", ptr " (ll-ptr! sx))
+    (let [tests (doall (map (fn [id] (let [c (ll-fresh "%te")] (ll-emit! "  " c " = icmp eq " w " " t ", " id) c)) ids))
+          any (reduce (fn [a b] (let [c (ll-fresh "%tor")] (ll-emit! "  " c " = or i1 " a ", " b) c)) tests)
+          r (ll-fresh "%is")]
+      (ll-emit! "  " r " = and i1 " ok ", " any)
+      r)))
+
+(defn ll-tids-for
+  "The ids that pass a test for type tn: Fn's subtypes pass as Fn."
+  [tn]
+  (if (= tn "$Fn") (map ll-tid ["$Fn" "$FnV" "$FnX"]) [(ll-tid tn)]))
+
+(defn ll-check!
+  "Continue only when i1 c holds; otherwise trap with msg (a failed cast or
+   an index out of range: wasm traps there, and so does the reference)."
+  [c msg]
+  (let [ok (ll-fresh "ck") bad (ll-fresh "cb")]
+    (ll-emit! "  br i1 " c ", label %" ok ", label %" bad)
+    (ll-label! bad)
+    (ll-emit! "  call void @lg_trap(ptr " (ll-cstring! msg) ")")
+    (ll-emit! "  unreachable")
+    (ll-label! ok)))
+
+(defn ll-cast!
+  "A ptr to the object x after checking it is a tn."
+  [tn x who]
+  (ll-check! (ll-is-type! x (ll-tids-for tn)) (str who ": cast failure, expected " (subs tn 1)))
+  (ll-ptr! x))
+
+(defn ll-field-ptr! [sty p i]
+  (let [g (ll-fresh "%fp")] (ll-emit! "  " g " = getelementptr " sty ", ptr " p ", i32 0, i32 " i) g))
+
+(defn ll-alloc!
+  "A fresh object of struct type sty with id tid; returns its ptr."
+  [sty tid]
+  (let [w (ll-word) r (ll-fresh "%new")]
+    (ll-emit! "  " r " = " (ll-alloc-call sty))
+    (ll-emit! "  store " w " " tid ", ptr " r)
+    r))
+
+(defn ll-store-arg
+  "nid as storage of slot type t: [llvm-type operand]."
+  [t nid]
+  (case t
+    :i64 ["i64" (ll-arg nid :int)]
+    (:i32 :i8) (let [r (ll-fresh "%tr")]
+                 (ll-emit! "  " r " = trunc i64 " (ll-arg nid :int) " to " (ll-slot-type t))
+                 [(ll-slot-type t) r])
+    :f64 ["double" (ll-arg nid :float)]
+    :ref [(ll-word) (ll-arg nid :box)]
+    :funcref ["ptr" (ll-arg nid :func)]))
+
+(defn ll-load-slot
+  "[operand kind] for a slot of type t loaded from ptr p."
+  [t p]
+  (let [r (ll-fresh "%ld")]
+    (ll-emit! "  " r " = load " (ll-slot-type t) ", ptr " p)
+    (case t
+      :i64 [r :int]
+      :i32 (let [e (ll-fresh "%ex")] (ll-emit! "  " e " = sext i32 " r " to i64") [e :int])
+      :i8 (let [e (ll-fresh "%ex")] (ll-emit! "  " e " = zext i8 " r " to i64") [e :int])
+      :f64 [r :float]
+      :ref [r :box]
+      :funcref [r :func])))
+
+(defn ll-array-ptr!
+  "[ptr len] of array object x of type tn after the cast check."
+  [tn x who]
+  (let [p (ll-cast! tn x who) n (ll-fresh "%len")]
+    (ll-emit! "  " n " = load " (ll-word) ", ptr " (ll-field-ptr! (ll-sty tn) p 1))
+    [p n]))
+
+(defn ll-index!
+  "The element ptr for index nid of the array at p (length n), bounds checked."
+  [tn p n nid who]
+  (let [w (ll-word) i (ll-word-of-i64! (ll-arg nid :int)) ok (ll-fresh "%ib") e (ll-fresh "%ep")]
+    (ll-emit! "  " ok " = icmp ult " w " " i ", " n)
+    (ll-check! ok (str who ": index out of bounds"))
+    (ll-emit! "  " e " = getelementptr " (ll-sty tn) ", ptr " p ", i32 0, i32 2, " w " " i)
+    e))
+
+(defn ll-bytes-const!
+  "A constant Bytes object holding s's UTF-8 bytes; returns its word operand."
+  [s]
+  (let [bs (.getBytes (str s)) w (ll-word)
+        nm (ll-const-sym "bytes" s)]
+    (ll-global! (ll-glob nm "private constant" (str "{ " w ", " w ", [" (count bs) " x i8] }")
+                         (str "{ " w " " (ll-tid "$Bytes") ", " w " " (count bs)
+                              ", [" (count bs) " x i8] c\"" (apply str (map (fn [b] (format "\\%02X" (bit-and b 255))) bs)) "\" }")))
+    (str "ptrtoint (ptr " (lir/ref nm) " to " w ")")))
+
+;; --- the type table (arch/type-*; spec §1) -----------------------------------
+
+;; The intrinsics read the table by name only, with no length or count in
+;; their text, so a cached runtime fn stays valid when a program adds types;
+;; llvm-module emits the table for each module (D221).
+
+(defn ll-tinfo-globals
+  "[item refs] for each of the type table's globals: each Type as a static object (spec §1: name,
+   id, ancestry as a static Node of Types, method table, epoch; the
+   collector skips pointers outside its heap), @lg_tinfo_types (the Types
+   by id, 0 for a hole), @lg_tinfo_names (name Bytes), @lg_tinfo_off and
+   @lg_tinfo_anc (each id's ancestry ids), @lg_tinfo_count."
+  []
+  (let [t (llvm-poly/ll-type-table) w (ll-word)
+        offs (reductions + 0 (map #(count (:anc %)) t))
+        anc (mapcat :anc t)
+        tv (lw-rt/type-name (resolve 'llvm.core/TypeVal)) nd (lw-rt/type-name (resolve 'llvm.pvec/Node))
+        tref #(str "ptrtoint (ptr " (lir/ref (str "lg_type." %)) " to " w ")")]
+    (map (fn [f] (lir/with-refs f))
+    (concat
+     (mapcat (fn [[id r]]
+               (when r
+                 (let [k (count (:anc r))]
+                   [#(ll-glob (str "lg_tanc." id) "private constant" (str "{ " w ", " w ", [" k " x " w "] }")
+                             (str "{ " w " " (ll-tid nd) ", " w " " k ", [" k " x " w "] [" (str/join ", " (for [a (:anc r)] (str w " " (tref a)))) "] }"))
+                    #(ll-glob (str "lg_type." id) "internal global" (ll-sty tv)
+                             (str "{ " w " " (ll-tid tv) ", " w " " (ll-bytes-const! (:name r)) ", i64 " id ", "
+                                  w " ptrtoint (ptr " (lir/ref (str "lg_tanc." id)) " to " w "), " w " 0, i64 0, " w " 0 }"))])))
+             (map-indexed vector t))
+     (map (fn [f] #(assoc-in (f) [:llvm/global :bare] true))
+          [#(ll-glob "lg_tinfo_types" "internal constant" (str "[" (count t) " x " w "]")
+                    (str "[" (str/join ", " (for [[id r] (map-indexed vector t)] (str w " " (if r (tref id) "0")))) "]"))
+           #(ll-glob "lg_tinfo_names" "internal constant" (str "[" (count t) " x " w "]")
+                    (str "[" (str/join ", " (for [r t] (str w " " (if r (ll-bytes-const! (:name r)) "0")))) "]"))
+           #(ll-glob "lg_tinfo_off" "internal constant" (str "[" (count offs) " x i64]")
+                    (str "[" (str/join ", " (for [o offs] (str "i64 " o))) "]"))
+           #(ll-glob "lg_tinfo_anc" "internal constant" (str "[" (max 1 (count anc)) " x i64]")
+                    (str "[" (if (seq anc) (str/join ", " (for [a anc] (str "i64 " a))) "i64 0") "]"))
+           #(ll-glob "lg_tinfo_count" "internal constant" "i64" (str (count t)))])))))
+
+(defn- ll-tinfo-load!
+  "Loads element i (an i64 operand) of type table global g, elements ty."
+  [g ty i]
+  (let [p (ll-fresh "%tip") r (ll-fresh "%tiv")]
+    (ll-emit! "  " p " = getelementptr " ty ", ptr " g ", i64 " i)
+    (ll-emit! "  " r " = load " ty ", ptr " p)
+    r))
+
+;; --- intrinsics (rt/wasm/intrinsics.lg's :wasm metadata is the reference) ----
+
+(defn ll-intrinsic!
+  "[operand kind] for intrinsic nm applied to arg nids; kind :void or
+   :bottom has no value."
+  [nm args]
+  (let [a (vec args) w (ll-word)
+        int2 (fn [op] (let [r (ll-fresh "%i")] (ll-emit! "  " r " = " op " i64 " (ll-arg (a 0) :int) ", " (ll-arg (a 1) :int)) [r :int]))
+        ;; wasm shifts by the count mod 64
+        shift (fn [op] (let [m (ll-fresh "%sh") r (ll-fresh "%i")]
+                         (ll-emit! "  " m " = and i64 " (ll-arg (a 1) :int) ", 63")
+                         (ll-emit! "  " r " = " op " i64 " (ll-arg (a 0) :int) ", " m) [r :int]))
+        bits (fn [f] (let [r (ll-fresh "%i")]
+                       (ll-emit! "  " r " = call i64 @llvm." f ".i64(i64 " (ll-arg (a 0) :int) (if (= f "ctpop") "" ", i1 false") ")") [r :int]))
+        call (fn [ret f & ops] (let [r (ll-fresh "%h")] (ll-emit! "  " r " = call " ret " @" f "(" (str/join ", " ops) ")") r))]
+    (case nm
+      "new" (let [[tn d] (decl-arg (a 0) nm) fs (:fields d)]
+              (when-not (= (count fs) (dec (count a)))
+                (ll-fail (str "wasm/new " (subs tn 1) ": " (count fs) " fields, got " (dec (count a))) {}))
+              (if (= tn "$Bool")
+                ;; a Bool is always one of the two singletons, so truth tests
+                ;; compare the word with @lg_false (the GC lane reads the field
+                ;; instead: its sq/bool makes Bools of its own)
+                (let [z (ll-fresh "%bz") r (ll-fresh "%bw")]
+                  (ll-emit! "  " z " = icmp ne i64 " (ll-arg (a 1) :int) ", 0")
+                  (ll-emit! "  " r " = select i1 " z ", " (ll-word) " " (ll-true) ", " (ll-word) " " (ll-false))
+                  [r :box])
+              (let [p (ll-alloc! (ll-sty tn) (ll-tid tn))]
+                (doseq [[i f] (map-indexed vector fs)]
+                  (let [[t v] (ll-store-arg (:type f) (a (inc i)))]
+                    (ll-emit! "  store " t " " v ", ptr " (ll-field-ptr! (ll-sty tn) p (inc i)))))
+                [(ll-word-of! p) :box])))
+      "get" (let [[tn d] (decl-arg (a 0) nm) i (const-int-arg (a 1) nm)
+                  p (ll-cast! tn (ll-arg (a 2) :box) (str "wasm/get " (subs tn 1)))]
+              (ll-load-slot (field-type d i) (ll-field-ptr! (ll-sty tn) p (inc i))))
+      "set!" (let [[tn d] (decl-arg (a 0) nm) i (const-int-arg (a 1) nm)
+                   p (ll-cast! tn (ll-arg (a 2) :box) (str "wasm/set! " (subs tn 1)))
+                   [t v] (ll-store-arg (field-type d i) (a 3))]
+               (ll-emit! "  store " t " " v ", ptr " (ll-field-ptr! (ll-sty tn) p (inc i)))
+               [nil :void])
+      "is?" (let [[tn] (decl-arg (a 0) nm)] [(ll-is-type! (ll-arg (a 1) :box) (ll-tids-for tn)) :bool])
+      "as" (let [[tn] (decl-arg (a 0) nm) x (ll-arg (a 1) :box)]
+             (ll-cast! tn x (str "wasm/as " (subs tn 1)))
+             [x :box])
+      "array-new" (let [[tn d] (decl-arg (a 0) nm) n (ll-word-of-i64! (ll-arg (a 1) :int))
+                        [t v] (ll-store-arg (:elem d) (a 2)) p (ll-fresh "%arr")]
+                    (ll-emit! "  " p ".end = getelementptr " (ll-sty tn) ", ptr null, i32 0, i32 2, " w " " n)
+                    (ll-emit! "  " p ".n = ptrtoint ptr " p ".end to " w)
+                    (ll-emit! "  " p " = call ptr @lg_alloc(" w " " p ".n, ptr " (ll-desc-name (ll-sty tn)) ")")
+                    (ll-emit! "  store " w " " (ll-tid tn) ", ptr " p)
+                    (ll-emit! "  store " w " " n ", ptr " (ll-field-ptr! (ll-sty tn) p 1))
+                    (ll-emit! "  call void @lg_fill_" (if (= t w) "word" t) "(ptr " (ll-field-ptr! (ll-sty tn) p 2) ", " w " " n ", " t " " v ")")
+                    [(ll-word-of! p) :box])
+      "aget" (let [[tn d] (decl-arg (a 0) nm) [p n] (ll-array-ptr! tn (ll-arg (a 1) :box) "wasm/aget")]
+               (ll-load-slot (:elem d) (ll-index! tn p n (a 2) "wasm/aget")))
+      "aset!" (let [[tn d] (decl-arg (a 0) nm) [p n] (ll-array-ptr! tn (ll-arg (a 1) :box) "wasm/aset!")
+                    e (ll-index! tn p n (a 2) "wasm/aset!") [t v] (ll-store-arg (:elem d) (a 3))]
+                (ll-emit! "  store " t " " v ", ptr " e)
+                [nil :void])
+      "alen" (let [x (ll-arg (a 0) :box)
+                   arrs (map (comp ll-tid :tn) (filter #(= :array (lw-rt/decl-kind (:decl %))) (ll-static-types)))
+                   _ (ll-check! (ll-is-type! x arrs) "wasm/alen: cast failure, expected an array")
+                   lp (ll-fresh "%lp") n (ll-fresh "%len")]
+               (ll-emit! "  " lp " = getelementptr " w ", ptr " (ll-ptr! x) ", i32 1")
+               (ll-emit! "  " n " = load " w ", ptr " lp)
+               [(ll-i64-of-word! n) :int])
+      "array-copy" (let [[tn d] (decl-arg (a 0) nm)
+                         [dp dn] (ll-array-ptr! tn (ll-arg (a 1) :box) "wasm/array-copy")
+                         [sp sn] (ll-array-ptr! tn (ll-arg (a 3) :box) "wasm/array-copy")]
+                     (ll-emit! "  call void @lg_array_copy(ptr " (ll-field-ptr! (ll-sty tn) dp 2) ", " w " " dn ", i64 " (ll-arg (a 2) :int)
+                               ", ptr " (ll-field-ptr! (ll-sty tn) sp 2) ", " w " " sn ", i64 " (ll-arg (a 4) :int) ", i64 " (ll-arg (a 5) :int)
+                               ", i64 ptrtoint (ptr getelementptr (" (ll-slot-type (:elem d)) ", ptr null, i32 1) to i64))")
+                     [nil :void])
+      "ref-eq" (let [r (ll-fresh "%eq")] (ll-emit! "  " r " = icmp eq " w " " (ll-arg (a 0) :box) ", " (ll-arg (a 1) :box)) [r :bool])
+      "null" ["0" :box]
+      "null?" (let [r (ll-fresh "%nl")]
+                (if (= :func (ty (a 0)))
+                  (ll-emit! "  " r " = icmp eq ptr " (ll-arg (a 0) :func) ", null")
+                  (ll-emit! "  " r " = icmp eq " w " " (ll-arg (a 0) :box) ", 0"))
+                [r :bool])
+      "fix" (let [t (ll-word-of-i64! (ll-arg (a 0) :int)) s (ll-fresh "%fs") r (ll-fresh "%fo")]
+              (ll-emit! "  " s " = shl " w " " t ", 1")
+              (ll-emit! "  " r " = or " w " " s ", 1")
+              [r :box])
+      "fix?" (let [lo (ll-fresh "%lo") r (ll-fresh "%fq")]
+               (ll-emit! "  " lo " = and " w " " (ll-arg (a 0) :box) ", 1")
+               (ll-emit! "  " r " = icmp ne " w " " lo ", 0")
+               [r :bool])
+      "fix-get" (let [x (ll-arg (a 0) :box) lo (ll-fresh "%lo") ok (ll-fresh "%fok") s (ll-fresh "%fg")]
+                  (ll-emit! "  " lo " = and " w " " x ", 1")
+                  (ll-emit! "  " ok " = icmp ne " w " " lo ", 0")
+                  (ll-check! ok "wasm/fix-get: cast failure, expected a fixnum")
+                  (ll-emit! "  " s " = ashr " w " " x ", 1")
+                  (if (= w "i64") [s :int]
+                      (let [r (ll-fresh "%fv")] (ll-emit! "  " r " = sext " w " " s " to i64") [r :int])))
+      "fix-min" [(str (first (ll-fix-bounds))) :int]
+      "fix-max" [(str (second (ll-fix-bounds))) :int]
+      "i64-add" (int2 "add")
+      "i64-sub" (int2 "sub")
+      "i64-mul" (int2 "mul")
+      "i64-shl" (shift "shl")
+      "i64-shr-s" (shift "ashr")
+      "i64-shr-u" (shift "lshr")
+      "i64-lt-u" (let [r (ll-fresh "%lt")] (ll-emit! "  " r " = icmp ult i64 " (ll-arg (a 0) :int) ", " (ll-arg (a 1) :int)) [r :bool])
+      "i64-clz" (bits "ctlz")
+      "i64-ctz" (bits "cttz")
+      "i64-popcnt" (bits "ctpop")
+      "i32-wrap" (let [t (ll-fresh "%t32") r (ll-fresh "%i")]
+                   (ll-emit! "  " t " = trunc i64 " (ll-arg (a 0) :int) " to i32")
+                   (ll-emit! "  " r " = sext i32 " t " to i64") [r :int])
+      "i64-extend-i32-u" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = and i64 " (ll-arg (a 0) :int) ", 4294967295") [r :int])
+      "i64-to-f64" (let [r (ll-fresh "%f")] (ll-emit! "  " r " = sitofp i64 " (ll-arg (a 0) :int) " to double") [r :float])
+      "f64-to-i64" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = fptosi double " (ll-arg (a 0) :float) " to i64") [r :int])
+      "f64-neg" (let [r (ll-fresh "%f")] (ll-emit! "  " r " = fneg double " (ll-arg (a 0) :float)) [r :float])
+      "f64-bits" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = bitcast double " (ll-arg (a 0) :float) " to i64") [r :int])
+      "bytes-new" [(call w "lg_bytes_new" (str "i64 " (ll-arg (a 0) :int))) :box]
+      "bget" (let [[p n] (ll-array-ptr! "$Bytes" (ll-arg (a 0) :box) "wasm/bget")]
+               (ll-load-slot :i8 (ll-index! "$Bytes" p n (a 1) "wasm/bget")))
+      "bset!" (let [[p n] (ll-array-ptr! "$Bytes" (ll-arg (a 0) :box) "wasm/bset!")
+                    e (ll-index! "$Bytes" p n (a 1) "wasm/bset!") t (ll-fresh "%b8")]
+                (ll-emit! "  " t " = trunc i64 " (ll-arg (a 2) :int) " to i8")
+                (ll-emit! "  store i8 " t ", ptr " e)
+                [nil :void])
+      "bytes-of-string" (if (string-const? (a 0))
+                          [(ll-bytes-const! (const-val (a 0))) :box]
+                          [(call w "lg_str_bytes_copy" (str w " " (ll-arg (a 0) :box))) :box])
+      "string-of-bytes" (let [p (ll-alloc! (ll-sty "$Str") (ll-tid "$Str"))]
+                          (ll-emit! "  store " w " " (ll-arg (a 0) :box) ", ptr " (ll-field-ptr! (ll-sty "$Str") p 1))
+                          (ll-emit! "  store i64 -1, ptr " (ll-field-ptr! (ll-sty "$Str") p 2))
+                          [(ll-word-of! p) :box])
+      "type-count" (let [r (ll-fresh "%i")] (ll-emit! "  " r " = load i64, ptr " (lir/ref-bare "lg_tinfo_count")) [r :int])
+      "type-static" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_types") w (ll-arg (a 0) :int)) :box]
+      "type-name-bytes" [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_names") w (ll-arg (a 0) :int)) :box]
+      "type-anc-count" (let [i (ll-arg (a 0) :int) j (ll-fresh "%i") r (ll-fresh "%i")]
+                         (ll-emit! "  " j " = add i64 " i ", 1")
+                         (ll-emit! "  " r " = sub i64 " (ll-tinfo-load! (lir/ref-bare "lg_tinfo_off") "i64" j) ", "
+                                   (ll-tinfo-load! (lir/ref-bare "lg_tinfo_off") "i64" i))
+                         [r :int])
+      "type-anc" (let [k (ll-fresh "%i")]
+                   (ll-emit! "  " k " = add i64 " (ll-tinfo-load! (lir/ref-bare "lg_tinfo_off") "i64" (ll-arg (a 0) :int)) ", " (ll-arg (a 1) :int))
+                   [(ll-tinfo-load! (lir/ref-bare "lg_tinfo_anc") "i64" k) :int])
+      "host-write" [(call "i64" "lg_host_write_bytes" (str "i64 " (ll-arg (a 0) :int)) (str w " " (ll-arg (a 1) :box))) :int]
+      "host-sleep" (do (ll-emit! "  call void @lg_host_sleep(i64 " (ll-arg (a 0) :int) ")") [nil :void])
+      "host-nanotime" [(call "i64" "lg_host_nanotime") :int]
+      "host-argc" [(call "i64" "lg_host_argc64" "") :int]
+      "host-arg" [(call w "lg_host_arg" (str "i64 " (ll-arg (a 0) :int))) :box]
+      "host-getenv" [(call w "lg_host_getenv" (str w " " (ll-arg (a 0) :box))) :box]
+      "host-open" [(call "i64" "lg_host_open" (str w " " (ll-arg (a 0) :box)) (str "i64 " (ll-arg (a 1) :int))) :int]
+      "term-read-key" [(call w "lg_term_read_key") :box]
+      "term-key-pending" (let [r (call "i32" "lg_term_key_pending") c (ll-fresh "%tpc")]
+                           (ll-emit! "  " c " = icmp ne i32 " r ", 0") [c :bool])
+      "term-size" [(call "i64" "lg_term_size") :int]
+      "host-emit" (do (ll-emit! "  call void @lg_host_emit(" w " " (ll-arg (a 0) :box) ", " w " " (ll-arg (a 1) :box) ")") [nil :void])
+      "host-url-param" [(call w "lg_host_url_param" (str w " " (ll-arg (a 0) :box))) :box]
+      "capture-begin" (do (ll-emit! "  call void @lg_capture_begin()") [nil :void])
+      "capture-end" [(call w "lg_capture_end") :box]
+      "funcref" (let [[tn d] (decl-arg (a 0) nm) fv (var-of (a 1))]
+                  (when-not fv (ll-fail "wasm/funcref of a fn value, not a defn var" {}))
+                  [(ll-q (ll-funcref! tn d fv)) :func])
+      "trap" (if (string-const? (a 0))
+               (do (ll-emit! "  call void @lg_trap(ptr " (ll-cstring! (const-val (a 0))) ")")
+                   [nil :bottom])
+               (ll-fail "wasm/trap needs a string literal" {}))
+      (ll-fail (str "unsupported intrinsic " nm) {}))))
+
+(defn ll-declare
+  "A declaration of host function nm (host/native/rt.c, gc.c)."
+  [ret nm params & attrs]
+  {:llvm/declare {:name nm :ret ret :params (vec params) :attrs (vec attrs)}})
+
+(defn ll-host-declares
+  "Declarations of the host helpers the intrinsics call (host/native/rt.c)."
+  []
+  (let [w (ll-word)]
+    [(ll-declare "void" "lg_trap" ["ptr"] "noreturn" "cold")
+     (ll-declare "void" "lg_fill_i8" ["ptr" w "i8"]) (ll-declare "void" "lg_fill_i32" ["ptr" w "i32"])
+     (ll-declare "void" "lg_fill_i64" ["ptr" w "i64"]) (ll-declare "void" "lg_fill_double" ["ptr" w "double"])
+     (ll-declare "void" "lg_fill_ptr" ["ptr" w "ptr"]) (ll-declare "void" "lg_fill_word" ["ptr" w w])
+     (ll-declare "void" "lg_array_copy" ["ptr" w "i64" "ptr" w "i64" "i64" "i64"])
+     (ll-declare w "lg_bytes_new" ["i64"]) (ll-declare w "lg_str_bytes_copy" [w])
+     (ll-declare "i64" "lg_host_write_bytes" ["i64" w]) (ll-declare "void" "lg_host_sleep" ["i64"])
+     (ll-declare "i64" "lg_host_nanotime" []) (ll-declare w "lg_host_getenv" [w]) (ll-declare "i64" "lg_host_open" [w "i64"])
+     (ll-declare "i64" "lg_host_argc64" []) (ll-declare w "lg_host_arg" ["i64"])
+     (ll-declare w "lg_term_read_key" []) (ll-declare "i32" "lg_term_key_pending" []) (ll-declare "i64" "lg_term_size" [])
+     (ll-declare "void" "lg_host_emit" [w w]) (ll-declare w "lg_host_url_param" [w])
+     (ll-declare "void" "lg_capture_begin" []) (ll-declare w "lg_capture_end" [])
+     (ll-declare "i64" "llvm.ctlz.i64" ["i64" "i1"]) (ll-declare "i64" "llvm.cttz.i64" ["i64" "i1"]) (ll-declare "i64" "llvm.ctpop.i64" ["i64"])]))
+
+(defn ll-funcref!
+  "The code (wasm/funcref tn fv) refers to: a function of func decl tn's
+   shape, (k, params...), that converts its params to defn fv's signature and
+   tail-calls it, through a boxing continuation when fv's result is not
+   boxed and tn's result is a ref. Made once per (tn, fv)."
+  [tn d fv]
+  (or (q-fn-value [:llvm-ref tn fv])
+      (let [argc (count (:params d)) ent (or (q-sig fv) (callee-sig fv)) sig (get-in ent [:arities argc])
+            w (ll-word) cname (str "fref." (subs tn 1) "." (safe-id (subs (str fv) 2)) "_" (hex32 (str fv)))]
+        (when-not sig (ll-fail "wasm/funcref target has no arity for the signature" {:var fv :sig tn}))
+        (when-not (= :ref (:result d)) (ll-fail "wasm/funcref of a func type with a non-ref result" {:sig tn}))
+        (let [ps (range argc) ret (:ret sig)
+              conv (fn [i] (let [t (nth (:params d) i) k (nth (:params sig) i) x (str "%a" i) r (str "%u" i)]
+                             (case t
+                               :ref (ll-unbox-lines k x r)
+                               :i64 (if (= k :int) [(str "  " r " = add i64 " x ", 0")]
+                                        (ll-fail "wasm/funcref param kind mismatch" {:sig tn :param i}))
+                               (ll-fail "wasm/funcref param slot type unsupported" {:sig tn :type t}))))]
+          (ll-region!
+                 {:items [(ll-fn cname (cons "ptr %k" (map #(str (ll-slot-type (nth (:params d) %)) " %a" %) ps))
+                          (str "entry:\n"
+                             (str/join "\n" (mapcat conv ps)) "\n"
+                             (if (= :box ret) "" (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
+                                                      "  store ptr " (lir/ref-bare (str "lg_kbox_" (name ret))) ", ptr %r\n"
+                                                      "  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr %k, ptr %r.1\n"))
+                             "  musttail call tailcc void " (ll-q (:name sig)) "(ptr " (if (= :box ret) "%k" "%r")
+                             (apply str (map #(str ", " (ll-type (nth (:params sig) %)) " %u" %) ps)) ")\n  ret void\n"))]}))
+        (swap! *fn-values* assoc [:llvm-ref tn fv] cname)
+        cname)))
+
+
+;; --- exceptions (spec decision 9) -----------------------------------------
+;; A handler frame {code, k, prior, depth, captures...} heads @lg_handler while
+;; a try body runs; lg_throw pops it and calls its code with the thrown value.
+;; Each region of a try (body, catch, finally) is lambda-lifted as the WasmGC
+;; lane lifts it, taking its captures as trailing params; the try itself is a
+;; call to a generated function <fn>.try<nid> taking every region's captures.
+
+(defn ll-catch-matches!
+  "catch-matches? inline: 0 Throwable, 1 Exception, 2 ExceptionInfo, 3
+   String (lower-wasm/catch-classes)."
+  [nid args]
+  (let [[c x] args code (when (symbol-const? c) (catch-classes (const-val c)))
+        _ (when-not code (ll-fail "unsupported catch class" {:class (when (symbol-const? c) (const-val c))}))
+        v (ll-arg x :box)]
+    (ll-def! nid :bool
+             (case code
+               0 "true"
+               3 (ll-is-type! v [(ll-tid "$Str")])
+               1 (ll-is-type! v [(ll-tid "$Err")])
+               2 (let [is (ll-is-type! v [(ll-tid "$Err")]) sv (ll-fresh "%sv") k (ll-fresh "%ek") z (ll-fresh "%ez") r (ll-fresh "%ei")]
+                   ;; a non-Err reads its kind through @lg_false (a Bool, field 1 is an i64 0/1; only Err's i32 matters)
+                   (ll-emit! "  " sv " = select i1 " is ", " (ll-word) " " v ", " (ll-word) " " (ll-false))
+                   (ll-emit! "  " k " = load i32, ptr " (ll-field-ptr! (ll-sty "$Err") (ll-ptr! sv) 1))
+                   (ll-emit! "  " z " = icmp eq i32 " k ", 0")
+                   (ll-emit! "  " r " = and i1 " is ", " z)
+                   r)))))
+
+(defn ll-box-lines
+  "LLVM lines boxing register x of kind k into word register r."
+  [k x r]
+  (let [w (ll-word)]
+    (case k
+      :box [(str "  " r " = add " w " " x ", 0")]
+      :int [(str "  " r " = call " w " @lg_box_int(i64 " x ")")]
+      :bool [(str "  " r " = select i1 " x ", " w " " (ll-true) ", " w " " (ll-false))]
+      :float [(str "  " r ".p = " (ll-alloc-call (ll-sty "$Float")))
+              (str "  store " w " " (ll-tid "$Float") ", ptr " r ".p")
+              (str "  " r ".f = getelementptr " (ll-sty "$Float") ", ptr " r ".p, i32 0, i32 1")
+              (str "  store double " x ", ptr " r ".f")
+              (str "  " r " = ptrtoint ptr " r ".p to " w)])))
+
+(defn ll-try-plan
+  "The call plan of a :try: lift its regions (once per try) and generate its
+   frame functions; the plan calls <fn>.try<nid> with every region's captures."
+  [nid]
+  (or (get @*fn-values* [:llvm-try *fname* nid *abi-notes*])
+      (let [{:keys [has-handler has-finally]} (ir/aux nid *f*)
+            refs (ir/refs nid *f*) w (ll-word)
+            region (fn [ref role params]
+                     (let [{:keys [tfn caps]} (region-of ref)
+                           ck (mapv ty caps) nm (str *fname* "__try" nid "_" role)
+                           info (assoc (binding [*box-params* true] (analyze-ir nm tfn)) :caps ck :params params :export? false)]
+                       (ll-region! (llvm-fn info))
+                       {:name nm :caps caps :ck ck :ret (:ret info)}))
+            body (region (nth refs 0) "body" [])
+            h (when has-handler (region (nth refs 1) "catch" [:box]))
+            fin (when has-finally (region (nth refs (if has-handler 2 1)) "finally" []))
+            tn (str *fname* ".try" nid) qn (fn [x] (str tn "." x)) q (fn [x] (ll-q (qn x)))
+            ft (lir/type-op (str "tryf." tn))
+            all-ck (vec (concat (:ck body) (:ck h) (:ck fin)))
+            off-h (count (:ck body)) off-f (+ off-h (count (:ck h)))
+            ;; the region's captures, loaded from frame F (field 4 onward)
+            caps-from (fn [F off ck] (let [ls (map-indexed (fn [i k] [(str "  %fc" i " = getelementptr " ft ", ptr " F ", i32 0, i32 " (+ 4 off i))
+                                                                      (str "  %cv" i " = load " (ll-type k) ", ptr %fc" i)]) ck)]
+                                       [(apply concat ls) (map-indexed (fn [i k] (str ", " (ll-type k) " %cv" i)) ck)]))
+            call-fin (fn [F after v]
+                       (let [[ls as] (caps-from F off-f (:ck fin))]
+                         (str "  %r2 = " (ll-alloc-call (ll-kfin)) "\n"
+                              "  store ptr " (q after) ", ptr %r2\n  %r2.1 = getelementptr %kfin, ptr %r2, i32 0, i32 1\n  store ptr " F ", ptr %r2.1\n"
+                              "  %r2.2 = getelementptr %kfin, ptr %r2, i32 0, i32 2\n  store " w " " v ", ptr %r2.2\n"
+                              (str/join "\n" ls) "\n"
+                              "  musttail call tailcc void " (ll-q (:name fin)) "(ptr %r2" (apply str as) ")\n  ret void\n")))
+            to-k (fn [F b] (str "  %kp = getelementptr " ft ", ptr " F ", i32 0, i32 1\n  %kk = load ptr, ptr %kp\n"
+                                "  %kc = load ptr, ptr %kk\n  musttail call tailcc void %kc(ptr %kk, " w " " b ")\n  ret void\n"))
+            pop (fn [F] (str "  %pp = getelementptr " ft ", ptr " F ", i32 0, i32 2\n  %pr = load ptr, ptr %pp\n  store ptr %pr, ptr " (lir/ref-bare "lg_handler") "\n"))
+            rec (fn [code F] (str "  %r = " (ll-alloc-call (ll-kbox)) "\n"
+                                  "  store ptr " code ", ptr %r\n  %r.1 = getelementptr %kbox, ptr %r, i32 0, i32 1\n  store ptr " F ", ptr %r.1\n"))
+            reify (get-in (callee-sig (lw-rt/rt-var 'core 'reify-caught)) [:arities 1])
+            frame-type {:llvm/type {:name ft :fields (into ["ptr" "ptr" "ptr" w] (map ll-type all-ck))}}
+            ;; the region's fns, made inside its ll-region! so their symbols are its
+            build-fns
+            (fn []
+            (let [fns
+            [;; enter: push F, run the body with a continuation that pops it
+             (ll-fn tn (cons "ptr %k" (map-indexed (fn [i k] (str (ll-type k) " %a" i)) all-ck))
+             (str "entry:\n"
+                  "  %F = " (ll-alloc-call ft) "\n"
+                  "  store ptr " (q "catch") ", ptr %F\n"
+                  "  %F1 = getelementptr " ft ", ptr %F, i32 0, i32 1\n  store ptr %k, ptr %F1\n"
+                  "  %F2 = getelementptr " ft ", ptr %F, i32 0, i32 2\n  %prior = load ptr, ptr " (lir/ref-bare "lg_handler") "\n  store ptr %prior, ptr %F2\n"
+                  "  %F3 = getelementptr " ft ", ptr %F, i32 0, i32 3\n  store " w " 0, ptr %F3\n"
+                  (apply str (map-indexed (fn [i k] (str "  %Fc" i " = getelementptr " ft ", ptr %F, i32 0, i32 " (+ 4 i) "\n  store " (ll-type k) " %a" i ", ptr %Fc" i "\n")) all-ck))
+                  "  store ptr %F, ptr " (lir/ref-bare "lg_handler") "\n"
+                  (rec (q "done") "%F")
+                  "  musttail call tailcc void " (ll-q (:name body)) "(ptr %r"
+                  (apply str (map-indexed (fn [i k] (str ", " (ll-type k) " %a" i)) (:ck body))) ")\n  ret void\n"))
+             ;; the body returned: pop F, then the finally or the try's continuation
+             (ll-fn (qn "done") ["ptr %rec" (str (ll-type (:ret body)) " %v")]
+             (str "entry:\n"
+                  "  %rp = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n" (pop "%F")
+                  (str/join "\n" (ll-box-lines (:ret body) "%v" "%b")) "\n"
+                  (if fin (call-fin "%F" "fdone" "%b") (to-k "%F" "%b"))))
+             ;; a throw reached F (lg_throw popped it)
+             (ll-fn (qn "catch") ["ptr %F" (str w " %exn")]
+             (str "entry:\n"
+                  (cond
+                    h (str (when fin (str "  %G = " (ll-alloc-call (ll-tryf)) "\n"
+                                          "  store ptr " (q "hthrow") ", ptr %G\n  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  store ptr %F, ptr %G1\n"
+                                          "  %G2 = getelementptr %tryf, ptr %G, i32 0, i32 2\n  %gp = load ptr, ptr " (lir/ref-bare "lg_handler") "\n  store ptr %gp, ptr %G2\n"
+                                          "  store ptr %G, ptr " (lir/ref-bare "lg_handler") "\n"))
+                           (rec (q "reified") "%F")
+                           "  musttail call tailcc void " (ll-q (:name reify)) "(ptr %r, " w " %exn)\n  ret void\n")
+                    fin (call-fin "%F" "rethrow" "%exn")
+                    :else (str "  musttail call tailcc void @lg_throw(ptr null, " w " %exn)\n  ret void\n"))))]
+            fns (if-not h fns
+                    (conj fns
+                          (ll-fn (qn "reified") ["ptr %rec" (str w " %e")]
+                          (str "entry:\n"
+                               "  %rp = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n"
+                               (rec (q "hdone") "%F")
+                               (let [[ls as] (caps-from "%F" off-h (:ck h))] (str (str/join "\n" ls) "\n"
+                                 "  musttail call tailcc void " (ll-q (:name h)) "(ptr %r, " w " %e" (apply str as) ")\n  ret void\n"))))
+                          (ll-fn (qn "hdone") ["ptr %rec" (str (ll-type (:ret h)) " %v")]
+                          (str "entry:\n"
+                               "  %rp = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n"
+                               (str/join "\n" (ll-box-lines (:ret h) "%v" "%b")) "\n"
+                               (if fin (str (pop "%F") (call-fin "%F" "fdone" "%b")) (to-k "%F" "%b"))))))
+            fns (if-not fin fns
+                    (conj fns
+                          (ll-fn (qn "fdone") ["ptr %rec" (str (ll-type (:ret fin)) " %ignored")]
+                          (str "entry:\n"
+                               "  %rp = getelementptr %kfin, ptr %rec, i32 0, i32 1\n  %F = load ptr, ptr %rp\n"
+                               "  %vp = getelementptr %kfin, ptr %rec, i32 0, i32 2\n  %b = load " w ", ptr %vp\n" (to-k "%F" "%b")))
+                          (ll-fn (qn "rethrow") ["ptr %rec" (str (ll-type (:ret fin)) " %ignored")]
+                          (str "entry:\n"
+                               "  %vp = getelementptr %kfin, ptr %rec, i32 0, i32 2\n  %e = load " w ", ptr %vp\n"
+                               "  musttail call tailcc void @lg_throw(ptr null, " w " %e)\n  ret void\n"))
+                          (ll-fn (qn "hthrow") ["ptr %G" (str w " %exn")]
+                          (str "entry:\n"
+                               "  %G1 = getelementptr %tryf, ptr %G, i32 0, i32 1\n  %F = load ptr, ptr %G1\n"
+                               (call-fin "%F" "rethrow" "%exn")))))]
+              fns))
+            plan {:sig {:name tn :params all-ck :ret :box}
+                  :args (vec (concat (:caps body) (:caps h) (:caps fin)))}]
+        (ll-region! {:name tn :items (build-fns)
+                     :types [frame-type (ll-desc-item ft (concat [1 2] (ll-kind-fields 4 all-ck)))]})
+        (swap! *fn-values* assoc [:llvm-try *fname* nid *abi-notes*] plan)
+        plan)))
+
+;; every llvm.arch intrinsic has an emitter here: the GC lane's set, plus
+;; os/args's host-argc and host-arg and the type table's readers
+(def ll-emitted-intrinsics
+  (into emitted-intrinsics #{"host-argc" "host-arg" "host-open" "type-count" "type-static" "type-name-bytes" "type-anc-count" "type-anc"}))
+
+(when lw-rt/llvm-target?
+  (let [missing (for [v (lw-rt/intrinsic-vars)
+                      :let [s (name (symbol v))]
+                      :when (not (contains? ll-emitted-intrinsics s))]
+                  (symbol v))]
+    (when (seq missing)
+      (throw (ex-info (str "lower-llvm: intrinsics without an emitter: " (vec (sort missing))) {})))))

@@ -55,6 +55,8 @@ export LG
 prog=$root/checks/fixtures/self-compile/main.lg
 t=$(mktemp -d); trap '[ -n "${KEEP:-}" ] && echo "kept $t" >&2 || rm -rf "$t"' EXIT
 mkdir -p "$t/src/lwx"
+# These independent helpers retain their original namespaces in the copy.
+cp "$root/src/lower_llvm_cache.lg" "$root/src/lower_llvm_analysis_cache.lg" "$t/src/"
 for f in lw_rt.lg lw_ext.lg lower_wasm.lg lower_linear.lg testshim.lg; do
   sed -E \
     -e 's/(^|[^a-zA-Z0-9.-])lower-wasm([^a-zA-Z0-9:-]|$)/\1lwx.lower-wasm\2/g' \

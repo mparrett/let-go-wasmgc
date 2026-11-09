@@ -34,10 +34,11 @@ Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 | 22 | `ir.lg` | `wasm.ir` |  | P10.6, in PLAIN lg like natives.lg: the `ir/*` substrate primitives let-go's IR data layer and passes call (`op-kws` and the catalog's four facet columns, `new-consts`, `form-source-info`, `new-named-source-info`), so a program can carry the IR pipeline; the chunk primitives (lowering to bytecode) have no twin |
 | 23 | `host_fs.lg` | `wasm.host-fs` | 1 4 10 | only under `LW_HOST_FS=1` (D208): `slurp` through the host's file system (`env.read_file`, host/ABI.md), plain lg like natives.lg; it claims `core/slurp` after natives.lg's no-file-system twin, so it replaces it. `spit`, `os/*` and directory reads stay natives.lg's |
 | 24 | `host_asm.lg` | `wasm.host-asm` | 1 4 10 | only under `LW_HOST_ASM=1` (D211): `assemble`, a module's own WAT text to the host's assembler (`env.assemble`, host/ABI.md), which keeps the binary and answers its length; plain lg like natives.lg, no twin (a program calls `wasm.host-asm/assemble`) |
+| 25 | `poly.lg` | `wasm.poly` | 4 10 | in PLAIN lg like natives.lg: placeholders for the natives deftype, defrecord, reify, defprotocol, extend-type, defmulti and defmethod expand to in a program; each raises "<form> is not supported on the WasmGC target" (the llvm lane implements them) |
 
 Rows 20 and 21 are the self-host stage (D193): `src/lw_rt.lg` skips a row
 whose text names `LW_RUNTIME_COMPILE` unless that variable is `1`, so the
-default build loads the other twenty namespaces and its bytes do not
+default build loads twenty-one files (rows 23 and 24 wait on their own variables too) and its bytes do not
 change (`checks/gc-byte-identity.sh`).
 Row 23 is the same mechanism for `LW_HOST_FS` (D208): only a build with
 that flag loads it, and the backend's `env.read_file` import and helper are

@@ -1,0 +1,72 @@
+;; Generate simple Unicode case ranges from the pinned let-go executable.
+;; Run from the repository root: $LG tools/unicode-case-tables.lg OUTPUT|--check
+;; No ambient Go/Unicode version is assumed. Every scalar is queried; the
+;; compressed ranges are checked against the same oracle before writing.
+(require '[clojure.string :as string])
+(def version (:out (os/sh (first os/args) "-version")))
+(def pin (second (re-find #"\(def letgo-commit \"([0-9a-f]+)\"\)" (slurp "src/lw_rt.lg"))))
+(def running-pin (second (re-find #"\(([0-9a-f]{7,40})\)" version)))
+(assert (and pin running-pin (string/starts-with? pin running-pin)) "run with this tree's pinned let-go")
+(def build-info (os/sh "go" "version" "-m" (first os/args)))
+(def toolchain (second (re-find #": (go[^\s]+)" (:out build-info))))
+(assert (= "go1.27.1" toolchain)
+        "Unicode oracle must be the pinned let-go built with go1.27.1; inspect go version -m")
+
+(defn add-mapping [{:keys [ranges current count] :as state} r mapped]
+  (if (= r mapped) state
+    (let [[lo hi first-mapped stride] current
+          distance (when current (- r hi))
+          extend? (and current (= (- mapped r) (- first-mapped lo))
+                       (if (= lo hi) (<= 1 distance 2) (= distance stride)))]
+      {:ranges (if (and current (not extend?)) (conj ranges current) ranges)
+       :current (if extend? [lo r first-mapped (if (= lo hi) distance stride)] [r r mapped 1])
+       :count (inc count)})))
+
+(defn mapped-rune [f r] (int (first (f (str (char r))))))
+(def states
+  (loop [r 256 up {:ranges [] :current nil :count 0} down {:ranges [] :current nil :count 0}]
+    (if (> r 0x10ffff) [up down]
+      (if (<= 0xd800 r 0xdfff)
+        (recur 0xe000 up down)
+        (let [s (str (char r))]
+          (recur (inc r)
+                 (add-mapping up r (int (first (upper-case s))))
+                 (add-mapping down r (int (first (lower-case s))))))))))
+
+(defn validated-ranges [state f]
+  (let [ranges (cond-> (:ranges state) (:current state) (conj (:current state)))]
+    (assert (= (:count state) (reduce + 0 (map (fn [[lo hi _ stride]] (inc (quot (- hi lo) stride))) ranges)))
+            "compression must retain every changed scalar")
+    (loop [rs (seq ranges) previous -1]
+      (when rs
+        (let [[lo hi target stride] (first rs)]
+          (assert (< previous lo) "ranges must be disjoint and ordered")
+          (doseq [r (range lo (inc hi))]
+            (assert (= (mapped-rune f r)
+                       (if (zero? (mod (- r lo) stride)) (+ target (- r lo)) r))
+                    (str "incorrect compressed mapping at " r)))
+          (recur (next rs) hi))))
+    ranges))
+
+(defn field [n]
+  (assert (<= 0 n 0xffffff))
+  (apply str (map #(char (+ 33 (bit-and 63 (unsigned-bit-shift-right n %)))) [18 12 6 0])))
+(defn table-form [nm ranges]
+  (str "(def " nm " (arch/bytes-of-string "
+       (pr-str (apply str (map field (mapcat identity ranges)))) "))\n"))
+(let [up (validated-ranges (first states) upper-case)
+      down (validated-ranges (second states) lower-case)
+      output (first *command-line-args*)]
+  (assert output "supply an output file")
+  (let [generated (str ";; BEGIN GENERATED UNICODE CASE TABLES\n"
+             ";; tools/unicode-case-tables.lg; " (first (string/split-lines version)) "; " toolchain "\n"
+             ";; Four printable six-bit digits per field: low, high, mapped-low, stride.\n"
+             (table-form "case-upper-data" up) (table-form "case-lower-data" down)
+             ";; END GENERATED UNICODE CASE TABLES\n")]
+    (if (= output "--check")
+      (assert (= generated (re-find #"(?s);; BEGIN GENERATED UNICODE CASE TABLES.*?;; END GENERATED UNICODE CASE TABLES\n"
+                                   (slurp "rt/llvm/str.lg")))
+              "generated Unicode case data differs from rt/llvm/str.lg")
+      (spit output generated)))
+  (println "unicode-case:" (count up) "upper ranges," (count down) "lower ranges;"
+           (:count (first states)) (:count (second states)) "changed scalars verified"))

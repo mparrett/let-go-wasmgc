@@ -1,0 +1,20 @@
+;; armv7-virt: Cortex-A7 on qemu's virt machine, bare metal over semihosting
+;; (spec decisions 2, 11 and 14): the pinned 32-bit profile. The MMU is off,
+;; so memory is strongly ordered and unaligned accesses fault: code is built
+;; with strict alignment. :board names host/native/boards/<board>/ (start.S
+;; and link.ld); :cflags go to clang for the host C, the board's assembly and
+;; compiler-rt's builtins (checks/build-builtins.sh).
+{:name        "armv7-virt"
+ :triple      "armv7-none-eabihf"
+ :cpu         "cortex-a7"
+ :features    "+strict-align"
+ :cflags      ["-mcpu=cortex-a7" "-mfloat-abi=hard" "-mno-unaligned-access"]
+ :word-bits   32
+ :tail-calls  :tailcc
+ :float       :hard
+ :host        :bare
+ :board       "armv7-virt"
+ :heap        {:bytes 805306368}
+ :run         ["qemu-system-arm" "-M" "virt" "-cpu" "cortex-a7" "-m" "1024M"
+               "-nographic" "-monitor" "none"
+               "-semihosting-config" "enable=on,target=native" "-kernel"]}

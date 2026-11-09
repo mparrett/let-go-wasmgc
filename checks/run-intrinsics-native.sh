@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # checks/run-intrinsics-native.sh — P2.1 native half: run the intrinsic and
+# (TEST_DIR=corpus/llvm-rt: the llvm target's runtime, rt/llvm, D213)
 # pvec test files under native lg with the reference wasm.intrinsics.
 # TEST_DIR (default corpus/intrinsics) names the test directory: another
 # target's runtime brings its own (phase 13, row P13.7).
@@ -52,7 +53,7 @@ weight() {
 one() {
   local f=$1 b n
   b=${1##*/}; b=${b%.lg}; n=$(grep -c '^(deftest ' "$f")
-  "$LG" -source-paths rt:"${TEST_DIR:-corpus/intrinsics}" checks/intrinsics-native-runner.lg "$n" "${b//_/-}" >"$t/$b.out" 2>&1
+  "$LG" -source-paths rt:src:"${TEST_DIR:-corpus/intrinsics}" checks/intrinsics-native-runner.lg "$n" "${b//_/-}" >"$t/$b.out" 2>&1
   echo $? >"$t/$b.rc"
 }
 export -f one
