@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-10-16 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-11-09 at
+# 4ddb83b, #92 moves the let-go pin to dbccbf0f: same tree both sides, base moves with it; before that 2026-10-16 at
 # d55d645, the hierarchy twins: no function changes; one constant's init call moves two lines in
 # the modules carrying natives.lg (the ns form's exclude list changes a load order), the 29 programs
 # MATCH native and legmacs parity holds; before that 2026-10-16 at
@@ -81,7 +82,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=d55d645c4055ba11f797502a011df07a1454186b
+base=4ddb83b721cfd5c26b5233493870bf8c7d134757
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
