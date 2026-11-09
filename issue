@@ -12,3 +12,6 @@ description: Six rows fail on origin/main, found while running main's rows for t
  
  - P8.7 (linear lane) and P10.1 (emit lane): since #72, native `/` on integers answers a Ratio (`(/ 1 2)` is `1/2`); these lanes do not. `corpus/opmatrix/div-1.lg`, `div-2.lg` and `recip.lg` mismatch on the linear lane (exit 0 against 1). On the emit lane, `div-1.lg` and `div-2.lg` print other values.
  - P12.0, P12.4, P12.5 and P12.6: the self-compile setup (`checks/self-compile-module.sh`'s `sc_setup` and P12.0's copy) renames src/ without copying rt/let-go/lang/, a directory the bignum work added (#70, #72). The renamed lw_rt reads `rt/let-go/lang/README.md` beside its copy, so it fails before the module builds. On origin/main P12.6 reaches a skip first and shows as skipped there.
+
+## Comments
+[2026-11-09T19:46:58Z] Matt Parrett: Both causes fixed in #95: the self-compile setups copy rt/let-go beside the renamed src (P12.0, P12.4, P12.5, P12.6 pass), and SKIP gains row-scoped lines so P8.7 and P10.1 leave the division programs out again under D177 and D15 (40/40 and 47/47). P1.1 still runs them, 48/48.
