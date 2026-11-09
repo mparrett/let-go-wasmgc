@@ -62,6 +62,8 @@ for f in lw_rt.lg lw_ext.lg lower_wasm.lg lower_linear.lg testshim.lg; do
     -e 's/(^|[^a-zA-Z0-9.-])lw-ext([^a-zA-Z0-9-]|$)/\1lwx.lw-ext\2/g' \
     "$root/src/$f" > "$t/src/lwx/$f"
 done
+# lw_rt reads the shared layer at src/../rt/let-go/lang, beside its own copy
+mkdir -p "$t/src/rt" && cp -R "$root/rt/let-go" "$t/src/rt/"
 export LW_RT_DIR=$root/rt/wasm
 letgo_commit=$(sed -n 's/^(def letgo-commit "\([0-9a-f]*\)")$/\1/p' "$root/src/lw_rt.lg")
 mkdir -p "$t/letgo"
