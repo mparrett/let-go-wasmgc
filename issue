@@ -15,3 +15,4 @@ description: Six rows fail on origin/main, found while running main's rows for t
 
 ## Comments
 [2026-11-09T19:46:58Z] Matt Parrett: Both causes fixed in #95: the self-compile setups copy rt/let-go beside the renamed src (P12.0, P12.4, P12.5, P12.6 pass), and SKIP gains row-scoped lines so P8.7 and P10.1 leave the division programs out again under D177 and D15 (40/40 and 47/47). P1.1 still runs them, 48/48.
+[2026-11-10T07:18:30Z] Matt Parrett: Fixed by PR #95, merged as 2582b36. The self-compile setups copy rt/let-go, and the linear and emit lanes skip the three division programs again through row-scoped SKIP lines. At f2c5cc6: P12.0 MATCH, P12.4 MATCH, P12.5 6/6, P12.6 passed, P8.7 40/40, P10.1 47/47, P10.2 45/45 with the division programs matching.
