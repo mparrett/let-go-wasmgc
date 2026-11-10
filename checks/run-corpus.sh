@@ -49,6 +49,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/skip.sh"
 export LG
 update=0 both=0
 dirs=()
@@ -65,11 +66,9 @@ done
 files=() fdirs=()
 for d in "${dirs[@]}"; do
   [ -d "$d" ] || { echo "no such dir: $d" >&2; exit 2; }
-  # A SKIP file in the dir lists basenames to leave out (`#` starts a comment); a
-  # "<row> name" line skips only when LW_SKIP_ROW names that row.
-  skip=""; [ -f "$d/SKIP" ] && skip=$(sed -e 's/#.*//' "$d/SKIP" | awk -v r="${LW_SKIP_ROW:-}" 'NF==1 {print $1} NF==2 && $1==r {print $2}' | tr '\n' ' ')
+  # The dir's SKIP file (checks/skip.sh); LW_SKIP_ROW names the row for "<row> name" lines.
   while IFS= read -r f; do
-    case " $skip " in *" $(basename "$f") "*) echo "SKIP            $f"; continue;; esac
+    if skip_reason "$f" "${LW_SKIP_ROW:-}" >/dev/null; then echo "SKIP            $f"; continue; fi
     files+=("$f"); fdirs+=("$d")
   done < <(find "$d" -maxdepth 1 -type f \( -name '*.lg' -o -name '*.clj' \) | LC_ALL=C sort)
 done
