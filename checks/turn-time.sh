@@ -79,9 +79,9 @@ for r in $(seq "$REPS"); do
 done
 
 # ---- table -----------------------------------------------------------------------
-python3 - "$t" "$here/corpus/xsofy/turn-time.md" "$REPS" "$KEYS" "$SEED" "$XSOFY" "$LG" <<'PY'
+python3 - "$t" "$here/corpus/xsofy/turn-time.md" "$REPS" "$KEYS" "$SEED" "$XSOFY" "$LG" "$COMMIT" <<'PY'
 import json, sys, os, datetime, subprocess, statistics as st
-t, md, reps, keys, seed, xsofy, lg = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7]
+t, md, reps, keys, seed, xsofy, lg, commit = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8]
 def load(lane, r):
     try: return json.loads(open(f'{t}/{lane}-{r}.json').read().strip().splitlines()[-1])
     except Exception as e: return {'failure': str(e)}
@@ -99,7 +99,7 @@ out = [f'# P4.4: xsofy turn latency (measured {today}, checks/turn-time.sh)', ''
        'waking on the key plus the turn\'s compute, before the frame is drawn. Keys the game coalesced or ignored are not',
        'counted. Per run the median over its counted turns; the lane row is the median of its runs.', '',
        '| lane | median | mean | p90 | turns counted | runs (median ms) |', '|---|---|---|---|---|---|']
-names = {'lw': 'lane 5: lower-wasm (emitted)', 'stock': 'stock Go (lg -w, let-go e9789b7d)'}
+names = {'lw': 'lane 5: lower-wasm (emitted)', 'stock': f'stock Go (lg -w, let-go {commit})'}
 summary = {}
 for lane in ('lw', 'stock'):
     v = [x for x in runs[lane] if not x.get('failure') and x.get('turns')]
