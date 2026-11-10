@@ -26,6 +26,8 @@ sc_setup() {
       "$root/src/$f" > "$t/src/lwx/$f"
   done
   grep -q '^(ns lwx.driver$' "$t/src/lwx/driver.lg" || { echo "rename failed: driver.lg's ns form moved"; return 1; }
+  # lw_rt reads the shared layer at src/../rt/let-go/lang, beside its own copy
+  mkdir -p "$t/src/rt" && cp -R "$root/rt/let-go" "$t/src/rt/"
   export LW_RT_DIR=$root/rt/wasm
   local letgo_commit
   letgo_commit=$(sed -n 's/^(def letgo-commit "\([0-9a-f]*\)")$/\1/p' "$root/src/lw_rt.lg")

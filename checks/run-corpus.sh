@@ -65,8 +65,9 @@ done
 files=() fdirs=()
 for d in "${dirs[@]}"; do
   [ -d "$d" ] || { echo "no such dir: $d" >&2; exit 2; }
-  # A SKIP file in the dir lists basenames to leave out (empty since D230; `#` starts a comment).
-  skip=""; [ -f "$d/SKIP" ] && skip=$(sed -e 's/#.*//' "$d/SKIP" | tr '\n' ' ')
+  # A SKIP file in the dir lists basenames to leave out (`#` starts a comment); a
+  # "<row> name" line skips only when LW_SKIP_ROW names that row.
+  skip=""; [ -f "$d/SKIP" ] && skip=$(sed -e 's/#.*//' "$d/SKIP" | awk -v r="${LW_SKIP_ROW:-}" 'NF==1 {print $1} NF==2 && $1==r {print $2}' | tr '\n' ' ')
   while IFS= read -r f; do
     case " $skip " in *" $(basename "$f") "*) echo "SKIP            $f"; continue;; esac
     files+=("$f"); fdirs+=("$d")
