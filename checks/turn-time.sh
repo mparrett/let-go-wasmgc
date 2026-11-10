@@ -25,7 +25,9 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
 XSOFY=${XSOFY:-$LW_ROOT/xsofy}
 LETGO=${LETGO:-$LW_ROOT/let-go}
-COMMIT=e9789b7d
+# the stock lane builds at the pin, so a pin bump moves both lanes together
+COMMIT=$(sed -nE 's/^\(def letgo-commit "([0-9a-f]+)"\)$/\1/p' "$here/src/lw_rt.lg")
+[ -n "$COMMIT" ] || { echo "FAIL: no letgo-commit in src/lw_rt.lg"; exit 1; }
 SEED=${SEED:-424242}
 KEYS=${KEYS:-40}
 REPS=${REPS:-3}
