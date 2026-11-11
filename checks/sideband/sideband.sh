@@ -209,7 +209,7 @@ cmd_rotate() {
   cp "$d/ping-cert.pub" "$STATE/ping-cert.pub"; rm -rf "$d"
   echo "ping key certified for $TTL"
 }
-cert_current() { [ -f "$STATE/ping-cert.pub" ] && ssh-add -l 2>/dev/null | grep -q "$(ssh-keygen -lf "$STATE/ping-cert.pub" | awk '{print $2}')"; }
+cert_current() { [ -f "$STATE/ping-cert.pub" ] && ssh-add -l 2>/dev/null | grep "$(ssh-keygen -lf "$STATE/ping-cert.pub" | awk '{print $2}')" >/dev/null; }
 cmd_send() {
   need_me; local peer=${1:?usage: send <peer> <issue>} issue=${2:?usage: send <peer> <issue>} payload ping out
   name_ok "$peer" || die "peer name must match [a-z0-9_]+"
@@ -268,7 +268,7 @@ selftest() {
   SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -q "$d/old" </dev/null 2>/dev/null
   check "a ping under a lapsed certificate is rejected" '! verify_for "$(SSH_AUTH_SOCK=$t/sta/agent.sock sign "ac94ed2 3bbf96335929875d56ec4d05872d4c670406c7e9" "$d/old-cert.pub")" b >/dev/null'
   rm -rf "$d"
-  check "the ping key lives only in the agent" 'SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -l | grep -q "a ping" && ! grep -rl PRIVATE "$t/sta" >/dev/null 2>&1'
+  check "the ping key lives only in the agent" 'SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -l | grep "a ping" >/dev/null && ! grep -rl PRIVATE "$t/sta" >/dev/null 2>&1'
   for w in a c; do run $w stop; done
   check "stop ends the agent" '! SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -l >/dev/null 2>&1' 
   STATE=$t/state
