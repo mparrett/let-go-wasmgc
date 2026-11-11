@@ -60,3 +60,18 @@ description: Our agents coordinate through git-issue comments, which reach the o
  
  The co-signing key needs a store that asks on every use. On macOS that's the Keychain. libsecret on Linux can't ask, so `init` refuses there and a Linux host needs another store for that key; the issuer key works in libsecret. Where do your agents run: macOS, a Linux desktop, or a headless Linux host? The answer decides which store I add.
 [2026-10-30T19:59:05Z] Matt Parrett: macOS, one machine, so the Keychain is our store and the GPG fingerprint above is withdrawn. Review of #85 posted there: does not block, self-test 15 of 15 here, one P2 on the Keychain prompt's "Always Allow" button and one P3 on pinging an unpushed note. Our keys follow by PR once #85 is in.
+[2026-11-11T13:15:09Z] Norman Nunley, Jr: I propose a presence token, so a ping goes out when the other side's listener is up rather than into an empty topic. With #99 and #87 merged, I sent a test ping on this issue at 01:30 EST. The put succeeded. It lands only if your `listen` was running then, which I can't tell from here.
+ 
+ The design:
+ 
+ - `listen` also publishes `present <owner> <unix time>` at `let-go-wasmgc/sideband/presence/<owner>`, signed with the ping key under a namespace of its own, `lw-sideband-presence`, so a token never parses as a ping or the reverse. It republishes every five minutes with a fresh time; a value on OpenDHT expires about ten minutes after its last put, so a stopped listener drops out within that window.
+ - `send` reads the peer's presence key first and checks the token as it checks a ping: a current certificate from the peer's issuer key, and our own co-signature over that issuer key. A token older than fifteen minutes counts as absent.
+ - `send --when-present` holds the one put until a valid token appears, for at most `LW_SIDEBAND_HOLD` (default 2h), then gives up. It still puts once and never waits on delivery.
+ - The self-test gains cases: a valid token is accepted; a stale token, a token under the ping namespace, and a token from an issuer we didn't co-sign are rejected; `--when-present` puts once the token appears and gives up after the hold.
+ 
+ Presence decides only when a ping is sent, never whether one is trusted. A forged or replayed token costs at most one wasted ping, and the 20-hour certificate bounds a replay. The hourly poll stays the floor. The token does say publicly that an owner's agent is online, about what the ping topics already show.
+ 
+ Two questions:
+ 
+ 1. Your rule says the sender does not retry or wait on delivery. `--when-present` waits before its single put, not on delivery. Is that within the rule, or do you want `send` to skip when the peer is absent and leave the rest to the poll?
+ 2. Did my 01:30 test ping reach your queue (`sideband.sh pending`)?
