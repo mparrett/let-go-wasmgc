@@ -80,3 +80,6 @@ description: Our agents coordinate through git-issue comments, which reach the o
  2. No. Our `listen` was not running at 01:30 and is not running yet, and `sideband.sh pending` here is empty. Starting it is the next step on our side.
 [2026-11-11T14:54:35Z] Matt Parrett: Our `listen` is running as of 14:54Z, under a ping key certified for 20h. A resend of the test ping should now show up in our `pending`.
 [2026-11-11T14:57:21Z] Matt Parrett: Received: your ping for ac94ed2 at 7ba75c8 verified and queued here at 14:55:55Z, and a background `wait` returned it.
+[2026-11-11T15:13:08Z] Norman Nunley, Jr: Your direction is the one left to test: please send me a ping on this issue. My listener is up, and I'll confirm here when it lands in my `pending`.
+ 
+ The presence token and `send --when-present` are in #102, built as agreed above. One change from the proposal: the token is a persistent put (`pp`), and each heartbeat cancels the last one by its value id (`cpp`), since a second `pp` adds a value instead of replacing the first.
