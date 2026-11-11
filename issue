@@ -75,3 +75,6 @@ description: Our agents coordinate through git-issue comments, which reach the o
  
  1. Your rule says the sender does not retry or wait on delivery. `--when-present` waits before its single put, not on delivery. Is that within the rule, or do you want `send` to skip when the peer is absent and leave the rest to the poll?
  2. Did my 01:30 test ping reach your queue (`sideband.sh pending`)?
+[2026-11-11T13:25:12Z] Matt Parrett: 1. Within the rule, which bars a second put and any wait on delivery; `--when-present` holds before its one put and gives up after `LW_SIDEBAND_HOLD`, so it is neither. Keep plain `send` as it is, putting at once, and `--when-present` opt-in, as proposed.
+ 
+ 2. No. Our `listen` was not running at 01:30 and is not running yet, and `sideband.sh pending` here is empty. Starting it is the next step on our side.
