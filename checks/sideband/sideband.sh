@@ -21,8 +21,11 @@
 #                                    once, on <peer>'s topic (no retry)
 #   sideband.sh listen               listen on our own topic; each verified ping
 #                                    joins the queue
+#   sideband.sh wait [<issue>...]    block while no ping (for one of these issues) is
+#                                    pending, then print one and exit: a session's
+#                                    background command, so a ping wakes the session
 #   sideband.sh pending              the queue: `<peer> <issue> <notes commit>`
-#   sideband.sh done <issue>         drop an issue from the queue once read
+#   sideband.sh done <issue> [<c>]   drop an issue's ping (only commit <c>'s) once read
 #   sideband.sh                      self-test (offline, a throwaway key store)
 #
 # Keys, after LOAS: three per owner. The co-signing key is human-only: its key
@@ -222,7 +225,7 @@ cmd_send() {
   echo "${out:-sideband: put sent, no result seen}"
 }
 cmd_listen() {
-  need_me; local seen="" line id ping res
+  need_me; local seen="" line id ping res r
   command -v dhtnode >/dev/null || die "no dhtnode (OpenDHT) on PATH"
   (echo "l let-go-wasmgc/sideband/$ME"; while :; do sleep 3600; done) | dhtnode -b "$BOOT" -p 0 2>&1 | while IFS= read -r line; do
     case $line in *'Value[id:'*'data(text/plain):"'*) ;; *) continue ;; esac
@@ -230,15 +233,49 @@ cmd_listen() {
     case " $seen " in *" $id "*) continue ;; esac; seen="$seen $id"
     ping=${line#*data(text/plain):\"}; ping=${ping%%\"*}
     if res=$(verify_for "$ping" "$ME"); then
-      set -- $res; logline received "$res $(enqueue "$1" "$2" "$3")"
+      set -- $res; r=$(enqueue "$1" "$2" "$3"); logline received "$res $r"
+      case $r in queued|updated) prefetch "$2" </dev/null & ;; esac
     else logline received "rejected: $res"; fi
   done
 }
+# the note into the prompt hook's watch namespace, so a woken session reads
+# it without a fetch of its own; local refs/notes stay untouched
+prefetch() {
+  git fetch -q --no-tags "${LW_SIDEBAND_REMOTE:-origin}" \
+    "+refs/notes/issue-$1:refs/issue-watch/issue-$1" 2>/dev/null || logline received "prefetch of $1 failed"
+}
+# ids match by prefix either way, so `ac94ed2` and the full id are one issue
+same_id() { case $1 in "$2"*) return 0 ;; esac; case $2 in "$1"*) return 0 ;; esac; return 1; }
+wanted() { local w; [ -z "$WANT" ] && return 0; for w in $WANT; do same_id "$1" "$w" && return 0; done; return 1; }
+# a pending ping is the token: wait returns one for a wanted issue that it
+# has not returned before, so a ping that lands while the last one is being
+# read is not lost, and one a session ignores without `done` wakes it once
+cmd_wait() {
+  local q=$STATE/queue.tsv d=$STATE/delivered p i c rest
+  while :; do
+    if [ -f "$q" ]; then
+      while IFS=$'\t' read -r p i c rest; do
+        [ -n "$c" ] && wanted "$i" || continue
+        grep -qxF "$p $i $c" "$d" 2>/dev/null && continue
+        echo "$p $i $c" >> "$d"; echo "$p $i $c"; return 0
+      done < "$q"
+    fi
+    sleep "${LW_SIDEBAND_POLL:-2}"
+  done
+}
 cmd_pending() { [ -f "$STATE/queue.tsv" ] && awk -F'\t' '{print $1, $2, $3}' "$STATE/queue.tsv"; true; }
-cmd_done() {
-  local issue=${1:?usage: done <issue>} q=$STATE/queue.tsv
+cmd_done() {   # <issue> [<commit>]: with a commit, only the ping that was read
+  local issue=${1:?usage: done <issue> [<commit>]} commit=${2:-} q=$STATE/queue.tsv p i c rest
   [ -f "$q" ] || return 0
-  awk -F'\t' -v i="$issue" '$2!=i' "$q" > "$q.tmp" && mv "$q.tmp" "$q"
+  while IFS=$'\t' read -r p i c rest; do
+    same_id "$i" "$issue" && { [ -z "$commit" ] || [ "$c" = "$commit" ]; } && continue
+    printf '%s\t%s\t%s\t%s\n' "$p" "$i" "$c" "$rest"
+  done < "$q" > "$q.tmp" && mv "$q.tmp" "$q"
+  [ -f "$STATE/delivered" ] || return 0
+  while read -r p i c; do
+    same_id "$i" "$issue" && { [ -z "$commit" ] || [ "$c" = "$commit" ]; } && continue
+    echo "$p $i $c"
+  done < "$STATE/delivered" > "$STATE/delivered.tmp" && mv "$STATE/delivered.tmp" "$STATE/delivered"
 }
 
 selftest() {
@@ -278,6 +315,21 @@ selftest() {
   check "another peer has its own queue" 'enqueue b i1 c1 >/dev/null'
   cmd_done i1
   check "done drops an issue from the queue" '! grep -q "	i1	" "$t/state/queue.tsv"'
+  (WANT="i5"; LW_SIDEBAND_POLL=1 cmd_wait > "$t/woke") & local w=$!
+  sleep 2; enqueue b i4 c4 >/dev/null; sleep 2
+  check "wait ignores a ping for another issue" 'kill -0 $w 2>/dev/null && [ ! -s "$t/woke" ]'
+  enqueue b i5 c5 >/dev/null; sleep 3
+  check "wait wakes on a new ping for its issue" '! kill -0 $w 2>/dev/null && [ "$(cat "$t/woke")" = "b i5 c5" ]'
+  kill $w 2>/dev/null; wait $w 2>/dev/null
+  waitfor() { timeout 4 bash -c "$(declare -f cmd_wait wanted same_id); STATE=$STATE; WANT=$1; LW_SIDEBAND_POLL=1; cmd_wait"; }
+  check "wait does not return a ping it already returned" '! waitfor i5 >/dev/null'
+  enqueue b i5 c6 >/dev/null
+  check "a newer commit on a returned issue wakes wait at once" '[ "$(waitfor i5)" = "b i5 c6" ]'
+  cmd_done i5 c5
+  check "done with a commit keeps a newer ping pending" 'grep -q "	i5	c6	" "$t/state/queue.tsv"'
+  check "ids match by prefix" 'same_id ac94ed2 ac94ed2f00 && same_id ac94ed2f00 ac94ed2 && ! same_id ac94ed2 bc33496'
+  cmd_done i5
+  check "done without a commit drops every ping for the issue" '! grep -q "	i5	" "$t/state/queue.tsv" && ! grep -q " i5 " "$t/state/delivered"'
   rm -rf "$t"
   return $fail
 }
@@ -290,8 +342,9 @@ case ${1:-} in
   stop) cmd_stop ;;
   send) shift; cmd_send "$@" ;;
   listen) cmd_listen ;;
+  wait) shift; WANT="$*"; cmd_wait ;;
   pending) cmd_pending ;;
   done) shift; cmd_done "$@" ;;
   '') selftest ;;
-  *) echo "usage: sideband.sh init | cosign <peer> | start | rotate | stop | send <peer> <issue> | listen | pending | done <issue>" >&2; exit 2 ;;
+  *) echo "usage: sideband.sh init | cosign <peer> | start | rotate | stop | send <peer> <issue> | listen | wait [<issue>...] | pending | done <issue> [<commit>]" >&2; exit 2 ;;
 esac

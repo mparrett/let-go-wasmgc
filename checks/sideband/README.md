@@ -68,7 +68,24 @@ A lapsed ping certificate is rejected; `send` rotates to a fresh one.
    fetches it from there.
    `sideband.sh stop` ends the agent, and the issuer and ping keys with it.
 
+## Waking a session
+
+A ping matters between the points where a session would fetch anyway, such
+as each prompt. A session working on an issue runs, as a background command:
+
+    checks/sideband/sideband.sh wait <issue>...
+
+A pending ping is the token: `wait` blocks while none for those issues (any
+issue, given none) is queued, then prints `<peer> <issue> <notes commit>` and
+exits, which wakes the session. The listener has already fetched the note
+into `refs/issue-watch/issue-<id>`, where the prompt hook reads it, so the
+woken session reads the issue at once, runs `done <issue> <commit>`, and
+starts `wait` again. A ping that lands meanwhile stays queued, so the next
+`wait` returns at once. `wait` returns each ping once: one a session ignores
+without `done` stays in `pending` but does not wake it again. Issue ids match by prefix, so a short and a full id
+name the same issue.
+
 `sideband.sh` with no arguments is the offline self-test (row P0.8): a
 throwaway key store, co-signing both ways, accepted and rejected pings
-(tampered, wrong payload, unco-signed issuer, lapsed certificate), and the
-queue bound.
+(tampered, wrong payload, unco-signed issuer, lapsed certificate), the
+queue bound, and `wait`.
