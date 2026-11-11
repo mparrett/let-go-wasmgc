@@ -68,6 +68,28 @@ A lapsed ping certificate is rejected; `send` rotates to a fresh one.
    fetches it from there.
    `sideband.sh stop` ends the agent, and the issuer and ping keys with it.
 
+## Presence
+
+While `listen` runs, it keeps a presence token on
+`let-go-wasmgc/sideband/presence/<owner>`: `present <owner> <unix time>`,
+signed with the ping key under the `lw-sideband-presence` namespace, so a
+token never verifies as a ping or the reverse. The token is a persistent put
+(dhtnode's `pp`), re-announced while the node runs. Every five minutes a
+heartbeat cancels the last one by its value id (`cpp`) and puts one with a
+fresh time: a second `pp` adds a value rather than replacing the first.
+Shutdown cancels the last one. A cancelled value stays stored until it expires,
+about ten minutes after its last announce, and a token older than fifteen
+minutes counts as absent, so a stopped listener drops out.
+
+`presence <peer>` exits 0 when `<peer>` has a current token, checked as a ping
+is: a current certificate from `<peer>`'s issuer key, which we co-signed.
+`send <peer> <issue>` still puts at once. `send --when-present <peer> <issue>`
+holds its one put until `<peer>` is present, for at most `LW_SIDEBAND_HOLD`
+(2h), then gives up and logs it; it never waits on delivery. Presence decides
+only when a ping is sent, never whether one is trusted: a forged or replayed
+token costs at most one wasted ping, and anyone who saw a token can re-put it
+until it is fifteen minutes old.
+
 ## Waking a session
 
 A ping matters between the points where a session would fetch anyway, such
@@ -87,5 +109,7 @@ name the same issue.
 
 `sideband.sh` with no arguments is the offline self-test (row P0.8): a
 throwaway key store, co-signing both ways, accepted and rejected pings
-(tampered, wrong payload, unco-signed issuer, lapsed certificate), the
-queue bound, and `wait`.
+(tampered, wrong payload, unco-signed issuer, lapsed certificate), presence
+tokens (stale, wrong namespace, unco-signed issuer, another owner's name),
+`--when-present`'s hold and give-up, `listen`'s heartbeat against a stand-in
+`dhtnode`, the queue bound, and `wait`.

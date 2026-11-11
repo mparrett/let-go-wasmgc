@@ -17,10 +17,15 @@
 #   sideband.sh stop                 end the agent: the issuer and ping keys go with it
 #   sideband.sh rotate               a fresh ping key with an LW_SIDEBAND_TTL
 #                                    certificate (send rotates when it has lapsed)
-#   sideband.sh send <peer> <issue>  sign a ping for an open issue and put it,
-#                                    once, on <peer>'s topic (no retry)
+#   sideband.sh send [--when-present] <peer> <issue>
+#                                    sign a ping for an open issue and put it,
+#                                    once, on <peer>'s topic (no retry); with
+#                                    --when-present, hold that one put until
+#                                    <peer>'s presence token is current, giving up
+#                                    after LW_SIDEBAND_HOLD
 #   sideband.sh listen               listen on our own topic; each verified ping
-#                                    joins the queue
+#                                    joins the queue; publish our presence token
+#   sideband.sh presence <peer>      exit 0 when <peer>'s presence token is current
 #   sideband.sh wait [<issue>...]    block while no ping (for one of these issues) is
 #                                    pending, then print one and exit: a session's
 #                                    background command, so a ping wakes the session
@@ -43,6 +48,17 @@
 # listener queues at most LW_SIDEBAND_DEPTH (2) pending issues per peer and
 # drops the rest. Both sides log what they send and receive.
 #
+# Presence: while it runs, listen keeps `present <owner> <unix time>` on
+# let-go-wasmgc/sideband/presence/<owner>, signed with the ping key under its
+# own namespace ("lw-sideband-presence"), so a token never verifies as a ping
+# or the reverse. The token is a persistent put (dhtnode's pp), which the node
+# re-announces while it runs; every five minutes a heartbeat cancels it by its
+# value id (cpp) and puts one with a fresh time, since a second pp adds a value
+# rather than replacing the first. Shutdown cancels the last one. A value on
+# OpenDHT expires about ten minutes after its last announce, and a token older
+# than fifteen minutes counts as absent, so a stopped listener drops out.
+# Presence decides only when a ping is sent, never whether one is trusted.
+#
 # Key store: the macOS Keychain (security) or, on Linux, libsecret's
 # secret-tool; a headless Linux host would need another backend, such as the
 # kernel keyring (keyctl). Secrets cross argv never: security -i reads its
@@ -53,16 +69,20 @@
 # Env: LW_SIDEBAND_OWNER (our name, required), LW_SIDEBAND_TTL (default 20h),
 # LW_SIDEBAND_STATE (agent socket, queue, logs), LW_SIDEBAND_KEYS (default
 # checks/sideband/keys), LW_SIDEBAND_DEPTH, LW_SIDEBAND_BOOTSTRAP (default
-# bootstrap.jami.net). Needs OpenSSH 8.2+, and dhtnode (OpenDHT) for send and
-# listen.
+# bootstrap.jami.net), LW_SIDEBAND_HOLD (default 2h). Needs OpenSSH 8.2+, and
+# dhtnode (OpenDHT) for send, listen and presence.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 NS=lw-sideband
+PNS=$NS-presence
+PRESENCE_EVERY=${LW_SIDEBAND_PRESENCE_EVERY:-300}   # seconds between heartbeats
+PRESENCE_MAX=900                      # a token older than this counts as absent
 KEYS=${LW_SIDEBAND_KEYS:-checks/sideband/keys}
 STATE=${LW_SIDEBAND_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/let-go-wasmgc/sideband}
 DEPTH=${LW_SIDEBAND_DEPTH:-2}
 TTL=${LW_SIDEBAND_TTL:-20h}
+HOLD=${LW_SIDEBAND_HOLD:-2h}
 BOOT=${LW_SIDEBAND_BOOTSTRAP:-bootstrap.jami.net}
 STORE=${LW_SIDEBAND_STORE:-}          # a directory: the self-test's throwaway store
 ME=${LW_SIDEBAND_OWNER:-}
@@ -71,7 +91,7 @@ die() { echo "sideband: $*" >&2; exit 1; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 need_me() { [ -n "$ME" ] || die "set LW_SIDEBAND_OWNER to this owner's name"; name_ok "$ME" || die "owner name must match [a-z0-9_]+"; }
 name_ok() { case $1 in ''|*[!a-z0-9_]*) return 1 ;; esac; }
-ttl_seconds() { case $1 in *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *) echo "$1" ;; esac; }
+ttl_seconds() { case $1 in *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *s) echo "${1%s}" ;; *) echo "$1" ;; esac; }
 
 # --- key store: put <name> <human-only?> (secret on stdin), get <name> --------
 ks_put() {
@@ -112,10 +132,10 @@ envelope() {   # <issue> -> `<issue> <notes commit>`, or dies
     || die "issue $issue's note $tip is not pushed yet: push it, then send"
   printf '%s %s' "$issue" "$tip"
 }
-sign() {       # <payload> <certificate> -> one-line ping (payload and signature)
+sign() {       # <payload> <certificate> [<namespace>] -> one line (payload and signature)
   local t; t=$(mktemp -d)
   printf '%s' "$1" > "$t/p"
-  ssh-keygen -q -Y sign -n "$NS" -f "$2" "$t/p" </dev/null >/dev/null 2>&1 || { rm -rf "$t"; return 1; }
+  ssh-keygen -q -Y sign -n "${3:-$NS}" -f "$2" "$t/p" </dev/null >/dev/null 2>&1 || { rm -rf "$t"; return 1; }
   { printf '%s\n' "$1"; cat "$t/p.sig"; } | base64 | tr -d '\n'
   rm -rf "$t"
 }
@@ -127,23 +147,58 @@ cosigned() {   # <peer> <recipient>: the recipient's co-signing key signed the p
   ssh-keygen -Y verify -f "$t/a" -I "$r" -n "$NS-cosign" -s "$KEYS/$p-issuer.by-$r.sig" < "$KEYS/$p-issuer.pub" >/dev/null 2>&1 && ok=0
   rm -rf "$t"; return $ok
 }
-verify_for() { # <ping> <recipient> -> `<sender> <issue> <commit>`
-  local ping=$1 rcpt=$2 t sender payload f p
+verify_ns() {  # <signed line> <recipient> <namespace> -> `<sender> <payload>`
+  local ping=$1 rcpt=$2 ns=$3 t sender payload f p
   t=$(mktemp -d)
   printf '%s' "$ping" | base64 -d > "$t/all" 2>/dev/null || { rm -rf "$t"; echo "not base64"; return 1; }
-  head -1 "$t/all" | tr -d '\n' > "$t/p"; tail -n +2 "$t/all" > "$t/s"
+  head -1 "$t/all" | LC_ALL=C tr -d '\n' > "$t/p"; tail -n +2 "$t/all" > "$t/s"
   : > "$t/allowed"
   for f in "$KEYS"/*-issuer.pub; do
     [ -f "$f" ] || continue; p=$(basename "$f" -issuer.pub); [ "$p" = "$rcpt" ] && continue; name_ok "$p" || continue
-    cosigned "$p" "$rcpt" && printf '%s cert-authority,namespaces="%s" %s\n' "$p" "$NS" "$(cat "$f")" >> "$t/allowed"
+    cosigned "$p" "$rcpt" && printf '%s cert-authority,namespaces="%s" %s\n' "$p" "$ns" "$(cat "$f")" >> "$t/allowed"
   done
   sender=$(ssh-keygen -Y find-principals -s "$t/s" -f "$t/allowed" 2>/dev/null | head -1)
   [ -n "$sender" ] || { rm -rf "$t"; echo "not signed under an issuer $rcpt co-signed, or the certificate has lapsed"; return 1; }
-  ssh-keygen -Y verify -f "$t/allowed" -I "$sender" -n "$NS" -s "$t/s" < "$t/p" >/dev/null 2>&1 \
+  ssh-keygen -Y verify -f "$t/allowed" -I "$sender" -n "$ns" -s "$t/s" < "$t/p" >/dev/null 2>&1 \
     || { rm -rf "$t"; echo "bad signature for $sender"; return 1; }
   payload=$(cat "$t/p"); rm -rf "$t"
-  printf '%s' "$payload" | grep -Eqx '[0-9a-f]{4,40} [0-9a-f]{40}' || { echo "payload is not <issue> <commit>"; return 1; }
   echo "$sender $payload"
+}
+verify_for() { # <ping> <recipient> -> `<sender> <issue> <commit>`
+  local res
+  res=$(verify_ns "$1" "$2" "$NS") || { echo "$res"; return 1; }
+  printf '%s' "${res#* }" | grep -Eqx '[0-9a-f]{4,40} [0-9a-f]{40}' || { echo "payload is not <issue> <commit>"; return 1; }
+  echo "$res"
+}
+
+# --- presence ----------------------------------------------------------------
+token() {      # <owner> <certificate> [<unix time>] -> a signed presence token
+  sign "present $1 ${3:-$(date +%s)}" "$2" "$PNS"
+}
+present_ok() { # <token> <peer> <recipient>: a current token from <peer>
+  local res at age
+  res=$(verify_ns "$1" "$3" "$PNS") || return 1
+  case $res in "$2 present $2 "*) ;; *) return 1 ;; esac
+  at=${res##* }; case $at in ''|*[!0-9]*) return 1 ;; esac
+  age=$(( $(date +%s) - at ))
+  [ "$age" -le "$PRESENCE_MAX" ] && [ "$age" -ge -60 ]
+}
+dht_get() {    # <key> -> each value's text, one per line
+  (sleep 5; echo "g $1"; sleep 10; echo x) | dhtnode -b "$BOOT" -p 0 2>&1 \
+    | sed -n 's/.*Value\[id:[^ ]* data(text\/plain):"\([^"]*\)".*/\1/p'
+}
+peer_present() { # <peer>
+  local v
+  for v in $(dht_get "let-go-wasmgc/sideband/presence/$1"); do present_ok "$v" "$1" "$ME" && return 0; done
+  return 1
+}
+hold_until_present() { # <peer>: 0 once its token is current, 1 after HOLD
+  local end=$(( $(date +%s) + $(ttl_seconds "$HOLD") ))
+  while :; do
+    peer_present "$1" && return 0
+    [ "$(date +%s)" -lt "$end" ] || { echo "sideband: $1 not present within $HOLD" >&2; return 1; }
+    sleep "${LW_SIDEBAND_POLL:-60}"
+  done
 }
 
 # --- queue: <sender>\t<issue>\t<commit>\t<time>; at most DEPTH per sender -----
@@ -214,21 +269,43 @@ cmd_rotate() {
 }
 cert_current() { [ -f "$STATE/ping-cert.pub" ] && ssh-add -l 2>/dev/null | grep "$(ssh-keygen -lf "$STATE/ping-cert.pub" | awk '{print $2}')" >/dev/null; }
 cmd_send() {
-  need_me; local peer=${1:?usage: send <peer> <issue>} issue=${2:?usage: send <peer> <issue>} payload ping out
+  local hold=""; [ "${1:-}" = --when-present ] && { hold=1; shift; }
+  need_me; local peer=${1:?usage: send [--when-present] <peer> <issue>} issue=${2:?usage: send [--when-present] <peer> <issue>} payload ping out
   name_ok "$peer" || die "peer name must match [a-z0-9_]+"
   command -v dhtnode >/dev/null || die "no dhtnode (OpenDHT) on PATH"
   payload=$(envelope "$issue") || exit 1
+  [ -z "$hold" ] || hold_until_present "$peer" || { logline sent "$peer $payload not sent: not present within $HOLD"; exit 1; }
   agent_env; cert_current || cmd_rotate >/dev/null || die "no ping key: run sideband.sh start"
   ping=$(sign "$payload" "$STATE/ping-cert.pub") || die "signing failed"
   out=$( (echo "p let-go-wasmgc/sideband/$peer $ping"; sleep 20; echo x) | dhtnode -b "$BOOT" -p 0 2>&1 | grep -m1 'Put:')
   logline sent "$peer $payload ${out:-no put result}"
   echo "${out:-sideband: put sent, no result seen}"
 }
+# dhtnode reads its commands from a FIFO, so the heartbeat and the shutdown
+# trap both reach it; the reader records each presence put's value id for the
+# next cpp
 cmd_listen() {
-  need_me; local seen="" line id ping res r
+  need_me; local d reader sl
   command -v dhtnode >/dev/null || die "no dhtnode (OpenDHT) on PATH"
-  (echo "l let-go-wasmgc/sideband/$ME"; while :; do sleep 3600; done) | dhtnode -b "$BOOT" -p 0 2>&1 | while IFS= read -r line; do
-    case $line in *'Value[id:'*'data(text/plain):"'*) ;; *) continue ;; esac
+  agent_env; mkdir -p "$STATE"; rm -f "$STATE/presence.id"
+  d=$(mktemp -d); mkfifo -m 600 "$d/in"
+  dhtnode -b "$BOOT" -p 0 < "$d/in" 2>&1 | listen_read & reader=$!
+  exec 3> "$d/in"
+  trap 'kill $sl 2>/dev/null; presence_cancel; echo x >&3; exec 3>&-; wait $reader; rm -rf "$d"; exit 0' INT TERM
+  echo "l let-go-wasmgc/sideband/$ME" >&3
+  while :; do
+    presence_cancel; presence_put >&3
+    sleep "$PRESENCE_EVERY" & sl=$!; wait $sl
+  done
+}
+listen_read() {
+  local seen="" line id ping res r
+  while IFS= read -r line; do
+    case $line in
+      *'Put: success'*'Value ID: '*) echo "${line##*Value ID: }" > "$STATE/presence.id"; continue ;;
+      *'Value[id:'*'data(text/plain):"'*) ;;
+      *) continue ;;
+    esac
     id=${line#*Value[id:}; id=${id%% *}
     case " $seen " in *" $id "*) continue ;; esac; seen="$seen $id"
     ping=${line#*data(text/plain):\"}; ping=${ping%%\"*}
@@ -237,6 +314,18 @@ cmd_listen() {
       case $r in queued|updated) prefetch "$2" </dev/null & ;; esac
     else logline received "rejected: $res"; fi
   done
+}
+# a fresh token each beat, so its age says when the listener last ran; a lapsed
+# ping key is rotated first, and a token that cannot be signed is skipped
+presence_put() {
+  local tok
+  cert_current || cmd_rotate >/dev/null 2>&1 || { logline sent "presence skipped: no ping key"; return 0; }
+  tok=$(token "$ME" "$STATE/ping-cert.pub") && echo "pp let-go-wasmgc/sideband/presence/$ME $tok"
+}
+presence_cancel() { # to fd 3: stop re-announcing the last presence put
+  local id; id=$(cat "$STATE/presence.id" 2>/dev/null)
+  [ -n "$id" ] && echo "cpp let-go-wasmgc/sideband/presence/$ME $id" >&3
+  rm -f "$STATE/presence.id"
 }
 # the note into the prompt hook's watch namespace, so a woken session reads
 # it without a fetch of its own; local refs/notes stay untouched
@@ -305,6 +394,36 @@ selftest() {
   SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -q "$d/old" </dev/null 2>/dev/null
   check "a ping under a lapsed certificate is rejected" '! verify_for "$(SSH_AUTH_SOCK=$t/sta/agent.sock sign "ac94ed2 3bbf96335929875d56ec4d05872d4c670406c7e9" "$d/old-cert.pub")" b >/dev/null'
   rm -rf "$d"
+  # presence: a's listener token, read by b; dht_get is the DHT read, stubbed here
+  local tok; tok=$(SSH_AUTH_SOCK=$t/sta/agent.sock token a "$t/sta/ping-cert.pub")
+  check "b accepts a's presence token" 'present_ok "$tok" a b'
+  check "a stale presence token counts as absent" '! present_ok "$(SSH_AUTH_SOCK=$t/sta/agent.sock token a "$t/sta/ping-cert.pub" $(( $(date +%s) - 3600 )))" a b'
+  check "a token under the ping namespace is rejected" '! present_ok "$(SSH_AUTH_SOCK=$t/sta/agent.sock sign "present a $(date +%s)" "$t/sta/ping-cert.pub")" a b'
+  check "a ping under the presence namespace is rejected" '! verify_for "$(SSH_AUTH_SOCK=$t/sta/agent.sock sign "ac94ed2 3bbf96335929875d56ec4d05872d4c670406c7e9" "$t/sta/ping-cert.pub" "$PNS")" b >/dev/null'
+  check "a token from an issuer nobody co-signed is rejected" '! present_ok "$(SSH_AUTH_SOCK=$t/stc/agent.sock token c "$t/stc/ping-cert.pub")" c b'
+  check "a token naming another owner is rejected" '! present_ok "$(SSH_AUTH_SOCK=$t/sta/agent.sock sign "present c $(date +%s)" "$t/sta/ping-cert.pub" "$PNS")" c b'
+  dht_get() { cat "$t/dht" 2>/dev/null; }
+  : > "$t/dht"
+  (sleep 2; printf 'junk\n%s\n' "$tok" > "$t/dht") &
+  check "--when-present holds until a token appears" 'ME=b HOLD=10s LW_SIDEBAND_POLL=1 hold_until_present a >/dev/null'
+  : > "$t/dht"
+  check "--when-present gives up after the hold" '! ME=b HOLD=2s LW_SIDEBAND_POLL=1 hold_until_present a >/dev/null 2>&1'
+  # listen against a stand-in dhtnode that logs its commands and answers each
+  # pp with a value id, as dhtnode does
+  mkdir -p "$t/bin"; cat > "$t/bin/dhtnode" <<'FAKE'
+#!/usr/bin/env bash
+n=0; while IFS= read -r c; do echo "$c" >> "$FAKE_LOG"
+  case $c in pp\ *) n=$((n+1)); echo ">> Put: success, took 0.1 s. Value ID: v$n" ;; x) exit 0 ;; esac; done
+FAKE
+  chmod +x "$t/bin/dhtnode"
+  PATH=$t/bin:$PATH FAKE_LOG=$t/dht.log LW_SIDEBAND_PRESENCE_EVERY=1 \
+    LW_SIDEBAND_STORE=$t/sa LW_SIDEBAND_KEYS=$t/keys LW_SIDEBAND_STATE=$t/sta LW_SIDEBAND_OWNER=a "$0" listen & local l=$!
+  sleep 4; kill -TERM $l; wait $l 2>/dev/null
+  local pk=let-go-wasmgc/sideband/presence/a
+  check "listen subscribes to its own topic first" '[ "$(head -1 "$t/dht.log")" = "l let-go-wasmgc/sideband/a" ]'
+  check "each heartbeat is a pp of a token b accepts" 'present_ok "$(grep -m1 "^pp $pk " "$t/dht.log" | cut -d" " -f3)" a b && [ "$(grep -c "^pp $pk " "$t/dht.log")" -ge 2 ]'
+  check "a heartbeat cancels the previous pp by its id" '[ "$(awk -v k="pp $pk " "f {print; exit} index(\$0, k) == 1 {f = 1}" "$t/dht.log")" = "cpp $pk v1" ]'
+  check "shutdown cancels the last pp, then quits" '[ "$(tail -2 "$t/dht.log" | head -1)" = "cpp $pk v$(grep -c "^pp $pk " "$t/dht.log")" ] && [ "$(tail -1 "$t/dht.log")" = x ]'
   check "the ping key lives only in the agent" 'SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -l | grep "a ping" >/dev/null && ! grep -rl PRIVATE "$t/sta" >/dev/null 2>&1'
   for w in a c; do run $w stop; done
   check "stop ends the agent" '! SSH_AUTH_SOCK=$t/sta/agent.sock ssh-add -l >/dev/null 2>&1' 
@@ -343,8 +462,9 @@ case ${1:-} in
   send) shift; cmd_send "$@" ;;
   listen) cmd_listen ;;
   wait) shift; WANT="$*"; cmd_wait ;;
+  presence) need_me; name_ok "${2:-}" || die "usage: presence <peer>"; peer_present "$2" ;;
   pending) cmd_pending ;;
   done) shift; cmd_done "$@" ;;
   '') selftest ;;
-  *) echo "usage: sideband.sh init | cosign <peer> | start | rotate | stop | send <peer> <issue> | listen | wait [<issue>...] | pending | done <issue> [<commit>]" >&2; exit 2 ;;
+  *) echo "usage: sideband.sh init | cosign <peer> | start | rotate | stop | send [--when-present] <peer> <issue> | listen | presence <peer> | wait [<issue>...] | pending | done <issue> [<commit>]" >&2; exit 2 ;;
 esac
