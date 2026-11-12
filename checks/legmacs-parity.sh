@@ -12,12 +12,13 @@
 # Prints one line per script, the module size, "n/N MATCH"; exit 0 iff all
 # MATCH. A backend compile failure is a MISMATCH (exit 1): the first error
 # line from the driver is shown. Env: LG, LEGMACS (default the canonical
-# checkout), KEEP=1.
+# checkout), KEEP=1, LW_LANE=llvm (the llvm lane: one binary, every script).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-5}
 . "$(dirname "$0")/env.sh"
 LEGMACS=${LEGMACS:-$LW_ROOT/legmacs}
+lane=${LW_LANE:-gc}
 [ -x checks/wasm-run.sh ] || { echo "NOT IMPLEMENTED: checks/wasm-run.sh missing"; exit 3; }
 [ -f corpus/legmacs/dump-session.lg ] || { echo "NOT IMPLEMENTED: corpus/legmacs/dump-session.lg missing"; exit 3; }
 [ -d "$LEGMACS/legmacs" ] || { echo "FAIL: no legmacs checkout at $LEGMACS"; exit 1; }
@@ -29,7 +30,23 @@ N=$(wc -w <<<"$scripts" | tr -d ' ')
 newest() { local m="" f; for f in "$cache"/*.wasm; do [ -f "$f" ] && { [ -z "$m" ] || [ "$f" -nt "$m" ]; } && m=$f; done; echo "$m"; }
 # compile once up front (fills the cache); a compile failure ends the run
 # here with the driver's first error instead of recompiling per script
-LG_ARGS="-source-paths $LEGMACS" checks/sem.sh checks/wasm-run.sh corpus/legmacs/dump-session.lg 1 >/dev/null 2>"$cache/first.err"
+if [ "$lane" = llvm ]; then
+  # the llvm lane (LW_LANE=llvm): native-run.sh keeps the binary it built,
+  # and every script runs that binary (run-bin, the oracle's backend side);
+  # a failed compile must not leave a cached binary from an earlier run
+  rm -f "$cache/legmacs.bin" "$cache/run-bin"
+  KEEP=1 LG_ARGS="-source-paths $LEGMACS" checks/sem.sh checks/native-run.sh corpus/legmacs/dump-session.lg 1 >/dev/null 2>"$cache/first.err"
+  kept=$(sed -n 's/^kept //p' "$cache/first.err" | tail -1)
+  if [ -x "$kept/m" ]; then
+    mv "$kept/m" "$cache/legmacs.bin" && rm -rf "$kept"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$cache/legmacs.bin" > "$cache/run-bin" && chmod +x "$cache/run-bin"
+  fi
+  runner=$cache/run-bin
+  newest() { [ -x "$cache/legmacs.bin" ] && echo "$cache/legmacs.bin"; }
+else
+  LG_ARGS="-source-paths $LEGMACS" checks/sem.sh checks/wasm-run.sh corpus/legmacs/dump-session.lg 1 >/dev/null 2>"$cache/first.err"
+  runner=checks/wasm-run.sh
+fi
 if [ -z "$(newest)" ]; then
   echo "COMPILE FAILED     (backend; no script ran)"
   sed -E 's/\x1b\[[0-9;]*m//g' "$cache/first.err" | grep -v catalog | grep -m1 -iE 'error|unsupported|failed' | cut -c1-400 | sed 's/^/backend: /'
@@ -38,13 +55,18 @@ if [ -z "$(newest)" ]; then
 fi
 ok=0
 for n in $scripts; do
-  r=$(LG_ARGS="-source-paths $LEGMACS" WASM_RUN=checks/wasm-run.sh checks/sem.sh checks/oracle.sh corpus/legmacs/dump-session.lg "$n" 2>&1)
+  r=$(LG_ARGS="-source-paths $LEGMACS" WASM_RUN=$runner checks/sem.sh checks/oracle.sh corpus/legmacs/dump-session.lg "$n" 2>&1)
   printf '%-18s script %s\n' "$(head -1 <<<"$r")" "$n"
   if [ "$(head -1 <<<"$r")" = MATCH ]; then ok=$((ok+1)); else sed -n '2,6p' <<<"$r" | cut -c1-300; fi
 done
 # the oracle reports only the exit class of a failing run; show the module's own error
 [ "$ok" -eq "$N" ] || sed -E 's/\x1b\[[0-9;]*m//g' "$cache/first.err" | grep -v catalog | grep -m1 -iE 'error' | cut -c1-400 | sed 's/^/backend (script 1): /'
 m=$(newest)
+if [ "$lane" = llvm ]; then
+  echo "binary: $(wc -c <"$m" | tr -d ' ') bytes"
+  echo "$ok/$N MATCH (legmacs $(git -C "$LEGMACS" rev-parse --short HEAD 2>/dev/null))"
+  [ "$ok" -eq "$N" ]; exit
+fi
 opt=$("$WASM_OPT" -O3 --enable-gc --enable-reference-types --enable-exception-handling \
       --enable-bulk-memory --enable-tail-call --enable-multivalue "$m" -o - 2>/dev/null | wc -c | tr -d ' ')
 echo "module: $(wc -c <"$m" | tr -d ' ') bytes raw, $opt bytes after wasm-opt -O3"

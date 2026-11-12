@@ -137,6 +137,12 @@
   (let [rs (arch/get Globals 2 globals)]
     (arch/set! Globals 2 globals (m/massoc (if (arch/null? rs) (m/empty-map) rs) (var-key v) x))
     x))
+;; A rooted native read as a value (the GC lane's root test): its
+;; altered root when alter-var-root gave it one (key k, the var's text
+;; "#'ns/name"), else f, its static fn
+(defn rooted-value [k f]
+  (let [rs (arch/get Globals 2 globals)]
+    (if (if (arch/null? rs) false (m/mcontains? rs k)) (m/mget rs k (arch/null)) f)))
 (defn var-value [v]
   (if (var-root-set? v)
     (m/mget (arch/get Globals 2 globals) (var-key v) (arch/null))
@@ -303,9 +309,16 @@
         table (if (arch/null? t) (arch/get UserGlobals 1 user-globals) (arch/get TypeVal 3 t))]
     (if (arch/null? table) (arch/null) (m/mget table key (arch/null)))))
 
+;; t is a Type (the value's type or in its ancestry), or a library type's
+;; stand-in from the static lowering (a library deftype or defrecord):
+;; the instance is that stand-in itself (a field-less deftype) or a map
+;; tagged :lw/type with it, as on the GC lane.
 (defn ^{:twin "core/instance?"} instance-of? [t x]
-  (if (arch/null? x)
-    false
+  (cond
+    (arch/null? x) false
+    (arch/null? t) false
+    (not (arch/is? TypeVal t)) (or (identical? t x) (and (map? x) (identical? t (get x :lw/type))))
+    :else
     (let [xt (type-of x)]
       (if (arch/ref-eq xt t)
         true
@@ -339,8 +352,13 @@
         head (if (arch/null? nm) (lit (arch/bytes-of-string "<fn 0x0>"))
                  (s/str (lit (arch/bytes-of-string "<fn ")) (lit nm) (lit (arch/bytes-of-string " 0x0>"))))]
     (cond
+      ;; native's MultiArityFn (vm/func.go): `function <mfn NAME 0x..> doesn't
+      ;; have a N-arity variant`, `<mfn  0x..>` when anonymous
       (= kind 1)
-      (raise-exec (s/str head (lit (arch/bytes-of-string " doesn't have a ")) (s/str (sq/box-int n) (lit (arch/bytes-of-string "-arity variant")))))
+      (let [mhead (if (arch/null? nm) (lit (arch/bytes-of-string "<mfn  0x0>"))
+                      (s/str (lit (arch/bytes-of-string "<mfn ")) (lit nm) (lit (arch/bytes-of-string " 0x0>"))))]
+        (raise-exec (s/str (s/str (lit (arch/bytes-of-string "function ")) mhead (lit (arch/bytes-of-string " doesn't have a ")))
+                           (s/str (sq/box-int n) (lit (arch/bytes-of-string "-arity variant"))))))
       :else
       (raise-exec (s/str (s/str (lit (arch/bytes-of-string "function ")) head
                                 (if (= kind 3) (lit (arch/bytes-of-string " expected at least ")) (lit (arch/bytes-of-string " expected "))))
@@ -517,9 +535,33 @@
 ;; The backend's inline int ops raise these (an overflowing IR op, a quot or
 ;; rem by zero), so the errors are catchable as natively.
 (defn overflow-error "An IR op's integer overflow." [] (op-overflow))
+;; An uncaught throw of a value that is not an exception (lg_throw with no
+;; handler): native's error line is the value as pr-str prints it (a
+;; string quoted, a fn as <fn ..>), so it is rethrown as an exception with
+;; that message, which the host reports
+(defn uncaught-value [x]
+  (let [m (s/str-bytes (s/pr-str x))] (throw (arch/new sq/Err 1 m m (arch/null) (arch/null)))))
 (defn div-zero-error "quot, rem or mod by zero." [] (raise (arch/bytes-of-string "divide by zero")))
 (defn unbox-error "A non-Int value in an Int-typed slot (the GC lane's $rt_unbox_fail)." []
   (raise (arch/bytes-of-string "a non-Int value reached an Int-typed slot")))
+;; + - * as the IR op with a boxed operand (the backend's slow path): an Int
+;; overflow is the op's, its caught message prefixed, as inc* and dec*;
+;; anything else is the core fn's
+(defn add-op [a b]
+  (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b) r (arch/i64-add x y)]
+      (if (< (bit-and (bit-xor x r) (bit-xor y r)) 0) (op-overflow) (sq/box-int r)))
+    (add2 a b)))
+(defn sub-op [a b]
+  (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b) r (arch/i64-sub x y)]
+      (if (< (bit-and (bit-xor x y) (bit-xor x r)) 0) (op-overflow) (sq/box-int r)))
+    (sub2 a b)))
+(defn mul-op [a b]
+  (if (if (= 1 (sq/kind a)) (= 1 (sq/kind b)) false)
+    (let [x (sq/unbox-int a) y (sq/unbox-int b)]
+      (if (mul-ok? x y) (sq/box-int (arch/i64-mul x y)) (op-overflow)))
+    (mul2 a b)))
 (defn inc* [x]
   (if (= 1 (sq/kind x))
     (let [n (sq/unbox-int x)] (if (= n 9223372036854775807) (op-overflow) (sq/box-int (+ n 1))))
@@ -539,6 +581,12 @@
           (let [x (f64-of a ka) y (f64-of b kb)]
             (cond (= op 0) (< x y) (= op 1) (<= x y) (= op 2) (> x y) :else (>= x y)))
           :else (raise-two (lit (arch/bytes-of-string "cannot compare ")) a b))))
+
+;; pos? and neg? as the IR op with a boxed operand (the backend's slow path):
+;; the comparison with 0, x first, so a non-number is native's
+;; "cannot compare <x> and let-go.lang.Int"
+(defn pos-op [x] (cmp2 2 x (sq/box-int 0)))
+(defn neg-op [x] (cmp2 0 x (sq/box-int 0)))
 
 (defn- chain [op xs]                                      ; lt/gt/... over a seq: stop at the first false
   (loop [a (sq/first xs) s (sq/next xs)]
@@ -1508,16 +1556,40 @@
                   (invoke-vec f (sq/vec args))
                   (raise (arch/bytes-of-string "apply expected Seq"))))))
 
-;; Binding frames for bound-fn* (llvm.natives, P6.7). binding is the
-;; backend's: each bound var saves on its own $bs_ stack (D149), so only the
-;; backend can enumerate them. It lowers these three as $rt_bframe (every
-;; var whose stack is non-empty with its current value; nil when none),
-;; $rt_bframe_push (re-establish a frame: push each var as binding does)
-;; and $rt_bframe_pop (undo it). Under the reference intrinsics no binding
-;; frame exists, so the bodies are the no-frame case.
-(defn binding-frame [] (arch/null))
-(defn frame-push! [fr] (arch/null))
-(defn frame-pop! [fr] (arch/null))
+;; Binding frames for bound-fn* (llvm.natives). Each program var a
+;; binding can push has a binding stack (a List of frames, the backend's
+;; binding.<var> global), which the module lists for arch/binding-get and
+;; arch/binding-set!. A frame is the value atop every stack, copied (nil when
+;; nothing is bound); pushing it re-establishes those values, as binding
+;; pushes, and popping it undoes that. Under the reference intrinsics there
+;; are none.
+(defn binding-frame []
+  (let [n (arch/binding-count) fr (arch/array-new pv/Node (if (< n 1) 1 n) (arch/null))]
+    (loop [i 0 any false]
+      (if (< i n)
+        (let [top (arch/binding-get i)]
+          ;; the value then, not the live node: a later set! changes that node
+          (arch/aset! pv/Node fr i (if (arch/null? top) top (arch/new sq/List (arch/get sq/List 0 top) (arch/null) 1 (arch/null))))
+          (recur (inc i) (if any true (if (arch/null? top) false true))))
+        (if any fr (arch/null))))))
+;; push each var the frame binds with its value then, as binding pushes
+(defn frame-push! [fr]
+  (let [n (arch/binding-count)]
+    (loop [i 0]
+      (when (< i n)
+        (let [top (arch/aget pv/Node fr i)]
+          (when-not (arch/null? top)
+            (arch/binding-set! i (arch/new sq/List (arch/get sq/List 0 top) (arch/binding-get i) 1 (arch/null)))))
+        (recur (inc i)))))
+  (arch/null))
+(defn frame-pop! [fr]
+  (let [n (arch/binding-count)]
+    (loop [i 0]
+      (when (< i n)
+        (when-not (arch/null? (arch/aget pv/Node fr i))
+          (arch/binding-set! i (arch/get sq/List 1 (arch/binding-get i))))
+        (recur (inc i)))))
+  (arch/null))
 
 ;; gensym (lang.go:5573): prefix (default "G__") + the next id.
 (defn ^{:twin "core/gensym"} gensym
@@ -1731,10 +1803,15 @@
           (= k 24) (s/str (lit (arch/bytes-of-string "<let-go.lang.Atom ")) (s/value-string (arch/get sq/Atom 0 x)) (lit (arch/bytes-of-string ">")))
           ;; native prints the heap address; 0x0 as D56's messages do
           (= k 25) (s/str (lit (arch/bytes-of-string "#<Volatile@0x0: ")) (s/value-string (arch/get sq/Volatile 0 x)) (lit (arch/bytes-of-string ">")))
-          (= k 26) (if (= 0 (arch/get sq/Err 0 x))
-                     (s/str (s/str (lit (arch/bytes-of-string "#error {:message ")) (s/pr-str (lit (arch/get sq/Err 1 x))))
-                            (lit (arch/bytes-of-string ", :data ")) (s/str (s/pr-str (arch/get sq/Err 3 x)) (lit (arch/bytes-of-string "}"))))
-                     (lit (arch/get sq/Err 1 x)))
+          ;; ex-info (kind 0) and a caught runtime error (kind 2, reify-caught)
+          ;; print native's #error form in every mode; a raw one (kind 1) its message
+          (= k 26) (cond (= 0 (arch/get sq/Err 0 x))
+                         (s/str (s/str (lit (arch/bytes-of-string "#error {:message ")) (s/pr-str (lit (arch/get sq/Err 1 x))))
+                                (lit (arch/bytes-of-string ", :data ")) (s/str (s/pr-str (arch/get sq/Err 3 x)) (lit (arch/bytes-of-string "}"))))
+                         (= 2 (arch/get sq/Err 0 x))
+                         (s/str (s/str (lit (arch/bytes-of-string "#error {:type java.lang.Exception, :message ")) (s/pr-str (lit (arch/get sq/Err 1 x))))
+                                (lit (arch/bytes-of-string ", :data ")) (s/str (s/pr-str (arch/get sq/Err 3 x)) (lit (arch/bytes-of-string "}"))))
+                         :else (lit (arch/get sq/Err 1 x)))
           (= k 32) (s/str (lit (arch/bytes-of-string "<transient-map count=")) (sq/box-int (m/tcount x)) (lit (arch/bytes-of-string ">")))
           (= k 33) (s/str (lit (arch/bytes-of-string "<transient-set count="))
                           (sq/box-int (hs/tscount (arch/get TSet 0 x))) (lit (arch/bytes-of-string ">")))

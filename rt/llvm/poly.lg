@@ -16,7 +16,7 @@
 ;; register-type-parent! bump it, so dispatch caches stamped with an older
 ;; epoch are stale.
 (ns llvm.poly
-  (:refer-clojure :exclude [make-hierarchy derive underive isa? parents ancestors descendants register-type-parent!])
+  (:refer-clojure :exclude [make-hierarchy derive underive isa? parents ancestors descendants register-type-parent! defmulti* defmethod* methods])
   (:require [llvm.arch :as arch]
             [llvm.pvec :as pv]
             [llvm.str :as s]
@@ -180,3 +180,49 @@
         (swap! type-parents update child (fnil conj #{}) p)
         (bump-epoch!))
       nil)))
+
+;; ---------------------------------------------------------------------------
+;; Multimethods (native's vm.MultiFn): a dispatch fn, a map from dispatch
+;; value to method, and the default dispatch value. A call applies the method
+;; for the exact dispatch value, else the default's (native dispatches on
+;; the value and the default only, not the isa? hierarchy); defmethod* makes
+;; a new multimethod, which defmethod stores in the var with set!. The value
+;; is a variadic fn that answers its state to a private probe, so a user's
+;; with-meta keeps it. Named limits: it prints and types as a fn (native:
+;; <multifn NAME>, MultiFn), and a throw in the dispatch fn is not wrapped in
+;; native's "multimethod NAME dispatch failed: ".
+
+(def ^:private multi-probe (atom nil))
+
+(defn- multi-state [mf] (when (c/callable? mf) (try (mf multi-probe) (catch Exception _ nil))))
+
+(defn- make-multi [st]
+  (let [{:keys [name dispatch methods default]} st]
+    (fn [& args]
+      (if (and (= 1 (count args)) (identical? multi-probe (first args)))
+        st
+        (let [dv (apply dispatch args)
+              m (if (contains? methods dv) (get methods dv) (get methods default))]
+          (cond (nil? m) (raise-lit (str "no method in multimethod '" name "' for dispatch value: " dv))
+                (c/callable? m) (apply m args)
+                :else (raise-lit (str "multimethod '" name "' method is not a function"))))))))
+
+(defn ^{:twin "core/defmulti*"} defmulti* [& args]
+  (let [n (count args) [nm dispatch default] args]
+    (cond (or (< n 2) (> n 3)) (raise-arity n)
+          (not (string? nm)) (raise-lit "defmulti* expected String name")
+          (not (c/callable? dispatch)) (raise-lit "defmulti* expected Fn")
+          :else (make-multi {:name nm :dispatch dispatch :methods {} :default (if (= n 3) default :default)}))))
+
+(defn ^{:twin "core/defmethod*"} defmethod* [& args]
+  (let [n (count args) [mf dv f] args st (when (= n 3) (multi-state mf))]
+    (cond (not= n 3) (raise-arity n)
+          (not (map? st)) (raise-lit "defmethod* expected MultiFn")
+          (not (c/callable? f)) (raise-lit "defmethod* expected Fn")
+          :else (make-multi (assoc st :methods (assoc (:methods st) dv f))))))
+
+(defn ^{:twin "core/methods"} methods [& args]
+  (let [st (when (= 1 (count args)) (multi-state (first args)))]
+    (cond (not= 1 (count args)) (raise-arity (count args))
+          (not (map? st)) (raise-lit "methods expected MultiFn")
+          :else (:methods st))))

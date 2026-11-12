@@ -35,8 +35,8 @@
 ;; The one runtime global (D39): the current *out* and *err* handles and the
 ;; handles a (binding [*out* h] ..) or *err* replaced, as Lists (D222).
 (arch/defstruct HGlobals [[:mut :ref] [:mut :ref] [:mut :ref] [:mut :ref]])
-;; *out* and *err* read as values (ll-var-alias): the standard handles. A
-;; read inside a binding still gives these; printing follows the binding.
+;; The standard handles. A read of *out* or *err* as a value is a call of
+;; out-handle or err-handle below (the current one, a binding's included).
 (def stdout-handle (arch/new Handle 1 (arch/bytes-of-string "/dev/stdout") 0))
 (def stderr-handle (arch/new Handle 2 (arch/bytes-of-string "/dev/stderr") 0))
 (def globals (arch/new HGlobals stdout-handle stderr-handle (arch/null) (arch/null)))

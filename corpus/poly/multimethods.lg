@@ -1,0 +1,25 @@
+;; Multimethods (native's MultiFn): dispatch by a keyword and by a fn, the
+;; default method and a custom :default value, the error when none applies,
+;; methods, a method redefined, vector and nil dispatch values, and a
+;; with-meta'd multimethod that still dispatches.
+(defmulti area :shape)
+(defmethod area :circle [{:keys [r]}] (* 3 r r))
+(defmethod area :square [{:keys [s]}] (* s s))
+(defmethod area :default [_] :unknown)
+(println (area {:shape :circle :r 2}) (area {:shape :square :s 3}) (area {:shape :tri}))
+(defmulti greet (fn [x y] [(type x) (keyword y)]) :default ::none)
+(defmethod greet [(type 1) :hi] [x _] (str "number hi " x))
+(defmethod greet ::none [x y] (str "none " x " " y))
+(println (greet 5 "hi") (greet "s" "hi") (greet 5 "bye"))
+(defmulti strict identity)
+(defmethod strict :a [_] :got-a)
+(println (strict :a) (try (strict :b) (catch Exception e (ex-message e))))
+(println (sort (map str (keys (methods area)))))
+(defmethod area :square [{:keys [s]}] (* 2 s s))
+(println (area {:shape :square :s 3}))
+(defmulti by-nil (fn [x] (when (pos? x) :pos)))
+(defmethod by-nil :pos [_] :positive)
+(defmethod by-nil nil [_] :not-positive)
+(println (by-nil 1) (by-nil -1))
+(def area2 (with-meta area {:doc "meta'd"}))
+(println (area2 {:shape :circle :r 1}) (:doc (meta area2)) (fn? area))
