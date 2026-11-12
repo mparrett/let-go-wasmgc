@@ -27,7 +27,7 @@
 (declare ll-q ll-fail ll-binding-var! ll-kbox ll-kfin ll-tryf ll-kinit llvm-dump llvm-profile llvm-fn
          ll-intrinsic! ll-host-declares ll-declare ll-desc-item ll-type-defs ll-object-globals ll-true ll-false
          ll-tid ll-sty ll-env-sty ll-env-tid! ll-tids-for ll-is-type! ll-alloc! ll-field-ptr!
-         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals)
+         ll-word-of! ll-ptr! ll-bytes-const! ll-str-const! ll-check! ll-funcref! ll-try-plan ll-tinfo-globals ll-static-named!)
 
 ;; A module unit (a lowered fn, a region, a global) is items plus the symbols
 ;; they define (their names) and name (recorded by lower-llvm-ir/ref while
@@ -131,10 +131,18 @@
        (nil? (lw-rt/source-kind v)) (not (lw-rt/runtime-var? v))
        (some? (ll-builtin-type-id (try @v (catch e nil))))))
 
+(declare ll-const-val*)
 (defn ll-const-val
   "[v] for a constant value, else nil (fn templates and Var objects are
-   handled as closures and :def targets)."
+   handled as closures and :def targets). Asked at every use of a value,
+   so it is remembered per value while a fn is cut and lowered."
   [nid]
+  (if-let [m (:const-vals *ll*)]
+    (let [c (get @m nid ::none)]
+      (if (= c ::none) (let [c (ll-const-val* nid)] (swap! m assoc nid c) c) c))
+    (ll-const-val* nid)))
+
+(defn- ll-const-val* [nid]
   (if-let [c (int-const-val nid)]
     [c]
     (let [r (src-of nid) op (ir/op r *f*) a (ir/aux r *f*)]
@@ -176,11 +184,12 @@
 (declare ll-var-value)
 
 (defn ll-param?
-  "A block param that takes a slot: not dead, and not one legalize threads a
-   materialized value through (a var, a literal, a closure link), whose uses
-   resolve through src-of instead."
+  "A block param that takes a slot: not dead, not one nothing reads (the IR
+   threads a join's whole scope through its params, read or not), and not one
+   legalize threads a materialized value through (a var, a literal, a closure
+   link), whose uses resolve through src-of instead."
   [p]
-  (not (or (dead? p) (ll-materialized? p))))
+  (not (or (dead? p) (contains? (:unread-params *ll*) p) (ll-materialized? p))))
 
 (defn ll-params [b] (filter ll-param? (ir/block-params b *f*)))
 
@@ -264,8 +273,12 @@
       (char? v) (ll-char-const! v)
       (and *rt* (some? (ll-builtin-type-id v)))
       (str "ptrtoint (ptr " (lir/ref (str "lg_type." (ll-builtin-type-id v))) " to " (ll-word) ")")
-      ;; keywords, symbols, collections, vars, regexes: built once by the
-      ;; runtime at startup (const-global!, as the WasmGC lane builds them)
+      ;; a keyword or a symbol without metadata: a static object, interned
+      ;; at startup (ll-static-named!)
+      (and *rt* (or (keyword? v) (and (symbol? v) (nil? (meta v)))))
+      (ll-static-named! v)
+      ;; collections, vars, regexes: built once by the runtime at startup
+      ;; (const-global!, as the WasmGC lane builds them)
       *rt* (let [g (if-let [rs (regex-standin v)]
                     (const-global! rs [:regex *fname* (src-of nid)])
                     (const-global! v)) r (ll-fresh "%k")]
@@ -656,12 +669,9 @@
   [nids empty]
   (let [sty (ll-sty "$List") w (ll-word)
         mk (fn [first-w next-w cnt]
-             (let [p (ll-alloc! sty (ll-tid "$List"))]
-               (ll-emit! "  store " w " " first-w ", ptr " (ll-field-ptr! sty p 1))
-               (ll-emit! "  store " w " " next-w ", ptr " (ll-field-ptr! sty p 2))
-               (ll-emit! "  store i64 " cnt ", ptr " (ll-field-ptr! sty p 3))
-               (ll-emit! "  store " w " 0, ptr " (ll-field-ptr! sty p 4))
-               (ll-word-of! p)))]
+             (let [r (ll-fresh "%ln")]
+               (ll-emit! "  " r " = call " w " " (lir/ref-bare "lg_list_node") "(" w " " first-w ", " w " " next-w ", i64 " cnt ")")
+               r))]
     (if (empty? nids)
       (if (= empty :nil) "0" (mk "0" "0" 0))
       (reduce (fn [acc [i nid]] (mk (ll-arg nid :box) acc i))
@@ -689,6 +699,27 @@
       :branch-if [(ir/cond-target-true a) (ir/cond-target-false a)]
       [])))
 
+(declare ll-term-edges)
+(defn ll-unread-params
+  "f's block params that nothing reads: no instruction or terminator refers
+   to one, and every edge passes it only into another such param."
+  [f]
+  (let [bs (ir/blocks f)
+        read (set (concat (mapcat (fn [b] (mapcat #(ir/refs % f) (ir/block-insts b f))) bs)
+                          (mapcat (fn [b] (when-let [t (ir/block-term b f)] (ir/refs t f))) bs)))
+        ;; param -> the args every edge passes it
+        args-of (reduce (fn [m [a p]] (update m p conj a)) {}
+                        (for [b bs e (ll-term-edges b)
+                              ap (map vector (ir/branch-target-args e) (ir/block-params (ir/branch-target-target e) f))]
+                          ap))
+        ;; from what is read, through the args of each needed param, once each
+        needed (loop [needed (transient read) todo (vec read)]
+                 (if (empty? todo)
+                   (persistent! needed)
+                   (let [x (peek todo) new (vec (distinct (remove #(contains? needed %) (get args-of x))))]
+                     (recur (reduce conj! needed new) (into (pop todo) new)))))]
+    (set (remove needed (mapcat #(ir/block-params % f) bs)))))
+
 (defn ll-value-uses
   "Values piece p reads, besides materialized ones."
   [[b n]]
@@ -698,7 +729,11 @@
                               (remove #(= :block-arg (ir/op % *f*)) insts))
                       (when (and last? (ir/block-term b *f*))
                         (concat (ir/refs (ir/block-term b *f*) *f*)
-                                (mapcat ir/branch-target-args (ll-term-edges b)))))]
+                                ;; an arg is read only by a param that takes a slot
+                                (mapcat (fn [e] (keep (fn [[a p]] (when (ll-param? p) a))
+                                                      (map vector (ir/branch-target-args e)
+                                                           (ir/block-params (ir/branch-target-target e) *f*))))
+                                        (ll-term-edges b)))))]
     (set (remove ll-materialized? reads))))
 
 (defn ll-defs
@@ -716,13 +751,22 @@
       (map (fn [e] [(ir/branch-target-target e) 0]) (ll-term-edges b)))))
 
 (defn ll-liveness []
-  (let [ps (for [[b pieces] (:cuts *ll*) n (range (count pieces))] [b n])]
+  (let [ps (vec (for [[b pieces] (:cuts *ll*) n (range (count pieces))] [b n]))
+        ;; each piece's uses, defs and successors do not change between rounds
+        flow (into {} (for [p ps]
+                        (let [defs (ll-defs p)]
+                          [p [(set (remove defs (ll-value-uses p))) defs (vec (ll-succs p))]])))
+        ;; a backward problem: later pieces first, each round reading this
+        ;; round's sets; from empty they only grow, so a size change is a change
+        order (reverse (sort ps))]
     (loop [live (zipmap ps (repeat #{}))]
-      (let [next (into {} (for [p ps]
-                            [p (into (set (remove (ll-defs p) (ll-value-uses p)))
-                                     (remove (ll-defs p)
-                                             (mapcat #(get live %) (ll-succs p))))]))]
-        (if (= next live) live (recur next))))))
+      (let [[live changed?]
+            (reduce (fn [[live changed?] p]
+                      (let [[gen defs succs] (flow p)
+                            v (into gen (remove defs (mapcat #(get live %) succs)))]
+                        (if (= (count v) (count (get live p))) [live changed?] [(assoc live p v) true])))
+                    [live false] order)]
+        (if changed? (recur live) live)))))
 
 (defn ll-live-in [p] (vec (sort (get (:live *ll*) p))))
 
@@ -883,7 +927,10 @@
         (when-not (table-var? v)
           (ll-fail "unsupported op :def" {:var v}))
         (when val (ll-emit! "  store " (ll-typed val :box) ", ptr " (ll-var-ptr! v)))
-        (ll-bind! nid (ll-arg vr (ty nid))))
+        ;; the def's value is the Var, whose stand-in is a constant built at
+        ;; startup: made only when something reads it
+        (when (or (nil? (:used *ll*)) (contains? (:used *ll*) nid))
+          (ll-bind! nid (ll-arg vr (ty nid)))))
       (var-const? nid) nil
       (= op :call)
       (let [v (ll-callee-var (first refs))]
@@ -975,11 +1022,18 @@
         (seq (:region-caps *ll*)) (vec (:region-caps *ll*))
         :else []))
 
+(declare ll-record-type*)
 (defn ll-record-type
   "The named struct type of continuation piece cont's record,
    {code, k, saved...}; its definition, and its collector descriptor (k,
-   then the boxed implicit and saved values), are collected for the module."
+   then the boxed implicit and saved values), are collected for the module
+   once per piece: the call site and the piece both ask for it."
   [cont]
+  (if-let [m (:records *ll*)]
+    (or (get @m cont) (doto (ll-record-type* cont) (->> (swap! m assoc cont))))
+    (ll-record-type* cont)))
+
+(defn- ll-record-type* [cont]
   (let [nm (lir/type-op (str "k." (ll-fn-name cont)))
         kinds (concat (ll-implicit-kinds) (map ty (ll-saved cont)))]
     (swap! (:types *ll*) conj
@@ -1549,11 +1603,20 @@
     (let [[linked tries] (closure-sets f)]
      (binding [*linked* linked *try-srcs* tries]
      ;; a nested fn (a closure, a try region) is lowered inside its parent's
-     ;; *ll*: cut without it, so the parent's per-instruction memos never answer
-     (let [cuts (binding [*ll* nil] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
+     ;; *ll*: cut without it, so the parent's per-instruction memos never
+     ;; answer; this fn's call plans, made while cutting, are kept for it
+     (let [plans (atom {}) const-vals (atom {})
+           cuts (binding [*ll* {:plans plans :const-vals const-vals}] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
       (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :ovf (atom false) :counter (atom 0)
                       :types (atom #{}) :self-type (:closure? info) :cap-kinds (:env-kinds info)
-                      :region-caps (:caps info) :plans (atom {})}]
+                      :region-caps (:caps info) :plans plans :records (atom {}) :const-vals const-vals
+                      :unread-params (ll-unread-params f)
+                      ;; every value an instruction, a terminator or an edge reads
+                      :used (set (for [b (ir/blocks f)
+                                       r (concat (mapcat #(ir/refs % f) (ir/block-insts b f))
+                                                 (when-let [t (ir/block-term b f)] (ir/refs t f))
+                                                 (mapcat ir/branch-target-args (ll-term-edges b)))]
+                                   r))}]
         (let [live (ll-liveness)]
           (binding [*ll* (assoc *ll* :live live)]
             (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))]
@@ -1712,7 +1775,19 @@
        (fnc "lg_halt" ["ptr %self" (str w " %v")] "  ret void\n")
        {:llvm/global {:name "lg_halt_k" :bare true :kind "internal global" :type "ptr" :init "@lg_halt"}}
        {:llvm/fn {:name "lg_run" :bare true :ret "void" :params [] :attrs ll-fn-attrs
-                  :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}])}))
+                  :body "  call tailcc void @lg_init.0(ptr @lg_halt_k)\n  ret void\n"}}
+       ;; one node of a rest List (ll-rest-list!): a call per node instead of
+       ;; its allocation and four stores inline; inlined, the code is the same
+       (let [lty (ll-sty "$List")]
+         {:llvm/fn {:name "lg_list_node" :bare true :linkage "internal" :ret w
+                    :params [(str w " %first") (str w " %next") "i64 %cnt"] :attrs ["alwaysinline" "nounwind"]
+                    :body (str "  %p = " (ll-alloc-call lty) "\n"
+                               "  store " w " " (ll-tid "$List") ", ptr %p\n"
+                               "  %p.1 = getelementptr " lty ", ptr %p, i32 0, i32 1\n  store " w " %first, ptr %p.1\n"
+                               "  %p.2 = getelementptr " lty ", ptr %p, i32 0, i32 2\n  store " w " %next, ptr %p.2\n"
+                               "  %p.3 = getelementptr " lty ", ptr %p, i32 0, i32 3\n  store i64 %cnt, ptr %p.3\n"
+                               "  %p.4 = getelementptr " lty ", ptr %p, i32 0, i32 4\n  store " w " 0, ptr %p.4\n"
+                               "  %w = ptrtoint ptr %p to " w "\n  ret " w " %w\n")}})])}))
 
 (defn ll-rt-fns!
   "Lower the runtime fns the program reached (they may reach more): the
@@ -1801,8 +1876,36 @@
                   todo (cond-> (into todo (init-of x)) expand? (into (concat (:defs u) (:refs u))))]
               (recur (conj! live x) (if expand? (conj! done i) done) todo))))))))
 
+(defn- ll-intern-statics-sym []
+  (:name (get-in (callee-sig (lw-rt/rt-var 'str 'intern-statics!)) [:arities 0])))
+
+(defn- ll-with-intern-step
+  "steps with a call of llvm.str/intern-statics! right after the intern
+   table's own step: before it nothing can make a keyword, after it one made
+   at run time must find the static one."
+  [steps]
+  (let [g (:name (get (:globals @*rt*) (lw-rt/rt-var 'str 'globals)))
+        [pre post] (split-with #(not= g (:global %)) steps)]
+    (if (seq post)
+      (concat pre [(first post) {:call (ll-intern-statics-sym)}] (rest post))
+      steps)))
+
+(defn- ll-static-named-table
+  "lg_static_named (the static keywords and symbols the module kept) and
+   lg_static_named_count."
+  [kept-globals]
+  (let [w (ll-word)
+        names (sort (filter #(or (str/starts-with? % "kw.") (str/starts-with? % "sym."))
+                            (mapcat :defs kept-globals)))]
+    [(assoc-in (ll-glob "lg_static_named" "internal constant" (str "[" (count names) " x " w "]")
+                        (if (empty? names) "zeroinitializer"
+                            (str "[" (str/join ", " (map #(str w " ptrtoint (ptr " (lir/ref %) " to " w ")") names)) "]")))
+               [:llvm/global :bare] true)
+     (assoc-in (ll-glob "lg_static_named_count" "internal constant" "i64" (str (count names))) [:llvm/global :bare] true)]))
+
 (defn llvm-module [fns]
-  (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail)))
+  (let [_ (when *rt* (callee-sig (lw-rt/rt-var 'core 'invoke-args)) (callee-sig (lw-rt/rt-var 'core 'call-fail))
+                (ll-intern-statics-sym))
         rt-fns (when *rt*
                  (let [a (ll-rt-fns!)
                        ;; D221: the cached library's lowered runtime, with what
@@ -1839,7 +1942,8 @@
                                                 (cond-> [(lir/sym (:init g))] (= hooks (:name g)) (conj install))]))
                        (into {} (for [g (when *rt* (:const-order @*rt*))] [(str "var" g) [(lir/sym (str (subs g 1) "__init"))]])))
         live (ll-live (concat fn-units g-units)
-                      (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs)
+                      (concat ["_main"] (mapcat :defs (map unit fns)) prelude-refs
+                              (when *rt* [(lir/sym (ll-intern-statics-sym))]))
                       #(get init-of % []))
         _ (when ll-refcheck?
             ;; the module's symbols: units' and every var global (not units)
@@ -1849,7 +1953,7 @@
         live? #(contains? live (str "var" %))
         kept (map :item (filter #(or (not *rt*) (some live (:defs %))) fn-units))
         kept-globals (map :item (filter #(or (not *rt*) (empty? (:defs %)) (some live (:defs %))) g-units))
-        inits (ll-init-chain (ll-init-steps unit-refs live?))
+        inits (ll-init-chain (cond-> (ll-init-steps unit-refs live?) *rt* ll-with-intern-step))
         gvars (distinct (concat (vals *var-globals*)
                                 (when *rt* (filter live? (map :name rt-gs)))
                                 (when *rt* (filter live? (:const-order @*rt*)))))
@@ -1878,6 +1982,7 @@
                                 (assoc-in (ll-glob "lg_gc_nglobals" "constant" "i32" (str (count roots))) [:llvm/global :bare] true)])))
          "\n"
          (str/join "\n" (map lir/render (ll-type-descs))) "\n"
+         (when *rt* (str (str/join "\n" (map lir/render (ll-static-named-table kept-globals))) "\n"))
          (str/join "\n" (map :text kept-globals)) "\n\n"
          (str/join "\n" (map lir/render inits)) "\n"
          (str/join "\n" (map :text kept)))))
