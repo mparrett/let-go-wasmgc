@@ -3918,6 +3918,11 @@
     ;; (str v): natively `namespace` refuses a meta'd symbol
     (list (lw-rt/rt-sym 'core 'with-meta) (list (lw-rt/rt-sym 'str 'sym-of-bytes) (list (lw-rt/rt-sym 'intrinsics 'bytes-of-string) (str v)))
           (const-form (meta v)))
+    ;; a regex inside a constant collection, on llvm: its stand-in is built
+    ;; here, in the collection's own init. As a constant global of its own it
+    ;; would be registered while this init is lowered, after the collection,
+    ;; and the collection's init would read it unset.
+    (and (= *target* :llvm) (regex-standin v)) (const-form (regex-standin v))
     (vector? v) (list (lw-rt/rt-sym 'pvec 'varray) (reduce (fn [acc x] (list (lw-rt/rt-sym 'pvec 'vconj) acc (const-form x))) (list (lw-rt/rt-sym 'pvec 'empty-vec)) v))
     (map? v) (reduce (fn [acc [k x]] (list (lw-rt/rt-sym 'core 'assoc) acc (const-form k) (const-form x))) (list (lw-rt/rt-sym 'phm 'empty-map)) v)
     (set? v) (reduce (fn [acc x] (list (lw-rt/rt-sym 'phs 'sconj) acc (const-form x))) (list (lw-rt/rt-sym 'phs 'empty-set)) v)
@@ -4162,31 +4167,6 @@
                      sym (symbol (ir/aux callee f))]
                  (not (and (= "clojure.core" (namespace sym))
                            (contains? allocation-sensitive-calls (name sym))))))))))
-
-;; LLVM must preserve native allocation of evaluated map/set literals.
-;; Quoted collections do not pass through these builders. Empty metadata-free
-;; literals retain the native shared-empty path; metadata still evaluates.
-(alter-var-root #'ir.build/build-set
-  (fn [orig]
-    (fn [form ctx]
-      (let [elements ((get (ns-interns 'ir.build) 'set-elements) form)]
-        (if (and (= *target* :llvm) (not (sorted? form))
-                 (or (seq elements) (seq (meta form))))
-          (ir.build/with-meta-call form ctx
-            (fn [plain inner]
-              (ir.build/build-form (apply list 'clojure.core/hash-set elements) inner)))
-          (orig form ctx))))))
-
-(alter-var-root #'ir.build/build-map
-  (fn [orig]
-    (fn [form ctx]
-      (let [entries ((get (ns-interns 'ir.build) 'map-entries) form)]
-        (if (and (= *target* :llvm) (not (sorted? form))
-                 (or (seq entries) (seq (meta form))))
-          (ir.build/with-meta-call form ctx
-            (fn [plain inner]
-              (ir.build/build-form (apply list 'clojure.core/array-map (mapcat identity entries)) inner)))
-          (orig form ctx))))))
 
 ;; P2.11 (F2/F5): CSE keyed :const insts by (op refs aux) with `=`, merging
 ;; [] with () and 0.0 with -0.0 inside one fn; and it merges equal :calls of

@@ -325,9 +325,9 @@
 
 (defn parse-int-v
   "Integer/parseInt (host_jvm_statics.go): strconv.ParseInt(s, 10, 32), so
-   an optional sign then ASCII digits only. As Go's ParseUint does, the
-   unsigned accumulator overflowing 2^32-1 is a range error at once, even
-   before a later bad byte; the signed 32-bit bound is checked at the end."
+   an optional sign then ASCII digits only, in the signed 32-bit range. A
+   bad byte and a value out of range raise the same message, as native's
+   NumberFormatException does."
   [s]
   (if-not (string? s)
     (raise-lit "parseInt expects a string")
@@ -335,19 +335,19 @@
           b0 (when (pos? n) (llvm.arch/bget bs 0))
           neg? (= b0 45)
           start (if (or neg? (= b0 43)) 1 0)
-          err (fn [why] (raise-lit (str "strconv.ParseInt: parsing " (pr-str s) ": " why)))]
+          err (fn [] (raise-lit (str "For input string: " (pr-str s))))]
       (if (= start n)
-        (err "invalid syntax")
+        (err)
         (loop [i start acc 0]
           (if (= i n)
             (if (if neg? (> acc 2147483648) (> acc 2147483647))
-              (err "value out of range")
+              (err)
               (if neg? (- acc) acc))
             (let [b (llvm.arch/bget bs i)]
               (if (and (>= b 48) (<= b 57))
                 (let [acc (+ (* acc 10) (- b 48))]
-                  (if (> acc 4294967295) (err "value out of range") (recur (inc i) acc)))
-                (err "invalid syntax")))))))))
+                  (if (> acc 4294967295) (err) (recur (inc i) acc)))
+                (err)))))))))
 
 (defn get-bytes
   "(.getBytes s): a fresh byte-array of s's UTF-8 bytes (let-go strings are
