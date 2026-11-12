@@ -256,13 +256,13 @@ async function xsofyShell(base, expectedFile) {
 
 // ---- --xsofy -----------------------------------------------------------------
 // The emitted xsofy module (module.wasm, the adapter's default) in the real
-// shell, booted the way local-scripts/browser-smoke-playwright/
-// zz-boot-time-probe.mjs boots the four let-go lanes: page load to "press any
-// key" in the page text (the title card) = time-to-title; Space; then "hp" or
-// "floor" in the page text (the map screen's HUD) = time-to-map, both from
-// navigation. Also asserts what only the D100 imports can make true: the
-// title card prints the ?seed= the page was opened with (js/url-param), and
-// the shell received xsofy/startup with a title and xsofy/stats (js/emit).
+// shell, booted the way checks/boot-time-probe.mjs boots the four let-go
+// lanes: page load to "press any key" in the page text (the title card) =
+// time-to-title; Space; then "hp" or "floor" in the page text (the map
+// screen's HUD) = time-to-map, both from navigation. Also asserts what only
+// the D100 imports can make true: the title card prints the ?seed= the page
+// was opened with (js/url-param), and the shell received xsofy/startup with
+// a title and xsofy/stats (js/emit).
 async function xsofyGame(base, seed = '424242') {
   const browser = await chromium.launch();
   const out = { label: 'xsofy', seed };
