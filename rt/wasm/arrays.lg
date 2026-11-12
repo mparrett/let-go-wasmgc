@@ -284,10 +284,13 @@
 ;; String(): #int-array[0 7 0] / #byte-array[1 2] / #object-array[1 "a"]
 ;; (elements by their String()); the same in every mode.
 (defn print-arr [a]
-  (let [n (alen* a) k (akind a)]
-    (loop [i 0 acc (lit (cond (= 0 k) (wasm/bytes-of-string "#byte-array[") (= 1 k) (wasm/bytes-of-string "#int-array[")
-                              :else (wasm/bytes-of-string "#object-array[")))]
-      (if (< i n)
-        (recur (inc i) (s/str (if (> i 0) (s/str acc (lit (wasm/bytes-of-string " "))) acc)
-                              (if (= 2 k) (s/value-string (aget* a i)) (aget* a i))))
-        (s/str acc (lit (wasm/bytes-of-string "]")))))))
+  (let [n (alen* a) k (akind a) b (s/sb-new) sp (lit (wasm/bytes-of-string " "))]
+    (s/sb-add! b (lit (cond (= 0 k) (wasm/bytes-of-string "#byte-array[") (= 1 k) (wasm/bytes-of-string "#int-array[")
+                            :else (wasm/bytes-of-string "#object-array["))))
+    (loop [i 0]
+      (when (< i n)
+        (when (> i 0) (s/sb-add! b sp))
+        (s/sb-add! b (if (= 2 k) (s/value-string (aget* a i)) (s/str (aget* a i))))
+        (recur (inc i))))
+    (s/sb-add! b (lit (wasm/bytes-of-string "]")))
+    (s/sb-done b)))

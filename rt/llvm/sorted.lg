@@ -122,14 +122,19 @@
 
 ;; String(): {k v, k v} with the elements' String(), in every print mode.
 (defn smap-print [x]
-  (let [items (m-items x) n (arch/alen items)]
-    (loop [i 0 acc (s/mk-str (arch/bytes-of-string "{"))]
-      (if (< i n)
+  (let [items (m-items x) n (arch/alen items) b (s/sb-new)
+        sep (s/mk-str (arch/bytes-of-string ", ")) sp (s/mk-str (arch/bytes-of-string " "))]
+    (s/sb-add! b (s/mk-str (arch/bytes-of-string "{")))
+    (loop [i 0]
+      (when (< i n)
         (let [e (arch/aget pv/Node items i)]
-          (recur (inc i) (s/str (s/str (if (> i 0) (s/str acc (s/mk-str (arch/bytes-of-string ", "))) acc)
-                                       (s/value-string (entry-key e)))
-                                (s/str (s/mk-str (arch/bytes-of-string " ")) (s/value-string (entry-val e))))))
-        (s/str acc (s/mk-str (arch/bytes-of-string "}")))))))
+          (when (> i 0) (s/sb-add! b sep))
+          (s/sb-add! b (s/value-string (entry-key e)))
+          (s/sb-add! b sp)
+          (s/sb-add! b (s/value-string (entry-val e))))
+        (recur (inc i))))
+    (s/sb-add! b (s/mk-str (arch/bytes-of-string "}")))
+    (s/sb-done b)))
 
 (defn smap-hash [x]                                      ; mixFinish(sum of hash(k) ^ hash(v)): a hash-map's
   (let [items (m-items x) n (arch/alen items)]
@@ -177,12 +182,15 @@
   (sq/arr-seq (s-items x) 1))
 
 (defn sset-print [x]                                     ; String(): #{a b}, elements' String()
-  (let [items (s-items x) n (arch/alen items)]
-    (loop [i 0 acc (s/mk-str (arch/bytes-of-string "#{"))]
-      (if (< i n)
-        (recur (inc i) (s/str (if (> i 0) (s/str acc (s/mk-str (arch/bytes-of-string " "))) acc)
-                              (s/value-string (arch/aget pv/Node items i))))
-        (s/str acc (s/mk-str (arch/bytes-of-string "}")))))))
+  (let [items (s-items x) n (arch/alen items) b (s/sb-new) sp (s/mk-str (arch/bytes-of-string " "))]
+    (s/sb-add! b (s/mk-str (arch/bytes-of-string "#{")))
+    (loop [i 0]
+      (when (< i n)
+        (when (> i 0) (s/sb-add! b sp))
+        (s/sb-add! b (s/value-string (arch/aget pv/Node items i)))
+        (recur (inc i))))
+    (s/sb-add! b (s/mk-str (arch/bytes-of-string "}")))
+    (s/sb-done b)))
 
 (defn sset-hash [x]                                      ; mixFinish(sum of hash(e)): a hash-set's
   (let [items (s-items x) n (arch/alen items)]
