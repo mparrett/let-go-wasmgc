@@ -332,11 +332,12 @@
                        (raise-str (s/str (lit (wasm/bytes-of-string "cannot parse bigint: ")) (s/pr-str x)))))
           (nt/bigint? x) x
           :else (raise-str (s/str (lit (wasm/bytes-of-string "cannot coerce ")) (tn x) (lit (wasm/bytes-of-string " to bigint")))))))
-;; bigdec (CoreBigDec) and round-bigdec (what with-precision expands to): a
-;; BigDecimal is literal-only (D233), so both are the named limit whatever
-;; their arguments.
+;; bigdec (CoreBigDec): a BigDecimal is literal-only (D233), so it is the
+;; named limit whatever its argument. round-bigdec (what with-precision
+;; expands to) rounds only a BigDecimal and natively answers anything else
+;; as it is, so a with-precision body yielding an Int or a Float still works.
 (defn ^{:twin "core/bigdec"} bigdec [x] (c/raise-bigdec))
-(defn ^{:twin "core/round-bigdec"} round-bigdec [precision rounding x] (c/raise-bigdec))
+(defn ^{:twin "core/round-bigdec"} round-bigdec [precision rounding x] (if (nt/decimal? x) (c/raise-bigdec) x))
 ;; numerator / denominator (CoreNumerator, CoreDenominator): of a Ratio only
 (defn ^{:twin "core/numerator"} numerator [x]
   (if (nt/ratio? x) (nt/numerator x) (c/raise (wasm/bytes-of-string "numerator expects a Ratio"))))

@@ -139,6 +139,11 @@
              #(wm/round-bigdec (W 2) (W :half-up) (R "1.25M"))]]
     (is (= "lower-wasm: arithmetic on a BigDecimal (numeric tower, named limit)" (second (mine-outcome f))))))
 
+(deftest round-bigdec-answers-a-non-decimal-as-it-is
+  (c/install!)
+  (doseq [x [1 -7 1.5 nil "s" :k [1 2]]]
+    (is (= (pr-str (round-bigdec 2 :half-up x)) (S (wm/round-bigdec (W 2) (W :half-up) (W x)))) (pr-str x))))
+
 (deftest arithmetic-is-the-next-piece
   (c/install!)
   (doseq [f [#(c/add (W 1) (R "1N")) #(c/sub (R "1/2") (W 1)) #(c/mul (R "2N") (R "2N")) #(wm/div (R "1/2") (W 2)) #(wm/rem (R "5N") (W 2))
