@@ -51,8 +51,10 @@
 # Env: LG, KEEP=1 (keep the scratch dir), SRC_PATHS (override the source
 # paths), LETGO_TEST (default $LW_ROOT/let-go/test), P (default 3),
 # LW_TEST_TIMEOUT (default 300: the per-file cap of --corpus, in seconds; a
-# legmacs eval test file compiles in ~365 s alone on 2026-10-08, 700+ s under
-# load, so a gate run on a loaded machine raises it; the bar does not move).
+# legmacs eval test file compiles in ~365 s alone on 2026-10-08, ~400 s at
+# load 5-14 on 2026-10-25, 700+ s under heavier load, so P7.1's row in
+# items.tsv defaults it to 1200 (D231) and a gate run on a loaded machine
+# raises it further; the bar does not move).
 # WASM_RUN (unset: the WasmGC lane as above) runs the backend side through
 # that runner instead, passing the driver flags in LW_DRIVER_ARGS and the
 # source paths in LG_ARGS (checks/native-run.sh for --target llvm).
