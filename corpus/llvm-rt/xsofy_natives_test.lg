@@ -193,6 +193,7 @@
 ;; the bit ops reject every non-Int with one message, and unchecked-* hands
 ;; non-Int pairs to llvm.core: a few non-Ints suffice for both
 (def ^:private bit-nums [0 1 -1 6 -7 2 63 64 65 -2 -9223372036854775808 9223372036854775807 1.5 nil "x"])
+(defn- bigdec? [v] (string/includes? (str (type v)) "BigDecimal"))
 (defn- ratio-or-big? [v] (let [t (str (type v))] (or (string/includes? t "Ratio") (string/includes? t "BigInt"))))
 
 (deftest numbers-binary
@@ -238,7 +239,11 @@
     (same (numerator p) (m/numerator (W p)))
     (same (denominator p) (m/denominator (W p))))
   (doseq [p [0 1 -1 9223372036854775807 -9223372036854775808]]
-    (same-or-limit (bigint p) (m/bigint (W p)) ratio-or-big?))
+    (same-or-limit (bigint p) (m/bigint (W p)) ratio-or-big?)
+    (same-or-limit (bigdec p) (m/bigdec (W p)) bigdec?)
+    (same (round-bigdec 2 :half-up p) (m/round-bigdec (W 2) (W :half-up) (W p))))
+  (doseq [p [1.567 nil "x"]]
+    (same (round-bigdec 2 :half-up p) (m/round-bigdec (W 2) (W :half-up) (W p))))
   (same (float) (m/float))
   (same (float? 1 2) (m/float? (W 1) (W 2)))
   (same (math/abs) (m/abs))

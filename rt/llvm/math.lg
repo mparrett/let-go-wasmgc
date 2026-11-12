@@ -22,7 +22,7 @@
 ;; the same type name, printed form, hash and =, but (compare (float 1) 1.0)
 ;; throws natively and is 0 here.
 (ns llvm.math
-  (:refer-clojure :exclude [float float? int? rem rand-int abs bigint numerator denominator])
+  (:refer-clojure :exclude [float float? int? rem rand-int abs bigint numerator denominator bigdec round-bigdec])
   (:require [llvm.arch :as arch]
             [llvm.seq :as sq]
             [llvm.str :as s]
@@ -328,6 +328,12 @@
 (defn ^{:twin "core/bigint"} bigint [x] (c/raise (arch/bytes-of-string "llvm: bigint makes a BigInt (numeric tower, D15)")))
 (defn ^{:twin "core/numerator"} numerator [x] (c/raise (arch/bytes-of-string "numerator expects a Ratio")))
 (defn ^{:twin "core/denominator"} denominator [x] (c/raise (arch/bytes-of-string "denominator expects a Ratio")))
+;; bigdec (CoreBigDec) makes a BigDecimal, which the runtime does not have
+;; either: a named limit. round-bigdec (what with-precision expands to)
+;; rounds a BigDecimal and answers any other value as it is, natively, so
+;; with no BigDecimal here it answers x.
+(defn ^{:twin "core/bigdec"} bigdec [x] (c/raise (arch/bytes-of-string "llvm: bigdec makes a BigDecimal (numeric tower, D15)")))
+(defn ^{:twin "core/round-bigdec"} round-bigdec [precision rounding x] x)
 
 ;; rem (NumRem): Go's truncated % on Ints (MinInt64 % -1 = 0), math.Mod
 ;; when a Float is involved; a zero divisor is "divide by zero" either way.
