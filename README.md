@@ -27,10 +27,10 @@ differential check (see "Checks"), and the design record is
 - **let-go's own core tests**: 271 of the 273 selected deftests pass, with
   the two remaining ones skipped by name.
 - **The jank clojure-test-suite** (241 files of core tests, run through
-  `checks/jank-suite.sh` against native lg) passes 128 files on the WasmGC
+  `checks/jank-suite.sh` against native lg) passes 168 files (as of 2026-10-25) on the WasmGC
   lane; `corpus/jank/baseline-wasm.tsv` ratchets the count, so a pull request
   may not drop a file. Most of the rest wait on the numeric tower (arithmetic
-  over BigInt and Ratio, BigDecimal literals).
+  over BigInt, Ratio and BigDecimal).
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
 - **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the
@@ -116,7 +116,8 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
   alone decides P4.0 when Chromium is missing too (D227).
   `LW_REQUIRE_WASMTIME=1` turns the SKIP into a FAIL.
 - **Chromium through Playwright** for the browser lanes
-  (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/eval-hosts.sh`,
+  (`checks/browser-boot.sh`, `checks/lane5.sh`, `checks/turn-time.sh`,
+  `checks/eval-hosts.sh`,
   `checks/size-boot.sh`, the `*-page-check.mjs` scripts). Playwright is
   the first of these whose Chromium launches (`checks/playwright.mjs`):
   `LW_BROWSER_TOOLS/browser-smoke-playwright/` when that is set; the version
@@ -266,6 +267,7 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
   reaches that the runtime does not provide).
 - `DECISIONS.md` the design record. `STATUS.md` the dated row table of work
   items. `FINDINGS.md` things learned that are not decisions.
+  `docs/WORKFLOW.md` how issues, commits, reviews and gates are run.
   `EVAL-NATIVE-SPEC.md` a work order for running the evaluator outside wasm.
 
 ## Design in brief
@@ -378,8 +380,9 @@ mirror of that workspace. In practice:
   means this script. `checks/run-corpus.sh <dir>...` runs it over a corpus
   directory.
 - Row P1.GATE's `checks/bench-fib.sh` compares against the original probe at
-  `../emit-wasm-probe`, which is not in this repo; it fails outside the
-  workspace. Gate 1 itself does not depend on it.
+  `../emit-wasm-probe/ext/gen-ext.lg`, which is not in this repo; without it
+  the row exits 2 with a `SKIP` line, which the gate reports as `# SKIP`.
+  Gate 1 itself does not depend on it.
 - `LW_ATTEST`: by default a gate skips rows whose inputs are unchanged since
   their last green run on this machine (`checks/attest.sh`, keyed by the
   input table in `checks/affected.sh`). Gate decisions are taken with

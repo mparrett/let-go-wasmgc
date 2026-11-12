@@ -30,6 +30,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/checks/env.sh"
+. "$root/checks/skip.sh"
 command -v node >/dev/null || { echo "SKIP node not on PATH"; exit 2; }
 command -v wasm-tools >/dev/null || { echo "SKIP wasm-tools not on PATH"; exit 2; }
 
@@ -142,11 +143,7 @@ EOF
 
 # A directory's SKIP file (corpus/opmatrix/SKIP: the `/` programs whose rows
 # need ratios and bigints, D15) skips here too, with its comment as reason.
-listed() {
-  local sf; sf=$(dirname "$1")/SKIP
-  # a bare name skips the program in every check; "<row> name" in this row only
-  [ -f "$sf" ] && awk -v b="$(basename "$1")" -v r=P10.1 '/^#/ {c=$0; next} $1==b || ($1==r && $2==b) {sub(/^# */, "", c); print c; found=1} END {exit !found}' "$sf"
-}
+listed() { skip_reason "$1" P10.1; }
 
 n=${#progs[@]} fit=0 match=0 bad=0 skips=()
 for ((i=0; i<n; i++)); do

@@ -31,6 +31,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/checks/env.sh"
+. "$root/checks/skip.sh"
 
 # oracle.sh's WASM_RUN: replay a leg's recorded run
 if [ "${1:-}" = --replay ]; then
@@ -67,11 +68,7 @@ if [ $# -gt 0 ]; then progs=("$@"); else
       find corpus/opmatrix corpus/typed corpus/emit -maxdepth 1 -type f -name '*.lg'; } | LC_ALL=C sort)
 fi
 
-listed() {
-  local sf; sf=$(dirname "$1")/SKIP
-  # a bare name skips the program in every check; "<row> name" in this row only
-  [ -f "$sf" ] && awk -v b="$(basename "$1")" -v r=P10.2 '/^#/ {c=$0; next} $1==b || ($1==r && $2==b) {sub(/^# */, "", c); print c; found=1} END {exit !found}' "$sf"
-}
+listed() { skip_reason "$1" P10.2; }
 first_err() { sed -E 's/\x1b\[[0-9;]*m//g' "$1/out" "$1/err" | grep -m1 -i 'error' ; }
 
 n=${#progs[@]} fit=0 match=0 bad=0 skips=() knowns=()

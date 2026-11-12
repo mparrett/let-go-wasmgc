@@ -43,6 +43,7 @@ These records were kept while the backend was built inside a larger workspace. T
 | P2.2 | done 2026-10-01 | — | wasm-hash.sh: 201 rows, 0 misses, 11 limits |
 | P4.1-backend + P4.3 | done 2026-10-01 | opus | xsofy plays in the real shell; 140 KB brotli; verified --xsofy PASS |
 | P4.2 | done 2026-10-01 | sonnet | settle-based lane5; 3/3 IDENTICAL; stock lane was the flaky one |
+| P4.4 | green 2026-11-10 | fable | checks/turn-time.sh: xsofy turn latency, keydown to the game's stats event with in-page timestamps, 40 keys x 3 runs per lane at seed 424242: lower-wasm 31.1 ms median, stock Go 73.1 ms (2.35x) at pin dbccbf0f and xsofy feeb420 (2026-10-21 at e9789b7d and xsofy 0c38395: 42.9 vs 164.1 ms, 3.82x), identical turn logs (27 turns of 40, the rest bump walls). corpus/xsofy/turn-time.md. The first steady-state compute row; size-boot measures download + init. |
 | P4.GATE | PASSED 2026-10-01 17:05 | — | campaign finish line; verified by orchestrator |
 | P2.14 | progress 17:56 | opus | 145/273 measured (blocker 1 done: source paths + load-by-path); blockers 2-8 + regex engine coded in scratch, rebuilding/measuring |
 | P0.1 | progress 17:59 | sonnet | steps done: sem.sh pool, run-corpus P=3, gate -j2, native per-file P=4, census sharded P=4 + content-hash key, LW_RTLIB_DIR, affected.sh bash-3.2 fix; serial-vs-parallel outputs byte-identical (corpus/wasm, native, legmacs+xsofy TSV, gate); falsified; remaining: final `checks/run.sh P0.1` in the live tree (census rerun in progress, then gate once); ETA 30 min |

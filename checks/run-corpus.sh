@@ -49,6 +49,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/skip.sh"
 export LG
 update=0 both=0
 dirs=()
@@ -65,10 +66,9 @@ done
 files=() fdirs=()
 for d in "${dirs[@]}"; do
   [ -d "$d" ] || { echo "no such dir: $d" >&2; exit 2; }
-  # A SKIP file in the dir lists basenames to leave out (empty since D230; `#` starts a comment).
-  skip=""; [ -f "$d/SKIP" ] && skip=$(sed -e 's/#.*//' "$d/SKIP" | tr '\n' ' ')
+  # The dir's SKIP file (checks/skip.sh); LW_SKIP_ROW names the row for "<row> name" lines.
   while IFS= read -r f; do
-    case " $skip " in *" $(basename "$f") "*) echo "SKIP            $f"; continue;; esac
+    if skip_reason "$f" "${LW_SKIP_ROW:-}" >/dev/null; then echo "SKIP            $f"; continue; fi
     files+=("$f"); fdirs+=("$d")
   done < <(find "$d" -maxdepth 1 -type f \( -name '*.lg' -o -name '*.clj' \) | LC_ALL=C sort)
 done
@@ -106,13 +106,16 @@ rtlib_warm() {
   # also at LW_PAR=1: a cold build inside the first program would hit its
   # compile limit
   [ -x "$runner" ] || return 0
-  local d=${LW_RTLIB_DIR:-$root/src/.rtlib} newest w
+  local d=${LW_RTLIB_DIR:-$root/src/.rtlib} newest w v
   # A custom runner warms its own target and owns its cache (2026-10-03).
   if [ "$runner" != "$root/checks/wasm-run.sh" ]; then
     "$root/checks/sem.sh" timeout -k 5 "${LW_WARM_LIMIT:-600}" "$runner" "$root/corpus/scalar/fib.clj" >/dev/null 2>&1
     return 0  # a failed warm-up shows again, with its message, in the first program
   fi
-  newest=$(ls -t "$d"/rtlib-${LW_TARGET:-gc}-*.edn 2>/dev/null | head -1)
+  # Only this run's eval variant counts (D231): the eval library is
+  # rtlib-<target>-<hex key>..., the no-eval one rtlib-<target>-noeval-...
+  if [ "${LW_NO_EVAL:-}" = 1 ]; then v=noeval-; else v='[0-9a-f]'; fi
+  newest=$(ls -t "$d"/rtlib-${LW_TARGET:-gc}-$v*.edn 2>/dev/null | head -1)
   if [ -n "$newest" ] && [ -z "$(find "$root/src" "$root/rt/wasm" "$root/rt/let-go/lang" -name '*.lg' -newer "$newest" 2>/dev/null | head -1)" ]; then return 0; fi
   w=$(mktemp -d)
   # background + wait, so a TERM during the (long) build reaches the trap now, not after it
