@@ -66,7 +66,7 @@ lane_own = {
     'core/defprotocol*', 'core/extend-type*', 'core/make-deftype', 'core/make-deftype-instance',
     'core/make-protocol-fn', 'core/make-record', 'core/make-record-type',
     # let-go's own lg definition compiles on llvm as program code
-    'core/long-array',
+    'core/long-array', 'core/integer?', 'core/rational?',
     # lowered by the llvm backend for a protocol named at the call (a call of
     # the protocol's predicate); refused otherwise, corpus/refused/satisfies-value.lg
     'core/satisfies?',

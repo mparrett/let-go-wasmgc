@@ -234,7 +234,11 @@
     (same (math/abs p) (m/abs (W p)))
     (same (math/sqrt p) (m/sqrt (W p)))
     (same (math/exp p) (m/exp (W p)))
-    (same (let-go.types/bigint? p) (m/bigint? (W p))))
+    (same (let-go.types/bigint? p) (m/bigint? (W p)))
+    (same (numerator p) (m/numerator (W p)))
+    (same (denominator p) (m/denominator (W p))))
+  (doseq [p [0 1 -1 9223372036854775807 -9223372036854775808]]
+    (same-or-limit (bigint p) (m/bigint (W p)) ratio-or-big?))
   (same (float) (m/float))
   (same (float? 1 2) (m/float? (W 1) (W 2)))
   (same (math/abs) (m/abs))
