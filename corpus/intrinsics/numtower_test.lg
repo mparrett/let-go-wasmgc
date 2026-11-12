@@ -128,7 +128,11 @@
   (doseq [t ["1M/2" "0x1M" "1.5MM" "1_0M" "1EM" "1E+M"]]
     (is (= :err (first (outcome #(read-string t)))) t)
     (is (= :err (first (mine-outcome #(R t)))) t))
-  (doseq [[a b] [["0.1M" "0.1"] ["9007199254740993M" "9007199254740993"] ["1E-400M" "0"] ["0.1M" "1/10"] ["1M" "##Inf"] ["0M" "-0.0"]]]
+  (doseq [[a b] [["0.1M" "0.1"] ["9007199254740993M" "9007199254740993"] ["1E-400M" "0"] ["0.1M" "1/10"] ["1M" "##Inf"] ["0M" "-0.0"]
+                 ;; exponents far apart settle by magnitude; close ones still compare exactly
+                 ["1E100000M" "1.0"] ["-1E100000M" "1.0"] ["-1E100000M" "-1.0"] ["1E-100000M" "5E-324"]
+                 ["1E100000M" "1E99999M"] ["-1E-100000M" "-1E-99999M"] ["1E100000M" "1E100000M"]
+                 ["1E5M" "100000.0"] ["1E5M" "100000.5"] ["123.45M" "123.45"] ["1E300M" "1.0E300"] ["9007199254740993M" "9.007199254740992E15"]]]
     (is (= (compare (read-string a) (read-string b)) (c/compare* (R a) (R b))) (str "compare " a " " b)))
   (is (= "Float.SetFloat64(NaN)" (second (mine-outcome #(c/compare* (R "1M") (R "##NaN")))))))
 
