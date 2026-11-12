@@ -21,8 +21,51 @@
 
 (deftest builtin-ancestry
   (let [t (poly/ll-type-table) nm #(:name (t %))]
-    (is (= ["Vector" "Associative" "Coll" "Seqable" "Indexed" "Counted" "Sequential" "Fn" "java.lang.Object"]
+    (is (= ["Vector" "clojure.lang.Associative" "clojure.lang.IPersistentCollection" "clojure.lang.Seqable"
+            "clojure.lang.IReduce" "clojure.lang.Indexed" "clojure.lang.Counted" "Sequential"
+            "clojure.lang.IEditableCollection" "Fn" "java.lang.Object"]
            (mapv nm (:anc (t 11)))))
+    (is (= ["java.lang.RuntimeException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"]
+           (mapv nm (:anc (t 26)))))
     (is (= [] (:anc (t 0))))
     (is (= ["Number" "java.lang.Object"] (mapv nm (:anc (t 22)))))
     (is (every? #(or (nil? %) (#{"java.lang.Object" "nil"} (:name %)) (= "java.lang.Object" (nm (peek (:anc %))))) t))))
+
+;; native's ancestry of each type (directTypeParents, the interfaces of its Go
+;; type, as native lg answered on 2026-10-30) is part of llvm's: whatever native
+;; says a type isa?, llvm says too. llvm's is larger by design: the composed
+;; Types native has no name for, and Object under every type.
+(def native-interfaces
+  {"let-go.lang.ArrayVector" #{"clojure.lang.Associative" "clojure.lang.Counted" "clojure.lang.IEditableCollection"
+                               "clojure.lang.IPersistentCollection" "clojure.lang.IReduce" "clojure.lang.Indexed"
+                               "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.PersistentList" #{"clojure.lang.Counted" "clojure.lang.IPersistentCollection" "clojure.lang.IReduce"
+                                  "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.Map" #{"clojure.lang.Associative" "clojure.lang.Counted" "clojure.lang.IEditableCollection"
+                       "clojure.lang.IPersistentCollection" "clojure.lang.IReduce" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.Set" #{"clojure.lang.Counted" "clojure.lang.IEditableCollection" "clojure.lang.IPersistentCollection"
+                       "clojure.lang.IReduce" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.PersistentTreeMap" #{"clojure.lang.Associative" "clojure.lang.Counted" "clojure.lang.IPersistentCollection"
+                                     "clojure.lang.IReduce" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.PersistentTreeSet" #{"clojure.lang.Counted" "clojure.lang.IPersistentCollection" "clojure.lang.IReduce"
+                                     "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.Range" #{"clojure.lang.IReduce" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.Repeat" #{"clojure.lang.IReduce" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.String" #{"clojure.lang.Counted" "clojure.lang.Indexed" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.Array" #{"clojure.lang.IReduce" "clojure.lang.Seqable" "java.lang.Object"}
+   "let-go.lang.ExceptionInfo" #{"java.lang.Exception" "java.lang.Object" "java.lang.RuntimeException" "java.lang.Throwable"}
+   "let-go.lang.Atom" #{"java.lang.Object"}
+   "let-go.lang.Promise" #{"java.lang.Object"}})
+
+(deftest native-ancestry-is-part-of-llvms
+  (let [t (poly/ll-type-table) nm #(:name (t %))
+        anc (into {} (keep (fn [row] (when row [(:name row) (set (map nm (:anc row)))])) t))]
+    (doseq [[ty ifs] native-interfaces]
+      (is (empty? (remove (get anc ty #{}) ifs)) (str ty " lacks " (pr-str (remove (get anc ty #{}) ifs)))))))
+
+;; llvm.poly's interface Types are these ids (rt/llvm/poly.lg names them)
+(deftest interface-ids
+  (let [t (poly/ll-type-table) nm #(:name (t %))]
+    (is (= ["java.lang.Object" "clojure.lang.Seqable" "clojure.lang.Counted" "clojure.lang.IPersistentCollection"
+            "clojure.lang.Associative" "clojure.lang.Indexed" "clojure.lang.IReduce" "clojure.lang.IEditableCollection"]
+           (mapv nm [42 43 44 45 48 49 57 58])))))

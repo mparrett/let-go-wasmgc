@@ -1,0 +1,13 @@
+;; Naming a protocol in an extension extends it, methods or not, as in
+;; Clojure (.out is JVM Clojure's output; native let-go counts a protocol only
+;; once one of its methods follows, git-issue:4a251d6): a marker protocol on a
+;; deftype, a record and a native type, and an extension naming two protocols
+;; whose method sits under the second.
+(defprotocol Named (nm [this]))
+(defprotocol Marker)
+(deftype T [] Marker)
+(defrecord R [] Marker)
+(extend-type String Marker)
+(extend-type java.lang.Long Named Marker (nm [n] n))
+(println (satisfies? Marker (T.)) (satisfies? Marker (->R)) (satisfies? Marker "s") (satisfies? Marker :k))
+(println (satisfies? Named 1) (satisfies? Marker 1) (try (nm 1) (catch Exception e :no-method)))

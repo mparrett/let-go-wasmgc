@@ -857,6 +857,9 @@
 ;; limits: extend-type, extend-protocol, reify and Object methods are not
 ;; seen. Written without destructuring, for or doseq (P9.1).
 (def protocol-methods (atom {}))   ; method var -> signatures and implementations keyed by [type tag, arity]
+(def protocol-vars (atom {}))      ; every defprotocol's var -> its method vars (llvm's satisfies?)
+(def protocol-preds (atom {}))     ; a protocol var -> the var of its satisfies? predicate (llvm)
+(def protocol-named (atom {}))     ; a protocol var -> [tag fields?] of each arms type that names it (llvm)
 
 (defn type-tag [ns-sym nm] (keyword (str ns-sym) (str nm)))
 
@@ -895,14 +898,17 @@
                    (fn [] (mapv #(rewrite emit receiver fieldset mutable-fields bound %) expanded)))))))
 
 (defn note-protocol! [ns-sym form]
+  (let [pv (lw-rt/ns-var ns-sym (second form))]
+  (when pv (swap! protocol-vars assoc pv []))
   (reduce (fn [_ sig]
             (when (seq? sig)
               (let [m (first sig)
                     signatures (mapv #(vec (rest %)) (filter vector? (rest sig)))
                     v (lw-rt/ns-var ns-sym m)]
                 (when-not v (throw (ex-info (str "lower-wasm: " ns-sym "/" m " did not load") {})))
+                (when pv (swap! protocol-vars update pv conj v))
                 (swap! protocol-methods assoc v {:var v :ns ns-sym :name m :signatures signatures :impls {}}))))
-          nil (drop 2 form)))
+          nil (drop 2 form))))
 
 (defn protocol-method-key [e] (str (:ns e) "/" (:name e)))
 
@@ -948,17 +954,27 @@
 
 (defn extension-forms [ns-sym form]
   ;; Extensions receive the runtime type expression, including a saved old type.
-  (let [type-expr (second form) out (atom [])]
+  ;; llvm: naming a protocol extends it, methods or not, as in Clojure (native
+  ;; let-go counts it only once a method follows: git-issue:4a251d6)
+  (let [type-expr (second form) out (atom []) cur (atom nil)]
     (reduce (fn [pns x]
               (if (symbol? x)
                 (let [pv (lw-rt/call-in-ns ns-sym (fn [] (resolve x)))]
+                  ;; an unresolved protocol leaves cur nil, so the methods after it are
+                  ;; all kept: natively such a program does not compile at all
+                  (reset! cur (when (var? pv) pv))
+                  (when (and lw-rt/llvm-target? (var? pv))
+                    (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!) type-expr (lw-rt/protocol-key pv) true)))
                   (ns-name (:ns (meta pv))))
                 (let [mv (lw-rt/call-in-ns pns (fn [] (resolve (first x))))
                       e (get @protocol-methods mv)]
                   (when-not e (throw (ex-info (str "Unknown protocol method " (first x)) {})))
-                  (swap! protocol-methods assoc-in [mv :impls [::extension 0]] {:type true})
-                  (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!)
-                                        type-expr (protocol-method-key e) (cons 'fn (rest x))))
+                  ;; llvm: a method extends the protocol named before it, as in
+                  ;; Clojure; one of another protocol's methods there is dropped
+                  (when (or (not lw-rt/llvm-target?) (nil? @cur) (some #(= mv %) (get @protocol-vars @cur)))
+                    (swap! protocol-methods assoc-in [mv :impls [::extension 0]] {:type true})
+                    (swap! out conj (list (lw-rt/rt-sym 'core 'install-type-method!)
+                                          type-expr (protocol-method-key e) (cons 'fn (rest x)))))
                   pns)))
             ns-sym (drop 2 form))
     @out))
@@ -1002,6 +1018,14 @@
           _ (reduce (fn [pns x]
                       (cond (symbol? x)
                             (let [pv (lw-rt/call-in-ns ns-sym (fn [] (try (resolve x) (catch e nil))))]
+                              ;; naming the protocol extends it, as above: an llvm deftype
+                              ;; (a table type) gets the marker, a record joins the
+                              ;; predicate's arms
+                              (when (and lw-rt/llvm-target? (var? pv))
+                                (if llvm-type?
+                                  (swap! installs conj (list (lw-rt/rt-sym 'core 'install-type-method!)
+                                                             (symbol (str ns-sym) (str nm)) (lw-rt/protocol-key pv) true))
+                                  (swap! protocol-named update pv (fnil conj #{}) [tag (boolean (seq fields))])))
                               (if (and (var? pv) (:ns (meta pv))) (ns-name (:ns (meta pv))) ns-sym))
                             (seq? x)
                             (let [m (first x)
@@ -1085,6 +1109,40 @@
         (vary-meta form assoc ::emitted-only true)
         form)))
 
+;; llvm: each protocol gets a hidden satisfies? predicate in its namespace
+;; (registered again while its methods are known; a program's own protocol
+;; keeps the one made before its methods are dropped, as its dispatch does),
+;; __lw_sat_<name>, true when P is extended to the value's type or to Object
+;; (the method tables, lw-rt/protocol-key) or the value is a type with P's
+;; methods compiled into its arms, the same tests the dispatch makes
+;; written without destructuring or for, which take gensyms when the driver
+;; loads (checks/gensym-load.sh)
+(defn protocol-satisfies-arities [pv mvs]
+  (let [x '__lw_sat_x
+        arm (fn [acc kv]
+              (let [impl (val kv) tag (first (key kv))]
+                (if (:type impl)
+                  acc
+                  (conj acc (if (seq (:fields impl)) (list 'identical? tag (list :lw/type x)) (list 'identical? tag x))))))
+        arms (reduce (fn [acc mv] (let [e (get @protocol-methods mv)] (if e (reduce arm acc (:impls e)) acc))) [] mvs)
+        arms (reduce (fn [acc tf] (conj acc (if (second tf) (list 'identical? (first tf) (list :lw/type x)) (list 'identical? (first tf) x))))
+                     arms (get @protocol-named pv))]
+    [(list [x] (apply list 'or (list (lw-rt/rt-sym 'core 'satisfies-key?) (lw-rt/protocol-key pv) x) (distinct arms)))]))
+
+(declare hidden-defn!)
+(defn register-protocol-predicates!
+  "Register (again) each protocol var's satisfies? predicate whose methods
+   are still known, so a later-loaded type joins it."
+  []
+  (when lw-rt/llvm-target?
+    (reduce (fn [_ kv]
+              (let [pv (key kv) mvs (val kv) ns-sym (ns-name (:ns (meta pv)))]
+              (when (or (empty? mvs) (some #(contains? @protocol-methods %) mvs))
+                (let [s (hidden-defn! ns-sym (symbol (str "__lw_sat_" (lw/munge-id (name (symbol pv)))))
+                                      (protocol-satisfies-arities pv mvs))]
+                  (swap! protocol-preds assoc pv (lw-rt/ns-var ns-sym (symbol (name s))))))))
+            nil @protocol-vars)))
+
 (defn register-protocol-dispatch!
   "Register (again) the dispatch defn of every protocol method with an
    implementation, so a later-loaded type joins it."
@@ -1094,7 +1152,8 @@
               (let [form (protocol-dispatch-form e) v (:var e)]
                 (swap! lw-rt/lib-defns assoc v {:var v :ns (:ns e) :name (:name e) :lib true
                                                 :arities (lw-rt/arities (drop 2 form))}))))
-          nil (vals @protocol-methods)))
+          nil (vals @protocol-methods))
+  (register-protocol-predicates!))
 
 (defn index-lib-ns!
   "Index one loaded library namespace (see above). Returns the init var's
@@ -1638,6 +1697,7 @@
         compile-error (let [own (ns-name *ns*)
                             es (filter (fn [e] (= own (:ns e))) (vals @protocol-methods))
                             m (reduce step nil (map protocol-dispatch-form es))]
+                        (register-protocol-predicates!)
                         (reduce (fn [_ e] (swap! protocol-methods dissoc (:var e))) nil es)
                         (register-protocol-dispatch!)
                         (if compile-error compile-error m))]
@@ -1731,6 +1791,7 @@
        ss
        (fn []
         (binding [lw/*stub-libs* (boolean test?) lw/*program-file* in
+                  lw/*protocol-vars* @protocol-preds
                   lw/*thunk-def-vars* @thunk-vars
                   ;; natives only: the program's and its libraries' own vars
                   ;; are var-table vars or direct-call defns. D207: the vars

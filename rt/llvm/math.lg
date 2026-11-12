@@ -314,6 +314,10 @@
   ([x y] (raise-arity 2)))
 
 (defn ^{:twin "core/float?"} float? ([] (raise-arity 0)) ([x] (sq/bool (= 22 (sq/kind x)))) ([x y] (raise-arity 2)))
+;; Natively any arity other than 1 is false. double? cannot tell (float x)
+;; apart: the Float32 stand-in is a Float here (see `float`).
+(defn ^{:twin "core/double?"} double?* ([] (sq/bool false)) ([x] (sq/bool (= 22 (sq/kind x)))) ([x y] (sq/bool false))
+  ([x y & more] (sq/bool false)))
 (defn ^{:twin "core/int?"} int? ([] (raise-arity 0)) ([x] (sq/bool (int-val? x))) ([x y] (raise-arity 2)))
 ;; No BigInt in the runtime; any arity other than 1 is false natively too.
 (defn ^{:twin "let-go.types/bigint?"} bigint? ([] (sq/bool false)) ([x] (sq/bool false)) ([x y] (sq/bool false)))
@@ -455,6 +459,13 @@
     (arch/set! MGlobals 0 globals x)
     (arch/i64-shr-u x 1)))                               ; 63 random bits, non-negative
 
+(defn ^{:twin "core/rand"} rand*                          ; CoreRandf (lang.go:6939): Float in [0,1), scaled by n
+  ([] (s/box-float (* (arch/i64-to-f64 (next-rand)) 1.0842021724855044e-19)))   ; 63 bits / 2^63
+  ([n] (if (if (int-val? n) true (= 22 (sq/kind n)))
+         (s/box-float (* (* (arch/i64-to-f64 (next-rand)) 1.0842021724855044e-19) (f64-of n)))
+         (c/raise (arch/bytes-of-string "rand expected number"))))
+  ([a b] (raise-arity 2)))
+
 (defn ^{:twin "core/rand-int"} rand-int
   ([] (raise-arity 0))
   ([n] (if (int-val? n)
@@ -465,3 +476,50 @@
                (loop [r (next-rand)] (if (< r lim) (sq/box-int (arch/i64-sub r (arch/i64-mul m (quot r m)))) (recur (next-rand)))))))
          (c/raise (arch/bytes-of-string "rand-int expected Int"))))
   ([a b] (raise-arity 2)))
+
+(defn- rand-below [m]                                    ; uniform in [0, m), m > 0
+  (let [lim (arch/i64-mul m (quot 9223372036854775807 m))]
+    (loop [r (next-rand)] (if (< r lim) (arch/i64-sub r (arch/i64-mul m (quot r m))) (recur (next-rand))))))
+
+;; A vm.Collection natively: the seq kinds that count without walking forever
+;; (not Repeat or ChunkedCons, which rand-nth refuses), vectors, strings,
+;; map entries, maps, sets, typed arrays.
+(defn- rand-coll? [k]
+  (cond (if (>= k 2) (<= k 5) false) true
+        (= k 7) true (= k 10) true (= k 11) true (= k 17) true (= k 23) true (= k 27) true
+        (if (>= k 30) (<= k 31) false) true
+        (if (>= k 37) (<= k 39) false) true
+        :else false))
+
+(defn ^{:twin "core/rand-nth"} rand-nth*
+  ([] (raise-arity 0))
+  ([coll] (let [k (c/ckind coll)]
+            (cond (= k 0) (arch/null)
+                  (rand-coll? k)
+                  (let [n (sq/unbox-int (sq/count coll))]
+                    (if (= n 0)
+                      (c/raise (arch/bytes-of-string "rand-nth called on empty collection"))
+                      (let [i (sq/box-int (rand-below n))]
+                        ;; a map or set is a vm.Lookup: ValueAt(idx) looks the index up as a key
+                        (if (if (if (= k 30) true (= k 31)) true (if (= k 38) true (= k 39)))
+                          (c/get coll i)
+                          (c/nth coll i)))))
+                  :else (c/raise (arch/bytes-of-string "rand-nth expected Collection")))))
+  ([a b] (raise-arity 2))
+  ([a b & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))
+
+(defn ^{:twin "core/shuffle"} shuffle*                    ; rand.Shuffle: Fisher-Yates from the top, j in [0, i]
+  ([] (raise-arity 0))
+  ([coll] (let [k (c/ckind coll)]
+            (cond (= k 0) (c/raise (arch/bytes-of-string "shuffle not supported on nil"))
+                  (= k 17) (c/raise (arch/bytes-of-string "shuffle not supported on string"))
+                  (if (= k 30) true (= k 38)) (c/raise (arch/bytes-of-string "shuffle not supported on map"))
+                  :else (let [v (sq/vec coll)]
+                          (loop [v v i (dec (sq/unbox-int (sq/count v)))]
+                            (if (> i 0)
+                              (let [j (rand-below (inc i)) bi (sq/box-int i) bj (sq/box-int j)
+                                    a (c/nth v bi) b (c/nth v bj)]
+                                (recur (c/assoc (c/assoc v bi b) bj a) (dec i)))
+                              v))))))
+  ([a b] (raise-arity 2))
+  ([a b & more] (raise-arity (+ 2 (sq/unbox-int (sq/count more))))))

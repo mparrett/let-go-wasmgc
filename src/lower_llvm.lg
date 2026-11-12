@@ -155,11 +155,22 @@
         (and (= :const op) (not (template? r)))
         (when-not (var? a) [a])))))
 
+;; native's class-name vars for the clojure.lang interfaces -> llvm.poly's def
+;; of the abstract Type with that name
+(def ll-interface-vars
+  (into {} (map (fn [e] [(or (resolve (first e)) (throw (ex-info (str "lower-llvm: native lg has no " (first e)) {}))) (second e)]))
+        '[[clojure.lang.Seqable seqable-type] [clojure.lang.Counted counted-type]
+          [clojure.lang.IPersistentCollection ipersistentcollection-type]
+          [clojure.lang.Associative associative-type] [clojure.lang.Indexed indexed-type]
+          [clojure.lang.IReduce ireduce-type] [IReduce ireduce-type]
+          [clojure.lang.IEditableCollection ieditablecollection-type]]))
+
 ;; core vars the llvm runtime implements as one of its top-level defs
 (defn ll-var-alias [v]
   (cond (and *rt* (= v #'os/args)) (lw-rt/rt-var 'host 'args)
         (and *rt* (= v #'*command-line-args*)) (lw-rt/rt-var 'host 'command-line-args)
         (and *rt* (= v #'Object)) (lw-rt/rt-var 'poly 'object-type)
+        (and *rt* (ll-interface-vars v)) (lw-rt/rt-var 'poly (ll-interface-vars v))
         (and *rt* (= v #'*out*)) (lw-rt/rt-var 'host 'stdout-handle)
         (and *rt* (= v #'*err*)) (lw-rt/rt-var 'host 'stderr-handle)
         (and *rt* (= v #'*in-wasm*)) (lw-rt/rt-var 'host 'in-wasm)
@@ -561,7 +572,7 @@
                                   (for [j (range 5 (inc ll-max-invoke))]
                                     (let [tg (str "n" j)]
                                       (str tg ":\n" (walk tg j)
-                                           "  musttail call tailcc void @lg_invoke" j "(ptr %k, " w " %f" (es tg j) ")\n  ret void\n"))))
+                                           "  musttail call tailcc void " (ll-q (str "lg_invoke" j)) "(ptr %k, " w " %f" (es tg j) ")\n  ret void\n"))))
                            "fail:\n"
                            (if (= :int (second (:params cf)))
                              (str "  musttail call tailcc void " (ll-q (:name cf)) "(ptr %k, " w " %f, i64 %n)\n")
@@ -640,6 +651,15 @@
       (and *rt* (= op :load-var) (#{#'*out* #'*err*} (ir/aux nid *f*)))
       (to (lw-rt/rt-var 'host (if (= (ir/aux nid *f*) #'*out*) 'out-handle 'err-handle)))
       (not= :call op) nil
+      ;; (satisfies? P x) of a protocol the program declares: a call of the
+      ;; predicate the driver made for P
+      (and *rt* (= v #'satisfies?) (= 2 (count args)) (q-protocol-pred (ll-callee-var (first args))))
+      (let [pv (q-protocol-pred (ll-callee-var (first args))) sig (ll-var-sig pv 1)]
+        (when-not sig (ll-fail "satisfies?: the protocol's predicate has no signature" {:var pv}))
+        (ll-note-abi! pv [(second args)] sig)
+        {:sig sig :args [(second args)] :var pv})
+      (and *rt* (= v #'satisfies?))
+      (ll-fail "satisfies? of a protocol not named at the call (protocols are not values on the llvm target)" {:argc (count args)})
       (= v #'throw) {:sig {:name "lg_throw" :params [:box] :ret :box} :args args}
       ;; wasm/call-ref: a call through a funcref, typed by its func decl
       (and v (lw-rt/intrinsic? v) (= "call-ref" (name (symbol v))))
@@ -873,6 +893,17 @@
 (defn ll-prim! [nid op refs]
   (let [n (count refs)]
     (cond
+      ;; no operand needed: (+) is 0 and (*) is 1, and a comparison of one
+      ;; value is true (unit-call-wat's cases)
+      (and (zero? n) (#{:add :mul} op)) (ll-def! nid :int (if (= op :add) "0" "1"))
+      (and (= 1 n) (ll-cmp op)) (ll-def! nid :bool "true")
+      ;; any other op with no operand: the runtime's arity error, as native
+      ;; raises it (catchable); the value after it is never read. Without the
+      ;; runtime the op is refused below, as before
+      (and (zero? n) *rt*)
+      (do (ll-emit! (ll-raise-text 'no-operand-error nil))
+          (ll-label! (ll-fresh "unreached"))
+          (ll-def! nid :box "0"))
       (and (= op :eq) (= 2 n) (every? #(= :bool (ll-arg-kind %)) refs))
       (let [a (ll-arg (first refs) :bool) b (ll-arg (second refs) :bool)
             v (str "%v" nid)]
@@ -1118,6 +1149,9 @@
         prim (if (= :call op) (core-var-ops v) op)
         args (if (= :call op) (rest refs) refs)]
     (when (and (ll-fast-ops prim) (:sig (ll-call-plan c)) (not (:invoke (ll-sig c)))
+               ;; the fast path is for the op's own operand count: (>= x) and
+               ;; the like go to the generic twin
+               (= (count args) (if (#{:inc :dec :zero? :pos? :neg?} prim) 1 2))
                (every? #{:box :int} (map ll-arg-kind args))
                (some #{:box} (map ll-arg-kind args)))
       prim)))
@@ -1884,7 +1918,8 @@
         (fnc (str "lg_kbox_" (name k)) ["ptr %rec" (str t " %v")]
              (str "  %ks = getelementptr %kbox, ptr %rec, i32 0, i32 1\n  %k = load ptr, ptr %ks\n" box
                   "  %kc = load ptr, ptr %k\n  musttail call tailcc void %kc(ptr %k, " w " %b)\n  ret void\n")))
-      (for [n (range (inc ll-max-invoke))] (ll-invoke-fn n fnt fn-ids))
+      ;; the code-slot arities; lg_invoke5.. are units the shake keeps when used
+      (for [n (range (inc max-arity))] (ll-invoke-fn n fnt fn-ids))
       ;; a trap: under --test a catchable error, "wasm trap: <msg>", as the
       ;; GC lane's $rt_trap with *trap-throws*; else the host's lg_trap
       [(fnc "lg_trapk" ["ptr %k" "ptr %msg"]
@@ -2005,7 +2040,7 @@
    table's own step: before it nothing can make a keyword, after it one made
    at run time must find the static one."
   [steps]
-  (let [g (:name (get (:globals @*rt*) (lw-rt/rt-var 'str 'globals)))
+  (let [g (:name (q-rt-global (lw-rt/rt-var 'str 'globals)))
         [pre post] (split-with #(not= g (:global %)) steps)]
     (if (seq post)
       (concat pre [(first post) {:call (ll-intern-statics-sym)}] (rest post))
@@ -2044,7 +2079,13 @@
         ;; by its latest lowering
         regions (let [rs @*regions* last-of (into {} (keep-indexed (fn [i r] (when (:name r) [(:name r) i])) rs))]
                   (keep-indexed (fn [i r] (when (or (nil? (:name r)) (= i (last-of (:name r)))) r)) rs))
-        all (concat fns rt-fns regions)
+        ;; lg_invoke5..ll-max-invoke, each a unit: a program keeps only the
+        ;; arities its live code calls through a value
+        invoke-units (let [fnt (ll-sty "$Fn") ids (map ll-tid ["$Fn" "$FnV" "$FnX"])]
+                       (mapv (fn [n] (let [r (lir/with-refs (fn [] (ll-invoke-fn n fnt ids)))]
+                                       (ll-unit {:items [(first r)]} (second r))))
+                             (range (inc max-arity) (inc ll-max-invoke))))
+        all (concat fns rt-fns regions invoke-units)
         w (ll-word)
         [pre prelude-refs] (lir/with-refs llvm-prelude)
         unit-refs (into {} (map (juxt :name :refs) all))

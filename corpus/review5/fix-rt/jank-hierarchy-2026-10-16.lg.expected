@@ -1,14 +1,14 @@
 make {:parents {}, :ancestors {}, :descendants {}} true
 derive-global nil nil nil nil nil nil
 parents1 #{:h/t} #{:h/p-1 :h/p-2} #{ns/p-0} nil nil #{:h/record} #{:h/num} nil nil nil nil
-ancestors1 #{:h/t :h/p-1 :h/p-2 ns/p-0} #{:h/p-1 :h/p-2 ns/p-0} nil nil #{:h/num}
+ancestors1 #{:h/t :h/p-1 :h/p-2 ns/p-0} #{:h/p-1 :h/p-2 ns/p-0} nil nil
 descendants1 #{:h/t :h/leaf :h/p-1} #{:h/t :h/leaf} nil nil #{:h/test-record} nil nil
 isa-global true true false true true true true true false false
-isa-vec true false false true false
+isa-vec true false true false
 diamond-parents #{:h/c :h/b} #{:h/a} #{} #{} #{:h/d} nil nil nil nil
 diamond-ancestors true #{:h/a} #{} true #{} nil
 diamond-descendants #{:h/leaf} #{:h/leaf :h/d} true nil nil
-diamond-isa true true false false false false false
+diamond-isa true true false false false false
 derive-h {:parents {:h/rect #{:h/shape}}, :ancestors {:h/rect #{:h/shape}}, :descendants {:h/shape #{:h/rect}}}
 derive-h2 {:parents {:h/rect #{:h/shape}, :h/square #{:h/rect}}, :ancestors {:h/rect #{:h/shape}, :h/square #{:h/rect :h/shape}}, :descendants {:h/shape #{:h/rect :h/square}, :h/rect #{:h/square}}}
 derive-h3 true {:parents {:rect #{:shape}}, :ancestors {:rect #{:shape}}, :descendants {:shape #{:rect}}} {:parents {n/a #{n/b}}, :ancestors {n/a #{n/b}}, :descendants {n/b #{n/a}}} {:parents {:h/x #{:h/y}}, :ancestors {:h/x #{:h/y}}, :descendants {:h/y #{:h/x}}}
