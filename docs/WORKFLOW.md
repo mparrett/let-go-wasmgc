@@ -53,8 +53,9 @@ taken while an in-flight item of the caller's can move.
 
 Commit subjects are Conventional Commits 1.0.0: `type(scope): description`,
 where the scope is the area the old prefixes named (`host`, `rt`, `checks`,
-`corpus`, `docs`). `checks/subject-lint.py` enforces it through the commit-msg
-hook that #68 adds to `.pre-commit-config.yaml` (`make -f
+`corpus`, `docs`). `checks/subject-lint.py` will enforce it through the
+commit-msg hook that #68 adds to `.pre-commit-config.yaml`, once #68 lands;
+until then the commit-msg stage runs only the corpus lint (`make -f
 checks/workflow.mk hooks` installs the hooks). Every commit, including those on a
 branch, since a squash merge keeps whichever subject the PR carries. A body
 says why; a trailer `Issue: #<id>`, `Fixes: #<id>` or `Closes: #<id>` names the
@@ -80,8 +81,9 @@ Each row also appends one line to the per-machine timings ledger
 codes, the directives and the owning-issue column are D228 (#69); the
 version line, the duration blocks and the ledger are D229 (#71); P0.7
 checks both. The GC byte guard (P8.0) is advisory. A general
-`LW_REQUIRE_<runtime>` opt-in is f1a846c's proposal; only
-`LW_REQUIRE_BROWSER` exists.
+`LW_REQUIRE_<runtime>` opt-in is f1a846c's proposal; today
+`LW_REQUIRE_BROWSER`, `LW_REQUIRE_WASMTIME` (D232) and `LW_REQUIRE_LLVM`
+each turn one runtime's SKIP into a FAIL.
 
 ## Records
 
