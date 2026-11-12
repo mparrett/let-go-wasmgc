@@ -166,7 +166,7 @@
 (defn ^{:twin "System/nanoTime"} nano-time [] (sq/box-int (arch/host-nanotime)))
 (defn ^{:twin "System/currentTimeMillis"} current-time-millis [] (sq/box-int (quot (arch/host-nanotime) 1000000)))
 (defn ^{:twin "let-go.core/now"} now []
-  (arch/trap "lower-wasm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
+  (arch/trap "llvm: let-go.core/now returns a Go time.Time (host interop; `time` needs .Sub)"))
 
 ;; sleep (lang.go:4572): Int or Float ms (a Float truncates); a non-positive
 ;; duration returns at once, as an expired time.Timer does. Through
@@ -383,3 +383,14 @@
   (let [n (arch/host-argc)]
     (loop [i 0 v (pv/empty-vec)]
       (if (< i n) (recur (inc i) (pv/vconj v (s/mk-str (arch/host-arg i)))) (pv/varray v)))))
+;; *command-line-args* (ll-var-alias): native's arguments after the program
+;; path, as a List of Strings (native builds a PersistentList), or nil when
+;; there are none. Built from the last argument back, as List.Cons does.
+(def command-line-args
+  (let [n (arch/host-argc)]
+    (if (<= n 2)
+      (arch/null)
+      (loop [i (dec n) l (sq/empty-list)]
+        (if (< i 2)
+          l
+          (recur (dec i) (arch/new sq/List (s/mk-str (arch/host-arg i)) l (inc (arch/get sq/List 2 l)) (arch/null))))))))

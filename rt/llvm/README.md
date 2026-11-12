@@ -5,11 +5,40 @@ with the reference `llvm.arch` standing in for the wasm instructions.
 Ground truth is let-go ff1e6dac. Each file's header states its dialect; the
 `dialect` deftest of its test file enforces it.
 
+## The runtime dialect
+
+The files that are not marked PLAIN in the table below are written in the
+runtime dialect: what a body may say once its macros are expanded, as the
+`dialect` deftests check (`corpus/llvm-rt/core_test.lg` and its siblings).
+
+- Allowed: the IR special forms (`if do let* loop* recur try fn* var set!
+  def quote`); any macro, since it is checked after expansion, so `let`,
+  `when`, `cond` and the threading macros (`system-properties` in core.lg
+  uses `->`); the runtime's own fns (`llvm.core`, `llvm.seq`, `llvm.pvec`, `llvm.str`, `llvm.phm`,
+  `llvm.phs`, `llvm.arrays`, `llvm.sorted`); `llvm.arch`'s intrinsics and
+  declarations; and the core fns the IR lowers to an op (`+ - * inc dec`,
+  the comparisons, the `bit-*` ops, `unchecked-add/subtract/multiply`,
+  `quot`, `throw`).
+- Not allowed: any other core fn, because the runtime is what implements
+  core, so a body cannot call the thing it defines (`not`, `not=`, `str`,
+  `assoc`, `get` and the rest are spelled through the runtime's own fns or
+  an `if`); and collection literals (`[..]`, `{..}`, `#{..}`), which would
+  need the collections the runtime builds (`pv/`, `m/`, `hs/` calls make
+  them).
+- `catch` takes only `Throwable`, the one catch class (D31).
+- Untested, though the check permits it: a closure (`fn`, `#(..)`). No
+  dialect file defines one, so whether the backend lowers a closure inside
+  runtime code the way it lowers one in a program is not shown.
+
+The PLAIN files (`natives.lg`, `eval.lg`, `poly.lg`, ...) are ordinary lg
+compiled by the backend after the dialect files load, so they use core
+freely.
+
 ## Load order and link step
 
 | order | file | ns | requires | owns |
 |---|---|---|---|---|
-| 1 | `arch.lg` | `llvm.arch` | | the 43 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
+| 1 | `arch.lg` | `llvm.arch` | | the 56 intrinsics, `defstruct`/`defarray`/`deffunc`, `Bytes` (INTRINSICS.md) |
 | 2 | `pvec.lg` | `llvm.pvec` | 1 | the persistent vector, `Node` arrays |
 | 3 | `seq.lg` | `llvm.seq` | 1 2 | the value model: every box struct, `Fn` (D52), `kind`, `equiv?`, `hash`; seq kinds, chunking, laziness, the seq natives; strings as collections; `float-bits`; the foreign-kind hook slots (SEQ.md) |
 | 4 | `str.lg` | `llvm.str` | 1 2 3 | building the scalar boxes, keyword/symbol interning, `str`/`pr-str`/`print-str`, float formatting, the string natives, `compare` (STR.md) |
@@ -158,7 +187,7 @@ FNV-1a of their String(), here as there.
   `nan:0x8000000000001`.
 - `upper-case`/`lower-case` map ASCII and Latin-1 and pass caseless scripts
   through (CJK, kana, Hangul, Indic, Hebrew/Arabic, symbols, emoji); other
-  cased text is a `lower-wasm:` named limit (Unicode case tables not ported).
+  cased text is an `llvm:` named limit (Unicode case tables not ported).
   `(int ##NaN)` is a named limit (Go leaves it platform-defined).
 - The Repeat type's own type is the Repeat type natively
   (`(type (type (repeat 1 1)))`): mirrored, like H1/M1.
@@ -209,7 +238,7 @@ entries (`massoc`, `vnth`, `sconj`, ...) carry no marker; the dispatching
 entries do, and where llvm.core's dispatcher supersedes a seq.lg/str.lg one
 (`conj`, `nth`, `peek`, `pop`, `compare`) the marker moved to llvm.core.
 `open` and `read-string` are named-limit twins: they claim the native and
-trap with a `lower-wasm:` message. `slurp` (llvm.natives, D138) raises
+trap with an `llvm:` message. `slurp` (llvm.natives, D138) raises
 native's catchable open-failed text, as `spit` does.
 
 ## Errors
@@ -221,7 +250,7 @@ reports unprefixed messages (msg = cmsg); `inc`/`dec`, being IR-op fns
 natively, carry the "ExecutionError: " prefix once caught. Under native lg the
 Err is a wasm ref, so only `catch Throwable` sees it. `arch/trap` is kept for
 invariant violations (`llvm.seq:`, `pvec:`, `phm:` prefixes: a hook not linked,
-a count that disagrees with its walk) and `lower-wasm:` named limits (D74
+a count that disagrees with its walk) and `llvm:` named limits (D74
 sweep, P2.13). Messages that name a type use `llvm.seq/kind-type-name` for
 seq.lg's kinds and llvm.core's namer for foreign values (Hooks slot 6,
 installed by `install!`). Every test file's `res` tags a reference trap

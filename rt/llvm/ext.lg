@@ -105,7 +105,7 @@
   "let-go.core/now: natively a Go time.Time, which only interop (.Sub) can
    read. The runtime's twin traps; xsofy evaluates (now) at load
    (ui/clock-epoch) without using it on the world path, so this stands in
-   the host's monotonic ns as an Int (interop on it stays unsupported)."
+   the host's monotonic ns as an Int, which dot-v's .Sub takes."
   [] (llvm.arch/host-nanotime))
 
 (defn term-size-v
@@ -209,10 +209,9 @@
   ([nm x] nil))
 
 (defn os-name-v
-  "os/os-name: runtime.GOOS of the build. This backend's target is the one
-   let-go's wasm bundle runs on (GOOS=js), and xsofy keys its web-only paths
-   (replay-dump via js/emit) on \"js\"."
-  [] "js")
+  "os/os-name: runtime.GOOS of the build, the host's operating system (not
+   \"js\": xsofy keys its web-only paths on that)."
+  [] (llvm.core/sysinfo 0))
 
 (declare get-bytes get-bytes-enc)
 
@@ -227,13 +226,13 @@
    String.getBytes (P2.14). Anything else is a named limit."
   ([obj m] (if (and (= m 'getBytes) (string? obj))
              (get-bytes obj)
-             (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported")))))
+             (llvm.core/raise (llvm.str/str-bytes (str "llvm: host interop (." m ") is not supported")))))
   ([obj m a] (cond (and (= m 'Sub) (int? obj) (int? a)) (ns-between obj a)
                    (and (= m 'getBytes) (string? obj)) (get-bytes-enc obj a)
-                   :else (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported")))))
+                   :else (llvm.core/raise (llvm.str/str-bytes (str "llvm: host interop (." m ") is not supported")))))
   ([obj m a b] (if (and (= m 'getBytes) (string? obj))
                  (llvm.core/raise (llvm.str/str-bytes "string.getBytes expected 0 or 1 argument, got 2"))
-                 (llvm.core/raise (llvm.str/str-bytes (str "lower-wasm: host interop (." m ") is not supported"))))))
+                 (llvm.core/raise (llvm.str/str-bytes (str "llvm: host interop (." m ") is not supported"))))))
 
 (defn char-v
   "core/char? (P4.1: reached through long-v once json-str calls long)."
@@ -440,7 +439,7 @@
    Runs natively, at build time."
   [src]
   (let [cs (vec src) n (count cs) pos (atom 0) ngroups (atom 0)
-        fail (fn [m] (throw (ex-info (str "lower-wasm: regex " m " (named limit)") {:src src})))
+        fail (fn [m] (throw (ex-info (str "llvm: regex " m " (named limit)") {:src src})))
         peekc (fn [] (when (< @pos n) (nth cs @pos)))
         nextc (fn [] (let [c (nth cs @pos)] (swap! pos inc) c))
         esc-class {\d :d \w :w \s :s \D :D \W :W \S :S}
@@ -948,6 +947,14 @@
                   (llvm.seq/reduce (nth args 2) x)
                   (and (= nm "reduce") (= 4 (count args)))
                   (llvm.seq/reduce (nth args 2) (nth args 3) x)
+                  ;; the two host methods core/. takes on both lanes (dot-v):
+                  ;; xsofy's (.Sub (now) epoch) and String.getBytes
+                  (and (= nm "Sub") (= 3 (count args)) (int? x) (int? (nth args 2)))
+                  (dot-v x (second args) (nth args 2))
+                  (and (= nm "getBytes") (<= (count args) 4) (string? x))
+                  (apply dot-v x (second args) (drop 2 args))
+                  ;; a Go string is a receiver whose other methods are missing
+                  (string? x) (raise-lit (str "method " nm " not found on string"))
                   :else (raise-lit "method-invoke expected Receiver"))))))
 
 (defn sorted-map-v

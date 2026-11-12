@@ -88,6 +88,20 @@ void lg_div_zero(void) { lg_error("divide by zero"); }
 /* A failed cast or an index out of range (wasm traps there). */
 void lg_trap(const char *msg) { lg_error(msg); }
 
+/* lg_trapk's message under --test: "wasm trap: <msg>" as a Bytes, the text
+   the GC lane's $rt_trap raises with *trap-throws* */
+static intptr_t lg_bytes_of(const void *p, size_t n);
+intptr_t lg_trap_bytes(const char *msg) {
+  static const char pre[] = "wasm trap: ";
+  size_t p = sizeof pre - 1, n = 0;
+  while (msg[n]) n++;
+  unsigned char buf[512];
+  if (p + n > sizeof buf) n = sizeof buf - p;
+  for (size_t i = 0; i < p; i++) buf[i] = (unsigned char)pre[i];
+  for (size_t i = 0; i < n; i++) buf[p + i] = (unsigned char)msg[i];
+  return lg_bytes_of(buf, p + n);
+}
+
 static void lg_copy(unsigned char *d, const unsigned char *s, size_t n) {
   if (d < s) for (size_t i = 0; i < n; i++) d[i] = s[i];
   else for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
@@ -182,6 +196,7 @@ int64_t lg_host_write_bytes(int64_t fd, intptr_t w) {
  * bare.c): getenv and url-param are Bytes -> Bytes or nil; read-key's 0
  * bytes is end of input (nil); size is cols << 32 | rows. */
 const char *lg_host_getenv_c(const char *name);
+const char *lg_host_sysinfo_c(int k); /* 0 os, 2 cwd, 3 temp dir, 4 home, 5 user name */
 int lg_host_read_key(unsigned char *buf, int cap);
 int lg_host_key_ready(void);
 void lg_host_term_dims(int *cols, int *rows);
@@ -198,6 +213,34 @@ int64_t lg_host_open(intptr_t w, int64_t mode) {
   return lg_host_open_c(path, (int)mode);
 }
 
+/* runtime.GOARCH of this build: Go fixes it when it compiles, so do we */
+static const char *lg_arch(void) {
+#if defined(__aarch64__)
+  return "arm64";
+#elif defined(__x86_64__)
+  return "amd64";
+#elif defined(__arm__)
+  return "arm";
+#elif defined(__i386__)
+  return "386";
+#elif defined(__riscv) && __riscv_xlen == 64
+  return "riscv64";
+#else
+  return "";
+#endif
+}
+
+/* os/os-name, os/arch and System's properties: Bytes, or nil for an
+   unknown k */
+intptr_t lg_host_sysinfo(int64_t k) {
+  if (k < 0 || k > 5) return 0;
+  const char *v = k == 1 ? lg_arch() : lg_host_sysinfo_c((int)k);
+  if (!v) return 0;
+  size_t n = 0;
+  while (v[n]) n++;
+  return lg_bytes_of(v, n);
+}
+
 intptr_t lg_host_getenv(intptr_t w) {
   const lg_bytes *nm = (const lg_bytes *)w;
   char name[256];
@@ -212,17 +255,23 @@ intptr_t lg_host_getenv(intptr_t w) {
 }
 
 intptr_t lg_term_read_key(void) {
-  unsigned char buf[16];
+  unsigned char buf[256];
   int n = lg_host_read_key(buf, sizeof buf);
   return n <= 0 ? 0 : lg_bytes_of(buf, (size_t)n);
 }
 
 int32_t lg_term_key_pending(void) { return lg_host_key_ready(); }
 
+/* term/raw-mode! and term/restore-mode! on stdin (term.go:315-370). */
+int lg_host_raw_mode(void);
+int lg_host_restore_mode(void);
+int64_t lg_term_raw_mode(void) { return lg_host_raw_mode(); }
+int64_t lg_term_restore_mode(void) { return lg_host_restore_mode(); }
+
 int64_t lg_term_size(void) {
   int c = 80, r = 24;
   lg_host_term_dims(&c, &r);
-  return ((int64_t)c << 32) | (uint32_t)r;
+  return (int64_t)(((uint64_t)(uint32_t)c << 32) | (uint32_t)r);
 }
 
 /* js/emit and js/url-param off a browser: native emits nothing and finds

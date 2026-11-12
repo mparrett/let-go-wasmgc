@@ -130,13 +130,17 @@
   (same-io (term/flush) (t/flush)))
 
 ;; ---------------------------------------------------------------------------
-;; Modes and geometry (pinned to term_wasm.go)
+;; Modes and geometry (modes pinned to term.go, geometry to term_wasm.go)
 
 (deftest modes
   (c/install!)
-  ;; term_wasm.go:51-59: both return vm.TRUE whatever the arguments
-  (is (= true (ct/<-w (t/raw-mode!))))
-  (is (= true (ct/<-w (t/restore-mode!))))
+  ;; term.go:315-370: stdin's mode; with no terminal (as under native lg)
+  ;; raw-mode! is nil, and restore-mode! is nil with nothing saved
+  (is (nil? (ct/<-w (t/raw-mode!))))
+  (is (nil? (ct/<-w (t/restore-mode!))))
+  ;; the handle forms keep the browser's no-op (term_wasm.go:51-59)
+  (is (= true (ct/<-w (t/raw-mode! nil))))
+  (is (= true (ct/<-w (t/restore-mode! nil nil))))
   (is (= "" (with-out-str (t/raw-mode!) (t/restore-mode!)))))
 
 (deftest size
@@ -257,7 +261,7 @@
                                        (or (:intrinsic (meta v)) (:llvm.arch/kind @v)))
                                   (and (string/starts-with? vname "#'core/") (ir-op-fns (symbol (name sym))))))]
                [(second d) sym]))]
-    (is (= 3 (count (filter intrinsic-defn? all))) "term-read-key term-key-pending term-size")
+    (is (= 5 (count (filter intrinsic-defn? all))) "term-read-key term-key-pending term-size term-raw-mode term-restore-mode")
     (is (<= 25 (count defns)) "rt/llvm/term.lg defns")
     (is (empty? bad) (str "rt/llvm/term.lg non-dialect references: " (pr-str bad)))
     (testing "the intrinsics carry D24's metadata"
