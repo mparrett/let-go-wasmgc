@@ -66,6 +66,10 @@ A lapsed ping certificate is rejected; `send` rotates to a fresh one.
    `send <peer> <issue>`, `pending` and `done <issue>` run unattended.
    `send` refuses until the issue's note is on the remote, since the peer
    fetches it from there.
+   On macOS with the application firewall on, the first `listen` asks
+   whether `dhtnode` may accept incoming connections; it was allowed on the
+   host where pings were first received. An OpenDHT upgrade replaces the
+   binary, so the prompt may return.
    `sideband.sh stop` ends the agent, and the issuer and ping keys with it.
 
 ## Presence
