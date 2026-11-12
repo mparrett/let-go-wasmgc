@@ -669,18 +669,25 @@
 ;; else reaches a record through the generic arms below by kind 45.
 
 (defn- rec-types [] (let [t (wasm/get Globals 3 globals)] (if (wasm/null? t) (let [e (m/empty-map)] (wasm/set! Globals 3 globals e) e) t)))
+(defn- same-fields? [a fs]                                ; keywords are interned, so ref-eq
+  (let [n (wasm/alen a)]
+    (if (= n (pv/vcount fs))
+      (loop [i 0] (cond (>= i n) true (wasm/ref-eq (wasm/aget m/HSlots a i) (pv/vnth fs i)) (recur (inc i)) :else false))
+      false)))
 (defn record-type
-  "The RecType interned for tag; fs, a vector of keywords, fixes its fields
-   on the first call."
+  "The RecType interned for tag with the fields fs, a vector of keywords.
+   A defrecord that redefines tag with other fields replaces the interned
+   type, as native's evaluation of defrecord makes a new type: instances
+   built before keep the old one, and the two types are not =."
   [tag fs]
   (let [ts (rec-types) t (m/mget ts tag (wasm/null))]
-    (if (wasm/null? t)
+    (if (if (wasm/null? t) false (same-fields? (wasm/get RecType 1 t) fs))
+      t
       (let [n (pv/vcount fs) a (wasm/array-new m/HSlots n (wasm/null))]
         (loop [i 0] (when (< i n) (wasm/aset! m/HSlots a i (pv/vnth fs i)) (recur (inc i))))
         (let [nt (wasm/new RecType tag a (wasm/null))]
           (wasm/set! Globals 3 globals (m/massoc ts tag nt))
-          nt))
-      t)))
+          nt)))))
 (defn- rec-fields [r] (wasm/get RecType 1 (wasm/get Rec 0 r)))
 (defn- rec-vals [r] (wasm/get Rec 1 r))
 (defn- rec-extra [r] (wasm/get Rec 2 r))

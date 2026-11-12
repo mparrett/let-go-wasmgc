@@ -36,3 +36,10 @@
 (show "update" [(update r :a inc) (merge r {:a 5}) (get-in {:r r} [:r :a]) (apply ->R [7 8]) (reduce (fn [acc [k v]] (conj acc k)) [] r)])
 (show "find" [(find r :a) (find r :zz) (find (->R nil 2) :a) (find (assoc r :c 3) :c)])
 (show "field-less" [(->Q 5) (:x (->Q 5)) (= (->Q 5) (->Q 5)) (= (->Q 5) (->R 5 nil))])
+;; a defrecord that redefines a name with other fields makes a new type:
+;; instances built before keep their fields and type, and the types differ
+(defrecord Rd [a])
+(def rd1 (->Rd 1))
+(defrecord Rd [a b])
+(def rd2 (->Rd 1 2))
+(show "redefine" [(count rd2) (keys rd2) rd2 (count rd1) rd1 (= (type rd1) (type rd2)) (= rd1 (->Rd 1 nil)) (map->Rd {:a 1 :b 2})])
