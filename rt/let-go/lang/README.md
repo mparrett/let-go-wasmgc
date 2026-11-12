@@ -23,6 +23,7 @@ lg: its defns compile when a program or the runtime reaches them (D114).
 | order | file | ns | requires | owns |
 |---|---|---|---|---|
 | 1 | `bignum.lg` | `let-go.lang.bignum` | | BigInt and Ratio (below) |
+| 2 | `decimal.lg` | `let-go.lang.decimal` | 1 | BigDecimal (below) |
 
 A library deftype becomes a runtime value through `wasm/deftype-struct`
 (rt/wasm/intrinsics.lg): the dialect declares a struct for it, and the
@@ -32,3 +33,4 @@ struct (git-issue:4d19ae0, D230). Natively the instance stays the deftype's.
 | File | Namespace | What it is |
 |---|---|---|
 | `bignum.lg` | `let-go.lang.bignum` | BigInt and Ratio (deftypes; 32-bit limbs in an int-array, sign apart): parse/print, add sub mul, quot rem mod (let-go's) and ediv emod (big.Int's Euclidean), gcd, compare, nearest-even float64, and `simplify` (let-go's MaybeSimplifyRatio). The wasm runtime loads it (row 1 above) as its BigInt and Ratio values (rt/wasm/numtower.lg, D230); the llvm target does not yet compile it as a library (it refuses a def constant used as a value). |
+| `decimal.lg` | `let-go.lang.decimal` | BigDecimal (a deftype: an unscaled BigInt and a decimal exponent, canonical with no trailing decimal zero, so `1.0M` and `1M` are one value): make, compare (two values, or one against a double taken apart as m * 2^k, the exact comparison native makes), nearest-even float64. Exact where native's big.Float holds 128 bits, so a literal past about 38 significant digits is kept here and rounded there (D233). The wasm runtime loads it (row 2) as its BigDecimal value (rt/wasm/numtower.lg). |
