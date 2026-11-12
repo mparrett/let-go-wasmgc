@@ -1,0 +1,18 @@
+id: de22e8e
+v: 2
+title: llvm: BigInt, Ratio and BigDecimal as runtime values
+status: open
+priority: medium
+created: 2026-11-12T15:03:16Z
+updated: 2026-11-12T15:03:16Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: The llvm runtime has no BigInt, Ratio or BigDecimal (D15). Each of these is a GC runtime value since D230 and D233, through let-go.lang.bignum and let-go.lang.decimal, which are plain lg written for every target. On llvm, `/` of two Ints yielding a Ratio and `(/ MinInt64 -1)` raise named limits, and so do `bigint` and `bigdec`; `numerator` and `denominator` raise native's "expects a Ratio"; and the reader refuses BigInt, Ratio and BigDecimal literals. P13.9 skips the five programs that need these values: corpus/opmatrix's div-1, div-2 and recip, and corpus/wasm's bignum-values and bigdec-values (#110).
+ 
+ The work: load rt/let-go/lang on llvm as the GC lane does, add an rt/llvm counterpart of rt/wasm/numtower.lg (the values' representation, printing, hash, equality, compare, and `/`), and drop the P13.9 lines in the two SKIP files.
+ 
+ Facts that close it:
+ 
+ - F1 P13.9 runs the five programs with no P13.9 lines in corpus/opmatrix/SKIP or corpus/wasm/SKIP, and they MATCH native lg: `checks/run.sh P13.9`, exit 0.
+ - F2 the llvm twins of bigint, bigdec, numerator and denominator answer as native does for BigInt, Ratio and BigDecimal arguments: corpus/llvm-rt/xsofy_natives_test.lg's cases use `same`, not `same-or-limit`, and `checks/run.sh P13.7` exits 0.
