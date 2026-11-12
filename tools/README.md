@@ -91,8 +91,9 @@ reads only the markers.
 dir of symlinks (reach.lg writes to its cwd and slurps fixtures relative to
 it). It needs that original probe checked out beside this repository;
 `reach.lg` is not in this repository, and the script exits 2 naming the
-missing file without it. The header gives the invocations that reproduce the probe's xsofy and
-legmacs lists, and `natives-shared.txt` is their `comm -12`.
+missing file without it. The header gives the invocations that reproduce
+the probe's xsofy and legmacs lists, and `natives-shared.txt` is their
+`comm -12`.
 
 ## git-issue-watch.py
 
