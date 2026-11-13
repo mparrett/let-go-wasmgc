@@ -147,3 +147,13 @@
     (loop [ls #{}]
       (let [more (into ls (for [[k cs] calls :when (every? ls cs)] k))]
         (if (= more ls) ls (recur more))))))
+
+(defn mark-leaves!
+  "Record :leaf true on the signature arity of each leaf among infos, and
+   return the leaves. A callee's sig is read without analysing it: one not
+   analysed yet keeps its caller out."
+  [infos]
+  (let [ls (leaves infos (fn [v argc] (get-in (or (lw/q-sig v) (some-> (lw/rt-target v) lw/q-sig))
+                                              [:arities argc])))]
+    (swap! lw/*sigs* (fn [sigs] (reduce (fn [s k] (assoc-in s [(first k) :arities (second k) :leaf] true)) sigs ls)))
+    ls))

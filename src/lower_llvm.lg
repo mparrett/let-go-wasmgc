@@ -2178,12 +2178,14 @@
 
 (defn ll-rtlib-key-extra
   "The llvm compiler's sources and the resolved profile: both shape every
-   lowered line (the lg binary and lower_wasm.lg are in the shared key)."
+   lowered line (the lg binary and lower_wasm.lg are in the shared key).
+   And the trap mode: a fn whose ops trap is a leaf only while traps abort."
   []
   (str (apply str (map #(slurp (str lw-rt/src-dir "/" %))
                        ["lower_llvm.lg" "lower_llvm_rt.lg" "lower_llvm_profile.lg" "lower_llvm_poly.lg"
-                        "lower_llvm_ir.lg" "lower_llvm_cache.lg"]))
-       "|profile=" (pr-str (llvm-profile))))
+                        "lower_llvm_ir.lg" "lower_llvm_cache.lg" "lower_llvm_leaf.lg"]))
+       "|profile=" (pr-str (llvm-profile))
+       (if *trap-throws* "|trap-throws" "")))
 
 (defn- ll-snap-key? [k]
   ;; the derived type lists are recomputed; :llvm-try memos hold an atom

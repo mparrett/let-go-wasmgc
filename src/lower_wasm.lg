@@ -4860,6 +4860,13 @@
                     (swap! *sigs* dissoc (:var d))
                     (swap! fails conj [(qual-name (:var d)) (ex-message e)]))))
     (doseq [g lw-rt/globals] (rt-global! (:var g)))
+    ;; llvm: the leaf arities among the analysed defns, recorded in their
+    ;; sigs (saved with the library); a fn analysed while lowering is none
+    (when (= *target* :llvm)
+      (let [by-name (into {} (for [[v e] @*sigs* [argc sig] (:arities e)] [(:name sig) [v argc]]))]
+        ((resolve 'lower-llvm-leaf/mark-leaves!)
+         (keep (fn [info] (when-let [[v argc] (by-name (:name info))] (assoc info :var v :argc argc)))
+               (:pending @*rt*)))))
     (loop []
       (when (seq (:pending @*rt*))
         (let [info (first (:pending @*rt*))]

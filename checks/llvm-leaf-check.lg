@@ -2,7 +2,8 @@
   (:require [test :refer [deftest is]]
             [leaf-check-driver :as driver]
             [lower-wasm :as lw]
-            [llvm.arch :as arch]))
+            [llvm.arch :as arch]
+            [lw-rt]))
 
 (lw/ensure-llvm-target!)
 (require '[lower-llvm-leaf :as leaf])
@@ -67,5 +68,26 @@
         (is (leaf/leaf-op? f bget false))
         (is (not (leaf/leaf-op? f bget true)))))))
 
+;; The driver's analysis records each leaf arity in its signature.
+(deftest records-leafness
+  (in-session false
+    (analyze)
+    (is (:leaf (sig-of #'r64 2)))
+    (is (not (:leaf (sig-of #'add-boxed 2))))))
+
+(defn rtlib-in-bounds
+  "The arity sig of llvm.seq/in-bounds?, a runtime leaf (int compares), in
+   a session started from the cached runtime library (built on the first
+   call, restored after)."
+  []
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (sig-of (lw-rt/rt-var 'seq 'in-bounds?) 3))))
+
+(deftest leafness-survives-the-runtime-library
+  (rtlib-in-bounds)
+  (is (:leaf (rtlib-in-bounds))))
+
 (let [result (test/run-tests 'llvm-leaf-check)]
-  (os/exit (if (and (= 2 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 4 (:test result)) (test/successful? result)) 0 1)))
