@@ -36,11 +36,13 @@
 - Create: `src/lower_llvm_leaf.lg` (namespace `lower-llvm-leaf`; required by `lower_llvm.lg`)
 - Create: `checks/llvm-leaf-check.lg`, `checks/llvm-leaf-check.sh`
 - Modify: `checks/items.tsv`, `checks/affected.sh` (row `LLVM.LEAVES`, as `LLVM.ORC` is laid out)
+- Modify: `src/lower_llvm.lg`: rename the existing `ll-leaf-vars`/`ll-leaf-var?` (calls emitted inline without the runtime: `println`) to `ll-inline-vars`/`ll-inline-var?`, every use included, so "leaf" names only this plan's concept
 
 **Interfaces:**
 - Produces: `(leaf-op? f nid trap-throws?) -> boolean`: nid's op is on the allowlist (one table, `leaf-ops`, beside the fn).
 - Produces: `(leaves infos sig-of) -> #{[var argc]}`: `infos` are analysed fn infos (`{:name :f :params :ret :var :argc}`), `sig-of` maps a callee var and argc to its arity sig or nil. Fixpoint from fns with no calls; a fn joins when every call reaches a known leaf of matching fixed arity; any fn on a call-graph cycle (self-calls included, other than `recur`) is excluded.
 
+- [ ] **Step 0: Rename `ll-leaf-vars`/`ll-leaf-var?` to `ll-inline-vars`/`ll-inline-var?`** (no behavior change; `grep -n 'll-leaf-var' src/` finds nothing after).
 - [ ] **Step 1: Write the failing check.** `checks/llvm-leaf-check.lg` builds IR (ir.build + the driver's pipeline, as the analysis path does) for these defns and asserts the classification:
   - leaves: `(defn r16 [b o] (bit-or (aget b o) (bit-shift-left (aget b (inc o)) 8)))`, `r32` calling `r16`, `r64` calling `r32`; `(defn sum-to [n] (loop [i 0 a 0] (if (< i n) (recur (inc i) (+ a i)) a)))` with `+` the wrapping op; a fn returning a fresh vector of its args (allocates).
   - not leaves: a fn using checked `+` on boxed values; a fn with `throw`; a fn with `try`; a fn returning a closure; `even?`/`odd?` defined mutually; a fn calling a non-leaf; a variadic arity (while its fixed arity is a leaf); `r16` when `trap-throws?` is true.
