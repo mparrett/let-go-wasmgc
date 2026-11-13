@@ -146,6 +146,7 @@ P12.39	src/lower_llvm.lg src/lower_llvm_rt.lg src/lower_llvm_ir.lg src/lower_llv
 LLVM.RTLIB.REUSE	src/ rt/llvm/ checks/llvm-rtlib-reuse-check.sh checks/llvm-rtlib-reuse-check.lg checks/native-run.sh checks/llvm-probe.sh
 LLVM.JANK.ADAPTER	oracle src/ checks/jank-llvm-check.sh checks/jank-reader-check.sh checks/jank-reader-check.lg checks/fixtures/jank-reader/ checks/run-tests.sh checks/jank-suite.sh checks/llvm-probe.sh
 LLVM.ORC	host/native/ src/ checks/native-run.sh checks/build-orc-runner.sh checks/llvm-orc-check.sh checks/fixtures/orc/ checks/llvm-probe.sh
+LLVM.LEAVES	src/ rt/llvm/ checks/llvm-leaf-check.sh checks/llvm-leaf-check.lg
 LLVM.RUNTIME.LOOKUP	src/lw_rt.lg checks/runtime-var-lookup-check.sh checks/runtime-var-lookup-check.lg
 LLVM.CACHE.PACKAGING	src/ checks/self-compile-module.sh checks/self-compile.sh checks/self-compile-deps-check.sh
 LLVM.ANALYSIS.REUSE	src/ rt/llvm/ host/native/ checks/llvm-analysis-reuse-check.sh checks/llvm-analysis-input-check.sh checks/llvm-analysis-input-check.lg checks/fixtures/analysis-reuse/ checks/llvm-probe.sh

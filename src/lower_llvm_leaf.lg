@@ -1,0 +1,149 @@
+;; lower-llvm-leaf: which fn arities are leaves, fns the llvm lowering can
+;; call directly inside its CPS. A leaf's body raises nothing catchably and
+;; calls only other leaves, so a call to one needs no continuation and no
+;; handler. Required at the end of lower_llvm.lg, whose helpers it uses
+;; (ll-arg-kind, ll-callee-var, ll-materialized?, ll-float-op?).
+(ns lower-llvm-leaf
+  (:require [lower-wasm :as lw] [lw-rt]))
+
+(defn- kinds [args] (map lw/ll-arg-kind args))
+
+(defn- fits?
+  "A value of kind have passed where want is read, without a conversion
+   that raises: unboxing to an int or a float is checked, catchably."
+  [have want]
+  (not (and (= have :box) (contains? #{:int :float :func} want))))
+
+(defn- wants [& ks]
+  (fn [_ args] (and (= (count ks) (count args)) (every? true? (map fits? (kinds args) ks)))))
+
+(defn- all-ints [_ args] (every? #{:int} (kinds args)))
+
+;; f64 arithmetic or a compare (ll-prim!'s float case), with no boxed operand
+(defn- floats [op args] (let [ks (kinds args)] (and (lw/ll-float-op? op ks) (not-any? #{:box} ks))))
+
+(defn- ints-or-floats [op args] (or (all-ints op args) (floats op args)))
+
+(defn- same-scalars [op args]
+  (let [ks (kinds args)] (or (= ks [:int :int]) (= ks [:bool :bool]) (floats op args))))
+
+;; an intrinsic whose operand is a declaration: its slots' kinds
+(def ^:private slot-kind {:i64 :int :i32 :int :i8 :int :f64 :float :ref :box :funcref :func})
+
+(defn- decl-of [nid] (when-let [v (lw/var-of nid)] (let [d @v] (when (map? d) d))))
+
+(defn- slots
+  "A test over a declaration intrinsic's operands: the declaration, then
+   (head decl) more fixed kinds, then the slot kind (slot decl args) names."
+  [head slot]
+  (fn [op args]
+    (when-let [d (decl-of (first args))]
+      ((apply wants (concat [:box] (head d) (when slot [(slot-kind (slot d args))]))) op args))))
+
+(def leaf-ops
+  "The ops a leaf may use, IR ops and intrinsics (by name): each with the
+   test its operands must pass, and :trap when it traps on bad input (a
+   failed cast or index aborts, but raises catchably when traps throw)."
+  {:load-arg [(wants)] :block-arg [(wants)]
+   :unchecked-add [all-ints] :unchecked-sub [all-ints] :unchecked-mul [all-ints]
+   :bit-and [all-ints] :bit-or [all-ints] :bit-xor [all-ints] :bit-not [all-ints] :bit-and-not [all-ints]
+   :bit-shift-left [all-ints] :bit-shift-right [all-ints] :unsigned-bit-shift-right [all-ints]
+   :lt [ints-or-floats] :lte [ints-or-floats] :gt [ints-or-floats] :gte [ints-or-floats]
+   :eq [same-scalars] :zero? [ints-or-floats] :pos? [ints-or-floats] :neg? [ints-or-floats]
+   ;; + - * inc dec on ints are checked (they raise on overflow): floats only
+   :add [floats] :sub [floats] :mul [floats] :div [floats] :inc [floats] :dec [floats]
+   "i64-add" [(wants :int :int)] "i64-sub" [(wants :int :int)] "i64-mul" [(wants :int :int)]
+   "i64-shl" [(wants :int :int)] "i64-shr-s" [(wants :int :int)] "i64-shr-u" [(wants :int :int)]
+   "i64-lt-u" [(wants :int :int)] "i64-clz" [(wants :int)] "i64-ctz" [(wants :int)]
+   "i64-popcnt" [(wants :int)] "i32-wrap" [(wants :int)] "i64-extend-i32-u" [(wants :int)]
+   "i64-to-f64" [(wants :int)] "f64-to-i64" [(wants :float)] "f64-neg" [(wants :float)]
+   "fix" [(wants :int)] "fix?" [(wants :box)] "fix-get" [(wants :box) :trap]
+   "fix-min" [(wants)] "fix-max" [(wants)]
+   "null" [(wants)] "null?" [(wants :box)] "ref-eq" [(wants :box :box)]
+   "new" [(slots #(map (comp slot-kind :type) (:fields %)) nil)]
+   "get" [(wants :box :box :int) :trap]
+   "set!" [(slots (constantly [:box :int])
+                  (fn [d args] (let [i (lw/const-val (nth args 2))] (when (int? i) (:type (get (:fields d) i))))))
+           :trap]
+   "is?" [(wants :box :box)] "as" [(wants :box :box) :trap]
+   "array-new" [(slots (constantly [:int]) (fn [d _] (:elem d)))]
+   "aget" [(wants :box :box :int) :trap]
+   "aset!" [(slots (constantly [:box :int]) (fn [d _] (:elem d))) :trap]
+   "alen" [(wants :box) :trap]
+   "bytes-new" [(wants :int)] "bget" [(wants :box :int) :trap] "bset!" [(wants :box :int :int) :trap]})
+
+(defn- op-ok? [op args trap-throws?]
+  (let [[test trap] (get leaf-ops op)]
+    (boolean (and test (not (and trap trap-throws?)) (test op args)))))
+
+(defn- leaf-op* [nid trap-throws?]
+  (let [f lw/*f* op (ir/op nid f) refs (ir/refs nid f)]
+    (case op
+      ;; a literal or a Var object; an fn template makes a closure
+      :const (not (lw/closure-val? nid))
+      ;; a defn or a constant, not a read through the var table or a root
+      :load-var (and (lw/ll-materialized? nid) (not (:dynamic (meta (ir/aux nid f)))))
+      :call (let [v (lw/ll-callee-var (first refs)) args (rest refs)]
+              (cond (lw-rt/intrinsic? v) (op-ok? (name (symbol v)) args trap-throws?)
+                    (lw/core-var-ops v) (op-ok? (lw/core-var-ops v) args trap-throws?)
+                    :else false))
+      (op-ok? op refs trap-throws?))))
+
+(defn leaf-op?
+  "Is nid's op one a leaf may use (on leaf-ops, its operands passing its
+   test)? A call of a fn is not: leaves decides those."
+  [f nid trap-throws?]
+  (binding [lw/*f* f lw/*memo* (atom {})]
+    (leaf-op* nid trap-throws?)))
+
+(defn- edges-fit?
+  "Each value block b's terminator passes reaches its param (a recur's: the
+   fn's) without a raising conversion."
+  [b params]
+  (let [f lw/*f* t (ir/block-term b f)]
+    (case (when t (ir/op t f))
+      (nil :return) true
+      :recur-fn (every? true? (map fits? (kinds (ir/refs t f)) params))
+      (:branch :branch-if)
+      (every? (fn [e] (every? true? (map #(fits? (lw/ll-arg-kind %1) (lw/ty %2))
+                                         (ir/branch-target-args e) (ir/block-params (:target e) f))))
+              (lw/ll-term-edges b))
+      false)))
+
+(defn- leaf-calls
+  "The [var argc] of the fns info's body calls when everything else in it
+   is leaf-op? and each call passes its args without a raising conversion,
+   else nil. A variadic arity is never a leaf."
+  [{:keys [f var argc params func-vals]} sig-of trap-throws?]
+  (when (and f var (int? argc))
+    (binding [lw/*f* f lw/*memo* (atom {}) lw/*func-vals* (or func-vals #{})]
+      (let [call-of (fn [nid]
+                      (when (= :call (ir/op nid f))
+                        (let [refs (ir/refs nid f) v (lw/ll-callee-var (first refs))
+                              n (count (rest refs)) sig (when v (sig-of v n))]
+                          (when (and sig (every? true? (map fits? (kinds (rest refs)) (:params sig))))
+                            [v n]))))]
+        (reduce (fn [calls b]
+                  (or (when (edges-fit? b params)
+                        (reduce (fn [calls nid]
+                                  (if (leaf-op* nid trap-throws?)
+                                    calls
+                                    (if-let [c (call-of nid)] (conj calls c) (reduced nil))))
+                                calls (ir/block-insts b f)))
+                      (reduced nil)))
+                #{} (ir/blocks f))))))
+
+(defn leaves
+  "#{[var argc]} of the leaf arities among analysed fn infos ({:f :params
+   :var :argc}); (sig-of var argc) is the callee arity's signature or nil.
+   A fixpoint from the fns that call nothing: a fn joins once every fn it
+   calls has, so none on a call-graph cycle (a self-call included; recur is
+   a loop, not a call) ever does."
+  [infos sig-of]
+  (let [calls (into {} (keep (fn [info]
+                               (when-let [cs (leaf-calls info sig-of lw/*trap-throws*)]
+                                 [[(:var info) (:argc info)] cs])))
+                    infos)]
+    (loop [ls #{}]
+      (let [more (into ls (for [[k cs] calls :when (every? ls cs)] k))]
+        (if (= more ls) ls (recur more))))))

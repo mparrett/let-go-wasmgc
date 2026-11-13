@@ -1,0 +1,71 @@
+(ns llvm-leaf-check
+  (:require [test :refer [deftest is]]
+            [leaf-check-driver :as driver]
+            [lower-wasm :as lw]
+            [llvm.arch :as arch]))
+
+(lw/ensure-llvm-target!)
+(require '[lower-llvm-leaf :as leaf])
+
+(arch/defstruct Pair [:ref :ref])
+(declare is-odd?)
+
+;; Ints are typed (^long, or by <) so no operand is unboxed: an unbox raises
+;; catchably. Arithmetic is the wrapping kind; checked + raises on overflow.
+(def leaf-forms
+  '[(defn r16 [b ^long o] (bit-or (arch/bget b o) (bit-shift-left (arch/bget b (unchecked-add o 1)) 8)))
+    (defn r32 [b ^long o] (bit-or (r16 b o) (bit-shift-left (r16 b (unchecked-add o 2)) 16)))
+    (defn r64 [b ^long o] (bit-or (r32 b o) (bit-shift-left (r32 b (unchecked-add o 4)) 32)))
+    (defn sum-to [n] (loop [i 0 a 0] (if (< i n) (recur (unchecked-add i 1) (unchecked-add a i)) a)))
+    (defn pair [a b] (arch/new Pair a b))
+    (defn spread ([^long x] (unchecked-add x 1)) ([x & more] x))])
+
+(def other-forms
+  '[(defn add-boxed [a b] (+ a b))
+    (defn raise [x] (throw (ex-info "raise" {:x x})))
+    (defn guarded [b] (try (r16 b 0) (catch Exception e 0)))
+    (defn adder [^long n] (fn [^long x] (unchecked-add x n)))
+    (defn is-even? [^long n] (if (zero? n) true (is-odd? (unchecked-add n -1))))
+    (defn is-odd? [^long n] (if (zero? n) false (is-even? (unchecked-add n -1))))
+    (defn countdown [^long n] (if (zero? n) 0 (countdown (unchecked-add n -1))))
+    (defn calls-raise [x] (raise x))])
+
+(doseq [form (concat leaf-forms other-forms)] (eval form))
+
+(defn analyze
+  "Infos of every arity of forms, analysed as the driver does (add-boxed's
+   params kept boxed, as its boxing fixpoint would), each with its var and
+   arity key."
+  []
+  (let [srcs (vec (mapcat driver/expand-defn (concat leaf-forms other-forms)))
+        boxed #{[#'add-boxed 2]}
+        infos (driver/analyze-program! srcs '(defn _main [] nil) boxed false nil)]
+    (vec (for [[src info] (map vector srcs infos)]
+           (assoc info :var (driver/defn-var src) :argc (driver/arity-key (nth src 2)))))))
+
+(defn sig-of [v argc] (get-in @lw/*sigs* [v :arities argc]))
+
+(defmacro in-session [trap-throws & body]
+  `(lw/with-session* (lw/new-session {} {} {:target :llvm :rt true :trap-throws ~trap-throws})
+     (fn [] ~@body)))
+
+(deftest classifies-leaves
+  (in-session false
+    (let [infos (analyze)]
+      (is (= #{[#'r16 2] [#'r32 2] [#'r64 2] [#'sum-to 1] [#'pair 2] [#'spread 1]}
+             (leaf/leaves infos sig-of))))))
+
+(deftest trapping-ops-are-not-leaves-when-traps-throw
+  (in-session true
+    (let [infos (analyze)]
+      (is (= #{[#'sum-to 1] [#'pair 2] [#'spread 1]} (leaf/leaves infos sig-of)))
+      (let [{f :f} (first (filter #(= #'r16 (:var %)) infos))
+            bget (first (filter #(and (= :call (ir/op % f))
+                                      (= #'arch/bget (ir/aux (first (ir/refs % f)) f)))
+                                (lw/all-insts f)))]
+        (is (some? bget))
+        (is (leaf/leaf-op? f bget false))
+        (is (not (leaf/leaf-op? f bget true)))))))
+
+(let [result (test/run-tests 'llvm-leaf-check)]
+  (os/exit (if (and (= 2 (:test result)) (test/successful? result)) 0 1)))
