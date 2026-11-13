@@ -136,17 +136,21 @@
 (defn leaves
   "#{[var argc]} of the leaf arities among analysed fn infos ({:f :params
    :var :argc}); (sig-of var argc) is the callee arity's signature or nil.
-   A fixpoint from the fns that call nothing: a fn joins once every fn it
-   calls has, so none on a call-graph cycle (a self-call included; recur is
-   a loop, not a call) ever does."
+   A fixpoint from the fns that call nothing and the callees outside infos
+   whose arity sig already says :leaf (the runtime library's): a fn joins
+   once every fn it calls has, so none on a call-graph cycle (a self-call
+   included; recur is a loop, not a call) ever does."
   [infos sig-of]
   (let [calls (into {} (keep (fn [info]
                                (when-let [cs (leaf-calls info sig-of lw/*trap-throws*)]
                                  [[(:var info) (:argc info)] cs])))
-                    infos)]
-    (loop [ls #{}]
+                    infos)
+        own (set (map (fn [info] [(:var info) (:argc info)]) infos))
+        known (set (filter (fn [k] (and (not (own k)) (:leaf (sig-of (first k) (second k)))))
+                           (apply concat (vals calls))))]
+    (loop [ls known]
       (let [more (into ls (for [[k cs] calls :when (every? ls cs)] k))]
-        (if (= more ls) ls (recur more))))))
+        (if (= more ls) (set (filter own ls)) (recur more))))))
 
 (defn mark-leaves!
   "Record :leaf true on the signature arity of each leaf among infos, and

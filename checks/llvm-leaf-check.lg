@@ -89,5 +89,23 @@
   (rtlib-in-bounds)
   (is (:leaf (rtlib-in-bounds))))
 
+;; Over a restored library, a program fn calling a runtime leaf is a leaf,
+;; one calling a runtime fn that is not one is not.
+(def rt-callers
+  '[(defn seq-kind [^long k] (llvm.seq/seq-kind? k))
+    (defn length [x] (llvm.seq/count x))])
+
+(doseq [form rt-callers] (eval form))
+
+(deftest calls-to-restored-runtime-leaves
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (is (:leaf (sig-of (lw-rt/rt-var 'seq 'seq-kind?) 1)))
+      (is (not (:leaf (sig-of (lw-rt/rt-var 'seq 'count) 1))))
+      (driver/analyze-program! (vec (mapcat driver/expand-defn rt-callers)) '(defn _main [] nil) #{} false nil)
+      (is (:leaf (sig-of #'seq-kind 1)))
+      (is (not (:leaf (sig-of #'length 1)))))))
+
 (let [result (test/run-tests 'llvm-leaf-check)]
-  (os/exit (if (and (= 4 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 5 (:test result)) (test/successful? result)) 0 1)))
