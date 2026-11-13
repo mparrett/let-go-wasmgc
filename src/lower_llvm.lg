@@ -384,9 +384,9 @@
 
 ;; --- calls -----------------------------------------------------------------
 
-(def ll-leaf-vars #{#'println})
+(def ll-inline-vars #{#'println})
 
-(defn ll-leaf-var? [v] (and (not *rt*) (contains? ll-leaf-vars v)))
+(defn ll-inline-var? [v] (and (not *rt*) (contains? ll-inline-vars v)))
 
 (def ll-max-invoke max-arity-x)   ; args through a value (positional cap, as FnX's slots); fixed code slots cover 0..4
 
@@ -672,7 +672,7 @@
       ;; runtime's handle stacks, which printing follows
       (and *rt* (#{#'push-out! #'pop-out! #'push-err! #'pop-err!} v))
       (to (lw-rt/rt-var 'host (symbol (name (symbol v)))))
-      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var! #'llvm-read-root #'llvm-write-root!} v) (and v (lw-rt/intrinsic? v))
+      (or (ll-inline-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var! #'llvm-read-root #'llvm-write-root!} v) (and v (lw-rt/intrinsic? v))
           (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))))
       nil
       (or (nil? v) (ll-table-var? v))
@@ -1025,7 +1025,7 @@
       (var-const? nid) nil
       (= op :call)
       (let [v (ll-callee-var (first refs))]
-        (cond (ll-leaf-var? v) (ll-println! nid (rest refs))
+        (cond (ll-inline-var? v) (ll-println! nid (rest refs))
               (= v #'catch-matches?) (ll-catch-matches! nid (rest refs))
               (#{#'push-var! #'pop-var!} v) (ll-binding-var! nid v (rest refs))
               (#{#'llvm-read-root #'llvm-write-root!} v) (ll-root-var! nid v (rest refs))
