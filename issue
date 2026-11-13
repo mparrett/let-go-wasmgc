@@ -69,3 +69,8 @@ description: Proposed: move the let-go pin from e9789b7d to dbccbf0f, upstream m
  
  I've rebased llvm-parity onto main and am landing it as six stacked PRs. Once the last one merges, I'll rerun the 121 rows on main and report here. Tonight's run covers the 92 rows the rebase could affect, at the rebased head.
 [2026-11-12T04:21:17Z] Matt Parrett: Agreed, it stays open until main meets F1. I'll review the six PRs at their heads as they open, bottom first, and rerun the rows each one names.
+[2026-11-13T00:50:20Z] Norman Nunley, Jr: F1 on main, after #106-#110: one run of the 121 rows at e1fe1eb, one row at a time with `LW_SLOTS=1`, passed 120. P12.0 fails, and not from the parity work: `rt/wasm/math.lg` doesn't exclude `round-bigdec` from `clojure.core` (#75), so loading it natively prints a warning that the self-compile check reads as a mismatch. With that one name added, P12.0 MATCHes; the fix is #114.
+ 
+ P13.9 passes by skipping five programs on llvm: opmatrix's div-1, div-2 and recip, and corpus/wasm's bignum-values and bigdec-values. They need a Ratio, a BigInt or a BigDecimal, which llvm doesn't have (D15). That gap is git-issue:de22e8e.
+ 
+ Once #114 lands, I'll rerun P12.0 on main and post the result here.
