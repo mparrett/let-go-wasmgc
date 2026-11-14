@@ -37,10 +37,12 @@ full record behind the D-numbers cited here.
   the rules for adding to it and which layer tests what.
 - `tools/` the native inventory and twin manifest (which natives a program
   reaches that the runtime does not provide).
-- `DECISIONS.md` the design record. `STATUS.md` the dated row table of work
-  items. `FINDINGS.md` things learned that are not decisions.
+- `DECISIONS.md` the design record. `FINDINGS.md` things learned that are
+  not decisions. `docs/ITEM-LEDGER.md` the dated row table of work items.
   `docs/WORKFLOW.md` how issues, commits, reviews and gates are run.
-  `EVAL-NATIVE-SPEC.md` a work order for running the evaluator outside wasm.
+  `docs/ROADMAP.md` where the backends might go next.
+  `docs/EVAL-NATIVE-SPEC.md` a work order for running the evaluator outside
+  wasm. `docs/history/` snapshots kept for the record.
 
 ## Design in brief
 

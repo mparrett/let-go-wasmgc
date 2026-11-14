@@ -68,7 +68,7 @@
 # per lane, and the output of some programs depends on that order: on 2026-10-08
 # registry-probe came out with one local $v64 vs $v65 in a wasm.natives fn when
 # compared warm against a baseline captured alone from a fresh rtlib. That is a
-# backend determinism defect, recorded in STATUS.md (P8.0 notes) as a named
+# backend determinism defect, recorded in docs/ITEM-LEDGER.md (P8.0 notes) as a named
 # finding; the guard's answer is to capture and compare in the same order, not
 # to hide it. legmacs is here because load-time compiler state (D174) shifted
 # its IR numbering while every small program stayed identical.

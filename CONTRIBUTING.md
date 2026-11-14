@@ -218,7 +218,7 @@ the default. Run it with `checks/wasm-run-linear.sh`. The Go host uses
 `v1.12.1-0.20260911172836-0ec6142ae8c7`, with
 `experimental.CoreFeaturesTailCall` and
 `experimental.CoreFeaturesExceptionHandling` enabled and GC disabled.
-Milestone corpus results and named refusals are recorded in STATUS.md.
+Milestone corpus results and named refusals are recorded in docs/ITEM-LEDGER.md.
 
 ## Checks
 

@@ -161,7 +161,7 @@ described so that 1 does not paint them out.
 6. **Corpus.** `checks/run-corpus.sh corpus/scalar` under the linear
    runner, then `corpus/opmatrix` and `corpus/typed` (row P1.1's set),
    then `corpus/control`, `corpus/closure`, `corpus/seqs`. Record each
-   directory's result in STATUS.md as rows `P8.0` onward in
+   directory's result in docs/ITEM-LEDGER.md as rows `P8.0` onward in
    `checks/items.tsv`, following the existing row format: the exact
    command whose exit 0 means done.
 

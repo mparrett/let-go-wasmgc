@@ -183,7 +183,7 @@ the linear-target milestone's territory until it merges.
 4. **Size and time, dated**: the module with `LW_RUNTIME_COMPILE=1` versus
    without (raw, opt, brotli), and the time to compile and instantiate a
    20-line fn in node and in Chromium.
-5. Rows `P9.0` onward in `checks/items.tsv`, STATUS.md updated, a
+5. Rows `P9.0` onward in `checks/items.tsv`, docs/ITEM-LEDGER.md updated, a
    DECISIONS.md entry per stage, a README paragraph, and
    `rt/wasm/README.md`'s load-order table updated.
 6. Gates 1 and 7 green with `LW_ATTEST=0`.
