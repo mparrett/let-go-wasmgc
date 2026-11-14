@@ -21,7 +21,7 @@ differential check (see "Checks"), and the design record is
   are byte-identical to native lg, and a scripted screen dump matches the
   stock build at seed 424242.
 - **legmacs** (an Emacs-like editor) boots in the browser and under node.
-  343 of its 373 deftests pass under the backend (as of 2026-11-09, #106),
+  343 of its 373 deftests pass under the backend (as of 2026-11-12, #106),
   and 28 of its 30 eval tests pass with the in-module evaluator. Typing a
   `defn` into `*scratch*` and evaluating it with `C-x C-e` works.
 - **let-go's own core tests**: 271 of the 273 selected deftests pass, with
@@ -108,7 +108,8 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 - **Native lg built from let-go commit dbccbf0f**, at
   `$LW_ROOT/lg-bin/lg-dbccbf0f63` or wherever `LG` points. The driver runs
   under this lg and uses let-go's IR passes from it. From `$LW_ROOT`, with
-  Go installed:
+  Go 1.27 or newer (let-go's `go.mod` at the pin; with the default
+  `GOTOOLCHAIN=auto`, an older Go downloads it):
 
   ```sh
   git clone https://github.com/nooga/let-go let-go
@@ -365,8 +366,6 @@ As of 2026-10-20:
   self-compiling in the browser (`host/compile.html`, D206 to D212,
   phase 12), and a wasm binary encoder in plain lg (`rt/wasm/wasmbin.lg`,
   D190). [docs/SELF-HOST-SPEC.md](docs/SELF-HOST-SPEC.md) is the spec.
-- A native target through LLVM IR has been on main since 2026-11-09 (#78,
-  phase 13 rows); see "The llvm target" above, under Status.
 - Still candidates, none started: the numeric tower's arithmetic over BigInt
   and Ratio (the values landed with D230); `go` blocks and channels, with a scheduler on JSPI; calls
   through var-table slots, so an evaluated redefinition reaches compiled
