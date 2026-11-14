@@ -21,9 +21,9 @@ differential check (see "Checks"), and the design record is
   are byte-identical to native lg, and a scripted screen dump matches the
   stock build at seed 424242.
 - **legmacs** (an Emacs-like editor) boots in the browser and under node.
-  316 of its 373 deftests pass under the backend, and 28 of its 30 eval
-  tests pass with the in-module evaluator. Typing a `defn` into `*scratch*`
-  and evaluating it with `C-x C-e` works.
+  343 of its 373 deftests pass under the backend (as of 2026-11-09, #106),
+  and 28 of its 30 eval tests pass with the in-module evaluator. Typing a
+  `defn` into `*scratch*` and evaluating it with `C-x C-e` works.
 - **let-go's own core tests**: 271 of the 273 selected deftests pass, with
   the two remaining ones skipped by name.
 - **The jank clojure-test-suite** (241 files of core tests, run through
@@ -31,6 +31,10 @@ differential check (see "Checks"), and the design record is
   lane; `corpus/jank/baseline-wasm.tsv` ratchets the count, so a pull request
   may not drop a file. Most of the rest wait on the numeric tower (arithmetic
   over BigInt, Ratio and BigDecimal).
+- **The llvm target** (as of 2026-11-14; see below) compiles the same
+  programs to native binaries. xsofy and legmacs run on it as interactive
+  terminal programs (#106), and legmacs reaches the same 343 of 373
+  deftests on both lanes.
 - **A browser REPL page** (`host/repl.html`) runs a let-go REPL entirely in
   the module.
 - **Live demos**: https://matt.parrett.us/let-go-wasmgc/ (REPL, explorer, the
@@ -82,6 +86,16 @@ the default. Run it with `checks/wasm-run-linear.sh`. The Go host uses
 `experimental.CoreFeaturesExceptionHandling` enabled and GC disabled.
 Milestone corpus results and named refusals are recorded in STATUS.md.
 
+**The llvm target.** Since 2026-11-09 (#78), `--target llvm` compiles a
+program to LLVM IR and, through clang, to a native binary over a small C
+host runtime (`host/native/`). WasmGC remains the default target; the two
+share the driver and the IR pipeline, and their runtimes (`rt/wasm/`,
+`rt/llvm/`) are kept at parity by the phase 13 rows. `checks/native-run.sh`
+compiles, links and runs a program, and behaves like `lg` on stdout and
+exit status; `--profile` (or `LW_PROFILE`) names a hardware profile,
+including 32-bit and bare-metal boards.
+[docs/LLVM-TARGET-SPEC.md](docs/LLVM-TARGET-SPEC.md) is the spec.
+
 ## Prerequisites
 
 The checks and build scripts find their inputs under one root, `LW_ROOT`,
@@ -93,12 +107,23 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 - **Go 1.25 or newer** for the linear runner (2026-10-03).
 - **Native lg built from let-go commit dbccbf0f**, at
   `$LW_ROOT/lg-bin/lg-dbccbf0f63` or wherever `LG` points. The driver runs
-  under this lg and uses let-go's IR passes from it.
+  under this lg and uses let-go's IR passes from it. From `$LW_ROOT`, with
+  Go installed:
+
+  ```sh
+  git clone https://github.com/nooga/let-go let-go
+  git -C let-go worktree add --detach ../lg-build dbccbf0f
+  make -C lg-build build
+  mkdir -p lg-bin && cp lg-build/bin/lg lg-bin/lg-dbccbf0f63
+  ```
 - **A let-go git checkout** (`$LETGO`, default `$LW_ROOT/let-go`) that
   contains commit dbccbf0f: `src/lw_rt.lg` reads let-go's `pkg/rt/core/*.lg`
   at that commit with `git show`, and fails with a message naming the path
   when it cannot.
 - **wasm-tools** on `PATH` (WAT to binary).
+- **LLVM's clang**, for `--target llvm`: `/opt/homebrew/opt/llvm/bin` by
+  default (`brew install llvm`), or set `LLVM_BIN`. The bare-metal board
+  profiles also need lld (`brew install lld`, or `LLD_BIN`).
 - **binaryen's wasm-opt** (and `wasm-merge` for `checks/browser-boot.sh`):
   the Homebrew install when present, otherwise the one on `PATH`; set
   `WASM_OPT` / `WASM_MERGE` to choose another. Used by the module build
@@ -231,6 +256,17 @@ host/build-legmacs-module.sh /tmp/lw-play/legmacs.wasm
 node host/node-host.mjs /tmp/lw-play/legmacs.wasm
 ```
 
+Run legmacs as a native binary through the llvm target. The first run
+builds the llvm runtime library (about four minutes from a clean clone as
+of 2026-11-14), and every run compiles the program again (about two
+minutes for legmacs). `KEEP=1` keeps the build directory and prints its
+path on exit; the binary in it, `m`, starts at once on later runs:
+
+```sh
+KEEP=1 LG_ARGS="-source-paths ../legmacs" checks/native-run.sh ../legmacs/main.lg
+cd ../legmacs && <kept dir>/m main.lg
+```
+
 ## Layout
 
 - `src/` the compiler
@@ -329,8 +365,8 @@ As of 2026-10-20:
   self-compiling in the browser (`host/compile.html`, D206 to D212,
   phase 12), and a wasm binary encoder in plain lg (`rt/wasm/wasmbin.lg`,
   D190). [docs/SELF-HOST-SPEC.md](docs/SELF-HOST-SPEC.md) is the spec.
-- A native target through LLVM IR is in review as pull request #25 (phase 13
-  rows); the runtime seam it needs (D213) is on main.
+- A native target through LLVM IR has been on main since 2026-11-09 (#78,
+  phase 13 rows); see "The llvm target" above, under Status.
 - Still candidates, none started: the numeric tower's arithmetic over BigInt
   and Ratio (the values landed with D230); `go` blocks and channels, with a scheduler on JSPI; calls
   through var-table slots, so an evaluated redefinition reaches compiled
