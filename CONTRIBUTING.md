@@ -258,7 +258,7 @@ Gate history:
   2026-10-09 (D212). Since then every pull request is held to the rows it
   touches; the GC byte guard (`checks/gc-byte-identity.sh`, P8.0) is
   advisory since D228, and the oracle rows decide. The test counts
-  above were re-measured on 2026-10-20.
+  in README.md's "What works" were re-measured on 2026-10-20.
 
 ## How this repository is maintained
 

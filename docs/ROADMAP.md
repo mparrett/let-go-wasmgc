@@ -1,5 +1,13 @@
 # Roadmap
 
+Each entry is dated.
+
+- As of 2026-11-14, the llvm target is on main (#78) at parity with the
+  WasmGC runtime. Next on it: compiling small pure fns as direct calls
+  within the CPS lowering, so LLVM can inline them (designed in #111), and
+  a warm compile under one second (designed in
+  `docs/superpowers/specs/2026-10-30-llvm-batch-compile-and-runtime-objects-design.md`).
+
 As of 2026-10-20:
 
 - A linear-memory target beside WasmGC, specified in

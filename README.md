@@ -102,7 +102,7 @@ let-go behaviours we met along the way.
 ## Where it might go
 
 [docs/ROADMAP.md](docs/ROADMAP.md) lists what is started and what is still
-a candidate.
+a candidate, each entry dated.
 
 ## Contributing
 
