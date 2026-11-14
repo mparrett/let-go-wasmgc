@@ -92,8 +92,8 @@ host runtime (`host/native/`). WasmGC remains the default target; the two
 share the driver and the IR pipeline, and their runtimes (`rt/wasm/`,
 `rt/llvm/`) are kept at parity by the phase 13 rows. `checks/native-run.sh`
 compiles, links and runs a program, and behaves like `lg` on stdout and
-exit status; `--profile` (or `LW_PROFILE`) names a hardware profile,
-including 32-bit and bare-metal boards.
+exit status. `LW_PROFILE` selects a hardware profile for it (the driver's
+own flag is `--profile`), including 32-bit and bare-metal boards.
 [docs/LLVM-TARGET-SPEC.md](docs/LLVM-TARGET-SPEC.md) is the spec.
 
 ## Prerequisites
@@ -124,7 +124,10 @@ override the individual paths (`LG`, `LETGO`, `XSOFY`, `LEGMACS`).
 - **wasm-tools** on `PATH` (WAT to binary).
 - **LLVM's clang**, for `--target llvm`: `/opt/homebrew/opt/llvm/bin` by
   default (`brew install llvm`), or set `LLVM_BIN`. The bare-metal board
-  profiles also need lld (`brew install lld`, or `LLD_BIN`).
+  profiles also need lld (`brew install lld`, or `LLD_BIN`); their first
+  build compiles LLVM's compiler-rt builtins with cmake, ninja and git
+  (`checks/build-builtins.sh`), and the armv7 boards run under
+  `qemu-system-arm`.
 - **binaryen's wasm-opt** (and `wasm-merge` for `checks/browser-boot.sh`):
   the Homebrew install when present, otherwise the one on `PATH`; set
   `WASM_OPT` / `WASM_MERGE` to choose another. Used by the module build
@@ -260,12 +263,17 @@ node host/node-host.mjs /tmp/lw-play/legmacs.wasm
 Run legmacs as a native binary through the llvm target. The first run
 builds the llvm runtime library (about four minutes from a clean clone as
 of 2026-11-14), and every run compiles the program again (about two
-minutes for legmacs). `KEEP=1` keeps the build directory and prints its
-path on exit; the binary in it, `m`, starts at once on later runs:
+minutes for legmacs). `KEEP=1` keeps the build directory and prints
+`kept <dir>` on exit:
 
 ```sh
 KEEP=1 LG_ARGS="-source-paths ../legmacs" checks/native-run.sh ../legmacs/main.lg
-cd ../legmacs && <kept dir>/m main.lg
+```
+
+Set `KEPT` to that directory; the binary in it, `m`, starts at once:
+
+```sh
+cd ../legmacs && "$KEPT/m" main.lg
 ```
 
 ## Layout
