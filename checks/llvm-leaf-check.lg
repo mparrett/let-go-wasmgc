@@ -29,7 +29,11 @@
     (defn is-even? [^long n] (if (zero? n) true (is-odd? (unchecked-add n -1))))
     (defn is-odd? [^long n] (if (zero? n) false (is-even? (unchecked-add n -1))))
     (defn countdown [^long n] (if (zero? n) 0 (countdown (unchecked-add n -1))))
-    (defn calls-raise [x] (raise x))])
+    (defn calls-raise [x] (raise x))
+    ;; a loop allocates nothing in a leaf: not by boxing i into acc, nor by
+    ;; calling pair (a leaf, being loop-free)
+    (defn box-each [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) i) acc)))
+    (defn pairs [a ^long n] (loop [i 0 p nil] (if (< i n) (recur (unchecked-add i 1) (pair a a)) p)))])
 
 (doseq [form (concat leaf-forms other-forms)] (eval form))
 
@@ -73,6 +77,8 @@
   (in-session false
     (analyze)
     (is (:leaf (sig-of #'r64 2)))
+    (is (true? (:leaf-allocates (sig-of #'pair 2))))
+    (is (false? (:leaf-allocates (sig-of #'sum-to 1))))
     (is (not (:leaf (sig-of #'add-boxed 2))))))
 
 (defn rtlib-in-bounds
@@ -87,7 +93,9 @@
 
 (deftest leafness-survives-the-runtime-library
   (rtlib-in-bounds)
-  (is (:leaf (rtlib-in-bounds))))
+  (let [sig (rtlib-in-bounds)]
+    (is (:leaf sig))
+    (is (false? (:leaf-allocates sig)))))
 
 ;; Over a restored library, a program fn calling a runtime leaf is a leaf,
 ;; one calling a runtime fn that is not one is not.
