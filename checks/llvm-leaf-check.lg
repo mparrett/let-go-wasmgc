@@ -3,6 +3,7 @@
             [leaf-check-driver :as driver]
             [lower-wasm :as lw]
             [llvm.arch :as arch]
+            [clojure.string :as str]
             [lw-rt]))
 
 (lw/ensure-llvm-target!)
@@ -117,5 +118,40 @@
       (is (:leaf (sig-of #'seq-kind 1)))
       (is (not (:leaf (sig-of #'length 1)))))))
 
+;; Each leaf is also one direct-call function, <name>.leaf: internal fastcc
+;; returning its value, with no continuation, no tail call and no GC entry
+;; check, its loops branches and phis; its CPS entry calls it. The modules
+;; are the driver's, of corpus/llvm/leaves.lg and the llvm.arch fixture
+;; (llvm-leaf-check.sh).
+(def modules (str/join "\n" (map slurp (str/split (os/getenv "LW_LEAF_MODULES") #" "))))
+
+(def leaf-fns
+  "{fn-name [ret body]} of the modules' .leaf functions; a program fn's
+   name ends in its defn's (u_r64)."
+  (into {} (for [[_ ret nm body] (re-seq #"(?s)define internal fastcc (\S+) @\"([^\"]*)\.leaf\"\([^)]*\)[^{]*\{(.*?)\n\}" modules)]
+             [nm [ret body]])))
+
+(defn leaf-of [defn-name]
+  (some (fn [[nm v]] (when (str/ends-with? nm (str "_" defn-name)) v)) leaf-fns))
+
+(deftest emits-leaves-as-direct-call-functions
+  (doseq [n ["r16" "r32" "r64" "pair" "sum-to" "sum-from" "tri" "r8" "pos-or-nil" "truthy"]]
+    (is (some? (leaf-of n)) n))
+  (is (nil? (leaf-of "box-each")))
+  (doseq [[nm [_ body]] leaf-fns]
+    (is (not (str/includes? body "musttail")) nm)
+    (is (not (str/includes? body "lg_gc")) nm)
+    (is (not (str/includes? body "%k")) nm))
+  (let [[ret body] (leaf-of "r64")]
+    (is (= "i64" ret))
+    (is (not (str/includes? (str body) "lg_alloc")))
+    (is (re-find #"call fastcc i64 @\"[^\"]*r32\.leaf\"" (str body))))
+  (is (str/includes? (str (second (leaf-of "pair"))) "lg_alloc"))
+  (doseq [n ["sum-to" "sum-from" "tri"]]
+    (let [[_ body] (leaf-of n)]
+      (is (str/includes? (str body) " phi ") n)
+      (is (not (re-find #"lg_alloc|lg_box" (str body))) n)))
+  (is (some? (re-find #"(?s)define tailcc void @\"[^\"]*_r64\"\(ptr %k[^{]*\{[^}]*call fastcc i64 @\"[^\"]*_r64\.leaf\"" modules)) "r64's CPS entry calls r64.leaf"))
+
 (let [result (test/run-tests 'llvm-leaf-check)]
-  (os/exit (if (and (= 5 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 6 (:test result)) (test/successful? result)) 0 1)))

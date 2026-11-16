@@ -3666,7 +3666,7 @@
                   ;; a float or nil argument would hit the unbox error
                   info (assoc (binding [*box-params* (boolean (:lib d))]
                                 (analyze-fn s (rt-fn-name v argc multi?) multi?))
-                              :export? false :lib (:lib d))]
+                              :export? false :lib (:lib d) :var v :argc argc)]
               (swap! *sigs* update v (fn [e] (let [e (or e {:multi? multi? :base (str (:name d)) :var v})
                                                    sig (select-keys info [:name :params :ret])]
                                                (if var?
