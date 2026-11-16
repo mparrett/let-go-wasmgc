@@ -27,6 +27,7 @@
 3. **Typed and boxed arguments across a direct call:** an `:int` param called with a boxed value, and a boxed result into an `:int` slot, coerce as the CPS path does. Test in Task 4.
 4. **Multi-arity and variadic fns:** only fixed arities can be leaves; a variadic arity stays CPS, and other arities of the same fn are classified separately. Test in Task 1.
 5. **Loops inside a leaf** (`loop`/`recur`, nested): the phi emission must carry every live value. Test in Task 3.
+6. **Allocation inside a loop**: a fn that boxes or allocates on each iteration of a loop must stay CPS, since a leaf's loops have no GC entry check and the native heap is fixed; a leaf with a loop allocates nothing, directly or through the leaves it calls. Test in Task 1 (classification) and Task 4 (a million-iteration boxing loop completes on the default heap).
 
 ---
 
@@ -40,12 +41,12 @@
 
 **Interfaces:**
 - Produces: `(leaf-op? f nid trap-throws?) -> boolean`: nid's op is on the allowlist (one table, `leaf-ops`, beside the fn).
-- Produces: `(leaves infos sig-of) -> #{[var argc]}`: `infos` are analysed fn infos (`{:name :f :params :ret :var :argc}`), `sig-of` maps a callee var and argc to its arity sig or nil. Fixpoint from fns with no calls; a fn joins when every call reaches a known leaf of matching fixed arity; any fn on a call-graph cycle (self-calls included, other than `recur`) is excluded.
+- Produces: `(leaves infos sig-of) -> #{[var argc]}`: `infos` are analysed fn infos (`{:name :f :params :ret :var :argc}`), `sig-of` maps a callee var and argc to its arity sig or nil. Fixpoint from fns with no calls; a fn joins when every call reaches a known leaf of matching fixed arity; any fn on a call-graph cycle (self-calls included, other than `recur`) is excluded. A fn whose body contains a loop or a `recur` joins only if neither it nor any leaf it calls allocates (an allocation or boxing op); the fixpoint carries an "allocates" bit with leafness, and a loop-free leaf may allocate.
 
 - [ ] **Step 0: Rename `ll-leaf-vars`/`ll-leaf-var?` to `ll-inline-vars`/`ll-inline-var?`** (no behavior change; `grep -n 'll-leaf-var' src/` finds nothing after).
 - [ ] **Step 1: Write the failing check.** `checks/llvm-leaf-check.lg` builds IR (ir.build + the driver's pipeline, as the analysis path does) for these defns and asserts the classification:
   - leaves: `(defn r16 [b o] (bit-or (aget b o) (bit-shift-left (aget b (inc o)) 8)))`, `r32` calling `r16`, `r64` calling `r32`; `(defn sum-to [n] (loop [i 0 a 0] (if (< i n) (recur (inc i) (+ a i)) a)))` with `+` the wrapping op; a fn returning a fresh vector of its args (allocates).
-  - not leaves: a fn using checked `+` on boxed values; a fn with `throw`; a fn with `try`; a fn returning a closure; `even?`/`odd?` defined mutually; a fn calling a non-leaf; a variadic arity (while its fixed arity is a leaf); `r16` when `trap-throws?` is true.
+  - not leaves: a fn using checked `+` on boxed values; a fn with `throw`; a fn with `try`; a fn returning a closure; `even?`/`odd?` defined mutually; a fn calling a non-leaf; a variadic arity (while its fixed arity is a leaf); `r16` when `trap-throws?` is true.; a fn that boxes on each iteration of a loop; a fn with a loop that calls an allocating leaf (while that leaf, loop-free, is itself a leaf)
 - [ ] **Step 2: Run it to see it fail.** `LW_ROOT=… checks/run.sh LLVM.LEAVES` → fails: `lower-llvm-leaf` not found.
 - [ ] **Step 3: Implement `leaf-op?` and `leaves`** in `src/lower_llvm_leaf.lg`. Exclusions per the spec's Design section: any call `ll-call-plan*` would plan, checked arithmetic, integer div/rem whose zero case raises, `throw`, `try`, closures, dynamic var reads or bindings.
 - [ ] **Step 4: Run it to see it pass.** `checks/run.sh LLVM.LEAVES` → `ok`.
@@ -96,7 +97,7 @@
 - Consumes: `ll-leaf-name`, `:leaf` sigs.
 - Produces: `(ll-leaf-call? nid) -> boolean`: a `:call` whose callee resolves to a var that is not a table var, not rooted, and whose arity sig for this argc has `:leaf true`. `(ll-leaf-call! nid)`: `call fastcc <ret> @"<leaf>"(args coerced as ll-arg does)`, the result bound with `ll-bind!`.
 
-- [ ] **Step 1: Add the failing cases** to `corpus/llvm/leaves.lg`: a CPS fn calling `r64` in a loop of 1000000 iterations (constant C stack); the checked-`+` fn raising inside `try` and caught; an `:int` param leaf called with a boxed value and its result stored in a vector (Review Focus 3); a leaf var redefined with `def` and called after, printing the new result (Review Focus 2). In the check, assert the caller's IR calls `r64.leaf` with `call fastcc` and allocates no frame for it.
+- [ ] **Step 1: Add the failing cases** to `corpus/llvm/leaves.lg`: a fn that boxes a double on each of 1000000 iterations, which stays CPS and completes on the default heap; a CPS fn calling `r64` in a loop of 1000000 iterations (constant C stack); the checked-`+` fn raising inside `try` and caught; an `:int` param leaf called with a boxed value and its result stored in a vector (Review Focus 3); a leaf var redefined with `def` and called after, printing the new result (Review Focus 2). In the check, assert the caller's IR calls `r64.leaf` with `call fastcc` and allocates no frame for it.
 - [ ] **Step 2: Run to see it fail.** `checks/run.sh LLVM.LEAVES` → the caller still emits `musttail` to `r64`.
 - [ ] **Step 3: Implement `ll-leaf-call?` and `ll-leaf-call!`;** in `ll-call-plan*`, return nil for a leaf call so `ll-cuts` makes no cut.
 - [ ] **Step 4: Run to see it pass:** `checks/run.sh LLVM.LEAVES`, `checks/run.sh P13.3`, `checks/run.sh P13.1`, `checks/run.sh P12.37`.

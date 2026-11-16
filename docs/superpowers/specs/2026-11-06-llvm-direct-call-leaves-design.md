@@ -60,7 +60,13 @@ Anti-goals, which would make this a failure even if it were faster:
   host/native/gc.c), and every heap value live across the direct call, the
   leaf's result included, is stored in the caller's continuation frame
   before the caller's next CPS call, whose callee's entry check is the only
-  place a collection runs.
+  place a collection runs. That defers a collection; it must not defer one
+  without bound. In a CPS fn every loop header is an entry point
+  (`ll-entry?`) with its own check, and a fn-level `recur` re-enters through
+  the fn's, so a loop collects on each iteration. A leaf keeps its loops as
+  LLVM branches with no check, and the native heap is fixed
+  (`lg_host_heap`): a leaf that allocated on each iteration of a long loop
+  would end in `oom()` where the same program runs today.
 - **Traps differ under --test.** Outside --test an index check or cast that
   fails calls `lg_trap`, which aborts. Under --test (`*trap-throws*`) it
   calls `lg_trapk`, a catchable raise through `%k`, which a leaf cannot
@@ -106,6 +112,15 @@ integer division or remainder whose zero case raises, `throw`, `try`,
 closures, dynamic var reads or bindings, and the GC lane's stand-ins. The
 classification runs after type inference, so a param typed `:int` reads
 unboxed.
+
+A leaf's allocation is bounded per call. A fn whose body contains a loop
+or a `recur` is a leaf only if neither it nor any leaf it calls allocates
+(an allocation or boxing op); a loop-free leaf may allocate, since its
+caller's own loop header still checks between calls. So a leaf "allocates"
+when its body allocates or it calls a leaf that allocates, and the fixpoint
+carries that bit with leafness. The xxh3 chain (`r16`/`r32`/`r64` on
+unboxed `i64`) and a `sum-to` over wrapping ops stay leaves; a fn that
+boxes on each iteration of a loop stays CPS.
 
 Leaves are found by a fixpoint: start from fns whose bodies call nothing,
 add any fn whose calls all reach leaves, repeat until nothing changes. The
@@ -170,7 +185,9 @@ same acceptance as leaves: behavior unchanged, then time.
   machine), including P13.9 and the llvm corpora; P12.37 meets its bound.
 - **A guard:** a corpus case per leaf property: a leaf that would raise if
   wrongly classified (checked `+`) stays CPS and its raise is caught; a leaf
-  called in a loop of a million iterations runs in constant C stack.
+  called in a loop of a million iterations runs in constant C stack; a fn
+  that boxes in a loop of a million iterations stays CPS and completes on the
+  default heap.
 - **Speed, measured with hyperfine on a quiet machine:** XXH3 of 25 MB on
   llvm, recorded before and after, with a target of under 100 ms (about
   250 MB/s, within two orders of magnitude of zeebo's assembly), recorded
@@ -184,7 +201,9 @@ same acceptance as leaves: behavior unchanged, then time.
   direction on 2026-11-06 that the optimizers should close the gap).
 - Leaves never collect, never raise catchably and never sit on a call-graph
   cycle; they may allocate (from host/native/gc.c: allocation never
-  collects).
+  collects), but only a bounded amount per call: a leaf with a loop or a
+  `recur` neither allocates nor calls a leaf that does (review of the design,
+  2026-11-14).
 
 ## Settled while writing (my calls)
 
@@ -208,5 +227,8 @@ same acceptance as leaves: behavior unchanged, then time.
   leaf), and the corpus guard above checks both failure modes.
 - **Deep recursion in a leaf** cannot happen: a fn on a call-graph cycle is
   not a leaf.
+- **Unbounded allocation in a leaf** cannot happen: a leaf with a loop
+  allocates nothing, directly or through the leaves it calls, so each call
+  allocates a bounded amount before its caller's next entry check.
 - **Code size:** a leaf has two entries (direct and CPS). The shake drops
   the CPS entry when nothing takes the fn as a value.
