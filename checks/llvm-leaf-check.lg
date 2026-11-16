@@ -33,7 +33,9 @@
     ;; a loop allocates nothing in a leaf: not by boxing i into acc, nor by
     ;; calling pair (a leaf, being loop-free)
     (defn box-each [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) i) acc)))
-    (defn pairs [a ^long n] (loop [i 0 p nil] (if (< i n) (recur (unchecked-add i 1) (pair a a)) p)))])
+    (defn pairs [a ^long n] (loop [i 0 p nil] (if (< i n) (recur (unchecked-add i 1) (pair a a)) p)))
+    ;; an int literal outside the fixnums is boxed where it is read
+    (defn box-big [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) -7046029254386353131) acc)))])
 
 (doseq [form (concat leaf-forms other-forms)] (eval form))
 

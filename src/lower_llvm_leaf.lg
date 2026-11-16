@@ -19,9 +19,14 @@
   (not (and (= have :box) (contains? #{:int :float :func} want))))
 
 (defn- boxes?
-  "Does reading nid as want box it (allocate)? A literal's box is static."
+  "Does reading nid as want box it (allocate)? A literal boxes where ll-arg
+   boxes it: an int outside the fixnums read as a box, or a constant that
+   is neither an int nor (read as a float) a float, read as a number."
   [nid want]
-  (and (= want :box) (nil? (lw/ll-const-val nid)) (contains? #{:int :float} (lw/ty nid))))
+  (if-let [[v] (lw/ll-const-val nid)]
+    (or (and (= want :box) (int? v) (let [[lo hi] (lw/ll-fix-bounds)] (not (<= lo v hi))))
+        (and (contains? #{:int :float} want) (not (int? v)) (not (and (float? v) (= want :float)))))
+    (and (= want :box) (contains? #{:int :float} (lw/ty nid)))))
 
 (defn- reads
   "The kinds args are read as, when each passes without a raising
