@@ -600,6 +600,16 @@
 (defn llvm-read-root [k] nil)
 (defn llvm-write-root! [k x] nil)
 
+(defn ll-leaf-call?
+  "Is nid a call of a known leaf: a var neither the table holds nor rooted,
+   whose arity signature for its args is a leaf's?"
+  [nid]
+  (boolean
+   (and (= :call (ir/op nid *f*))
+        (let [refs (ir/refs nid *f*) v (ll-callee-var (first refs))]
+          (and v (not (ll-table-var? v)) (not (rooted? v))
+               (:leaf (ll-var-sig v (count (rest refs)))))))))
+
 (defn ll-call-plan*
   [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*)
@@ -691,6 +701,8 @@
       {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box} :args args}
       (and *rt* (= v (lw-rt/rt-var 'core 'invoke-args)) (= 6 (count args)))
       {:sig {:name (ll-invoke-args!) :params [:box :int :box :box :box :box] :ret :box} :args args}
+      ;; a known leaf is called directly, without a continuation (ll-leaf-call!)
+      (ll-leaf-call? nid) (do (ll-note-abi! v args (ll-var-sig v (count args))) nil)
       (ll-var-sig v (count args))
       (let [sig (ll-var-sig v (count args))]
         ;; a boxed or float value for a typed param: the driver re-lowers the
@@ -987,7 +999,7 @@
   (ll-emit! "  call void @lg_print_nl()")
   (ll-bind! nid (ll-coerce! :box (ty nid) "0")))
 
-(declare ll-closure! ll-gvar ll-var-ptr! ll-root-var! ll-catch-matches!)
+(declare ll-closure! ll-gvar ll-var-ptr! ll-root-var! ll-catch-matches! ll-leaf-call!)
 
 (defn ll-inst! [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)]
@@ -1053,6 +1065,7 @@
                 (if (contains? #{:void :bottom} k)
                   (ll-bind! nid (ll-coerce! :box (ty nid) "0"))
                   (ll-def! nid k o)))
+              (ll-leaf-call? nid) (ll-leaf-call! nid)
               :else (ll-fail "unexpected call" {:nid nid :var v})))
       :else (ll-prim! nid op refs))))
 
@@ -1425,6 +1438,8 @@
 ;; basic blocks whose params are phis, a call of another leaf a plain call,
 ;; the fn's own recur a branch back to the entry block. Its CPS entry is a
 ;; wrapper that calls it and returns to %k, so the fn as a value is the same.
+;; Any fn's call of a known leaf calls <name>.leaf too (ll-leaf-call?): no
+;; continuation record, and no cut in the caller's pieces.
 
 (defn ll-leaf-name [sig] (str (:name sig) ".leaf"))
 
@@ -1435,11 +1450,10 @@
     (let [sig (get-in (q-sig var) [:arities argc])] (when (:leaf sig) sig))))
 
 (defn ll-leaf-call!
-  "Call nid of another leaf, made directly: no continuation, the result bound."
+  "Call nid of a leaf (ll-leaf-call?), made directly: no continuation, its
+   args converted as for a CPS call, the result bound."
   [nid]
-  (let [{:keys [sig args]} (ll-call-plan nid) r (str "%v" nid)]
-    (when-not (:leaf sig)
-      (ll-fail "a leaf calls a fn that is not one" {:nid nid :callee (:name sig)}))
+  (let [[c & args] (ir/refs nid *f*) sig (ll-var-sig (ll-callee-var c) (count args)) r (str "%v" nid)]
     (ll-emit! "  " r " = call fastcc " (ll-type (:ret sig)) " " (ll-q (ll-leaf-name sig))
               "(" (str/join ", " (doall (map ll-typed args (:params sig)))) ")")
     (ll-def! nid (:ret sig) r)))
@@ -1492,7 +1506,9 @@
       ;; its phis, once every edge into b is emitted
       (swap! (:lines *ll*) conj [::phis b])
       (doseq [i (ir/block-insts b f)]
-        (if (ll-cps-call? i) (ll-leaf-call! i) (ll-inst! i)))
+        (when (ll-cps-call? i)
+          (ll-fail "a leaf calls a fn that is not one" {:nid i :callee (:name (ll-sig i))}))
+        (ll-inst! i))
       (let [t (ir/block-term b f) a (when t (ir/aux t f))]
         (case (when t (ir/op t f))
           nil (ll-emit! "  unreachable")

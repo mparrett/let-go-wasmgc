@@ -155,5 +155,23 @@
       (is (not (re-find #"lg_alloc|lg_box" (str body))) n)))
   (is (some? (re-find #"(?s)define tailcc void @\"[^\"]*_r64\"\(ptr %k[^{]*\{[^}]*call fastcc i64 @\"[^\"]*_r64\.leaf\"" modules)) "r64's CPS entry calls r64.leaf"))
 
+;; A call of a leaf from a CPS fn is a direct fastcc call of its .leaf
+;; function: r64-sum makes no continuation record for its r64 call (it
+;; allocates nothing) and never enters r64's CPS entry.
+(defn fns-of
+  "[name body] of the modules' functions of defn defn-name, its pieces too."
+  [defn-name]
+  (for [[_ nm body] (re-seq #"(?s)define [^@]*@\"([^\"]*)\"\([^)]*\)[^{]*\{(.*?)\n\}" modules)
+        :when (re-find (re-pattern (str "_" defn-name "($|\\.)")) nm)]
+    [nm body]))
+
+(deftest calls-leaves-directly
+  (let [fs (fns-of "r64-sum")]
+    (is (seq fs))
+    (is (some #(re-find #"call fastcc i64 @\"[^\"]*_r64\.leaf\"" (second %)) fs))
+    (doseq [[nm body] fs]
+      (is (not (str/includes? body "lg_alloc")) nm)
+      (is (not (re-find #"@\"[^\"]*_r64\"\(" body)) nm))))
+
 (let [result (test/run-tests 'llvm-leaf-check)]
-  (os/exit (if (and (= 6 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 7 (:test result)) (test/successful? result)) 0 1)))
