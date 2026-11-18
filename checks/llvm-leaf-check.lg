@@ -36,7 +36,9 @@
     (defn box-each [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) i) acc)))
     (defn pairs [a ^long n] (loop [i 0 p nil] (if (< i n) (recur (unchecked-add i 1) (pair a a)) p)))
     ;; an int literal outside the fixnums is boxed where it is read
-    (defn box-big [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) -7046029254386353131) acc)))])
+    (defn box-big [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) -7046029254386353131) acc)))
+    ;; = on two floats is a call of the runtime's equiv?, not an inline op
+    (defn float-eq [^long n] (= (arch/i64-to-f64 n) 2.0))])
 
 (doseq [form (concat leaf-forms other-forms)] (eval form))
 

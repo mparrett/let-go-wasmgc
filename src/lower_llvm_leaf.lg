@@ -2,7 +2,7 @@
 ;; call directly inside its CPS. A leaf's body raises nothing catchably and
 ;; calls only other leaves, so a call to one needs no continuation and no
 ;; handler. Required at the end of lower_llvm.lg, whose helpers it uses
-;; (ll-arg-kind, ll-callee-var, ll-materialized?, ll-float-op?).
+;; (ll-arg-kind, ll-callee-var, ll-materialized?, ll-float-op?, ll-call-plan).
 (ns lower-llvm-leaf
   (:require [lower-wasm :as lw] [lw-rt]))
 
@@ -122,11 +122,12 @@
 
 (defn- leaf-op**
   "nil when nid's op is not one a leaf may use, else whether it allocates:
-   an allocating op, an arg it boxes, or a number result it boxes."
+   an allocating op, an arg it boxes, or a number result it boxes. An op
+   the lowering makes a CPS call of (= on floats is equiv?) is none."
   [nid trap-throws?]
   (let [f lw/*f* op (ir/op nid f) refs (ir/refs nid f)
         use (fn [nm args]
-              (when-let [ks (op-reads nm args trap-throws?)]
+              (when-let [ks (and (not (lw/ll-call-plan nid)) (op-reads nm args trap-throws?))]
                 (boolean (or (some #{:alloc} (rest (get leaf-ops nm)))
                              (some true? (map boxes? args ks))
                              (and (= :box (lw/ty nid)) (number-result? nm args))))))]
