@@ -187,8 +187,9 @@
 
 (defn- leaf-body
   "{:calls #{[var argc]} :allocates :loops} for info's body when everything
-   in it but calls of fns is leaf-op? and each call passes its args without
-   a raising conversion, else nil. A variadic arity is never a leaf."
+   in it but calls of fns is leaf-op? and each call passes its args and
+   takes its result without a raising conversion, else nil. A variadic
+   arity is never a leaf."
   [{:keys [f var argc params ret func-vals]} sig-of trap-throws?]
   (when (and f var (int? argc))
     (binding [lw/*f* f lw/*memo* (atom {}) lw/*func-vals* (or func-vals #{})]
@@ -197,7 +198,7 @@
                         (let [refs (ir/refs nid f) v (lw/ll-callee-var (first refs))
                               n (count (rest refs)) sig (when v (sig-of v n))
                               args (rest refs) ks (:params sig)]
-                          (when (and sig (every? true? (map fits? (kinds args) ks)))
+                          (when (and sig (every? true? (map fits? (kinds args) ks)) (fits? (:ret sig) (lw/ty nid)))
                             {:call [v n]
                              :allocates (boolean (or (some true? (map boxes? args ks))
                                                      (and (= :box (lw/ty nid)) (contains? #{:int :float} (:ret sig)))))}))))

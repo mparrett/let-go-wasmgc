@@ -1508,7 +1508,9 @@
             (ll-label! tl) (edge! (ir/cond-target-true a))
             (ll-label! fl) (edge! (ir/cond-target-false a)))
           (ll-fail (str "unsupported terminator " (ir/op t f)) {:block b}))))
-    (when @(:ovf *ll*) (ll-fail "a leaf that raises" {:fn *fname*}))
+    ;; a catchable raise is a tail call with %k, which a leaf has none of
+    (when (or @(:ovf *ll*) (some #(and (string? %) (re-find #"musttail|ptr %k\b" %)) @(:lines *ll*)))
+      (ll-fail "a leaf that raises" {:fn *fname*}))
     (let [lines (mapcat (fn [l] (if (vector? l) (phis (second l)) [l])) @(:lines *ll*))
           params (map-indexed (fn [i k] (str (ll-type k) " %p" i (when recur? ".in"))) *param-kinds*)]
       (update (ll-fn (ll-leaf-name sig) params (str (str/join "\n" lines) "\n"))

@@ -143,7 +143,7 @@
   (doseq [[nm [_ body]] leaf-fns]
     (is (not (str/includes? body "musttail")) nm)
     (is (not (str/includes? body "lg_gc")) nm)
-    (is (not (str/includes? body "%k")) nm))
+    (is (not (re-find #"ptr %k\b" body)) nm))
   (let [[ret body] (leaf-of "r64")]
     (is (= "i64" ret))
     (is (not (str/includes? (str body) "lg_alloc")))
