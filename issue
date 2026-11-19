@@ -16,3 +16,8 @@ description: The llvm runtime has no BigInt, Ratio or BigDecimal (D15). Each of 
  
  - F1 P13.9 runs the five programs with no P13.9 lines in corpus/opmatrix/SKIP or corpus/wasm/SKIP, and they MATCH native lg: `checks/run.sh P13.9`, exit 0.
  - F2 the llvm twins of bigint, bigdec, numerator and denominator answer as native does for BigInt, Ratio and BigDecimal arguments: corpus/llvm-rt/xsofy_natives_test.lg's cases use `same`, not `same-or-limit`, and `checks/run.sh P13.7` exits 0.
+
+## Comments
+[2026-11-19T13:37:20Z] Norman Nunley, Jr: The tower also bears on param inference. let-go's `infer-arg-types` types a param `:int` from `+ - * inc dec < <= > >=`, and natively those take a BigInt or a Ratio (`(+ 9223372036854775807N 1)` is `9223372036854775808N`, `(< 1/2 1)` is true), so once llvm carries these values a param typed that way rejects them with the unbox error. Bit ops are not affected: `(bit-and 5N 1)` raises `bit-and expected Int` natively. The leaves work's llvm-side inference uses a strict join (`:int` only when every use reads the param as an int), which does not help here: an arithmetic use reads it as a number, not an int.
+ 
+ F3: a param whose only uses are arithmetic or comparisons accepts a BigInt and a Ratio argument on llvm as native does, checked by a case in P13.9.
