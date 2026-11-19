@@ -1,0 +1,25 @@
+id: 746a745
+v: 2
+title: A record's entries have the same type on wasm as on native lg
+status: open
+priority: medium
+created: 2026-11-19T04:32:13Z
+updated: 2026-11-19T04:32:13Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Found in review of #118. Native lg builds a record's entries as plain vectors (`Record.Seq` makes `ArrayVector`s), so `map-entry?` is false and `key`/`val` raise "val expects map entry". The wasm runtime builds them through `m/entries->map-seq` as map entries (kind 23), so `map-entry?` is true and `key`/`val` answer. Probe at main f1f6d8f plus #118:
+ 
+     (defrecord R [a b]) (def r (->R 1 2))
+     (prn (map-entry? (first r)) (vector? (first r)) (type (first r)))
+     (prn (try (key (first r)) (catch Exception e :raised)) (try (val (first r)) (catch Exception e :raised)))
+ 
+ native prints `false true let-go.lang.ArrayVector` then `:raised :raised`; wasm prints `true true let-go.lang.ArrayVector` then `:a 1`. The corpus does not see it: `records.lg` reads entries through `first`/`second` and `type`, which agree.
+ 
+ Which side moves is open: Clojure gives a record map entries, so native may be the one to change upstream; until then the oracle relation says wasm follows native.
+ 
+ Facts that close it
+ F1 the probe above prints the same two lines natively and under `checks/wasm-run.sh`.
+ F2 `corpus/wasm/records.lg` has a line with `map-entry?`, `key` and `val` on a record entry, and `checks/oracle.sh corpus/wasm/records.lg` exits 0.
+ 
+ Related from the same review: `sortable?`, `coll?`, `seqable-k?` and `callable?` in rt/wasm/core.lg each keep their own ckind list, which is how #76 missed `sort`; one shared collection-kind predicate would stop the next miss.
