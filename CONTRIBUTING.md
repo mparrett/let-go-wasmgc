@@ -214,8 +214,8 @@ and links and runs for the same profile.
 As of 2026-10-03, `--target linear` (or `LW_TARGET=linear`) selects an
 experimental linear-memory module with a leaking allocator; WasmGC remains
 the default. Run it with `checks/wasm-run-linear.sh`. The Go host uses
-[nooga/wazero](https://github.com/nooga/wazero) pinned at
-`v1.12.1-0.20260911172836-0ec6142ae8c7`, with
+a wazero fork, pinned by the `replace` line in
+[host/wazero/go.mod](host/wazero/go.mod), with
 `experimental.CoreFeaturesTailCall` and
 `experimental.CoreFeaturesExceptionHandling` enabled and GC disabled.
 Milestone corpus results and named refusals are recorded in docs/ITEM-LEDGER.md.
