@@ -235,8 +235,9 @@ same acceptance as leaves: behavior unchanged, then time.
 
 ## Results
 
-Measured on the branch head (call leaves directly) against the commit before
-the first leaves commit (255a8e6), both built by the same script
+Measured at 23bc985 (call leaves directly, the head when the numbers and the
+full row run were taken) against the commit before the first leaves commit
+(255a8e6), both built by the same script
 (checks/llvm-xxh3-bench.sh: the runtime's llvm.xxhash over a 25 MB buffer,
 native executable from the driver's default cached runtime library, hyperfine
 under checks/quiet.sh). Both print the same checksum.
@@ -259,8 +260,10 @@ under checks/quiet.sh). Both print the same checksum.
   in the other runtime namespaces (arrays, core, host, phm, ...). The gain is
   in typing the xxh3 params (and the arch bytes/array accessors they call) so
   the unboxes cannot raise; that is the next change.
-- **Rows:** the 121-row parity set, one slot, LW_ATTEST=0, load under 4 at
-  the start: 120 pass; P12.0 fails, also on rerun alone.
+- **Rows:** the full run was at 23bc985 (the 121-row parity set, one slot,
+  LW_ATTEST=0, load under 4 at the start); the P9.1 fix at 1a59fed was
+  checked by rerunning rows, not the set. 120 pass; P12.0 fails, also on
+  rerun alone.
   - P12.0 fails identically at 255a8e6 (a native stderr warning that
     round-bigdec already refers to the clojure.core var, in the self-compile
     comparison); a later change on main fixes it and this branch's base
@@ -272,6 +275,9 @@ under checks/quiet.sh). Both print the same checksum.
     LLVM.LEAVES, P12.37 and LLVM.RTLIB.REUSE; the rest of the set was not
     rerun at that commit.
   The llvm benchmark rows (P13.x, P12.37, P12.40, the llvm corpora) all pass.
+  They were not timed against the base: the machine never held a load under
+  4, so a comparison would be noise, and "none slower" is not established.
+  That comparison moves to the re-measure after the param-inference change.
 - **The llvm-built compiler's compile of corpus/scalar/fib.clj:** not
   recorded. No script builds the compiler through llvm: the self-compile rows
   (P12.0, P12.4, P12.5) carry it as a wasm program, so there is no llvm-built
