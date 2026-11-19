@@ -1,0 +1,15 @@
+id: a4f4709
+v: 2
+title: A count typed from arithmetic accepts a float on wasm, as natively
+status: open
+priority: medium
+created: 2026-11-19T17:33:44Z
+updated: 2026-11-19T17:33:44Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Found while checking git-issue:a3c2faf against the GC lane. A count typed from arithmetic rejects a float on wasm, where native counts it down: `(doall 1.5 [1 2])` and `(dorun 1.5 [1 2])` raise "a non-Int value reached an Int-typed slot", and `(nthnext [1 2 3] 1.5)` and `(drop 1.5 [1 2 3])` raise "dec on a non-Int operand". Natively they answer `[1 2]`, `nil`, `(3)` and `[3]`. `take` and `partition` with a float count agree with native. Same cause as a3c2faf on llvm: let-go's `infer-arg-types` types a param `:int` when its uses are only arithmetic or comparisons, and floats reach those params today, ahead of the BigInt/Ratio half in 4d19ae0.
+ 
+ Facts that close it
+ F1 the four calls above answer as natively on wasm: a case in the owning corpus file, `checks/oracle.sh` exits 0.
+ F2 a runtime fn whose param is typed `:int` only from arithmetic or comparisons accepts a float argument on wasm as natively.
