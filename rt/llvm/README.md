@@ -128,7 +128,10 @@ stderr handles).
 llvm.core refines kind 18 with `ckind`: 30 map, 31 set, 32 TransientMap
 (phm's `HTransient`), 33 TransientSet (`TSet`), 34 TransientVector (`TVec`),
 35 a `type` value (`TypeVal`), 36 a keyword/symbol with meta (`MetaNamed`),
-37 a typed array (`llvm.arrays/Arr`; also its `type` id). Values of the
+37 a typed array (`llvm.arrays/Arr`; also its `type` id), 38 and 39 the
+sorted map and set (`llvm.sorted`), 40 `Promise`, 41 `Delay`, 42 a deftype
+instance (`UserInstance`), 45 a defrecord instance (`Rec`, its type a
+`RecType` interned per tag, laid out as `vm.Record`). Values of the
 namespaces loaded after llvm.core stay plain kind 18 (llvm.host's `Handle`
 and `Chan`): they have no `type` name or printed form yet.
 

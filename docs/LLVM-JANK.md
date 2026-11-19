@@ -50,7 +50,7 @@ numeric failure. This was not an isolated performance measurement.
   using the restored runtime cache. This focused result does not replace the
   full census above. It also exposed and fixed a cache-key omission: LLVM's
   loaded extension source must be hashed, rather than the GC extension file.
-- Records still use tagged maps and have unresolved type semantics.
+- Records are a runtime kind of their own (`llvm.core`'s `Rec`), as on the GC lane.
 - Implement the [pure Clojure numeric tower](superpowers/specs/2026-10-16-clojure-numeric-tower-design.md):
   BigInt and Ratio through deftype, including operations, literals, equality,
   hashing, printing, and serialization. BigDecimal and distinct Float32

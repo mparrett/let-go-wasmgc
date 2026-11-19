@@ -350,7 +350,7 @@
                      (if (if (< f 1.0e18) (if (> f -1.0e18) (= f (arch/i64-to-f64 (arch/f64-to-i64 f))) false) false)
                        (jb-lit! b (s/str-bytes (s/value-string (sq/box-int (arch/f64-to-i64 f)))))
                        (jb-lit! b (s/str-bytes (s/value-string x)))))
-          (= ck 30) (json-map! b x)
+          (if (= ck 30) true (= ck 45)) (json-map! b x)
           (if (= k 11) true (if (sq/seq-kind? k) true (if (= ck 31) true (= k 23)))) (json-seq! b x)
           :else (json-string! b (s/str-bytes (s/value-string x))))))
 
