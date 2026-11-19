@@ -1,0 +1,15 @@
+id: 61b0715
+v: 2
+title: sort and sort-by order a record's entries as native does
+status: open
+priority: medium
+created: 2026-11-19T04:26:44Z
+updated: 2026-11-19T04:26:44Z
+author: Matt Parrett
+assignee: Matt Parrett
+hash_source: content
+description: Follow-up from the review of #76 (D234). Records now have ckind 45, and `sortable?` in rt/wasm/core.lg has no arm for it, so `(sort r)` and `(sort-by f r)` on a record raise "sort expected a Collection" where native lg sorts the entries. `sort*` already goes through `sq/vec`, which handles records, so the fix is a `(= k 45) true` arm.
+ 
+ Facts that close it
+ F1 `sortable?` accepts kind 45: rt/wasm/core.lg, the `sortable?` cond.
+ F2 a corpus case sorts a record with `sort` and with `sort-by` and matches native: `checks/oracle.sh corpus/wasm/records.lg` exits 0.
