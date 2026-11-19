@@ -260,15 +260,17 @@ under checks/quiet.sh). Both print the same checksum.
   in typing the xxh3 params (and the arch bytes/array accessors they call) so
   the unboxes cannot raise; that is the next change.
 - **Rows:** the 121-row parity set, one slot, LW_ATTEST=0, load under 4 at
-  the start: 119 pass. Two fail, each also on rerun alone:
+  the start: 120 pass; P12.0 fails, also on rerun alone.
   - P12.0 fails identically at 255a8e6 (a native stderr warning that
     round-bigdec already refers to the clojure.core var, in the self-compile
-    comparison). It is not this branch.
-  - P9.1 fails only here: the gensym count after loading the driver is 1175
-    against the recorded 1162 (255a8e6 passes at 1162). The leaves classifier
-    in src/ takes 13 more gensyms at load (destructuring or `for`), which
-    renumbers every emitted module's locals. Either avoid the gensyms in
-    src/lower_llvm_leaf.lg or record the new count in checks/gensym-load.sh.
+    comparison); a later change on main fixes it and this branch's base
+    predates that. It is not this branch.
+  - P9.1 failed in the run at 23bc985: the gensym count after loading the
+    driver was 1175 against the recorded 1162, 13 more taken by a `doto` in
+    the driver's analysis and a `for` with destructuring in the rtlib
+    build. It passes at 1a59fed, back at 1162, rerun alone, as do
+    LLVM.LEAVES, P12.37 and LLVM.RTLIB.REUSE; the rest of the set was not
+    rerun at that commit.
   The llvm benchmark rows (P13.x, P12.37, P12.40, the llvm corpora) all pass.
 - **The llvm-built compiler's compile of corpus/scalar/fib.clj:** not
   recorded. No script builds the compiler through llvm: the self-compile rows
