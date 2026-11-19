@@ -287,16 +287,51 @@
     :bit-and :bit-or :bit-xor :bit-and-not :bit-not
     :bit-shift-left :bit-shift-right :unsigned-bit-shift-right})
 
+;; An llvm.arch intrinsic reads an arg as an int at a position its :type
+;; declares :int and its native twin (rt/llvm/arch.lg) refuses a non-int
+;; at: check-int! or check-index! there. These are those positions, by
+;; intrinsic; a :type :int position missing here (host-write's fd, a case
+;; over 1 and 2; type-anc's j, an nth) does not count. Natively those
+;; positions raise on a non-int, so typing the param :int moves where a
+;; non-int is refused, not whether.
+(def ^:private checked-int-args
+  {"array-new" #{1} "aget" #{2} "aset!" #{2} "array-copy" #{2 4 5}
+   "fix" #{0} "i32-wrap" #{0} "bytes-new" #{0} "bget" #{1} "bset!" #{1 2}
+   "host-sleep" #{0} "host-sysinfo" #{0} "host-open" #{1} "host-exit" #{0} "host-arg" #{0}
+   "binding-get" #{0} "binding-set!" #{0} "static-named" #{0}
+   "type-static" #{0} "type-name-bytes" #{0} "type-anc-count" #{0} "type-anc" #{0}})
+
+(defn- type-int-args
+  "The positions intrinsic var v's :type declares :int."
+  [v]
+  (let [ps (clojure.string/trim (first (clojure.string/split (str (:type (meta v))) #"->")))
+        ps (clojure.string/replace ps #"[\[\]]" "")]
+    (set (keep-indexed (fn [i t] (when (= ":int" t) i)) (clojure.string/split ps #"\s+")))))
+
+(defn- int-args
+  "The positions at which intrinsic var v reads an arg as an int. A
+   position its :type does not declare :int fails loudly."
+  [v]
+  (when (= lw-rt/intrinsics-ns (ns-name (:ns (meta v))))
+    (let [ps (get checked-int-args (name (symbol v)) #{}) ts (type-int-args v)]
+      (when-not (every? ts ps)
+        (throw (ex-info "lower-llvm-leaf: a checked int arg its :type does not declare :int"
+                        {:var (symbol v) :checked ps :type (:type (meta v))})))
+      ps)))
+
 (defn- int-call-arg?
   "Is user a call with nid among its args (not its callee), each place it
-   is passed read as an int: by an i64 intrinsic, or by a callee whose
-   recorded sig takes an int there?"
+   is passed read as an int: by an i64 intrinsic, an intrinsic at a
+   checked int position (int-args), or a callee whose recorded sig takes
+   an int there?"
   [f user nid]
   (let [refs (ir/refs user f) callee (first refs) args (vec (rest refs))]
     (and (= :call (ir/op user f)) callee (not= callee nid) (= :load-var (ir/op callee f))
          (let [v (ir/aux callee f)]
            (if (lw-rt/intrinsic? v)
-             (clojure.string/starts-with? (name (symbol v)) "i64-")
+             (or (clojure.string/starts-with? (name (symbol v)) "i64-")
+                 (let [ok (int-args v)]
+                   (every? (fn [i] (or (not= nid (nth args i)) (contains? ok i))) (range (count args)))))
              (let [ps (get-in (or (lw/q-sig v) (let [t (lw/rt-target v)] (when t (lw/q-sig t)))) [:arities (count args) :params])]
                (and (= (count ps) (count args))
                     (every? (fn [i] (or (not= nid (nth args i)) (= :int (nth ps i))))
