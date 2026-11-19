@@ -14,8 +14,15 @@
 
 (def ^:private ten (b/from-i64 10))
 (def ^:private one (b/from-i64 1))
-(defn- pow10 "10^k as a BigInt, k >= 0." [k] (loop [i 0 p one] (if (< i k) (recur (inc i) (b/mul p ten)) p)))
-(defn- pow2 "2^k as a BigInt, k >= 0." [k] (loop [i 0 p one] (if (< i k) (recur (inc i) (b/add p p)) p)))
+(defn- pow "base^k as a BigInt, k >= 0, by squaring: 1E100000M compared
+  exactly needs 10^100000, which k multiplications made a minute's work on wasm."
+  [base k]
+  (loop [k k sq base acc one]
+    (if (= k 0)
+      acc
+      (recur (bit-shift-right k 1) (if (> k 1) (b/mul sq sq) sq) (if (= 1 (bit-and k 1)) (b/mul acc sq) acc)))))
+(defn- pow10 "10^k as a BigInt, k >= 0." [k] (pow ten k))
+(defn- pow2 "2^k as a BigInt, k >= 0." [k] (pow (b/from-i64 2) k))
 
 (defn make "u * 10^e (u a BigInt, e an int) in canonical form." [u e]
   (if (b/zero? u)
@@ -24,7 +31,7 @@
       (if (b/zero? (b/rem u ten)) (recur (b/quot u ten) (inc e)) (BigDecimal. u e)))))
 (defn make-2 "u * 10^e * 2^k (k an int of either sign): a literal with a binary exponent." [u e k]
   (if (< k 0)
-    (make (b/mul u (loop [i 0 p one] (if (< i (- 0 k)) (recur (inc i) (b/mul p (b/from-i64 5))) p))) (+ e k))   ; 2^-k = 5^k / 10^k
+    (make (b/mul u (pow (b/from-i64 5) (- 0 k))) (+ e k))   ; 2^-k = 5^k / 10^k
     (make (b/mul u (pow2 k)) e)))
 
 (defn unscaled [d] (.-unscaled d))
@@ -34,9 +41,36 @@
 
 (defn- scaled "u * 10^(e - emin): the integer a value is once brought to the smaller exponent." [u e emin]
   (b/mul u (pow10 (- e emin))))
+
+;; Magnitude first: a nonzero u * 10^e with u of bit length L lies in
+;; [2^lo, 2^(lo+1)) for lo = L-1 + e*log2 10, and m * 2^k likewise for
+;; lo = Lm-1 + k. When two such ranges do not overlap their order is settled
+;; without the exact expansion, which for exponents far apart builds a
+;; number of |e| digits. The slack covers the double's rounding of
+;; e*log2 10; a pair within it takes the exact path. No destructuring, `or`
+;; or `for` here: the runtime's gensym count stays where D233 left it (P9.1).
+(def ^:private log2-10 3.321928094887362)
+(defn- bitlen32 [x] (loop [x x n 0] (if (= x 0) n (recur (unsigned-bit-shift-right x 1) (inc n)))))
+(defn- bitlen "Bit length of |u|; 0 for zero." [u]
+  (let [n (b/limb-count u)] (if (= n 0) 0 (+ (* 32 (dec n)) (bitlen32 (b/limb u (dec n)))))))
+(defn- log2-lo [d] (+ (double (dec (bitlen (.-unscaled d)))) (* (double (.-exp d)) log2-10)))
+(defn- by-magnitude
+  "1 or -1 when |x| in [2^xlo, 2^(xlo+1)) is surely above or below |y| in
+   [2^ylo, 2^(ylo+1)); nil when the ranges come within the slack."
+  [xlo ylo]
+  (cond (> xlo (+ ylo 1.000001)) 1 (> ylo (+ xlo 1.000001)) -1 :else nil))
+(defn- by-sign "Order by signs alone, or nil when they agree and are nonzero." [sa sb]
+  (cond (< sa sb) -1 (> sa sb) 1 (= sa 0) 0 :else nil))
+
 (defn compare "-1, 0 or 1 of two BigDecimals (big.Float.Cmp)." [a b]
-  (let [emin (min (.-exp a) (.-exp b))]
-    (b/compare (scaled (.-unscaled a) (.-exp a) emin) (scaled (.-unscaled b) (.-exp b) emin))))
+  (let [sa (signum a) s (by-sign sa (signum b))]
+    (if (nil? s)
+      (let [m (by-magnitude (log2-lo a) (log2-lo b))]
+        (if (nil? m)
+          (let [emin (min (.-exp a) (.-exp b))]
+            (b/compare (scaled (.-unscaled a) (.-exp a) emin) (scaled (.-unscaled b) (.-exp b) emin)))
+          (* sa m)))
+      s)))
 
 (defn- as-rat [d]
   (let [u (.-unscaled d) e (.-exp d)]
@@ -45,9 +79,15 @@
   "-1, 0 or 1 of a against m * 2^k (ints: a finite double taken apart), the
    exact comparison big.Float.Cmp makes against SetFloat64 of that double."
   [a m k]
-  (let [mb (b/from-i64 m)
-        r (if (< k 0) (b/rat-make mb (pow2 (- 0 k))) (b/rat-make (b/mul mb (pow2 k)) one))]
-    (b/rat-compare (as-rat a) r)))
+  (let [sa (signum a) s (by-sign sa (cond (< m 0) -1 (> m 0) 1 :else 0))]
+    (if (nil? s)
+      (let [o (by-magnitude (log2-lo a) (double (+ (dec (bitlen (b/abs (b/from-i64 m)))) k)))]
+        (if (nil? o)
+          (let [mb (b/from-i64 m)
+                r (if (< k 0) (b/rat-make mb (pow2 (- 0 k))) (b/rat-make (b/mul mb (pow2 k)) one))]
+            (b/rat-compare (as-rat a) r))
+          (* sa o)))
+      s)))
 (defn to-f64 "big.Float.Float64: nearest even; +-Inf beyond the range, 0.0 below it." [d]
   (let [u (.-unscaled d) e (.-exp d)]
     (if (< e 0) (b/rat->f64 (b/rat-make u (pow10 (- 0 e)))) (b/to-f64 (b/mul u (pow10 e))))))
