@@ -1,0 +1,49 @@
+;; D231's eviction rule on the real load-rtlib!: the eval and no-eval runtime
+;; libraries coexist, and a build evicts only stale files of its own variant.
+;; The build, key and payload are stubbed as in llvm-rtlib-reuse-check.lg, so
+;; file names, lookup and pruning are the driver's own.
+;; Run with a fresh LW_RTLIB_DIR (rtlib-evict-check.sh).
+(require '[lower-wasm :as lw] '[lw-rt] '[clojure.string :as str])
+
+(def failures (atom []))
+(defn check [label ok]
+  (println (if ok "PASS" "FAIL") label)
+  (when-not ok (swap! failures conj label)))
+
+(def dir lw/rtlib-dir)
+(defn files [] (set (os/ls dir)))
+(defn has? [prefix] (some #(str/starts-with? % prefix) (files)))
+
+(def generation (atom "aaaaaaaa"))
+(defn load! [no-eval?]
+  (with-redefs [lw/rtlib-key (fn [] @generation)
+                lw/build-rtlib! (fn [] [])
+                lw/rtlib-snapshot (fn [_] {:generation @generation})
+                lw/rtlib-restore! (fn [_] nil)
+                lw-rt/no-eval? no-eval?]
+    (binding [lw/*target* :gc lw/*rooted-natives* #{}]
+      (lw/load-rtlib!))))
+
+;; a library named before the target joined the key is always stale
+(os/sh "mkdir" "-p" dir)
+(spit (str dir "/rtlib-12345678.edn") "{}")
+
+(load! false)
+(check "eval build writes its library" (has? "rtlib-gc-aaaaaaaa"))
+(check "eval build removes the pre-target name" (not (contains? (files) "rtlib-12345678.edn")))
+(load! true)
+(check "no-eval build writes its own library" (has? "rtlib-gc-noeval-aaaaaaaa"))
+(check "no-eval build keeps the eval library" (has? "rtlib-gc-aaaaaaaa"))
+
+(reset! generation "bbbbbbbb")
+(load! false)
+(check "eval build of a new key writes it" (has? "rtlib-gc-bbbbbbbb"))
+(check "eval build evicts its stale key" (not (has? "rtlib-gc-aaaaaaaa")))
+(check "eval build keeps the no-eval library" (has? "rtlib-gc-noeval-aaaaaaaa"))
+(load! true)
+(check "no-eval build evicts its stale key" (not (has? "rtlib-gc-noeval-aaaaaaaa")))
+(check "no-eval build keeps the eval library" (has? "rtlib-gc-bbbbbbbb"))
+(check "both variants of the current key remain"
+       (and (has? "rtlib-gc-noeval-bbbbbbbb") (has? "rtlib-gc-bbbbbbbb")))
+
+(when (seq @failures) (throw (ex-info "runtime cache eviction regression" {:failed @failures})))
