@@ -3,8 +3,9 @@
 ;; calls only other leaves, so a call to one needs no continuation and no
 ;; handler. Required at the end of lower_llvm.lg, whose helpers it uses
 ;; (ll-arg-kind, ll-callee-var, ll-materialized?, ll-float-op?, ll-call-plan).
+;; Loading it also types i64 params on llvm (infer-i64-params, at the end).
 (ns lower-llvm-leaf
-  (:require [lower-wasm :as lw] [lw-rt]))
+  (:require [lower-wasm :as lw] [lw-rt] [ir.lattice :as lat] [ir.passes.infer-arg-types]))
 
 ;; A leaf's loops are branches with no GC entry check, so a leaf with a
 ;; loop or a recur allocates nothing, nor does any leaf it calls; a
@@ -261,3 +262,68 @@
                                           (update-in s [v :arities argc] assoc :leaf true :leaf-allocates a))
                                         sigs ls)))
     (set (keys ls))))
+
+;; Param types on llvm. Upstream infer-arg-types types a param :int only
+;; from + - * inc dec and the compares, so a param used as an i64 by a bit
+;; op, an i64 intrinsic (llvm.arch's i64-*) or a callee taking an int stays
+;; boxed and each use unboxes it, which can raise: the xxh3 mixers were no
+;; leaves. Here a param every user of which reads it as an int is typed
+;; :int; a user that does not disagrees. Upstream lets such a user pass,
+;; which would type to-f's x (an int? test, then i64-to-f64 or unbox-float)
+;; and make a float raise. Natively those ops reject a non-int, and the
+;; driver's boxing fixpoint re-boxes a program param a caller passes boxed.
+;; A callee is read by its recorded sig, which the analysis cache keys on
+;; (the driver's analysis-interfaces). The bit ops go once the pinned
+;; let-go infers them upstream.
+(def ^:private int-users
+  #{:add :sub :mul :inc :dec :lt :lte :gt :gte
+    :bit-and :bit-or :bit-xor :bit-and-not :bit-not
+    :bit-shift-left :bit-shift-right :unsigned-bit-shift-right})
+
+(defn- int-call-arg?
+  "Is user a call with nid among its args (not its callee), each place it
+   is passed read as an int: by an i64 intrinsic, or by a callee whose
+   recorded sig takes an int there?"
+  [f user nid]
+  (let [refs (ir/refs user f) callee (first refs) args (vec (rest refs))]
+    (and (= :call (ir/op user f)) callee (not= callee nid) (= :load-var (ir/op callee f))
+         (let [v (ir/aux callee f)]
+           (if (lw-rt/intrinsic? v)
+             (clojure.string/starts-with? (name (symbol v)) "i64-")
+             (let [ps (get-in (or (lw/q-sig v) (let [t (lw/rt-target v)] (when t (lw/q-sig t)))) [:arities (count args) :params])]
+               (and (= (count ps) (count args))
+                    (every? (fn [i] (or (not= nid (nth args i)) (= :int (nth ps i))))
+                            (range (count args))))))))))
+
+(defn- param-type
+  ":int when nid has users and each reads it as an int, else :unknown."
+  [f nid]
+  (let [n (ir/inst-count f)]
+    (loop [u 0 t :unknown]
+      (cond (>= u n) t
+            (not (some (fn [r] (= r nid)) (ir/refs u f))) (recur (inc u) t)
+            (or (contains? int-users (ir/op u f)) (int-call-arg? f u nid)) (recur (inc u) :int)
+            :else :unknown))))
+
+(defn- infer-i64-params
+  "Join each param's type into state, skipping those upstream skips (a
+   type hint) and those kept boxed (lw/*box-param-idx*)."
+  [f state]
+  (let [arg-types (ir/fn-arg-types f)]
+    (reduce (fn [s nid]
+              (if (= :load-arg (ir/op nid f))
+                (let [idx (ir/aux nid f)
+                      explicit (when (and (vector? arg-types) (< (int idx) (count arg-types))) (nth arg-types (int idx)))
+                      t (if (or (contains? lw/*box-param-idx* idx) (and explicit (not= explicit :unknown)))
+                          :unknown
+                          (param-type f nid))]
+                  (if (= :unknown t) s (lat/join-inst-type! s nid t)))
+                s))
+            state (ir/block-insts (ir/entry-block f) f))))
+
+;; over lower-wasm's override: with lw/*box-params* bound every param stays
+;; boxed, and the GC target never loads this file
+(alter-var-root #'ir.passes.infer-arg-types/infer-arg-types
+                (fn [prev] (fn ([f] (prev f))
+                             ([f state] (let [s (prev f state)]
+                                          (if (and (= :llvm lw/*target*) (not lw/*box-params*)) (infer-i64-params f s) s))))))

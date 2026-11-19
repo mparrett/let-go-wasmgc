@@ -102,6 +102,48 @@
     (is (:leaf sig))
     (is (false? (:leaf-allocates sig)))))
 
+;; On llvm a param used only as an i64, by a bit op, an i64 intrinsic or a
+;; callee taking an int, is typed :int, so the runtime's xxh3 mixers take
+;; ints and are leaves.
+(defn rtlib-xxh3-sigs
+  "{name arity-sig} of llvm.xxhash's mixers over a restored library."
+  []
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (into {} (map (fn [[nm argc]] [nm (sig-of (lw-rt/rt-var 'xxhash nm) argc)])
+                    [['lo32 1] ['hi32 1] ['mul-fold 2] ['avalanche 1]])))))
+
+(deftest xxh3-mixers-take-ints
+  (rtlib-xxh3-sigs)
+  (let [sigs (rtlib-xxh3-sigs)]
+    (is (= [:int] (:params (sigs 'lo32))))
+    (is (= [:int :int] (:params (sigs 'mul-fold))))
+    (doseq [[nm sig] sigs] (is (:leaf sig) (str nm)))))
+
+(def i64-forms
+  '[(defn mask [x] (bit-and x 255))
+    (defn shr8 [x] (arch/i64-shr-u x 8))
+    ;; read as an int only once tested: a float passes
+    (defn to-f [x] (if (int? x) (arch/i64-to-f64 x) 0.5))
+    ;; passed where the callee's sig takes an int, or does not
+    (defn via-mask [x] (mask (shr8 x)))
+    (defn via-to-f [x] (to-f x))])
+
+(doseq [form i64-forms] (eval form))
+
+(defn i64-params
+  "The params of i64-forms' fns as the driver analyses them on target."
+  [target]
+  (lw/with-session* (lw/new-session {} {} {:target target :rt true})
+    (fn []
+      (driver/analyze-program! (vec (mapcat driver/expand-defn i64-forms)) '(defn _main [] nil) #{} false nil)
+      (mapv (fn [v] (:params (sig-of v 1))) [#'mask #'shr8 #'to-f #'via-mask #'via-to-f]))))
+
+(deftest infers-i64-params-on-llvm-only
+  (is (= [[:int] [:int] [:box] [:int] [:box]] (i64-params :llvm)))
+  (is (= [[:box] [:box] [:box] [:box] [:box]] (i64-params :gc))))
+
 ;; Over a restored library, a program fn calling a runtime leaf is a leaf,
 ;; one calling a runtime fn that is not one is not.
 (def rt-callers
@@ -174,4 +216,4 @@
       (is (not (re-find #"@\"[^\"]*_r64\"\(" body)) nm))))
 
 (let [result (test/run-tests 'llvm-leaf-check)]
-  (os/exit (if (and (= 7 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 9 (:test result)) (test/successful? result)) 0 1)))

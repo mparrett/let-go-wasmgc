@@ -5,6 +5,7 @@
             [lower-llvm-analysis-cache :as ac]))
 
 (defn callee ([x] x) ([x y] y))
+(defn caller [x] (callee x))
 
 (deftest referenced-definition-includes-every-arity
   (lw/with-session* (lw/new-session {} {} {:target :llvm})
@@ -32,6 +33,23 @@
           (swap! lw/*sigs* assoc-in [target :arities 1 :ret] :box)
           (is (not= before (driver/analysis-interfaces src))))))))
 
+;; A caller's param types read its callees' param types (on llvm, a param
+;; passed only where the callee takes an int is one): the cache re-analyses
+;; the caller once the callee's param type changes.
+(deftest callee-param-type-invalidates
+  (lw/with-session* (lw/new-session {} {} {:target :llvm})
+    (fn []
+      (lw/ensure-llvm-target!)
+      (let [src (first (driver/expand-defn '(defn caller [x] (callee x))))
+            cache (ac/new-cache true)
+            params (fn [] (:params (first (driver/analyze-program! [src] '(defn _main [] nil) #{} false cache))))]
+        (swap! lw/*sigs* assoc #'callee {:arities {1 {:name "callee#1" :params [:int] :ret :int}}})
+        (is (= [:int] (params)))
+        (swap! lw/*sigs* assoc-in [#'callee :arities 1 :params] [:box])
+        (is (= [:box] (params)))
+        ;; only _main, whose interfaces did not change, is reused
+        (is (= 1 (:reused (ac/stats cache))))))))
+
 (deftest actual-template-ir-is-not-reusable
   (lw/with-session* (lw/new-session {} {} {:target :llvm})
     (fn []
@@ -43,4 +61,4 @@
           (is (= (= 'scalar (second form)) (boolean (driver/reusable-analysis? info)))))))))
 
 (let [result (test/run-tests 'llvm-analysis-input-check)]
-  (os/exit (if (and (= 3 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 4 (:test result)) (test/successful? result)) 0 1)))

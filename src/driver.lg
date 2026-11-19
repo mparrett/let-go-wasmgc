@@ -533,8 +533,10 @@
 (defn analyze-program!
   "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint).
    stub?: --test, a failing defn becomes a stub (above). Each round of the
-   boxing loop records leafness afresh (record-leaves!)."
+   boxing loop records leafness afresh (record-leaves!). On llvm the target
+   loads first: it adds to the param inference."
   [defns main-src boxed stub? cache]
+  (when (= :llvm lw/*target*) (lw/ensure-llvm-target!))
   (let [infos (doall
    (for [src (conj defns main-src)]
      (lw-rt/call-in-ns (src-ns src)
