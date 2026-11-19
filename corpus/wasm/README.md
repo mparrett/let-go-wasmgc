@@ -5,7 +5,7 @@ runs let-go's own Go natives. The backend side compiles the program plus `rt/was
 `src/driver.lg`. Match means `checks/oracle.sh`. `.expected` files are native snapshots (D13).
 
 ```
-checks/run-corpus.sh corpus/wasm              # the 14 programs
+checks/run-corpus.sh corpus/wasm              # the 14 programs, plus records.lg (D234)
 checks/run-corpus.sh corpus/wasm/pending      # the backlog (13 files after P2.12)
 checks/run-corpus.sh corpus/wasm/pending/variadic   # P2.12's row (9 programs)
 checks/run-corpus.sh --update-expected corpus/wasm corpus/wasm/pending corpus/wasm/pending/variadic
