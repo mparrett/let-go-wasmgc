@@ -117,10 +117,10 @@
 
 ### Task 6: Infer i64 params from bit ops and the arch i64 intrinsics
 
-Measured cause (after Task 2): the runtime's xxh3 fns (`lo32`, `hi32`, `mul-fold`, `avalanche`, ...) are not leaves because their params are `:box`, and the unbox at each use can raise. They are boxed because let-go's `ir.passes.infer-arg-types` types a param `:int` only from `:add :sub :mul :inc :dec :lt :lte :gt :gte`; a param used only by bit ops (`:bit-and`, `:bit-xor`, the shifts) or by this repo's `arch/i64-*` intrinsics stays `:unknown`. The upstream half (bit ops) is a let-go PR; this task is the lane half and covers bit ops locally until the pin passes that PR.
+Measured cause (after Task 2): the runtime's xxh3 fns (`lo32`, `hi32`, `mul-fold`, `avalanche`, ...) are not leaves because their params are `:box`, and the unbox at each use can raise. They are boxed because let-go's `ir.passes.infer-arg-types` types a param `:int` only from `:add :sub :mul :inc :dec :lt :lte :gt :gte`; a param used only by bit ops (`:bit-and`, `:bit-xor`, the shifts) or by this repo's `arch/i64-*` intrinsics stays `:unknown`. The upstream half (bit ops) is nooga/let-go#1138; this task is the llvm half and covers bit ops locally until the pin includes it.
 
 **Files:**
-- Modify: `src/lower_wasm.lg`: the lane's `infer-arg-types` override (beside its `*box-params*` arm): on `--target llvm` only, a param's users that are bit ops or calls of `arch/i64-*` intrinsics constrain it to `:int`, joined as the upstream pass joins constraints (any disagreement leaves it `:unknown`).
+- Modify: the llvm side (`src/lower_llvm_leaf.lg`, or a small llvm-only namespace it requires): an llvm-only wrapper of `ir.passes.infer-arg-types/infer-arg-types`, installed when the llvm target loads (`lw/ensure-llvm-target!`), in which a param's users that are bit ops or calls of `arch/i64-*` intrinsics constrain it to `:int`, joined as the upstream pass joins constraints (any disagreement leaves it `:unknown`). `src/lower_wasm.lg` and its own override are not touched: llvm-specific logic does not go into the WasmGC lowering. The bit-op half goes once the pin includes nooga/let-go#1138, which adds it upstream.
 - Test: `checks/llvm-leaf-check.lg` (row LLVM.LEAVES), `docs/superpowers/specs/2026-11-06-llvm-direct-call-leaves-design.md` (Results)
 
 **Interfaces:**
@@ -129,7 +129,7 @@ Measured cause (after Task 2): the runtime's xxh3 fns (`lo32`, `hi32`, `mul-fold
 
 - [ ] **Step 1: Write the failing assertions.** After a restore of the cached runtime library: `(get-in (lw/q-sig #'llvm.xxhash/lo32) [:arities 1 :params])` is `[:int]`, `mul-fold` arity 2 is `[:int :int]`, and `lo32`, `hi32`, `mul-fold` and `avalanche` carry `:leaf true`; a program fn using its param only through `bit-and` has an `:int` param.
 - [ ] **Step 2: Run to see it fail.** `checks/run.sh LLVM.LEAVES` → the params read `[:box]`.
-- [ ] **Step 3: Implement the llvm-only constraint** in the lane's override.
+- [ ] **Step 3: Implement the llvm-only constraint** in the llvm-side wrapper.
 - [ ] **Step 4: Run to see it pass**, then once each: P13.3, P13.1, P12.37, LLVM.RTLIB.REUSE, P13.9 (the common corpora on llvm: a runtime fn newly typed `:int` unboxes at entry, so a non-int argument's error text could change; any difference is a failure to fix, not to accept).
 - [ ] **Step 5: Re-measure** with `checks/llvm-xxh3-bench.sh` on a quiet machine and add a "with i64 params" row to the design's Results.
 - [ ] **Step 6: Commit.** `feat(llvm): infer i64 params from bit ops and the arch i64 intrinsics`
