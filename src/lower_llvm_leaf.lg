@@ -5,7 +5,7 @@
 ;; (ll-arg-kind, ll-callee-var, ll-materialized?, ll-float-op?, ll-call-plan).
 ;; Loading it also types i64 params on llvm (infer-i64-params, at the end).
 (ns lower-llvm-leaf
-  (:require [lower-wasm :as lw] [lw-rt] [ir.lattice :as lat] [ir.passes.infer-arg-types]))
+  (:require [lower-wasm :as lw] [lw-rt] [ir] [ir.lattice :as lat] [ir.passes.infer-arg-types] [clojure.string]))
 
 ;; A leaf's loops are branches with no GC entry check, so a leaf with a
 ;; loop or a recur allocates nothing, nor does any leaf it calls; a
@@ -59,11 +59,13 @@
 
 (defn- slots
   "A test over a declaration intrinsic's operands: the declaration, then
-   (head decl) more fixed kinds, then the slot kind (slot decl args) names."
+   (head decl) more fixed kinds, then the slot kind (slot decl args) names.
+   A kind it cannot name (a field index that is no constant) fails it."
   [head slot]
   (fn [op args]
     (when-let [d (decl-of (first args))]
-      (reads args (concat [:box] (head d) (when slot [(slot-kind (slot d args))]))))))
+      (let [ks (concat [:box] (head d) (when slot [(slot-kind (slot d args))]))]
+        (when (not-any? nil? ks) (reads args ks))))))
 
 (def leaf-ops
   "The ops a leaf may use, IR ops and intrinsics (by name): each with the
@@ -270,8 +272,13 @@
 ;; leaves. Here a param every user of which reads it as an int is typed
 ;; :int; a user that does not disagrees. Upstream lets such a user pass,
 ;; which would type to-f's x (an int? test, then i64-to-f64 or unbox-float)
-;; and make a float raise. Natively those ops reject a non-int, and the
-;; driver's boxing fixpoint re-boxes a program param a caller passes boxed.
+;; and make a float raise. Natively the bit ops and the i64 intrinsics
+;; reject a non-int; the :add/:lt family (upstream's, kept here) and a
+;; callee sig typed from it do not, so there a float that native lg computes
+;; with raises. The inference is flow-insensitive: a param read as an int on
+;; one branch only is typed :int (one passed on to a block param is not).
+;; The driver's boxing fixpoint re-boxes a program param a caller passes
+;; boxed; a runtime fn's param stays :int.
 ;; A callee is read by its recorded sig, which the analysis cache keys on
 ;; (the driver's analysis-interfaces). The bit ops go once the pinned
 ;; let-go infers them upstream.
