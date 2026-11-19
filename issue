@@ -17,3 +17,6 @@ description: On llvm, `(doall 1.5 [1 2])` raises; natively it returns `[1 2]`. l
  
  - F1 `(doall 1.5 [1 2])` and `(dorun 1.5 [1 2])` behave on llvm as natively, checked by a case in the owning corpus file and run through the oracle.
  - F2 a runtime fn's param typed `:int` only from arithmetic or comparisons accepts a float argument on llvm as natively: either the param stays boxed, or the fn keeps a boxed entry for a non-int argument.
+
+## Comments
+[2026-11-19T17:33:49Z] Matt Parrett: The GC lane has the same gap with floats today: `doall`/`dorun` with a 1.5 count, and `nthnext`/`drop` with 1.5, raise on wasm where native answers. Filed for that lane as git-issue:a4f4709; whichever side settles the rule first (boxed param vs a boxed entry for a non-int argument), the other can follow it.
