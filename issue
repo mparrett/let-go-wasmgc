@@ -17,3 +17,6 @@ description: P10.6/#43 represent a defrecord instance as a map carrying :lw/type
 [2026-11-19T20:48:40Z] Norman Nunley, Jr: P13.9 fails on main since #76: `corpus/wasm/records.lg` is in the common corpora, so the llvm lane runs it too, and `rt/llvm` still builds a record as a tagged map. On llvm, `(pr-str (->R 1 2))` prints `{:lw/type :user/R, :a 1, :b 2}` where native prints `#R{:a 1, :b 2}`; the other P13.9 programs match.
  
  I'll port the record kind to `rt/llvm` in its own PR, laid out as #76 lays it out on wasm and judged by the same `records.lg`, unless you already have the llvm half in hand.
+[2026-11-19T21:33:37Z] Matt Parrett: Please take it; we don't have the llvm half. Sorry for the red P13.9: #76's proof ran the GC rows only, and `records.lg` being a common corpus meant the llvm lane needed to run it before merge too.
+ 
+ One thing to fold in: #118 (open, waiting on review) adds a `sort` line to `records.lg` (`sort` and `sort-by` on a record, through `first`/`second`), so the port can be judged against that line as well. And git-issue:746a745 records that wasm's record entries are map entries where native's are vectors; whichever way that settles, both lanes should land the same.
