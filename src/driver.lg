@@ -535,7 +535,7 @@
    stub?: --test, a failing defn becomes a stub (above). Each round of the
    boxing loop records leafness afresh (record-leaves!)."
   [defns main-src boxed stub? cache]
-  (doto (doall
+  (let [infos (doall
    (for [src (conj defns main-src)]
      (lw-rt/call-in-ns (src-ns src)
       (fn []
@@ -572,8 +572,9 @@
                               (if (= "v" argc)
                                 (assoc e :variadic (assoc sig :fixed (lw/fixed-count (nth src 2))))
                                 (assoc-in e [:arities (count (:params info))] sig))))))
-           info)))))
-    record-leaves!))
+           info)))))]
+    (record-leaves! infos)
+    infos))
 
 (defn boxing-needed
   "[var argc] keys of program defns whose typed params some call cannot
