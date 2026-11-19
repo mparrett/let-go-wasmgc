@@ -2352,3 +2352,9 @@
 
 (require 'lower-llvm-rt)
 (require 'lower-llvm-leaf)
+
+(defn ll-mark-rt-leaves!
+  "Record the leaf arities among the runtime library's analysed defns (each
+   pending info carries its :var and :argc) in their sigs."
+  []
+  (lower-llvm-leaf/mark-leaves! (:pending @*rt*)))

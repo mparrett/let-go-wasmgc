@@ -4862,20 +4862,7 @@
     (doseq [g lw-rt/globals] (rt-global! (:var g)))
     ;; llvm: the leaf arities among the analysed defns, recorded in their
     ;; sigs (saved with the library); a fn analysed while lowering is none
-    (when (= *target* :llvm)
-      (let [by-name (reduce (fn [m e]
-                              (reduce (fn [m a]
-                                        (let [nm (:name (val a)) k [(key e) (key a)]]
-                                          (when (and (contains? m nm) (not= k (m nm)))
-                                            (throw (ex-info (str (target-prefix) "two runtime arities share the name " nm)
-                                                            {:name nm :arities [(m nm) k]})))
-                                          (assoc m nm k)))
-                                      m (:arities (val e))))
-                            {} @*sigs*)]
-        ((resolve 'lower-llvm-leaf/mark-leaves!)
-         (keep (fn [info] (let [k (by-name (:name info))]
-                            (when k (assoc info :var (first k) :argc (second k)))))
-               (:pending @*rt*)))))
+    (when (= *target* :llvm) ((resolve 'lower-wasm/ll-mark-rt-leaves!)))
     (loop []
       (when (seq (:pending @*rt*))
         (let [info (first (:pending @*rt*))]
