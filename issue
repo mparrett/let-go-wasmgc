@@ -4,10 +4,11 @@ title: llvm: a bare board's module goes through LLVM's optimizer before code gen
 status: open
 priority: medium
 created: 2026-11-19T16:21:33Z
-updated: 2026-11-19T16:21:33Z
+updated: 2026-11-19T16:21:34Z
 author: Norman Nunley, Jr
 assignee: Norman Nunley, Jr
 hash_source: content
+relates_to: 1030da2
 description: On a bare board profile, the llvm module gets no IR optimization. `checks/native-run.sh` takes `m.ll` straight to `llc -O2` for the profile's triple; `llc` only generates code, so LLVM's middle end never runs: no inlining, no instcombine, no GVN, no loop passes. The host build hands the same module to `clang -O2`, and the ORC runner builds LLVM's default per-module pipeline (`host/native/orc-runner.cpp`), so both of those get it. Boards matter most for this: the leaves work lowers small pure fns to direct `fastcc` calls so LLVM can inline them, and on a board nothing inlines them.
  
  The change: run the module through `opt -O2` (or `clang -O2 -c` for the triple) before `llc`, with the profile's triple and cpu, and keep the link step as it is.
