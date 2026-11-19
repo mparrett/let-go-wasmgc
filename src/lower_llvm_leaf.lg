@@ -295,12 +295,25 @@
                     (every? (fn [i] (or (not= nid (nth args i)) (= :int (nth ps i))))
                             (range (count args))))))))))
 
+(defn- branch-args
+  "The values a branch terminator t passes to its targets' params (they
+   live in its aux, not its refs), else none."
+  [f t]
+  (let [a (ir/aux t f)]
+    (case (ir/op t f)
+      :branch (ir/branch-target-args a)
+      :branch-if (concat (ir/branch-target-args (ir/cond-target-true a))
+                         (ir/branch-target-args (ir/cond-target-false a)))
+      nil)))
+
 (defn- param-type
-  ":int when nid has users and each reads it as an int, else :unknown."
+  ":int when nid has users and each reads it as an int, else :unknown. A
+   branch passing nid to a block param does not read it as an int."
   [f nid]
   (let [n (ir/inst-count f)]
     (loop [u 0 t :unknown]
       (cond (>= u n) t
+            (some (fn [r] (= r nid)) (branch-args f u)) :unknown
             (not (some (fn [r] (= r nid)) (ir/refs u f))) (recur (inc u) t)
             (or (contains? int-users (ir/op u f)) (int-call-arg? f u nid)) (recur (inc u) :int)
             :else :unknown))))

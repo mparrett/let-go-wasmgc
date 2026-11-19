@@ -128,7 +128,11 @@
     (defn to-f [x] (if (int? x) (arch/i64-to-f64 x) 0.5))
     ;; passed where the callee's sig takes an int, or does not
     (defn via-mask [x] (mask (shr8 x)))
-    (defn via-to-f [x] (to-f x))])
+    (defn via-to-f [x] (to-f x))
+    ;; passed on to a block param (an if's join, a loop's): read as an int
+    ;; on one path only, so (h 1.5 false) is 1.5
+    (defn h [x flag] (if flag (bit-and x 1) x))
+    (defn via-loop [x ^long n] (loop [i 0 a x] (if (< i n) (recur (unchecked-add i 1) (bit-and x 3)) a)))])
 
 (doseq [form i64-forms] (eval form))
 
@@ -138,11 +142,12 @@
   (lw/with-session* (lw/new-session {} {} {:target target :rt true})
     (fn []
       (driver/analyze-program! (vec (mapcat driver/expand-defn i64-forms)) '(defn _main [] nil) #{} false nil)
-      (mapv (fn [v] (:params (sig-of v 1))) [#'mask #'shr8 #'to-f #'via-mask #'via-to-f]))))
+      (mapv (fn [[v argc]] (:params (sig-of v argc)))
+            [[#'mask 1] [#'shr8 1] [#'to-f 1] [#'via-mask 1] [#'via-to-f 1] [#'h 2] [#'via-loop 2]]))))
 
 (deftest infers-i64-params-on-llvm-only
-  (is (= [[:int] [:int] [:box] [:int] [:box]] (i64-params :llvm)))
-  (is (= [[:box] [:box] [:box] [:box] [:box]] (i64-params :gc))))
+  (is (= [[:int] [:int] [:box] [:int] [:box] [:box :box] [:box :int]] (i64-params :llvm)))
+  (is (= [[:box] [:box] [:box] [:box] [:box] [:box :box] [:box :int]] (i64-params :gc))))
 
 ;; Over a restored library, a program fn calling a runtime leaf is a leaf,
 ;; one calling a runtime fn that is not one is not.
