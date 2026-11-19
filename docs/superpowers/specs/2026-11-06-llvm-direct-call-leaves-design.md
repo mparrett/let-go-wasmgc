@@ -282,3 +282,21 @@ under checks/quiet.sh). Both print the same checksum.
   recorded. No script builds the compiler through llvm: the self-compile rows
   (P12.0, P12.4, P12.5) carry it as a wasm program, so there is no llvm-built
   compiler to time.
+- **With i64 params (95a4fe4): XXH3 of 25 MB, about 20 percent faster by
+  the minimum, still far from the 100 ms target.** On llvm a param every
+  user of which reads it as an int (a bit op, an i64 intrinsic, a callee
+  whose sig takes an int there) is now typed :int. Seven llvm.xxhash fns
+  become leaves (lo32, hi32, bswap32, bswap64, mul-fold, avalanche,
+  avalanche-small); the module has 106 leaf fns, against 88 at 0d1ee72.
+  Same script, 10 hyperfine runs each, run in the order 95a4fe4, 0d1ee72,
+  95a4fe4. Each run started once the 1-minute load was under 4 (3.7), but the
+  load rose to 5 to 8 during the runs. Means and minimums were 963 ms (min
+  650) and 750 ms (min 627) at 95a4fe4, against 1054 ms (min 823) at
+  0d1ee72. All three print the same checksum. The minimums are the
+  least-noisy figure (about 40 MB/s); the means are noise-bound. The 25 MB
+  path runs through h-long, stripe! and scramble!, which stay CPS: r16,
+  r32 and r64 add their offsets with checked + (which can raise), so the
+  byte reads that feed every stripe are no leaves.
+  Rows at 95a4fe4, one slot, LW_ATTEST=0: LLVM.LEAVES, LLVM.ANALYSIS.REUSE,
+  P13.3, P13.1, P12.37, LLVM.RTLIB.REUSE, P13.9 (no mismatch), P12.40 and
+  P9.1 (1162) pass.
