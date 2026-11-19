@@ -1,0 +1,18 @@
+id: a3c2faf
+v: 2
+title: llvm: a count typed from arithmetic accepts a float, as natively
+status: open
+priority: medium
+created: 2026-11-19T16:35:00Z
+updated: 2026-11-19T16:35:00Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: On llvm, `(doall 1.5 [1 2])` raises; natively it returns `[1 2]`. let-go's core `dorun` uses its count `n` only through `pos?` and `dec`, so let-go's `ir.passes.infer-arg-types` types `n` as `:int`, and the llvm lane unboxes it at entry. Natively `pos?` and `dec` take any number: 1.5 counts down through 0.5 and stops. The leaves branch's callee-param rule passes that `:int` on to `doall`'s `n`, so the raise moves from `dorun`'s entry to `doall`'s; the typing itself is upstream's.
+ 
+ The cause is the rule, not these two fns: a param whose uses are all arithmetic or comparisons is typed `:int`, though those ops accept a float, a BigInt or a Ratio. The tower half of this is F3 on git-issue:de22e8e; floats are the half that exists today.
+ 
+ Facts that close it:
+ 
+ - F1 `(doall 1.5 [1 2])` and `(dorun 1.5 [1 2])` behave on llvm as natively, checked by a case in the owning corpus file and run through the oracle.
+ - F2 a runtime fn's param typed `:int` only from arithmetic or comparisons accepts a float argument on llvm as natively: either the param stays boxed, or the fn keeps a boxed entry for a non-int argument.
