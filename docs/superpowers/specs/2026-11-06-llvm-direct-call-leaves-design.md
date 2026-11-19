@@ -232,3 +232,45 @@ same acceptance as leaves: behavior unchanged, then time.
   allocates a bounded amount before its caller's next entry check.
 - **Code size:** a leaf has two entries (direct and CPS). The shake drops
   the CPS entry when nothing takes the fn as a value.
+
+## Results
+
+Measured on the branch head (call leaves directly) against the commit before
+the first leaves commit (255a8e6), both built by the same script
+(checks/llvm-xxh3-bench.sh: the runtime's llvm.xxhash over a 25 MB buffer,
+native executable from the driver's default cached runtime library, hyperfine
+under checks/quiet.sh). Both print the same checksum.
+
+- **XXH3 of 25 MB on llvm: no measurable change, far from the 100 ms
+  target.** Before 745 to 1016 ms mean over four hyperfine runs of 3 to 15
+  samples each; after 753 to 968 ms. The machine was shared and never held a
+  1-minute load under 4 for a whole run (loads 3 to 7 while timing; the spread
+  within one run is 10 to 20 percent), so the means are noise-bound. The
+  least-noisy figure, the minimum over 15 runs, is 696 ms before and 729 ms
+  after, roughly 35 MB/s. Read it as unchanged, not as a regression.
+- **Why it did not move: none of the xxh3 fns is a leaf.** The before module
+  has 0 leaf fns. The after module has 88, none in llvm.xxhash: all 25
+  top-level fns (r8, r16, r32, r64, rotl, lo32, hi32, bswap32, bswap64,
+  mul-fold, avalanche, avalanche-small, rrmxmx, mix16, key-word, w64!,
+  default-secret, init-secret, stripe!, scramble!, h-short, h-medium,
+  h-midsize, h-long, hash-bytes) stay CPS. Their params are untyped, so each
+  use of one as a byte offset or word is an unbox that can raise, and the
+  classifier keeps a fn that can raise out of the leaves. The 88 leaves are
+  in the other runtime namespaces (arrays, core, host, phm, ...). The gain is
+  in typing the xxh3 params (and the arch bytes/array accessors they call) so
+  the unboxes cannot raise; that is the next change.
+- **Rows:** the 121-row parity set, one slot, LW_ATTEST=0, load under 4 at
+  the start: 119 pass. Two fail, each also on rerun alone:
+  - P12.0 fails identically at 255a8e6 (a native stderr warning that
+    round-bigdec already refers to the clojure.core var, in the self-compile
+    comparison). It is not this branch.
+  - P9.1 fails only here: the gensym count after loading the driver is 1175
+    against the recorded 1162 (255a8e6 passes at 1162). The leaves classifier
+    in src/ takes 13 more gensyms at load (destructuring or `for`), which
+    renumbers every emitted module's locals. Either avoid the gensyms in
+    src/lower_llvm_leaf.lg or record the new count in checks/gensym-load.sh.
+  The llvm benchmark rows (P13.x, P12.37, P12.40, the llvm corpora) all pass.
+- **The llvm-built compiler's compile of corpus/scalar/fib.clj:** not
+  recorded. No script builds the compiler through llvm: the self-compile rows
+  (P12.0, P12.4, P12.5) carry it as a wasm program, so there is no llvm-built
+  compiler to time.
