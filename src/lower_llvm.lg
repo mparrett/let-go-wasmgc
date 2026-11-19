@@ -1471,9 +1471,18 @@
      (ir/entry-block *f*))
     @out))
 
+(defn ll-leaf-plain!
+  "Fail unless the leaf's code carries no implicit values (ll-implicit: a
+   closure's %self, a try region's captures): its two functions take its
+   params alone."
+  []
+  (when (seq (ll-implicit))
+    (ll-fail "a leaf with implicit args" {:implicit (map second (ll-implicit))})))
+
 (defn ll-leaf-function!
   "The direct-call function of the leaf with arity signature sig."
   [sig]
+  (ll-leaf-plain!)
   (reset! (:env *ll*) {})
   (reset! (:lines *ll*) [])
   (reset! (:ovf *ll*) false)
@@ -1536,6 +1545,7 @@
   "The CPS entry of the leaf with arity signature sig: call its direct-call
    function, then return the result to %k as ll-return! does."
   [sig]
+  (ll-leaf-plain!)
   (let [ps (map-indexed (fn [i k] (str (ll-type k) " %p" i)) *param-kinds*) t (ll-type *ret-type*)]
     (ll-fn *fname* (cons "ptr %k" ps)
            (str "entry:\n"
