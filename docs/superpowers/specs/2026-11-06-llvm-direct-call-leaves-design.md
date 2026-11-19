@@ -300,3 +300,7 @@ under checks/quiet.sh). Both print the same checksum.
   Rows at 95a4fe4, one slot, LW_ATTEST=0: LLVM.LEAVES, LLVM.ANALYSIS.REUSE,
   P13.3, P13.1, P12.37, LLVM.RTLIB.REUSE, P13.9 (no mismatch), P12.40 and
   P9.1 (1162) pass.
+- **Calling convention: fastcc, chosen and not measured.** The leaves'
+  direct-call functions are `internal fastcc`; no build with the default
+  convention was timed against it, so the choice left to the builder is
+  made but not settled by measurement.
