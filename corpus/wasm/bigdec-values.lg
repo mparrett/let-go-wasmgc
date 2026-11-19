@@ -50,10 +50,6 @@
 ;; here and computes natively, so it is not in this oracle: the deftests of
 ;; corpus/intrinsics/numtower_test.lg assert the limit's text.
 
-;; with-precision rounds only a BigDecimal: a body yielding anything else
-;; comes back as it is (round-bigdec's pass-through, git-issue:4d19ae0)
-(show "with-precision" [(with-precision 2 (+ 1 2)) (with-precision 3 :rounding HALF_UP 1.5) (with-precision 2 nil) (with-precision 2 [1 2]) (round-bigdec 2 :half-up (id 7))])
-
 ;; values survive the collections and fns that carry them
 (show "coll" [(first [1M]) (nth [1/2 1M] 1) (into [] (map identity [1M 2.5M])) ((fn [x] x) 1M) (:k {:k 1M}) (apply str [1M 2M])])
 (show "atom" (let [a (atom 1M)] (reset! a 2.5M) @a))

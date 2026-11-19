@@ -114,3 +114,7 @@
 (show "nan-arith" [(+ nan 1) (* 0 inf) (- inf inf) (* inf -1)])
 (show "inf-arith" [(+ inf 1) (/ 1.0 0.0) (/ -1.0 0.0) (/ 0.0 inf)])
 (show "lcg-sum" (reduce + lcg-floats))
+
+;; with-precision rounds only a BigDecimal: a body yielding an Int, a Float or
+;; nil comes back as it is (round-bigdec's pass-through, git-issue:4d19ae0)
+(println "with-precision" [(with-precision 2 (+ 1 2)) (with-precision 3 :rounding HALF_UP 1.5) (with-precision 2 nil) (with-precision 2 [1 2]) (round-bigdec 2 :half-up 7)])
