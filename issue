@@ -1,0 +1,19 @@
+id: 48c1d30
+v: 2
+title: The llvm lowering does not depend on lower_wasm.lg
+status: open
+priority: medium
+created: 2026-11-19T13:33:47Z
+updated: 2026-11-19T13:33:47Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: The llvm lowering reaches the compiler through the WasmGC backend's module: src/lower_llvm*.lg require src/lower_wasm.lg, and the pieces both targets need live there. Sigs and the recorded questions, the lowering session, the runtime library build and cache, `analyze-fn` and the lane's override of let-go's `infer-arg-types` all sit in lower_wasm.lg, with llvm-only branches added inside them (the runtime library build already has several, and the leaves work added more). Each llvm change then edits the WasmGC lowering, and the GC lane's byte guard and rows become part of every llvm change's review.
+ 
+ The goal: lower_wasm.lg and lower_llvm*.lg become siblings over a target-neutral module that holds what both use, and neither target's file names the other. This is the compiler-side counterpart of git-issue:646deae, which does the same for the runtime under rt/.
+ 
+ Facts that close it:
+ 
+ - F1 no file under src/lower_llvm*.lg requires lower-wasm: `grep -l "lower-wasm" src/lower_llvm*.lg` prints nothing.
+ - F2 lower_wasm.lg has no llvm branches: `grep -n ":llvm" src/lower_wasm.lg` prints nothing.
+ - F3 the GC and llvm rows pass as before the split: a full row run of each lane's set, exit 0, and P8.0's byte guard IDENTICAL for the GC lane.
