@@ -292,8 +292,10 @@
 ;; at: check-int! or check-index! there. These are those positions, by
 ;; intrinsic; a :type :int position missing here (host-write's fd, a case
 ;; over 1 and 2; type-anc's j, an nth) does not count. Natively those
-;; positions raise on a non-int, so typing the param :int moves where a
-;; non-int is refused, not whether.
+;; positions raise on a non-int, so on each path that reaches the use,
+;; typing the param :int moves where a non-int is refused, not whether. On
+;; a path that skips the use the fn now refuses what native accepts (the
+;; inference is flow-insensitive, as above).
 (def ^:private checked-int-args
   {"array-new" #{1} "aget" #{2} "aset!" #{2} "array-copy" #{2 4 5}
    "fix" #{0} "i32-wrap" #{0} "bytes-new" #{0} "bget" #{1} "bset!" #{1 2}
