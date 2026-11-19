@@ -1,0 +1,19 @@
+id: 4525486
+v: 2
+title: llvm: an unboxed value takes the narrowest width its uses allow
+status: open
+priority: medium
+created: 2026-11-19T16:35:00Z
+updated: 2026-11-19T16:35:00Z
+author: Norman Nunley, Jr
+assignee: Norman Nunley, Jr
+hash_source: content
+description: The llvm lane gives every unboxed int an `i64` and every unboxed float a `double`. Values whose uses bound their range could take a narrower type: a byte read from `arch/bget` and masked with `bit-and 255` fits an `i8`, a 32-bit lane in xxh3 an `i32`, a sample in a float buffer a `float`. Narrower values pack denser in arrays and records and let LLVM vectorize wider; on a 32-bit board (P13.5) an `i32` is a register where an `i64` is a pair.
+ 
+ Width is chosen from uses, as the param types are now: a value narrows only when every use agrees, and widens back wherever it meets a boxed or generic op. Narrowing keeps behavior by construction: let-go's numbers are `i64` and `double`, so a narrow value is a storage and codegen choice, sign- or zero-extended at every boundary.
+ 
+ Facts that close it:
+ 
+ - F1 the llvm lowering records a width per unboxed value (`i8`, `i16`, `i32`, `i64`; `half`, `float`, `double`, `fp128`), chosen from its uses, and emits that type.
+ - F2 every row that passes before passes after, P13.5 and P13.9 included.
+ - F3 the xxh3 fns' 32-bit lanes are `i32` in the emitted module, and XXH3 of 25 MB is recorded before and after.
