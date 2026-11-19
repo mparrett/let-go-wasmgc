@@ -102,6 +102,17 @@
     (is (:leaf sig))
     (is (false? (:leaf-allocates sig)))))
 
+;; A runtime fn that fails to lower becomes a stub, its message kept in the
+;; library's failures, so a leaf the emitter refuses would pass silently.
+(defn rtlib-failures []
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (:failures @lw/*rt*))))
+
+(deftest runtime-leaves-lower
+  (is (empty? (filter (fn [e] (str/includes? (str (second e)) "a leaf")) (rtlib-failures)))))
+
 ;; On llvm a param used only as an i64, by a bit op, an i64 intrinsic or a
 ;; callee taking an int, is typed :int, so the runtime's xxh3 mixers take
 ;; ints and are leaves.
@@ -221,4 +232,4 @@
       (is (not (re-find #"@\"[^\"]*_r64\"\(" body)) nm))))
 
 (let [result (test/run-tests 'llvm-leaf-check)]
-  (os/exit (if (and (= 9 (:test result)) (test/successful? result)) 0 1)))
+  (os/exit (if (and (= 10 (:test result)) (test/successful? result)) 0 1)))
