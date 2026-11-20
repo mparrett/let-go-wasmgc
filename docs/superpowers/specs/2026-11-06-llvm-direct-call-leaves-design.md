@@ -304,3 +304,17 @@ under checks/quiet.sh). Both print the same checksum.
   direct-call functions are `internal fastcc`; no build with the default
   convention was timed against it, so the choice left to the builder is
   made but not settled by measurement.
+- **With checked intrinsic indexes read as ints (1d43943): XXH3 of 25 MB
+  in 32.7 ms, under the 100 ms target.** The byte readers' offset was also
+  the index of `arch/bget`, which the inference did not count as an int
+  read, so it stayed boxed; the checked `+` was not the blocker (wrapping
+  the adds, 877f365, made no new leaf). With the rule, r8, r16, r32 and r64
+  are leaves; the module has 114 leaf fns, against 106. Same script, 7
+  hyperfine runs each, in the order 877f365, 187b65f, 877f365: 909.9 ms
+  (min 827) and 973.7 ms (min 842) before, 32.7 ms ± 0.4 (min 32.1) with
+  it, about 770 MB/s; peak memory 1.0 GiB before, 64.6 MiB with it. All
+  three print the same checksum. The load was 8 to 80 around the runs;
+  checks/quiet.sh held every slot, but no bench-baton binary was installed,
+  so other agents' work was not drained. A 28-fold gap is far outside that
+  noise. h-long, stripe! and scramble! still run as CPS fns: their loops
+  use checked `+`, `*` and `inc`.
