@@ -4862,7 +4862,7 @@
     (doseq [g lw-rt/globals] (rt-global! (:var g)))
     ;; llvm: the leaf arities among the analysed defns, recorded in their
     ;; sigs (saved with the library); a fn analysed while lowering is none
-    (when (= *target* :llvm) ((resolve 'lower-wasm/ll-mark-rt-leaves!)))
+    (when (= *target* :llvm) ((resolve 'lower-wasm/ll-mark-rt-leaves!) (:pending @*rt*)))
     (loop []
       (when (seq (:pending @*rt*))
         (let [info (first (:pending @*rt*))]
