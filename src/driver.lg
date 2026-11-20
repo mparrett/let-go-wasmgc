@@ -848,13 +848,14 @@
 ;; is the runtime's record struct carrying the tag and the declared fields
 ;; (D234; D122's tagged map before it), built by the runtime's make-record
 ;; and record-of-map (llvm's deftype is a user type instead); the type's var
-;; holds the tag, so (instance? T x) is instance? over tags. A protocol method is one library defn
-;; dispatching on the tag of its first argument over every deftype and
-;; defrecord that implements it, registered once the require that reached
-;; them is loaded. An implementation in the protocol's own namespace is an
-;; inline arm; one from another namespace (a program's type implementing a
-;; library's protocol) is a hidden defn `__lw_<Type>_<method>` in the type's
-;; namespace, so its body resolves there, and the arm calls it. Named
+;; holds the tag, so (instance? T x) is instance? over tags. A protocol
+;; method is one library defn dispatching on the tag of its first argument
+;; over every deftype and defrecord that implements it, registered once the
+;; require that reached them is loaded. An implementation in the protocol's
+;; own namespace is an inline arm; one from another namespace (a program's
+;; type implementing a library's protocol) is a hidden defn
+;; `__lw_<Type>_<method>` in the type's namespace, so its body resolves
+;; there, and the arm calls it. Named
 ;; limits: extend-type, extend-protocol, reify and Object methods are not
 ;; seen. Written without destructuring, for or doseq (P9.1).
 (def protocol-methods (atom {}))   ; method var -> signatures and implementations keyed by [type tag, arity]
