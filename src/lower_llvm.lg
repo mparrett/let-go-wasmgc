@@ -51,14 +51,18 @@
    that it did not record."
   (= "1" (os/getenv "LW_LL_CHECK_REFS")))
 (when ll-refcheck? (require 'lower-llvm-refcheck))
+(defn ll-unit-text
+  "A unit's text, rendered from its items, which are the unit (D225); the
+   text is not kept, so the cached runtime holds each fn once."
+  [u]
+  (str/join "\n" (map lir/render (:items u))))
 (defn ll-unit
-  "A module unit: m's :items, their text, the symbols they define (their
-   names) and the symbols they name (refs, as recorded while they were made)."
+  "A module unit: m's :items, the symbols they define (their names) and the
+   symbols they name (refs, as recorded while they were made)."
   [m refs]
-  (let [items (:items m) text (str/join "\n" (map lir/render items))
-        defs (set (keep lir/defines items))]
-    (when ll-refcheck? ((resolve 'lower-llvm-refcheck/note-unit!) text defs refs))
-    (assoc m :text text :defs defs :refs (set refs))))
+  (let [defs (set (keep lir/defines (:items m)))]
+    (when ll-refcheck? ((resolve 'lower-llvm-refcheck/note-unit!) (ll-unit-text m) defs refs))
+    (assoc m :defs defs :refs (set refs))))
 (defn ll-glob
   "A global item: kind its linkage and kind (\"internal global\", \"private
    constant\" ..), type and init its LLVM type and initializer."
@@ -68,7 +72,7 @@
   "ll-global!'s work: [item refs] made under with-refs."
   [[item refs]]
   (let [u (ll-unit {:items [item]} refs) nm (lir/defines item)
-        k [:llvm :global nm] h (hash/xxh3-64-str (:text u)) seen (get @*fn-values* k)]
+        k [:llvm :global nm] h (hash/xxh3-64-str (ll-unit-text u)) seen (get @*fn-values* k)]
     (cond (nil? seen) (do (swap! *fn-values* assoc k h) (swap! *globals* conj u))
           (not= seen h) (ll-fail "two definitions of one global" {:global nm}))
     nil))
@@ -2154,9 +2158,9 @@
                                       [:llvm/global :bare] true))
                 "\n" (lir/render (assoc-in (ll-glob "lg_binding_count" "internal constant" "i64" (str (count binding-roots))) [:llvm/global :bare] true))
                 "\n"))
-         (str/join "\n" (map :text kept-globals)) "\n\n"
+         (str/join "\n" (map ll-unit-text kept-globals)) "\n\n"
          (str/join "\n" (map lir/render inits)) "\n"
-         (str/join "\n" (map :text kept)))))
+         (str/join "\n" (map ll-unit-text kept)))))
 
 (defn ll-stub-fn
   "lower-wasm/stub-fn under --target llvm: a runtime fn that failed to lower
