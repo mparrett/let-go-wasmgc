@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-11-09 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-11-19 at
+# f1f6d8f, #76's merge: #75 through #76 grow the runtime library an eval program carries (BigDecimal, the
+# llvm parity fixes, records), so corpus/eval/errors/compile.lg's module moves while P7.0, P7.11 and P12.3
+# MATCH; before that 2026-11-09 at
 # e18bef1, #78 adds the llvm target: the restructured driver interns the symbol user in an eval program's _main and its try blocks renumber, while P7.0, P7.11 and P12.3 MATCH; before that 2026-11-09 at
 # 4ddb83b, #92 moves the let-go pin to dbccbf0f: same tree both sides, base moves with it; before that 2026-10-16 at
 # d55d645, the hierarchy twins: no function changes; one constant's init call moves two lines in
@@ -84,7 +87,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=e18bef136ed3f3c2016273d18d0ab837d20e1b79
+base=f1f6d8fa805d2c6987d1286ba7d33f3813612da2
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
