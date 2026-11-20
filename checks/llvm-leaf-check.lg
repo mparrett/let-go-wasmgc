@@ -1,0 +1,241 @@
+(ns llvm-leaf-check
+  (:require [test :refer [deftest is]]
+            [leaf-check-driver :as driver]
+            [lower-wasm :as lw]
+            [llvm.arch :as arch]
+            [clojure.string :as str]
+            [lw-rt]))
+
+(lw/ensure-llvm-target!)
+(require '[lower-llvm-leaf :as leaf])
+
+(arch/defstruct Pair [:ref :ref])
+(declare is-odd?)
+
+;; Ints are typed (^long, or by <) so no operand is unboxed: an unbox raises
+;; catchably. Arithmetic is the wrapping kind; checked + raises on overflow.
+(def leaf-forms
+  '[(defn r16 [b ^long o] (bit-or (arch/bget b o) (bit-shift-left (arch/bget b (unchecked-add o 1)) 8)))
+    (defn r32 [b ^long o] (bit-or (r16 b o) (bit-shift-left (r16 b (unchecked-add o 2)) 16)))
+    (defn r64 [b ^long o] (bit-or (r32 b o) (bit-shift-left (r32 b (unchecked-add o 4)) 32)))
+    (defn sum-to [n] (loop [i 0 a 0] (if (< i n) (recur (unchecked-add i 1) (unchecked-add a i)) a)))
+    (defn pair [a b] (arch/new Pair a b))
+    (defn spread ([^long x] (unchecked-add x 1)) ([x & more] x))])
+
+(def other-forms
+  '[(defn add-boxed [a b] (+ a b))
+    (defn raise [x] (throw (ex-info "raise" {:x x})))
+    (defn guarded [b] (try (r16 b 0) (catch Exception e 0)))
+    (defn adder [^long n] (fn [^long x] (unchecked-add x n)))
+    (defn is-even? [^long n] (if (zero? n) true (is-odd? (unchecked-add n -1))))
+    (defn is-odd? [^long n] (if (zero? n) false (is-even? (unchecked-add n -1))))
+    (defn countdown [^long n] (if (zero? n) 0 (countdown (unchecked-add n -1))))
+    (defn calls-raise [x] (raise x))
+    ;; a loop allocates nothing in a leaf: not by boxing i into acc, nor by
+    ;; calling pair (a leaf, being loop-free)
+    (defn box-each [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) i) acc)))
+    (defn pairs [a ^long n] (loop [i 0 p nil] (if (< i n) (recur (unchecked-add i 1) (pair a a)) p)))
+    ;; an int literal outside the fixnums is boxed where it is read
+    (defn box-big [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) -7046029254386353131) acc)))
+    ;; = on two floats is a call of the runtime's equiv?, not an inline op
+    (defn float-eq [^long n] (= (arch/i64-to-f64 n) 2.0))])
+
+(doseq [form (concat leaf-forms other-forms)] (eval form))
+
+(defn analyze
+  "Infos of every arity of forms, analysed as the driver does (add-boxed's
+   params kept boxed, as its boxing fixpoint would), each with its var and
+   arity key."
+  []
+  (let [srcs (vec (mapcat driver/expand-defn (concat leaf-forms other-forms)))
+        boxed #{[#'add-boxed 2]}
+        infos (driver/analyze-program! srcs '(defn _main [] nil) boxed false nil)]
+    (vec (for [[src info] (map vector srcs infos)]
+           (assoc info :var (driver/defn-var src) :argc (driver/arity-key (nth src 2)))))))
+
+(defn sig-of [v argc] (get-in @lw/*sigs* [v :arities argc]))
+
+(defmacro in-session [trap-throws & body]
+  `(lw/with-session* (lw/new-session {} {} {:target :llvm :rt true :trap-throws ~trap-throws})
+     (fn [] ~@body)))
+
+(deftest classifies-leaves
+  (in-session false
+    (let [infos (analyze)]
+      (is (= #{[#'r16 2] [#'r32 2] [#'r64 2] [#'sum-to 1] [#'pair 2] [#'spread 1]}
+             (leaf/leaves infos sig-of))))))
+
+(deftest trapping-ops-are-not-leaves-when-traps-throw
+  (in-session true
+    (let [infos (analyze)]
+      (is (= #{[#'sum-to 1] [#'pair 2] [#'spread 1]} (leaf/leaves infos sig-of)))
+      (let [{f :f} (first (filter #(= #'r16 (:var %)) infos))
+            bget (first (filter #(and (= :call (ir/op % f))
+                                      (= #'arch/bget (ir/aux (first (ir/refs % f)) f)))
+                                (lw/all-insts f)))]
+        (is (some? bget))
+        (is (leaf/leaf-op? f bget false))
+        (is (not (leaf/leaf-op? f bget true)))))))
+
+;; The driver's analysis records each leaf arity in its signature.
+(deftest records-leafness
+  (in-session false
+    (analyze)
+    (is (:leaf (sig-of #'r64 2)))
+    (is (true? (:leaf-allocates (sig-of #'pair 2))))
+    (is (false? (:leaf-allocates (sig-of #'sum-to 1))))
+    (is (not (:leaf (sig-of #'add-boxed 2))))))
+
+(defn rtlib-in-bounds
+  "The arity sig of llvm.seq/in-bounds?, a runtime leaf (int compares), in
+   a session started from the cached runtime library (built on the first
+   call, restored after)."
+  []
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (sig-of (lw-rt/rt-var 'seq 'in-bounds?) 3))))
+
+(deftest leafness-survives-the-runtime-library
+  (rtlib-in-bounds)
+  (let [sig (rtlib-in-bounds)]
+    (is (:leaf sig))
+    (is (false? (:leaf-allocates sig)))))
+
+;; A runtime fn that fails to lower becomes a stub, its message kept in the
+;; library's failures, so a leaf the emitter refuses would pass silently.
+(defn rtlib-failures []
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (:failures @lw/*rt*))))
+
+(deftest runtime-leaves-lower
+  (is (empty? (filter (fn [e] (str/includes? (str (second e)) "a leaf")) (rtlib-failures)))))
+
+;; On llvm a param used only as an i64, by a bit op, an i64 intrinsic, a
+;; checked intrinsic index or a callee taking an int, is typed :int, so the
+;; runtime's xxh3 mixers and byte readers take ints and are leaves.
+(defn rtlib-xxh3-sigs
+  "{name arity-sig} of llvm.xxhash's mixers and byte readers over a
+   restored library."
+  []
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (into {} (map (fn [[nm argc]] [nm (sig-of (lw-rt/rt-var 'xxhash nm) argc)])
+                    [['lo32 1] ['hi32 1] ['mul-fold 2] ['avalanche 1] ['r16 2] ['r32 2] ['r64 2]])))))
+
+(deftest xxh3-mixers-take-ints
+  (rtlib-xxh3-sigs)
+  (let [sigs (rtlib-xxh3-sigs)]
+    (is (= [:int] (:params (sigs 'lo32))))
+    (is (= [:int :int] (:params (sigs 'mul-fold))))
+    (doseq [r ['r16 'r32 'r64]] (is (= [:box :int] (:params (sigs r))) (str r)))
+    (doseq [[nm sig] sigs] (is (:leaf sig) (str nm)))))
+
+(def i64-forms
+  '[(defn mask [x] (bit-and x 255))
+    (defn shr8 [x] (arch/i64-shr-u x 8))
+    ;; read as an int only once tested: a float passes
+    (defn to-f [x] (if (int? x) (arch/i64-to-f64 x) 0.5))
+    ;; passed where the callee's sig takes an int, or does not
+    (defn via-mask [x] (mask (shr8 x)))
+    (defn via-to-f [x] (to-f x))
+    ;; passed on to a block param (an if's join, a loop's): read as an int
+    ;; on one path only, so (h 1.5 false) is 1.5
+    (defn h [x flag] (if flag (bit-and x 1) x))
+    (defn via-loop [x ^long n] (loop [i 0 a x] (if (< i n) (recur (unchecked-add i 1) (bit-and x 3)) a)))
+    ;; an index arch/bget checks is read as an int, unless also passed boxed
+    (defn bidx [b o] (arch/bget b o))
+    (defn bidx-to-f [b o] (+ (arch/bget b o) (to-f o)))])
+
+(doseq [form i64-forms] (eval form))
+
+(defn i64-params
+  "The params of i64-forms' fns as the driver analyses them on target."
+  [target]
+  (lw/with-session* (lw/new-session {} {} {:target target :rt true})
+    (fn []
+      (driver/analyze-program! (vec (mapcat driver/expand-defn i64-forms)) '(defn _main [] nil) #{} false nil)
+      (mapv (fn [[v argc]] (:params (sig-of v argc)))
+            [[#'mask 1] [#'shr8 1] [#'to-f 1] [#'via-mask 1] [#'via-to-f 1] [#'h 2] [#'via-loop 2]
+             [#'bidx 2] [#'bidx-to-f 2]]))))
+
+(deftest infers-i64-params-on-llvm-only
+  (is (= [[:int] [:int] [:box] [:int] [:box] [:box :box] [:box :int] [:box :int] [:box :box]] (i64-params :llvm)))
+  (is (= [[:box] [:box] [:box] [:box] [:box] [:box :box] [:box :int] [:box :box] [:box :box]] (i64-params :gc))))
+
+;; Over a restored library, a program fn calling a runtime leaf is a leaf,
+;; one calling a runtime fn that is not one is not.
+(def rt-callers
+  '[(defn seq-kind [^long k] (llvm.seq/seq-kind? k))
+    (defn length [x] (llvm.seq/count x))])
+
+(doseq [form rt-callers] (eval form))
+
+(deftest calls-to-restored-runtime-leaves
+  (in-session false
+    (binding [lw/*rooted-natives* #{}]
+      (lw/load-rtlib!)
+      (is (:leaf (sig-of (lw-rt/rt-var 'seq 'seq-kind?) 1)))
+      (is (not (:leaf (sig-of (lw-rt/rt-var 'seq 'count) 1))))
+      (driver/analyze-program! (vec (mapcat driver/expand-defn rt-callers)) '(defn _main [] nil) #{} false nil)
+      (is (:leaf (sig-of #'seq-kind 1)))
+      (is (not (:leaf (sig-of #'length 1)))))))
+
+;; Each leaf is also one direct-call function, <name>.leaf: internal fastcc
+;; returning its value, with no continuation, no tail call and no GC entry
+;; check, its loops branches and phis; its CPS entry calls it. The modules
+;; are the driver's, of corpus/llvm/leaves.lg and the llvm.arch fixture
+;; (llvm-leaf-check.sh).
+(def modules (str/join "\n" (map slurp (str/split (os/getenv "LW_LEAF_MODULES") #" "))))
+
+(def leaf-fns
+  "{fn-name [ret body]} of the modules' .leaf functions; a program fn's
+   name ends in its defn's (u_r64)."
+  (into {} (for [[_ ret nm body] (re-seq #"(?s)define internal fastcc (\S+) @\"([^\"]*)\.leaf\"\([^)]*\)[^{]*\{(.*?)\n\}" modules)]
+             [nm [ret body]])))
+
+(defn leaf-of [defn-name]
+  (some (fn [[nm v]] (when (str/ends-with? nm (str "_" defn-name)) v)) leaf-fns))
+
+(deftest emits-leaves-as-direct-call-functions
+  (doseq [n ["r16" "r32" "r64" "pair" "sum-to" "sum-from" "tri" "r8" "pos-or-nil" "truthy"]]
+    (is (some? (leaf-of n)) n))
+  (is (nil? (leaf-of "box-each")))
+  (doseq [[nm [_ body]] leaf-fns]
+    (is (not (str/includes? body "musttail")) nm)
+    (is (not (str/includes? body "lg_gc")) nm)
+    (is (not (re-find #"ptr %k\b" body)) nm))
+  (let [[ret body] (leaf-of "r64")]
+    (is (= "i64" ret))
+    (is (not (str/includes? (str body) "lg_alloc")))
+    (is (re-find #"call fastcc i64 @\"[^\"]*r32\.leaf\"" (str body))))
+  (is (str/includes? (str (second (leaf-of "pair"))) "lg_alloc"))
+  (doseq [n ["sum-to" "sum-from" "tri"]]
+    (let [[_ body] (leaf-of n)]
+      (is (str/includes? (str body) " phi ") n)
+      (is (not (re-find #"lg_alloc|lg_box" (str body))) n)))
+  (is (some? (re-find #"(?s)define tailcc void @\"[^\"]*_r64\"\(ptr %k[^{]*\{[^}]*call fastcc i64 @\"[^\"]*_r64\.leaf\"" modules)) "r64's CPS entry calls r64.leaf"))
+
+;; A call of a leaf from a CPS fn is a direct fastcc call of its .leaf
+;; function: r64-sum makes no continuation record for its r64 call (it
+;; allocates nothing) and never enters r64's CPS entry.
+(defn fns-of
+  "[name body] of the modules' functions of defn defn-name, its pieces too."
+  [defn-name]
+  (for [[_ nm body] (re-seq #"(?s)define [^@]*@\"([^\"]*)\"\([^)]*\)[^{]*\{(.*?)\n\}" modules)
+        :when (re-find (re-pattern (str "_" defn-name "($|\\.)")) nm)]
+    [nm body]))
+
+(deftest calls-leaves-directly
+  (let [fs (fns-of "r64-sum")]
+    (is (seq fs))
+    (is (some #(re-find #"call fastcc i64 @\"[^\"]*_r64\.leaf\"" (second %)) fs))
+    (doseq [[nm body] fs]
+      (is (not (str/includes? body "lg_alloc")) nm)
+      (is (not (re-find #"@\"[^\"]*_r64\"\(" body)) nm))))
+
+(let [result (test/run-tests 'llvm-leaf-check)]
+  (os/exit (if (and (= 10 (:test result)) (test/successful? result)) 0 1)))

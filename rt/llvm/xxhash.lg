@@ -60,9 +60,9 @@
 ;; utils.go
 
 (defn- r8 [b o] (arch/bget b o))
-(defn- r16 [b o] (bit-or (arch/bget b o) (arch/i64-shl (arch/bget b (+ o 1)) 8)))
-(defn- r32 [b o] (bit-or (r16 b o) (arch/i64-shl (r16 b (+ o 2)) 16)))
-(defn- r64 [b o] (bit-or (r32 b o) (arch/i64-shl (r32 b (+ o 4)) 32)))
+(defn- r16 [b o] (bit-or (arch/bget b o) (arch/i64-shl (arch/bget b (arch/i64-add o 1)) 8)))
+(defn- r32 [b o] (bit-or (r16 b o) (arch/i64-shl (r16 b (arch/i64-add o 2)) 16)))
+(defn- r64 [b o] (bit-or (r32 b o) (arch/i64-shl (r32 b (arch/i64-add o 4)) 32)))
 
 (defn- lo32 [x] (bit-and x 0xffffffff))
 (defn- hi32 [x] (arch/i64-shr-u x 32))

@@ -523,11 +523,21 @@
                          (contains? #{:fn-template :multi-fn-template} (:kind (ir/aux i f)))))
                    (lw/all-insts f)))))
 
+(defn record-leaves!
+  "On llvm, record the leaf arities among a round's infos in their sigs."
+  [infos]
+  (when (= :llvm lw/*target*)
+    (lw/ensure-llvm-target!)
+    ((resolve 'lower-llvm-leaf/mark-leaves!) infos)))
+
 (defn analyze-program!
   "boxed: #{[var argc]} whose params must stay boxed (bug-01's fixpoint).
-   stub?: --test, a failing defn becomes a stub (above)."
+   stub?: --test, a failing defn becomes a stub (above). Each round of the
+   boxing loop records leafness afresh (record-leaves!). On llvm the target
+   loads first: it adds to the param inference."
   [defns main-src boxed stub? cache]
-  (doall
+  (when (= :llvm lw/*target*) (lw/ensure-llvm-target!))
+  (let [infos (doall
    (for [src (conj defns main-src)]
      (lw-rt/call-in-ns (src-ns src)
       (fn []
@@ -552,7 +562,7 @@
                                                       (contains? boxed [v argc]) (analysis-interfaces src)))
                               reusable-analysis? analyze)
                              (analyze))
-                           :export-name ename)
+                           :export-name ename :var v :argc argc)
                          ;; P1.4's refusals compare the error's first line: rethrow as is
                          (catch e (if (and stub? (not main?))
                                     (stub-info src e)
@@ -564,7 +574,9 @@
                               (if (= "v" argc)
                                 (assoc e :variadic (assoc sig :fixed (lw/fixed-count (nth src 2))))
                                 (assoc-in e [:arities (count (:params info))] sig))))))
-           info))))))
+           info)))))]
+    (record-leaves! infos)
+    infos))
 
 (defn boxing-needed
   "[var argc] keys of program defns whose typed params some call cannot

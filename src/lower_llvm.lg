@@ -384,9 +384,9 @@
 
 ;; --- calls -----------------------------------------------------------------
 
-(def ll-leaf-vars #{#'println})
+(def ll-inline-vars #{#'println})
 
-(defn ll-leaf-var? [v] (and (not *rt*) (contains? ll-leaf-vars v)))
+(defn ll-inline-var? [v] (and (not *rt*) (contains? ll-inline-vars v)))
 
 (def ll-max-invoke max-arity-x)   ; args through a value (positional cap, as FnX's slots); fixed code slots cover 0..4
 
@@ -600,6 +600,16 @@
 (defn llvm-read-root [k] nil)
 (defn llvm-write-root! [k x] nil)
 
+(defn ll-leaf-call?
+  "Is nid a call of a known leaf: a var neither the table holds nor rooted,
+   whose arity signature for its args is a leaf's?"
+  [nid]
+  (boolean
+   (and (= :call (ir/op nid *f*))
+        (let [refs (ir/refs nid *f*) v (ll-callee-var (first refs))]
+          (and v (not (ll-table-var? v)) (not (rooted? v))
+               (:leaf (ll-var-sig v (count (rest refs)))))))))
+
 (defn ll-call-plan*
   [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*)
@@ -672,7 +682,7 @@
       ;; runtime's handle stacks, which printing follows
       (and *rt* (#{#'push-out! #'pop-out! #'push-err! #'pop-err!} v))
       (to (lw-rt/rt-var 'host (symbol (name (symbol v)))))
-      (or (ll-leaf-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var! #'llvm-read-root #'llvm-write-root!} v) (and v (lw-rt/intrinsic? v))
+      (or (ll-inline-var? v) (core-var-ops v) (= v #'catch-matches?) (= v #'neg) (#{#'push-var! #'pop-var! #'llvm-read-root #'llvm-write-root!} v) (and v (lw-rt/intrinsic? v))
           (and *rt* (= v (lw-rt/rt-var 'seq 'float-bits))))
       nil
       (or (nil? v) (ll-table-var? v))
@@ -691,6 +701,8 @@
       {:sig {:name (ll-apply-list!) :params [:box :box :int] :ret :box} :args args}
       (and *rt* (= v (lw-rt/rt-var 'core 'invoke-args)) (= 6 (count args)))
       {:sig {:name (ll-invoke-args!) :params [:box :int :box :box :box :box] :ret :box} :args args}
+      ;; a known leaf is called directly, without a continuation (ll-leaf-call!)
+      (ll-leaf-call? nid) (do (ll-note-abi! v args (ll-var-sig v (count args))) nil)
       (ll-var-sig v (count args))
       (let [sig (ll-var-sig v (count args))]
         ;; a boxed or float value for a typed param: the driver re-lowers the
@@ -865,7 +877,12 @@
 ;; --- instructions ----------------------------------------------------------
 
 (defn ll-emit! [& parts] (swap! (:lines *ll*) conj (apply str parts)))
-(defn ll-label! [l] (swap! (:lines *ll*) conj (str l ":")))
+(defn ll-label!
+  "Start basic block l; it is the current block (:label), which a phi names
+   as an incoming edge's."
+  [l]
+  (swap! (:lines *ll*) conj (str l ":"))
+  (some-> (:label *ll*) (reset! l)))
 (defn ll-fresh [prefix] (str prefix (swap! (:counter *ll*) inc)))
 
 (defn ll-int-arg [nid] (ll-arg nid :int))
@@ -982,7 +999,7 @@
   (ll-emit! "  call void @lg_print_nl()")
   (ll-bind! nid (ll-coerce! :box (ty nid) "0")))
 
-(declare ll-closure! ll-gvar ll-var-ptr! ll-root-var! ll-catch-matches!)
+(declare ll-closure! ll-gvar ll-var-ptr! ll-root-var! ll-catch-matches! ll-leaf-call!)
 
 (defn ll-inst! [nid]
   (let [op (ir/op nid *f*) refs (ir/refs nid *f*) aux (ir/aux nid *f*)]
@@ -1025,7 +1042,7 @@
       (var-const? nid) nil
       (= op :call)
       (let [v (ll-callee-var (first refs))]
-        (cond (ll-leaf-var? v) (ll-println! nid (rest refs))
+        (cond (ll-inline-var? v) (ll-println! nid (rest refs))
               (= v #'catch-matches?) (ll-catch-matches! nid (rest refs))
               (#{#'push-var! #'pop-var!} v) (ll-binding-var! nid v (rest refs))
               (#{#'llvm-read-root #'llvm-write-root!} v) (ll-root-var! nid v (rest refs))
@@ -1048,6 +1065,7 @@
                 (if (contains? #{:void :bottom} k)
                   (ll-bind! nid (ll-coerce! :box (ty nid) "0"))
                   (ll-def! nid k o)))
+              (ll-leaf-call? nid) (ll-leaf-call! nid)
               :else (ll-fail "unexpected call" {:nid nid :var v})))
       :else (ll-prim! nid op refs))))
 
@@ -1413,6 +1431,130 @@
                      (apply str (map-indexed (fn [i s] (str "  %s" s " = getelementptr " rt ", ptr %rec, i32 0, i32 " (+ (ll-slot0) i) "\n  %a" s " = load " (ll-type (ty s)) ", ptr %s" s "\n")) (ll-saved p)))
                      "  musttail call tailcc void " (ll-q (str nm ".j")) "(" (str/join ", " jparams) ")\n  ret void\n"))]))))
 
+;; --- leaves ----------------------------------------------------------------
+;; A leaf arity (lower-llvm-leaf) is emitted twice. Its direct-call function,
+;; <name>.leaf, is internal fastcc returning its value: no %k and no GC entry
+;; check (it never collects; its caller's next CPS call does), its blocks
+;; basic blocks whose params are phis, a call of another leaf a plain call,
+;; the fn's own recur a branch back to the entry block. Its CPS entry is a
+;; wrapper that calls it and returns to %k, so the fn as a value is the same.
+;; Any fn's call of a known leaf calls <name>.leaf too (ll-leaf-call?): no
+;; continuation record, and no cut in the caller's pieces.
+
+(defn ll-leaf-name [sig] (str (:name sig) ".leaf"))
+
+(defn ll-leaf-sig
+  "info's arity signature when it is a leaf (its :var's sig says so), else nil."
+  [{:keys [var argc]}]
+  (when var
+    (let [sig (get-in (q-sig var) [:arities argc])] (when (:leaf sig) sig))))
+
+(defn ll-leaf-call!
+  "Call nid of a leaf (ll-leaf-call?), made directly: no continuation, its
+   args converted as for a CPS call, the result bound."
+  [nid]
+  (let [[c & args] (ir/refs nid *f*) sig (ll-var-sig (ll-callee-var c) (count args)) r (str "%v" nid)]
+    (ll-emit! "  " r " = call fastcc " (ll-type (:ret sig)) " " (ll-q (ll-leaf-name sig))
+              "(" (str/join ", " (doall (map ll-typed args (:params sig)))) ")")
+    (ll-def! nid (:ret sig) r)))
+
+(defn ll-leaf-order
+  "*f*'s blocks reachable from its entry, each after the blocks that
+   dominate it (reverse postorder), so a value is bound before its uses."
+  []
+  (let [seen (atom #{}) out (atom ())]
+    ((fn visit [b]
+       (when-not (contains? @seen b)
+         (swap! seen conj b)
+         (doseq [e (ll-term-edges b)] (visit (ir/branch-target-target e)))
+         (swap! out conj b)))
+     (ir/entry-block *f*))
+    @out))
+
+(defn ll-leaf-plain!
+  "Fail unless the leaf's code carries no implicit values (ll-implicit: a
+   closure's %self, a try region's captures): its two functions take its
+   params alone."
+  []
+  (when (seq (ll-implicit))
+    (ll-fail "a leaf with implicit args" {:implicit (map second (ll-implicit))})))
+
+(defn ll-leaf-function!
+  "The direct-call function of the leaf with arity signature sig."
+  [sig]
+  (ll-leaf-plain!)
+  (reset! (:env *ll*) {})
+  (reset! (:lines *ll*) [])
+  (reset! (:ovf *ll*) false)
+  (let [f *f* e (ir/entry-block f) order (ll-leaf-order)
+        recur? (some #(= :recur-fn (some-> (ir/block-term % f) (ir/op f))) order)
+        ;; a phi's incoming [operand label]s, by its key: a block param, or
+        ;; [:p i] for the fn's param i when a recur makes it one
+        ins (atom (if recur? (into {} (map-indexed (fn [i _] [[:p i] [[(str "%p" i ".in") "entry"]]]) *param-kinds*)) {}))
+        ;; leave the current block for b, passing [key kind arg] to its phis
+        jump! (fn [b passed]
+                (let [vs (doall (map (fn [[k kind a]] [k (ll-arg a kind)]) passed)) l @(:label *ll*)]
+                  (doseq [[k v] vs] (swap! ins update k (fnil conj []) [v l]))
+                  (ll-emit! "  br label %b" b)))
+        edge! (fn [edge]
+                (let [b (ir/branch-target-target edge)]
+                  (jump! b (for [[p a] (map vector (ir/block-params b f) (ir/branch-target-args edge))
+                                 :when (ll-param? p)]
+                             [p (ty p) a]))))
+        phi (fn [nm k kind]
+              (str "  " nm " = phi " (ll-type kind) " "
+                   (str/join ", " (map (fn [[v l]] (str "[ " v ", %" l " ]")) (get @ins k)))))
+        phis (fn [b]
+               (concat (when (and recur? (= b e)) (map-indexed (fn [i k] (phi (str "%p" i) [:p i] k)) *param-kinds*))
+                       (map (fn [p] (phi (str "%a" p) p (ty p))) (ll-params b))))]
+    (doseq [b order p (ll-params b)] (ll-bind! p (str "%a" p)))
+    (ll-label! "entry")
+    (ll-emit! "  br label %b" e)
+    (doseq [b order]
+      (ll-label! (str "b" b))
+      ;; its phis, once every edge into b is emitted
+      (swap! (:lines *ll*) conj [::phis b])
+      (doseq [i (ir/block-insts b f)]
+        (when (ll-cps-call? i)
+          (ll-fail "a leaf calls a fn that is not one" {:nid i :callee (:name (ll-sig i))}))
+        (ll-inst! i))
+      (let [t (ir/block-term b f) a (when t (ir/aux t f))]
+        (case (when t (ir/op t f))
+          nil (ll-emit! "  unreachable")
+          :return (ll-emit! "  ret " (ll-typed (first (ir/refs t f)) *ret-type*))
+          :recur-fn (let [refs (ir/refs t f)]
+                      (when (not= (count refs) (count *param-kinds*))
+                        (ll-fail "recur arity mismatch" {:argc (count refs)}))
+                      (jump! e (map-indexed (fn [i [r k]] [[:p i] k r]) (map vector refs *param-kinds*))))
+          :branch (edge! a)
+          :branch-if
+          (let [tl (ll-fresh "t") fl (ll-fresh "f")]
+            (ll-emit! "  br i1 " (ll-arg (first (ir/refs t f)) :bool) ", label %" tl ", label %" fl)
+            (ll-label! tl) (edge! (ir/cond-target-true a))
+            (ll-label! fl) (edge! (ir/cond-target-false a)))
+          (ll-fail (str "unsupported terminator " (ir/op t f)) {:block b}))))
+    ;; a catchable raise is a tail call with %k, which a leaf has none of
+    (when (or @(:ovf *ll*) (some #(and (string? %) (re-find #"musttail|ptr %k\b" %)) @(:lines *ll*)))
+      (ll-fail "a leaf that raises" {:fn *fname*}))
+    (let [lines (mapcat (fn [l] (if (vector? l) (phis (second l)) [l])) @(:lines *ll*))
+          params (map-indexed (fn [i k] (str (ll-type k) " %p" i (when recur? ".in"))) *param-kinds*)]
+      (update (ll-fn (ll-leaf-name sig) params (str (str/join "\n" lines) "\n"))
+              :llvm/fn assoc :cc "fastcc" :ret (ll-type *ret-type*)))))
+
+(defn ll-leaf-entry
+  "The CPS entry of the leaf with arity signature sig: call its direct-call
+   function, then return the result to %k as ll-return! does."
+  [sig]
+  (ll-leaf-plain!)
+  (let [ps (map-indexed (fn [i k] (str (ll-type k) " %p" i)) *param-kinds*) t (ll-type *ret-type*)]
+    (ll-fn *fname* (cons "ptr %k" ps)
+           (str "entry:\n"
+                (ll-gc-check (concat [["ptr" "%k"]] (ll-boxed-roots (map-indexed (fn [i k] [k (str "%p" i)]) *param-kinds*))))
+                "  %r = call fastcc " t " " (ll-q (ll-leaf-name sig)) "(" (str/join ", " ps) ")\n"
+                "  %kc = load ptr, ptr %k\n"
+                "  musttail call tailcc void %kc(ptr %k, " t " %r)\n  ret void\n")
+           nil)))
+
 ;; --- fn values (spec decision 10) ----------------------------------------
 ;; A fn value is a word pointing at an object of the runtime's own Fn type
 ;; (rt/wasm/seq.lg): {id, code0, code1, code2, env, code3, code4, info, hash}.
@@ -1740,7 +1882,7 @@
      ;; answer; this fn's call plans, made while cutting, are kept for it
      (let [plans (atom {}) const-vals (atom {})
            cuts (binding [*ll* {:plans plans :const-vals const-vals}] (into {} (for [b (ir/blocks f)] [b (ll-cuts b)])))]
-      (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :ovf (atom false) :counter (atom 0)
+      (binding [*ll* {:cuts cuts :env (atom {}) :lines (atom []) :label (atom nil) :ovf (atom false) :counter (atom 0)
                       :types (atom #{}) :self-type (:closure? info) :cap-kinds (:env-kinds info)
                       :region-caps (:caps info) :plans plans :records (atom {}) :const-vals const-vals
                       :unread-params (ll-unread-params f)
@@ -1752,8 +1894,11 @@
                                    r))}]
         (let [live (ll-liveness)]
           (binding [*ll* (assoc *ll* :live live)]
-            (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))]
-              (let [[items refs] (lir/with-refs #(vec (doall (mapcat (fn [e] (ll-function! e (count params))) entries))))]
+            (let [entries (filter ll-entry? (for [[b pieces] (sort-by key cuts) n (range (count pieces))] [b n]))
+                  leaf (ll-leaf-sig info)]
+              (let [[items refs] (lir/with-refs #(if leaf
+                                                   [(ll-leaf-function! leaf) (ll-leaf-entry leaf)]
+                                                   (vec (doall (mapcat (fn [e] (ll-function! e (count params))) entries)))))]
                 (ll-unit {:name name :types @(:types *ll*) :items items} refs)))))))))))
 
 (defn llvm-dump [{:keys [name f params ret]}]
@@ -2178,12 +2323,14 @@
 
 (defn ll-rtlib-key-extra
   "The llvm compiler's sources and the resolved profile: both shape every
-   lowered line (the lg binary and lower_wasm.lg are in the shared key)."
+   lowered line (the lg binary and lower_wasm.lg are in the shared key).
+   And the trap mode: a fn whose ops trap is a leaf only while traps abort."
   []
   (str (apply str (map #(slurp (str lw-rt/src-dir "/" %))
                        ["lower_llvm.lg" "lower_llvm_rt.lg" "lower_llvm_profile.lg" "lower_llvm_poly.lg"
-                        "lower_llvm_ir.lg" "lower_llvm_cache.lg"]))
-       "|profile=" (pr-str (llvm-profile))))
+                        "lower_llvm_ir.lg" "lower_llvm_cache.lg" "lower_llvm_leaf.lg"]))
+       "|profile=" (pr-str (llvm-profile))
+       (if *trap-throws* "|trap-throws" "")))
 
 (defn- ll-snap-key? [k]
   ;; the derived type lists are recomputed; :llvm-try memos hold an atom
@@ -2214,3 +2361,11 @@
   (swap! *fn-values* merge (ll-decode (:ll-fn-values snap))))
 
 (require 'lower-llvm-rt)
+(require 'lower-llvm-leaf)
+
+(defn ll-mark-rt-leaves!
+  "Record the leaf arities among the runtime library's analysed defns (each
+   pending info carries its :var and :argc) in their sigs. build-rtlib!, which
+   runs once per library build, passes the pending infos."
+  [pending]
+  (lower-llvm-leaf/mark-leaves! pending))

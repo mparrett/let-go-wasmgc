@@ -1,14 +1,14 @@
-# Backend census: legmacs (2026-10-03)
+# Backend census: legmacs (2026-11-19)
 
 Each top-level fn unit (one row per arity) lowered alone by lower-wasm and its module validated with wasm-tools; nothing is run. Regenerate with `checks/census.sh legmacs`; per-unit rows in `legmacs.tsv`.
 
-**816/816 units compile** (100.0%): ok 123, unbound-var 688, phase2-const 5. unsupported op: 0; invalid-wat: 0; goto fallback: 0; unsupported tree node: 0.
+**816/816 units compile** (100.0%): ok 123, unbound-var 687, phase2-const 6. unsupported op: 0; invalid-wat: 0; goto fallback: 0; unsupported tree node: 0.
 
 | bucket | units |
 |---|---:|
-| `unbound-var` | 688 |
+| `unbound-var` | 687 |
 | `ok` | 123 |
-| `phase2-const` | 5 |
+| `phase2-const` | 6 |
 
 `unbound-var` = compiles; reaches at least one var outside the corpus with no wasm definition yet (a run-time `TypeError: nil is not a function `). `phase2-const` = compiles, no unbound var, at least one Phase-2 constant placeholder. Units reaching only the corpus's own vars count as ok: a whole-program compile makes those direct calls.
 
@@ -17,16 +17,16 @@ Each top-level fn unit (one row per arity) lowered alone by lower-wasm and its m
 | n | head | example | detail |
 |---:|---|---|---|
 
-## Phase-2 constant placeholders: 122 units
+## Phase-2 constant placeholders: 153 units
 
 Units (any bucket) holding at least one placeholder, by kind (sites in parentheses):
 
 | kind | units | sites |
 |---|---:|---:|
-| vector | 68 | 89 |
-| map | 41 | 50 |
-| set | 14 | 18 |
-| list | 6 | 7 |
+| vector | 87 | 139 |
+| map | 43 | 56 |
+| set | 26 | 30 |
+| list | 6 | 9 |
 | let-go.lang.Regex | 5 | 5 |
 | symbol | 4 | 8 |
 | var | 2 | 3 |
@@ -39,8 +39,8 @@ Units (any bucket) holding at least one placeholder, by kind (sites in parenthes
 | `core/nth` | 179 |
 | `core/str` | 156 |
 | `core/count` | 153 |
-| `core/vector` | 132 |
-| `core/array-map` | 114 |
+| `core/array-map` | 113 |
+| `core/vector` | 112 |
 | `core/get` | 108 |
 | `core/seq` | 94 |
 | `core/vec` | 70 |

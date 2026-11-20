@@ -1,0 +1,12 @@
+;; Leaves over llvm.arch (checks/llvm-leaf-check.sh): the xxh3 chain reading
+;; a byte array, and a loop-free leaf that allocates a struct.
+(ns llvm-arch-leaves (:require [llvm.arch :as arch]))
+(arch/defstruct Pair [:i64 :i64])
+(defn r16 [b ^long o] (bit-or (arch/bget b o) (bit-shift-left (arch/bget b (unchecked-add o 1)) 8)))
+(defn r32 [b ^long o] (bit-or (r16 b o) (bit-shift-left (r16 b (unchecked-add o 2)) 16)))
+(defn r64 [b ^long o] (bit-or (r32 b o) (bit-shift-left (r32 b (unchecked-add o 4)) 32)))
+(defn pair [^long a ^long b] (arch/new Pair a b))
+(let [b (arch/bytes-new 16)]
+  (dotimes [i 16] (arch/bset! b i (unchecked-add (unchecked-multiply i 17) 1)))
+  (println (r64 b 0) (r64 b 8) (r64 b 3)))
+(println (arch/get Pair 1 (pair 3 4)))

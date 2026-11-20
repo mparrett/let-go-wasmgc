@@ -10,7 +10,7 @@
 ;; A renderer/ref-tracker edit must invalidate already-rendered runtime units.
 (binding [lw/*target* :llvm]
   (let [before (lw/rtlib-key) read-file slurp]
-    (doseq [file ["lower_llvm_ir.lg" "lower_llvm_cache.lg"]]
+    (doseq [file ["lower_llvm_ir.lg" "lower_llvm_cache.lg" "lower_llvm_leaf.lg"]]
       (with-redefs [slurp (fn [path]
                            (str (read-file path)
                                 (when (str/ends-with? path (str "/" file)) "\n;; changed compiler source\n")))]
@@ -22,6 +22,12 @@
                          (str (read-file path)
                               (when (= path lw-rt/ext-path) "\n(defn changed-extension [] 42)\n")))]
       (check "key includes the loaded extension source" (not= before (lw/rtlib-key))))))
+
+;; A runtime fn whose ops trap is a leaf only while traps abort, so the
+;; library's leaf records depend on the trap mode.
+(binding [lw/*target* :llvm]
+  (check "key includes the trap mode"
+         (not= (lw/rtlib-key) (binding [lw/*trap-throws* true] (lw/rtlib-key)))))
 
 ;; Keep actual publication, filenames, lookup, and pruning. Only the expensive
 ;; runtime build and its payload are replaced with a distinguishable marker.

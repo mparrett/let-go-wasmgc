@@ -1,0 +1,45 @@
+;; Leaves (fns of wrapping int, bit and float ops that call only other
+;; leaves) are also emitted as one direct-call function each, their CPS entry
+;; a wrapper that calls it. Loops and a fn-level recur stay inside the leaf,
+;; carrying their values through phis; the wrapper keeps a leaf a value
+;; (through map, from a vector). A loop-free leaf may box; a loop that boxes
+;; on each iteration stays CPS and finishes on the default heap.
+(defn sum-to [^long n] (loop [i 0 a 0] (if (< i n) (recur (unchecked-add i 1) (unchecked-add a i)) a)))
+(defn sum-from [^long n ^long i ^long a] (if (< i n) (recur n (unchecked-add i 1) (unchecked-add a i)) a))
+(defn tri [^long n] (loop [i 0 a 0]
+                      (if (< i n)
+                        (recur (unchecked-add i 1) (loop [j 0 b a] (if (< j i) (recur (unchecked-add j 1) (unchecked-add b (unchecked-multiply i j))) b)))
+                        a)))
+(println (sum-to 1000000) (sum-from 1000000 0 0) (tri 300))
+;; byte o of a 16-byte buffer held in two words, and wider reads over it
+(defn r8 [^long lo ^long hi ^long o] (bit-and (unsigned-bit-shift-right (if (< o 8) lo hi) (bit-shift-left (bit-and o 7) 3)) 255))
+(defn r16 [^long lo ^long hi ^long o] (bit-or (r8 lo hi o) (bit-shift-left (r8 lo hi (unchecked-add o 1)) 8)))
+(defn r32 [^long lo ^long hi ^long o] (bit-or (r16 lo hi o) (bit-shift-left (r16 lo hi (unchecked-add o 2)) 16)))
+(defn r64 [^long lo ^long hi ^long o] (bit-or (r32 lo hi o) (bit-shift-left (r32 lo hi (unchecked-add o 4)) 32)))
+(println (r64 578437695752307201 -1157159080937066480 0) (r64 578437695752307201 -1157159080937066480 3)
+         (r32 578437695752307201 -1157159080937066480 6) (r16 578437695752307201 -1157159080937066480 15))
+(defn pos-or-nil [^long n] (if (pos? n) n nil))
+(println (pos-or-nil 5) (pos-or-nil -5) (pos-or-nil 4611686018427387904))
+(defn truthy [x] (if x 1 2))
+(println (map truthy [nil 1 false :a]) ((nth [truthy sum-to] 0) false) ((peek [truthy sum-to]) 10))
+(defn box-each [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) i) acc)))
+(println (box-each 1000000))
+(defn box-floats [^long n] (loop [i 0 acc nil] (if (< i n) (recur (unchecked-add i 1) (* 1.5 i)) acc)))
+(println (box-floats 1000000))
+;; A call of a leaf is direct, with no continuation: a CPS fn (checked + is
+;; no leaf op) calls r64 a million times in constant C stack, and a checked
+;; + that overflows still raises catchably. A boxed value passed for a
+;; leaf's ^long param and its int result stored boxed convert as on a CPS
+;; call. A leaf var redefined is called through its new value.
+(defn r64-sum [^long n] (loop [i 0 a 0] (if (< i n) (recur (unchecked-add i 1) (+ a (bit-and (r64 578437695752307201 i (bit-and i 15)) 255))) a)))
+(println (r64-sum 1000000))
+(defn inc-checked [^long x] (+ x 1))
+(println (try (inc-checked 9223372036854775807) (catch Exception e :overflow)) (inc-checked 1))
+(defn twice [^long x] (unchecked-add x x))
+(defn twice-each [v] [(twice 21) (twice (first v))])
+(println (twice-each [4]))
+(defn bump [^long x] (unchecked-add x 1))
+(defn bump2 [^long x] (bump (bump x)))
+(println (bump 1) (bump2 1))
+(def bump (fn [^long x] (unchecked-add x 10)))
+(println (bump 1) (bump2 1))

@@ -232,3 +232,89 @@ same acceptance as leaves: behavior unchanged, then time.
   allocates a bounded amount before its caller's next entry check.
 - **Code size:** a leaf has two entries (direct and CPS). The shake drops
   the CPS entry when nothing takes the fn as a value.
+
+## Results
+
+Measured at 23bc985 (call leaves directly, the head when the numbers and the
+full row run were taken) against the commit before the first leaves commit
+(255a8e6), both built by the same script
+(checks/llvm-xxh3-bench.sh: the runtime's llvm.xxhash over a 25 MB buffer,
+native executable from the driver's default cached runtime library, hyperfine
+under checks/quiet.sh). Both print the same checksum.
+
+- **XXH3 of 25 MB on llvm: no measurable change, far from the 100 ms
+  target.** Before 745 to 1016 ms mean over four hyperfine runs of 3 to 15
+  samples each; after 753 to 968 ms. The machine was shared and never held a
+  1-minute load under 4 for a whole run (loads 3 to 7 while timing; the spread
+  within one run is 10 to 20 percent), so the means are noise-bound. The
+  least-noisy figure, the minimum over 15 runs, is 696 ms before and 729 ms
+  after, roughly 35 MB/s. Read it as unchanged, not as a regression.
+- **Why it did not move: none of the xxh3 fns is a leaf.** The before module
+  has 0 leaf fns. The after module has 88, none in llvm.xxhash: all 25
+  top-level fns (r8, r16, r32, r64, rotl, lo32, hi32, bswap32, bswap64,
+  mul-fold, avalanche, avalanche-small, rrmxmx, mix16, key-word, w64!,
+  default-secret, init-secret, stripe!, scramble!, h-short, h-medium,
+  h-midsize, h-long, hash-bytes) stay CPS. Their params are untyped, so each
+  use of one as a byte offset or word is an unbox that can raise, and the
+  classifier keeps a fn that can raise out of the leaves. The 88 leaves are
+  in the other runtime namespaces (arrays, core, host, phm, ...). The gain is
+  in typing the xxh3 params (and the arch bytes/array accessors they call) so
+  the unboxes cannot raise; that is the next change.
+- **Rows:** the full run was at 23bc985 (the 121-row parity set, one slot,
+  LW_ATTEST=0, load under 4 at the start); the P9.1 fix at 1a59fed was
+  checked by rerunning rows, not the set. 120 pass; P12.0 fails, also on
+  rerun alone.
+  - P12.0 fails identically at 255a8e6 (a native stderr warning that
+    round-bigdec already refers to the clojure.core var, in the self-compile
+    comparison); a later change on main fixes it and this branch's base
+    predates that. It is not this branch.
+  - P9.1 failed in the run at 23bc985: the gensym count after loading the
+    driver was 1175 against the recorded 1162, 13 more taken by a `doto` in
+    the driver's analysis and a `for` with destructuring in the rtlib
+    build. It passes at 1a59fed, back at 1162, rerun alone, as do
+    LLVM.LEAVES, P12.37 and LLVM.RTLIB.REUSE; the rest of the set was not
+    rerun at that commit.
+  The llvm benchmark rows (P13.x, P12.37, P12.40, the llvm corpora) all pass.
+  They were not timed against the base: the machine never held a load under
+  4, so a comparison would be noise, and "none slower" is not established.
+  That comparison moves to the re-measure after the param-inference change.
+- **The llvm-built compiler's compile of corpus/scalar/fib.clj:** not
+  recorded. No script builds the compiler through llvm: the self-compile rows
+  (P12.0, P12.4, P12.5) carry it as a wasm program, so there is no llvm-built
+  compiler to time.
+- **With i64 params (95a4fe4): XXH3 of 25 MB, about 20 percent faster by
+  the minimum, still far from the 100 ms target.** On llvm a param every
+  user of which reads it as an int (a bit op, an i64 intrinsic, a callee
+  whose sig takes an int there) is now typed :int. Seven llvm.xxhash fns
+  become leaves (lo32, hi32, bswap32, bswap64, mul-fold, avalanche,
+  avalanche-small); the module has 106 leaf fns, against 88 at 0d1ee72.
+  Same script, 10 hyperfine runs each, run in the order 95a4fe4, 0d1ee72,
+  95a4fe4. Each run started once the 1-minute load was under 4 (3.7), but the
+  load rose to 5 to 8 during the runs. Means and minimums were 963 ms (min
+  650) and 750 ms (min 627) at 95a4fe4, against 1054 ms (min 823) at
+  0d1ee72. All three print the same checksum. The minimums are the
+  least-noisy figure (about 40 MB/s); the means are noise-bound. The 25 MB
+  path runs through h-long, stripe! and scramble!, which stay CPS: r16,
+  r32 and r64 add their offsets with checked + (which can raise), so the
+  byte reads that feed every stripe are no leaves.
+  Rows at 95a4fe4, one slot, LW_ATTEST=0: LLVM.LEAVES, LLVM.ANALYSIS.REUSE,
+  P13.3, P13.1, P12.37, LLVM.RTLIB.REUSE, P13.9 (no mismatch), P12.40 and
+  P9.1 (1162) pass.
+- **Calling convention: fastcc, chosen and not measured.** The leaves'
+  direct-call functions are `internal fastcc`; no build with the default
+  convention was timed against it, so the choice left to the builder is
+  made but not settled by measurement.
+- **With checked intrinsic indexes read as ints (1d43943): XXH3 of 25 MB
+  in 32.7 ms, under the 100 ms target.** The byte readers' offset was also
+  the index of `arch/bget`, which the inference did not count as an int
+  read, so it stayed boxed; the checked `+` was not the blocker (wrapping
+  the adds, 877f365, made no new leaf). With the rule, r8, r16, r32 and r64
+  are leaves; the module has 114 leaf fns, against 106. Same script, 7
+  hyperfine runs each, in the order 877f365, 187b65f, 877f365: 909.9 ms
+  (min 827) and 973.7 ms (min 842) before, 32.7 ms ± 0.4 (min 32.1) with
+  it, about 770 MB/s; peak memory 1.0 GiB before, 64.6 MiB with it. All
+  three print the same checksum. The load was 8 to 80 around the runs;
+  checks/quiet.sh held every slot, but no bench-baton binary was installed,
+  so other agents' work was not drained. A 28-fold gap is far outside that
+  noise. h-long, stripe! and scramble! still run as CPS fns: their loops
+  use checked `+`, `*` and `inc`.

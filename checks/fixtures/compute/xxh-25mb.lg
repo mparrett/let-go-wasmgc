@@ -1,0 +1,14 @@
+;; XXH3-64 of a 25 MB buffer through the runtime-dialect hash, once.
+;; The buffer is zero but for a sparse stride, so the fill is a few
+;; thousand stores and the time is the hash.
+(require '[llvm.arch :as arch] '[llvm.xxhash :as x])
+(def size 26214400)
+(def input (arch/bytes-new size))
+(loop [i 0]
+  (when (< i size)
+    (arch/bset! input i (mod (* i 17) 256))
+    (recur (+ i 4093))))
+(let [start (System/nanoTime)
+      checksum (x/hash-bytes input 0)
+      elapsed (- (System/nanoTime) start)]
+  (println checksum elapsed))
