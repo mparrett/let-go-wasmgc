@@ -28,7 +28,7 @@
                             list? fn? nil? string? keyword? symbol? coll? sequential? atom deref reset! swap!
                             compare-and-set! get-validator add-watch remove-watch volatile! vreset! vswap! with-meta meta gensym apply*
                             promise deliver delay* force delay? realized?
-                            ex-info ex-data ex-message ex-cause sort read-string slurp open compare])
+                            ex-info ex-data ex-message ex-cause sort read-string slurp open compare make-record])
   (:require [llvm.arch :as arch]
             [llvm.pvec :as pv]
             [llvm.seq :as sq]
@@ -65,13 +65,24 @@
 ;; forced then its value, state (0 pending, 1 value, 2 threw, 3 running), the error.
 (arch/defstruct Promise [[:mut :ref] [:mut :i32]])
 (arch/defstruct Delay [[:mut :ref] [:mut :i32] [:mut :ref]])
+;; A defrecord instance, laid out as vm.Record: the declared field values in
+;; order and the keys assoc added in a map. A RecType is interned per tag
+;; (Globals slot 4), so (type r) is one value per defrecord. A field slot is
+;; null when the field is absent and rec-nil when it holds nil, as native
+;; keeps Go nil apart from NIL: (->R nil 2) counts 1 and (assoc r :a nil)
+;; counts 2.
+(arch/defstruct RecType [:ref :ref [:mut :ref]])          ; tag (Kw), field keywords (phm HSlots), its Type once typed
+(arch/defstruct Rec [:ref :ref :ref :ref])                 ; type, field values (HSlots), extra (HMap), meta
 ;; Shared core state (D39): the gensym counter, the interned Types (by
 ;; type id, as many as the build's type table has: arch/type-count) and
 ;; (P6.7) the roots alter-var-root gave vars the module does not hold (a
 ;; native's: legmacs' (alter-var-root #'future* ..)), a map from the
-;; stand-in's "#'ns/name" text to the root, which var-value reads first.
-(arch/defstruct Globals [[:mut :i64] :ref [:mut :ref] [:mut :ref]])
-(def globals (arch/new Globals 0 (arch/array-new pv/Node (arch/type-count) (arch/null)) (arch/null) (arch/null)))
+;; stand-in's "#'ns/name" text to the root, which var-value reads first;
+;; the watch tables of var stand-ins; the record types by tag; rec-nil.
+(arch/defstruct Globals [[:mut :i64] :ref [:mut :ref] [:mut :ref] [:mut :ref] :ref])
+(def globals (arch/new Globals 0 (arch/array-new pv/Node (arch/type-count) (arch/null)) (arch/null) (arch/null)
+                       (arch/null) (arch/new sq/Reduced (arch/null))))
+(defn- rec-nil "The slot value of a record field holding nil (never escapes a Rec)." [] (arch/get Globals 5 globals))
 ;; Pinned core's synchronous agents share one private atom of action errors.
 ;; Keep it as a runtime global so compiled embedded functions share state.
 (def agent-errors (arch/new sq/Atom (m/empty-map) 0 nil nil 0 nil))
@@ -81,6 +92,7 @@
 ;;  30 map  31 set  32 TransientMap  33 TransientSet  34 TransientVector  35 Type
 ;;  36 keyword/symbol with meta  37 a typed array (llvm.arrays)
 ;;  38 SortedMap  39 SortedSet (llvm.sorted)  40 Promise  41 Delay
+;;  42 a deftype instance  45 a defrecord instance (Rec)
 (defn ckind [x]
   (let [k (sq/kind x)]
     (if (= k 18)
@@ -97,6 +109,7 @@
             (arch/is? Promise x) 40
             (arch/is? Delay x) 41
             (arch/is? UserInstance x) 42
+            (arch/is? Rec x) 45
             :else 18)
       k)))
 
@@ -192,6 +205,7 @@
           (= k 40) (arch/bytes-of-string "let-go.lang.Promise")
           (= k 41) (arch/bytes-of-string "let-go.lang.Delay")
           (= k 42) (arch/get TypeVal 0 (arch/get UserInstance 0 x))
+          (= k 45) (arch/get sq/Kw 1 (arch/get RecType 0 (arch/get Rec 0 x))) ; a record type's name is the record's
           :else (arch/bytes-of-string "let-go.lang.Unknown"))))
 
 (defn- tn [x] (s/mk-str (type-name x)))
@@ -314,18 +328,26 @@
     (arch/null? x) (arch/null)
     (= 2 (standin x)) (type-of (var-value x))             ; native: a Var's type is its value's
     (= 42 (ckind x)) (arch/get UserInstance 0 x)
+    ;; a record's type is its RecType's, made on first use under Object
+    (= 45 (ckind x)) (let [t (arch/get Rec 0 x) tv (arch/get RecType 2 t)]
+                       (if (arch/null? tv)
+                         (let [nt (arch/new TypeVal (type-name x) -1 (arch/array-new pv/Node 1 (type-of-id 42)) (arch/null) 0 (arch/null))]
+                           (arch/set! RecType 2 t nt)
+                           nt)
+                         tv))
     :else (type-of-id (dispatch-id x))))
 
 (defn- table-get [table key] (if (arch/null? table) (arch/null) (m/mget table key (arch/null))))
 
 ;; a library type's stand-in table holding x's methods, when one was
-;; extended: a field-less deftype's value is its keyword tag, a record's map
-;; carries the tag under :lw/type; any other value has no stand-in
+;; extended: a field-less deftype's value is its keyword tag, a record
+;; carries its tag; any other value has no stand-in
+(declare record-tag)
 (defn- standin-method [x key]
   (let [all (arch/get UserGlobals 2 user-globals)]
     (cond (arch/null? all) (arch/null)
           (= 20 (sq/kind x)) (table-get (m/mget all x (arch/null)) key)
-          (map? x) (let [tag (get x :lw/type)] (if (arch/null? tag) (arch/null) (table-get (m/mget all tag (arch/null)) key)))
+          (= 45 (ckind x)) (table-get (m/mget all (record-tag x) (arch/null)) key)
           :else (arch/null))))
 
 ;; the method of x's own type (nil's own table for nil; a library type's
@@ -348,8 +370,8 @@
 
 ;; t is a Type (the value's type or in its ancestry), or a library type's
 ;; stand-in from the static lowering (a library deftype or defrecord):
-;; the instance is that stand-in itself (a field-less deftype) or a map
-;; tagged :lw/type with it, as on the GC lane.
+;; the instance is that stand-in itself (a field-less deftype) or a record
+;; carrying it as its tag, as on the GC lane.
 (defn ^{:twin "core/instance?"} instance-of? [t x]
   (cond
     (arch/null? x) false
@@ -360,7 +382,7 @@
         true
         (let [anc (arch/get TypeVal 2 xt) n (arch/alen anc)]
           (loop [j 0] (cond (>= j n) false (arch/ref-eq t (arch/aget pv/Node anc j)) true :else (recur (inc j)))))))
-    :else (or (arch/ref-eq t x) (and (map? x) (arch/ref-eq t (get x :lw/type))))))
+    :else (or (arch/ref-eq t x) (arch/ref-eq t (record-tag x)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Calling values. A Fn goes through its code slot for the arity (D52); the
@@ -407,7 +429,7 @@
 (defn callable? [x]                                       ; vm.AsFn
   (let [k (ckind x)]
     (cond (= k 16) true (= k 20) true (= k 21) true (= k 11) true (= k 30) true (= k 31) true
-          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true
+          (if (>= k 32) (<= k 34) false) true (= k 38) true (= k 39) true (= k 45) true
           (= k 36) (= 2 (standin x))                      ; a Var (P5.9)
           :else false)))          ; transients are IFns (transient.go)
 
@@ -840,6 +862,7 @@
                  (= k 38) true
                  (= k 39) true
                  (= k 40) true
+                 (= k 45) true                          ; a record looks itself up (vm.Record.Invoke)
                  (= k 36) (if (= 1 (standin x)) false true)
                  :else false))))
   ([x y & more] (sq/bool false)))
@@ -870,6 +893,147 @@
                                     (= k 38) true (= k 39) true :else false))))
 (defn sequential? [x]
   (let [k (ckind x)] (sq/bool (cond (if (>= k 2) (<= k 11) false) true (= k 23) true (= k 27) true :else false))))
+
+;; ---------------------------------------------------------------------------
+;; Records. The program's ->Name and map->Name call make-record and
+;; record-of-map with the type's tag and declared field keywords; everything
+;; else reaches a record through the generic arms below by kind 45.
+
+(defn- rec-types [] (let [t (arch/get Globals 4 globals)] (if (arch/null? t) (let [e (m/empty-map)] (arch/set! Globals 4 globals e) e) t)))
+(defn- same-fields? [a fs]                                ; keywords are interned, so ref-eq
+  (let [n (arch/alen a)]
+    (if (= n (pv/vcount fs))
+      (loop [i 0] (cond (>= i n) true (arch/ref-eq (arch/aget m/HSlots a i) (pv/vnth fs i)) (recur (inc i)) :else false))
+      false)))
+(defn record-type
+  "The RecType interned for tag with the fields fs, a vector of keywords.
+   A defrecord that redefines tag with other fields replaces the interned
+   type, as native's evaluation of defrecord makes a new type: instances
+   built before keep the old one, and the two types are not =."
+  [tag fs]
+  (let [ts (rec-types) t (m/mget ts tag (arch/null))]
+    (if (if (arch/null? t) false (same-fields? (arch/get RecType 1 t) fs))
+      t
+      (let [n (pv/vcount fs) a (arch/array-new m/HSlots n (arch/null))]
+        (loop [i 0] (when (< i n) (arch/aset! m/HSlots a i (pv/vnth fs i)) (recur (inc i))))
+        (let [nt (arch/new RecType tag a (arch/null))]
+          (arch/set! Globals 4 globals (m/massoc ts tag nt))
+          nt)))))
+(defn- rec-fields [r] (arch/get RecType 1 (arch/get Rec 0 r)))
+(defn- rec-vals [r] (arch/get Rec 1 r))
+(defn- rec-extra [r] (arch/get Rec 2 r))
+(defn record-tag "The tag of a record; null for any other value." [x]
+  (if (= 45 (ckind x)) (arch/get RecType 0 (arch/get Rec 0 x)) (arch/null)))
+(defn- field-index [fs k]                                 ; -1 when k is no declared field (keywords are interned)
+  (let [n (arch/alen fs)]
+    (loop [i 0] (cond (>= i n) -1 (arch/ref-eq (arch/aget m/HSlots fs i) k) i :else (recur (inc i))))))
+(defn- rec-field [r i nf]                                 ; field i's value: nf when absent, nil when it holds nil
+  (let [v (arch/aget m/HSlots (rec-vals r) i)]
+    (cond (arch/null? v) nf (arch/ref-eq v (rec-nil)) (arch/null) :else v)))
+(defn- rec-present? [r i] (if (arch/null? (arch/aget m/HSlots (rec-vals r) i)) false true))
+(defn- rec-get [r k nf]
+  (let [i (field-index (rec-fields r) k)]
+    (if (< i 0) (m/mget (rec-extra r) k nf) (rec-field r i nf))))
+(defn- rec-contains? [r k]
+  (let [i (field-index (rec-fields r) k)]
+    (if (< i 0) (m/mcontains? (rec-extra r) k) (rec-present? r i))))
+(defn- rec-count [r]
+  (let [n (arch/alen (rec-vals r))]
+    (loop [i 0 c (m/mcount (rec-extra r))]
+      (if (< i n) (recur (inc i) (if (rec-present? r i) (inc c) c)) c))))
+(defn- clone-vals [vs]
+  (let [n (arch/alen vs) out (arch/array-new m/HSlots n (arch/null))]
+    (arch/array-copy m/HSlots out 0 vs 0 n)
+    out))
+
+(defn make-record
+  "->Name: a record of the type tag with the declared fields fs holding the
+   values of vs in order. A nil value leaves its field absent, as native's
+   constructor builds the record from a map."
+  [tag fs vs]
+  (let [t (record-type tag fs) n (pv/vcount vs) a (arch/array-new m/HSlots n (arch/null))]
+    (loop [i 0] (when (< i n) (arch/aset! m/HSlots a i (pv/vnth vs i)) (recur (inc i))))
+    (arch/new Rec t a (m/empty-map) (arch/null))))
+
+(defn record-of-map
+  "map->Name: the declared fields from the map mm (absent when missing or
+   nil), its other keys as extras in its order."
+  [tag fs mm]
+  (let [t (record-type tag fs) flds (arch/get RecType 1 t) n (arch/alen flds)
+        a (arch/array-new m/HSlots n (arch/null))
+        src (if (= 30 (ckind mm)) mm (m/empty-map))
+        e (m/entries src) ne (arch/alen e)]
+    (loop [i 0] (when (< i n) (arch/aset! m/HSlots a i (m/mget src (arch/aget m/HSlots flds i) (arch/null))) (recur (inc i))))
+    (loop [j 0 ex (m/empty-map)]
+      (if (< j ne)
+        (let [k (arch/aget m/HSlots e j)]
+          (recur (+ j 2) (if (< (field-index flds k) 0) (m/massoc ex k (arch/aget m/HSlots e (inc j))) ex)))
+        (arch/new Rec t a ex (arch/null))))))
+
+;; vm.Record.Assoc and .Dissoc: the result carries no meta
+(defn- rec-assoc [r k v]
+  (let [i (field-index (rec-fields r) k)]
+    (if (< i 0)
+      (arch/new Rec (arch/get Rec 0 r) (rec-vals r) (m/massoc (rec-extra r) k v) (arch/null))
+      (let [a (clone-vals (rec-vals r))]
+        (arch/aset! m/HSlots a i (if (arch/null? v) (rec-nil) v))
+        (arch/new Rec (arch/get Rec 0 r) a (rec-extra r) (arch/null))))))
+(defn- rec-dissoc [r k]
+  (let [fs (rec-fields r) i (field-index fs k)]
+    (if (< i 0)
+      (arch/new Rec (arch/get Rec 0 r) (rec-vals r) (m/mdissoc (rec-extra r) k) (arch/null))
+      ;; a declared field: a plain map of the extras, then the other fields in
+      ;; order, an absent one as nil
+      (let [n (arch/alen fs)]
+        (loop [j 0 mm (rec-extra r)]
+          (if (< j n)
+            (recur (inc j) (if (= j i) mm (m/massoc mm (arch/aget m/HSlots fs j) (rec-field r j (arch/null)))))
+            mm))))))
+(defn- rec-conj [r x]                                     ; vm.Record.Conj: an ArrayVector pair assocs, anything else leaves r
+  (if (if (= 11 (ckind x)) (if (= 0 (pv/vpkind x)) (= 2 (pv/vcount x)) false) false)
+    (rec-assoc r (pv/vnth x 0) (pv/vnth x 1))
+    r))
+
+(defn- rec-entries [r]                                    ; [k v ...]: the present fields in order, then the extras
+  (let [fs (rec-fields r) n (arch/alen fs) e (m/entries (rec-extra r)) ne (arch/alen e)
+        out (arch/array-new m/HSlots (* 2 (rec-count r)) (arch/null))
+        j (loop [i 0 j 0]
+            (if (< i n)
+              (if (rec-present? r i)
+                (do (arch/aset! m/HSlots out j (arch/aget m/HSlots fs i))
+                    (arch/aset! m/HSlots out (inc j) (rec-field r i (arch/null)))
+                    (recur (inc i) (+ j 2)))
+                (recur (inc i) j))
+              j))]
+    (arch/array-copy m/HSlots out j e 0 ne)
+    out))
+(defn- rec-seq [r]                                        ; vm.Record.Seq: a list of entries; null when empty
+  (let [e (rec-entries r) n (arch/alen e)]
+    (if (= n 0) (arch/null) (m/entries->map-seq e (unsigned-bit-shift-right n 1)))))
+(defn- rec-equiv? [a b]                                   ; vm.Record.Equals: one type, fields pairwise, the extras as maps
+  (if (if (= 45 (ckind b)) (arch/ref-eq (arch/get Rec 0 a) (arch/get Rec 0 b)) false)
+    (let [n (arch/alen (rec-vals a))]
+      (if (loop [i 0]
+            (if (< i n)
+              (let [pa (rec-present? a i) pb (rec-present? b i)]
+                (cond (if pa false (if pb false true)) (recur (inc i))
+                      (if pa pb false) (if (sq/equiv? (rec-field a i (arch/null)) (rec-field b i (arch/null))) (recur (inc i)) false)
+                      :else false))
+              true))
+        (m/mequiv (rec-extra a) (rec-extra b))
+        false))
+    false))
+(defn- rec-hash [r]                                       ; vm.Record.Hash: mixFinish(sum of hash(k)^hash(v) over the present fields, plus the extras' hash)
+  (let [fs (rec-fields r) n (arch/alen fs)]
+    (m/mix-finish
+     (loop [i 0 h (m/mhash (rec-extra r))]
+       (if (< i n)
+         (recur (inc i)
+                (if (rec-present? r i)
+                  (bit-and 0xffffffff (+ h (bit-xor (sq/unbox-int (sq/hash (arch/aget m/HSlots fs i)))
+                                                    (sq/unbox-int (sq/hash (rec-field r i (arch/null)))))))
+                  h))
+         h)))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -946,6 +1110,7 @@
           (= k 37) (arr/aget-nf coll key nf)
           (= k 38) (so/smap-get coll key nf)
           (= k 39) (so/sset-get coll key nf)
+          (= k 45) (rec-get coll key nf)
           :else nf)))
 
 (defn ^{:twin "core/get"} get
@@ -959,6 +1124,7 @@
           (= k 31) (sq/bool (hs/scontains? coll key))
           (= k 38) (sq/bool (so/smap-contains? coll key))
           (= k 39) (sq/bool (so/sset-contains? coll key))
+          (= k 45) (sq/bool (rec-contains? coll key))
           (= k 11) (sq/bool (index-in? key (pv/vcount coll)))
           (= k 23) (sq/bool (index-in? key 2))
           (= k 32) (let [t coll] (sq/bool (if (arch/ref-eq (m/tget t key t) t) false true)))
@@ -983,6 +1149,7 @@
     (cond (= c 0) (m/massoc (m/empty-map) k v)            ; nil assocs into {}
           (= c 30) (m/massoc coll k v)
           (= c 38) (so/smap-assoc coll k v)
+          (= c 45) (rec-assoc coll k v)
           (= c 11) (if (index-in? k (inc (pv/vcount coll)))
                      (pv/vassoc coll (sq/unbox-int k) v)
                      (raise-str (s/str (lit (arch/bytes-of-string "assoc failed for key ")) (s/value-string k))))
@@ -1007,6 +1174,7 @@
     (cond (= c 0) (arch/null)
           (= c 30) (m/mdissoc coll k)
           (= c 38) (so/smap-dissoc coll k)
+          (= c 45) (rec-dissoc coll k)
           (= c 11) (raise-str (s/str (lit (arch/bytes-of-string "dissoc failed for key ")) (s/value-string k)))
           :else (raise (arch/bytes-of-string "dissoc expected Associative")))))
 
@@ -1048,6 +1216,7 @@
           (= k 31) (hs/sconj coll x)
           (= k 38) (conj-smap coll x)
           (= k 39) (so/sset-conj coll x)
+          (= k 45) (rec-conj coll x)
           (if (= k 0) true (if (if (>= k 2) (<= k 11) false) true (if (= k 23) true (= k 27)))) (sq/conj coll x)
           :else (raise (arch/bytes-of-string "conj expected Collection")))))
 
@@ -1062,7 +1231,7 @@
 
 (defn- seqable-k? [k]                                     ; a TransientMap seqs natively (transient.go:231)
   (cond (= k 0) true (if (>= k 2) (<= k 13) false) true (= k 17) true (= k 23) true (= k 27) true (= k 30) true (= k 31) true (= k 32) true (= k 37) true
-        (= k 38) true (= k 39) true :else false))
+        (= k 38) true (= k 39) true (= k 45) true :else false))
 
 (defn ^{:twin "core/nth"} nth                             ; Nth/Nth3 plus TransientVector (Indexed, not seqable)
   ([coll i] (let [k (ckind coll) n (sq/int-arg i)]
@@ -1545,6 +1714,7 @@
           (= k 38) (so/smap-with-meta x mt)
           (= k 39) (so/sset-with-meta x mt)
           (= k 42) (new-user-instance (arch/get UserInstance 0 x) (arch/get UserInstance 1 x) mt)
+          (= k 45) (arch/new Rec (arch/get Rec 0 x) (rec-vals x) (rec-extra x) mt)
           (if (= k 2) true (= k 3)) (sq/list-with-meta x mt)
           (= k 16) (fn-with-meta x mt)
           (if (= k 20) true (= k 21)) (arch/new MetaNamed x mt)
@@ -1562,6 +1732,7 @@
           (= k 38) (so/smeta x)
           (= k 39) (so/ssmeta x)
           (= k 42) (arch/get UserInstance 2 x)
+          (= k 45) (arch/get Rec 3 x)
           (if (= k 2) true (= k 3)) (arch/get sq/List 3 x)
           (= k 16) (if (meta-fn? x) (arch/get MetaEnv 1 (arch/get sq/Fn 3 x)) (arch/null))
           (= k 36) (if (= 2 (standin x))
@@ -1747,7 +1918,7 @@
 (defn- sortable? [x]                                      ; a vm.Collection (nil included: (sort nil) is ())
   (let [k (ckind x)]                                      ; Repeat, InfiniteRange, ChunkedCons are not one (bug-14)
     (cond (= k 0) true (= k 6) false (= k 8) false (= k 9) false (if (>= k 2) (<= k 11) false) true
-          (= k 27) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 38) true (= k 39) true :else false)))
+          (= k 27) true (= k 17) true (= k 23) true (= k 30) true (= k 31) true (= k 38) true (= k 39) true (= k 45) true :else false)))
 
 (defn- sort* [f coll]
   (cond
@@ -1871,6 +2042,25 @@
                              (s/value-string (arch/aget pv/Node fields i)))))
         (s/str acc (lit (arch/bytes-of-string ">")))))))
 
+;; vm.Record.String: #Name{:f v, :f v, k v}, every declared field (an absent
+;; one as nil) then the extras, each element in its readable form whatever the
+;; outer mode, since native prints through String()
+(defn- print-rec [r]
+  (let [fs (rec-fields r) n (arch/alen fs) e (m/entries (rec-extra r)) ne (arch/alen e)
+        sep (lit (arch/bytes-of-string ", ")) sp (lit (arch/bytes-of-string " "))
+        head (s/str (lit (arch/bytes-of-string "#")) (lit (arch/get sq/Kw 1 (record-tag r))) (lit (arch/bytes-of-string "{")))
+        acc (loop [i 0 acc head]
+              (if (< i n)
+                (recur (inc i) (s/str (if (> i 0) (s/str acc sep) acc) (s/pr-str (arch/aget m/HSlots fs i))
+                                      (s/str sp (s/pr-str (rec-field r i (arch/null))))))
+                acc))
+        acc (loop [j 0 acc acc]
+              (if (< j ne)
+                (recur (+ j 2) (s/str (if (if (> j 0) true (> n 0)) (s/str acc sep) acc) (s/pr-str (arch/aget m/HSlots e j))
+                                      (s/str sp (s/pr-str (arch/aget m/HSlots e (inc j))))))
+                acc))]
+    (s/str acc (lit (arch/bytes-of-string "}")))))
+
 (defn- print-foreign [self x mb]
   (let [k (ckind x) mode (sq/unbox-int mb)]
     (cond (= k 30) (print-map x mode)
@@ -1896,6 +2086,7 @@
                           (sq/box-int (pv/vcount (arch/get TVec 0 x))) (lit (arch/bytes-of-string ">")))
           (= k 35) (lit (arch/get TypeVal 0 x))
           (= k 42) (print-user-instance x)
+          (= k 45) (print-rec x)
           (= k 37) (arr/print-arr x)
           (= k 38) (so/smap-print x)
           (= k 39) (so/sset-print x)
@@ -1918,18 +2109,21 @@
           (= k 37) (arr/acount x)
           (= k 38) (sq/box-int (so/smap-count x))
           (= k 39) (sq/box-int (so/sset-count x))
+          (= k 45) (sq/box-int (rec-count x))
           :else (raise (arch/bytes-of-string "count expected Counted")))))
 (defn- foreign-seq [self x]
   (cond (= 32 (ckind x)) (m/tentry-seq x)
     (= 37 (ckind x)) (arr/aseq x)
     (= 38 (ckind x)) (so/smap-seq x)
     (= 39 (ckind x)) (so/sset-seq x)
+    (= 45 (ckind x)) (rec-seq x)
     :else
     (raise-str (s/str (lit (arch/bytes-of-string "don't know how to create ISeq from ")) (tn x)))))
 (defn- foreign-seqable [self x]                          ; maps, sets and transient maps are vm.Sequable
-  (let [k (ckind x)] (sq/bool (if (= k 18) true (if (>= k 37) (<= k 39) (if (>= k 30) (<= k 32) false))))))
+  (let [k (ckind x)] (sq/bool (if (= k 18) true (if (= k 45) true (if (>= k 37) (<= k 39) (if (>= k 30) (<= k 32) false)))))))
 (defn- foreign-equiv [self a b]                          ; identity: the transients and types; sorted colls as maps/sets
-  (sq/bool (cond (= 38 (ckind a)) (so/smap-equiv? a b) (= 38 (ckind b)) (so/smap-equiv? b a)
+  (sq/bool (cond (= 45 (ckind a)) (rec-equiv? a b) (= 45 (ckind b)) (rec-equiv? b a)
+                 (= 38 (ckind a)) (so/smap-equiv? a b) (= 38 (ckind b)) (so/smap-equiv? b a)
                  (= 39 (ckind a)) (so/sset-equiv? a b) (= 39 (ckind b)) (so/sset-equiv? b a)
                  :else (arch/ref-eq a b))))
 ;; None of these is Hashable natively: FNV-1a of String() (hash.go:31), so a
@@ -1939,6 +2133,7 @@
   (let [k (ckind x)]
     (cond (= k 38) (sq/box-int (so/smap-hash x)) (= k 39) (sq/box-int (so/sset-hash x))
           (= k 42) (sq/box-int (m/mix-finish (bit-and (arch/get UserInstance 3 x) 0xffffffff)))
+          (= k 45) (sq/box-int (rec-hash x))
           :else (sq/hash (s/value-string x)))))
 (defn- tn-hook [self x] (tn x))                          ; llvm.arrays names argument types through this
 

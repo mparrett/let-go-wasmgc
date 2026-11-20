@@ -67,8 +67,8 @@
 (def ^:private global (atom (empty-hierarchy)))
 
 ;; native's asHierarchy wants a plain persistent map: a sorted map is another
-;; type, and a record is a map tagged :lw/type here
-(defn- h-map? [x] (and (map? x) (not (sorted? x)) (not (contains? x :lw/type))))
+;; type, and a record is its own kind, so map? already refuses it
+(defn- h-map? [x] (and (map? x) (not (sorted? x))))
 
 (defn- hierarchy? [h]
   (and (h-map? h) (h-map? (:parents h)) (h-map? (:ancestors h)) (h-map? (:descendants h))))
