@@ -122,7 +122,7 @@ https://github.com/mparrett/let-go-wasmgc/blob/2b80f13a351885255493486d1c1324c6d
 
 ## 14. Where things are recorded
 
-`DECISIONS.md` is the design record: one dated line per decision, D10 onward, and the code cites these numbers in its comments. D41 is a typical entry, recording a representation choice with the measurement behind it; D170 records how this repository is published. `STATUS.md` is the dated table of work items, each with its state and a note. `FINDINGS.md` lists native let-go behaviours met along the way that are not decisions, such as hashing and arithmetic quirks the backend reproduces rather than fixes (D16).
+`DECISIONS.md` is the design record: one dated line per decision, D10 onward, and the code cites these numbers in its comments. D41 is a typical entry, recording a representation choice with the measurement behind it; D170 records how this repository is published. `docs/ITEM-LEDGER.md` (then `STATUS.md`) is the dated table of work items, each with its state and a note. `FINDINGS.md` lists native let-go behaviours met along the way that are not decisions, such as hashing and arithmetic quirks the backend reproduces rather than fixes (D16).
 
 https://github.com/mparrett/let-go-wasmgc/blob/2b80f13a351885255493486d1c1324c6ddf3a748/DECISIONS.md#L36-L36
 

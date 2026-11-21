@@ -311,7 +311,7 @@ apply) and replaces that plan's Task 10.
 
 ### Task 10: The jank suite past the shim
 
-**Files:** `corpus/jank/baseline.tsv`, `STATUS.md`.
+**Files:** `corpus/jank/baseline.tsv`, `docs/ITEM-LEDGER.md`.
 
 - [ ] **Step 1: Run** `WASM_RUN=checks/native-run.sh checks/jank-suite.sh`. Expected: more than 0/242 files agree, and every file still failing has a first-error line.
-- [ ] **Step 2: Group the failures by cause** in STATUS.md (polymorphism causes are fixed here; others are listed for the M1 plan's Task 11). Update the baseline; commit "jank suite: the llvm lane past the portability shim".
+- [ ] **Step 2: Group the failures by cause** in docs/ITEM-LEDGER.md (polymorphism causes are fixed here; others are listed for the M1 plan's Task 11). Update the baseline; commit "jank suite: the llvm lane past the portability shim".
