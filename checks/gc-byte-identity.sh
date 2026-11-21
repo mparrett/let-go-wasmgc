@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-11-19 at
+# GC regression guard, baseline frozen at the last pre-linear main (re-frozen 2026-11-21 at
+# 1b64c29, #118's merge: sort on records adds a kind to the runtime's sortable?, so
+# corpus/eval/errors/compile.lg's module moves again while P7.0, P7.11 and P12.3 MATCH; before that 2026-11-19 at
 # f1f6d8f, #76's merge: #75 through #76 grow the runtime library an eval program carries (BigDecimal, the
 # llvm parity fixes, records), so corpus/eval/errors/compile.lg's module moves while P7.0, P7.11 and P12.3
 # MATCH; before that 2026-11-09 at
@@ -87,7 +89,7 @@ for a in "$@"; do
 done
 [ "$capture$default_only" != 11 ] || { echo "--capture and --default-only cannot combine: capture compares nothing" >&2; exit 2; }
 . checks/env.sh
-base=f1f6d8fa805d2c6987d1286ba7d33f3813612da2
+base=1b64c291561885be9ad1ab701866acfa61ac370c
 cache=${LW_GC_BASELINE_DIR:-${TMPDIR:-/tmp}/lw-gc-byte-identity-$base}
 mkdir -p "$cache"
 t=$(mktemp -d)
