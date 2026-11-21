@@ -103,7 +103,7 @@
 - [ ] **Step 1: Write the failing test.** `corpus/jank-harness/conditionals.cljc` is a namespace with one deftest whose assertions use `#?(:clj 1 :cljs 2 :default 3)`, `#?(:cljs 2 :default 3)` and `[#?@(:clj [1 2] :cljs [3])]`. `checks/jank-suite.sh --self-test` runs it on both sides and expects agreement, and expects a deliberately wrong fixture (`conditionals-wrong.cljc`, asserting the `:cljs` value) to be reported as FAIL on both sides.
 - [ ] **Step 2:** FAIL (no harness).
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** `--self-test` exits 0. Run the whole suite once under the WasmGC lane (`WASM_RUN=checks/wasm-run.sh checks/jank-suite.sh`) and once under this target; record both summaries and cause tables in `STATUS.md` under a dated heading, and write `corpus/jank/baseline.tsv` from the llvm run.
+- [ ] **Step 4:** `--self-test` exits 0. Run the whole suite once under the WasmGC lane (`WASM_RUN=checks/wasm-run.sh checks/jank-suite.sh`) and once under this target; record both summaries and cause tables in `docs/ITEM-LEDGER.md` under a dated heading, and write `corpus/jank/baseline.tsv` from the llvm run.
 - [ ] **Step 5:** Row `P12.4	12	env WASM_RUN=checks/native-run.sh checks/jank-suite.sh --ratchet`; P8.0 and P9.1 green (driver changed); commit `llvm target: jank suite harness and first measurement (W3)`.
 
 ### Task 5: Program code: vars, closures, calls through values, recur (W5)
@@ -204,7 +204,7 @@
 ### Task 11: The suite to its bar (W11)
 
 **Files:**
-- Modify: whichever of the files above each failure's cause belongs to; `checks/items.tsv`, `checks/affected.sh`, `STATUS.md`, `DECISIONS.md`
+- Modify: whichever of the files above each failure's cause belongs to; `checks/items.tsv`, `checks/affected.sh`, `docs/ITEM-LEDGER.md`, `DECISIONS.md`
 - Create: `checks/llvm-convention-check.sh`, `checks/llvm-bench.sh`
 
 **Interfaces:**
@@ -213,4 +213,4 @@
 - [ ] **Step 1:** Run `checks/jank-suite.sh`; take the largest cause bucket first and fix it in the task's file that owns it; after each fix, `--update-baseline` (the count only grows) and commit with the bucket named.
 - [ ] **Step 2:** When every remaining failure is in the `d15` column, write the D15 decision (implement the number tower, or count those deftests as named exceptions) as a DECISIONS.md entry with the measured counts from both lanes, and stop for the human partner's choice before acting on it.
 - [ ] **Step 3:** Add rows `P12.8`–`P12.12`; `LW_ATTEST=0 checks/gate.sh 12` exits 0; P8.0 and P9.1 green.
-- [ ] **Step 4:** Record the final suite numbers, peak memory and bench timings in `STATUS.md` and a DECISIONS entry for M1; commit `llvm target: M1, jank suite on the 64-bit host`.
+- [ ] **Step 4:** Record the final suite numbers, peak memory and bench timings in `docs/ITEM-LEDGER.md` and a DECISIONS entry for M1; commit `llvm target: M1, jank suite on the 64-bit host`.

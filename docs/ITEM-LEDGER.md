@@ -1,4 +1,6 @@
-# STATUS (orchestrator-owned; one line per item)
+# Item ledger (one line per item)
+
+Was `STATUS.md` until 2026-11-14. A row's dated result is appended here when it lands; what works today is in [README.md](../README.md)'s "What works", and work in flight is on the issue board ([WORKFLOW.md](WORKFLOW.md)).
 
 These records were kept while the backend was built inside a larger workspace. They cite the campaign's plan (D1–D9), round notes (ROUND2–4), the handoff, INVENTORY and TOUR; those are working notes that stayed behind and are not in this repository. D-numbers cited from the code resolve here.
 

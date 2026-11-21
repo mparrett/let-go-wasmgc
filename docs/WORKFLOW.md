@@ -89,6 +89,6 @@ each turn one runtime's SKIP into a FAIL.
 
 - `DECISIONS.md`: numbered design decisions; a new one takes the next number
   (whether it starts as a board issue is 2a446d9).
-- `STATUS.md`: the dated row table of work items.
+- `docs/ITEM-LEDGER.md` (was `STATUS.md`): the dated row table of work items.
 - `FINDINGS.md`: things learned that are not decisions.
 - The issue board: anything in flight, and every rule before it is settled.

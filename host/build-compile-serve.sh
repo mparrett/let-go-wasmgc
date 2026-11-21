@@ -11,7 +11,7 @@
 # The module and its wasm-opt output are cached under $LW_COMPILE_HOST_DIR
 # (default $TMPDIR/lw-compile-host) by a hash of src/, rt/, the module script
 # and the program; the first build takes minutes (the P12 rows' build times
-# in STATUS.md, plus wasm-opt), later runs a few seconds.
+# in docs/ITEM-LEDGER.md, plus wasm-opt), later runs a few seconds.
 # Env: LG, LETGO (env.sh), LW_NO_OPT=1, LW_SELF_COMPILE_CACHE (the rtlib dir).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
